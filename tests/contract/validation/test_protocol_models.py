@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from pydantic import ValidationError
 
@@ -177,41 +179,32 @@ def test_runtime_context_rejects_empty_or_multiline_references(
         RuntimeContext.model_validate(payload)
 
 
-def test_cleanup_evidence_cannot_pass_with_a_failed_cleanup_result() -> None:
-    with pytest.raises(ValidationError, match="passed cleanup contains a failure"):
+@pytest.mark.parametrize(
+    ("cleanup_status", "result_status", "expected_error"),
+    [
+        ("passed", "failed", "passed cleanup contains a failure"),
+        ("failed", "removed", "failed cleanup contains no failure"),
+    ],
+)
+def test_cleanup_evidence_status_matches_result_inventory(
+    cleanup_status: Literal["passed", "failed"],
+    result_status: Literal["removed", "failed"],
+    expected_error: str,
+) -> None:
+    with pytest.raises(ValidationError, match=expected_error):
         CleanupEvidence(
             schema="kamiwaza.cleanup-evidence/v1",
             provider_revision="sdk.golden@v1",
             run_id="run-123",
             state_digest="sha256:" + "1" * 64,
-            status="passed",
+            status=cleanup_status,
             results=(
                 CleanupResult(
                     target_id="evo-x2-2-llamacpp-chat",
                     resource_type="deployment",
                     resource_id="owned-deployment",
-                    status="failed",
+                    status=result_status,
                     detail="resource remains",
-                ),
-            ),
-        )
-
-
-def test_failed_cleanup_evidence_must_name_a_failed_result() -> None:
-    with pytest.raises(ValidationError, match="failed cleanup contains no failure"):
-        CleanupEvidence(
-            schema="kamiwaza.cleanup-evidence/v1",
-            provider_revision="sdk.golden@v1",
-            run_id="run-123",
-            state_digest="sha256:" + "1" * 64,
-            status="failed",
-            results=(
-                CleanupResult(
-                    target_id="evo-x2-2-llamacpp-chat",
-                    resource_type="deployment",
-                    resource_id="owned-deployment",
-                    status="removed",
-                    detail=None,
                 ),
             ),
         )

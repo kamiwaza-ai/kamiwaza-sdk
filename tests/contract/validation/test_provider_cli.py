@@ -36,6 +36,20 @@ class EvidenceFailure:
     expected_error: str
 
 
+@dataclass(frozen=True)
+class ArtifactFailure:
+    path: Path
+    expected_error: str
+    retained: bool = False
+
+
+@dataclass(frozen=True)
+class PrepareFailure:
+    provider: GoldenProvider
+    expected_error: str
+    retained: bool = False
+
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -63,24 +77,11 @@ def _assert_provider_failure(
     provider: GoldenProvider,
     args: list[str],
     capsys: pytest.CaptureFixture[str],
-    artifact: tuple[Path, str],
+    artifact: ArtifactFailure,
 ) -> None:
-    output_path, expected_error = artifact
     assert provider_main(provider, args) == 2
-    assert expected_error in capsys.readouterr().err
-    assert not output_path.exists()
-
-
-def _assert_failed_with_evidence(
-    provider: GoldenProvider,
-    args: list[str],
-    capsys: pytest.CaptureFixture[str],
-    artifact: tuple[Path, str],
-) -> None:
-    output_path, expected_error = artifact
-    assert provider_main(provider, args) == 2
-    assert expected_error in capsys.readouterr().err
-    assert output_path.exists()
+    assert artifact.expected_error in capsys.readouterr().err
+    assert artifact.path.exists() is artifact.retained
 
 
 def _write_golden_profile(tmp_path: Path) -> Path:
@@ -438,7 +439,7 @@ def test_cli_rejects_invalid_or_detached_plans(
         provider,
         ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
         capsys,
-        (plan_path, expected_error),
+        ArtifactFailure(plan_path, expected_error),
     )
 
 
@@ -480,7 +481,7 @@ def test_cli_rejects_invalid_or_detached_evidence(
     args.extend(["--evidence", str(evidence_path)])
 
     _assert_provider_failure(
-        case.provider, args, capsys, (evidence_path, case.expected_error)
+        case.provider, args, capsys, ArtifactFailure(evidence_path, case.expected_error)
     )
 
 
@@ -511,7 +512,7 @@ def test_cli_rejects_state_detached_from_runtime_before_run(
             str(evidence_path),
         ],
         capsys,
-        (evidence_path, "fixture state run identity mismatch"),
+        ArtifactFailure(evidence_path, "fixture state run identity mismatch"),
     )
 
 
@@ -548,7 +549,7 @@ def test_cli_rejects_runtime_content_changed_after_prepare(
             str(evidence_path),
         ],
         capsys,
-        (evidence_path, "fixture state runtime digest mismatch"),
+        ArtifactFailure(evidence_path, "fixture state runtime digest mismatch"),
     )
 
 
@@ -579,7 +580,7 @@ def test_cli_rejects_state_detached_from_plan_before_run(
             str(evidence_path),
         ],
         capsys,
-        (evidence_path, "fixture state plan digest mismatch"),
+        ArtifactFailure(evidence_path, "fixture state plan digest mismatch"),
     )
 
 
@@ -594,132 +595,89 @@ def test_cli_invalid_utf8_input_fails_without_traceback(
         GoldenProvider(),
         ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
         capsys,
-        (plan_path, "protocol input/output failed"),
+        ArtifactFailure(plan_path, "protocol input/output failed"),
     )
 
 
-def test_cli_rejects_wrong_fixture_snapshot_model(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    "case",
+    [
+        PrepareFailure(WrongSnapshotOutputProvider(), "provider contract failed"),
+        PrepareFailure(
+            RegressiveSnapshotProvider(),
+            "fixture journal snapshot regressed",
+            retained=True,
+        ),
+        PrepareFailure(
+            InvalidPartialIdentityProvider(), "fixture state run identity mismatch"
+        ),
+    ],
+)
+def test_cli_rejects_invalid_fixture_state_snapshots(
+    case: PrepareFailure,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    plan_path, runtime_path, state_path = _write_prepare_inputs(
-        tmp_path, GoldenProvider()
-    )
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, case.provider)
+    args = [
+        "prepare",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+    ]
 
     _assert_provider_failure(
-        WrongSnapshotOutputProvider(),
-        [
-            "prepare",
-            "--plan",
-            str(plan_path),
-            "--runtime",
-            str(runtime_path),
-            "--state",
-            str(state_path),
-        ],
+        case.provider,
+        args,
         capsys,
-        (state_path, "provider contract failed"),
+        ArtifactFailure(state_path, case.expected_error, case.retained),
     )
 
 
-def test_cli_rejects_regressive_fixture_snapshots_but_retains_final_state(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    provider = RegressiveSnapshotProvider()
-    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
-
-    assert (
-        provider_main(
-            provider,
-            [
-                "prepare",
-                "--plan",
-                str(plan_path),
-                "--runtime",
-                str(runtime_path),
-                "--state",
-                str(state_path),
-            ],
-        )
-        == 2
-    )
-    assert "fixture journal snapshot regressed" in capsys.readouterr().err
-    assert state_path.exists()
-
-
-def test_cli_refuses_invalid_partial_state_before_persisting_it(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    provider = InvalidPartialIdentityProvider()
-    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
-
-    assert (
-        provider_main(
-            provider,
-            [
-                "prepare",
-                "--plan",
-                str(plan_path),
-                "--runtime",
-                str(runtime_path),
-                "--state",
-                str(state_path),
-            ],
-        )
-        == 2
-    )
-    assert "fixture state run identity mismatch" in capsys.readouterr().err
-    assert not state_path.exists()
-
-
-def test_cli_semantic_run_failure_returns_nonzero_with_evidence(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    "case",
+    [
+        EvidenceFailure(
+            "run",
+            IncompleteRunEvidenceProvider(),
+            "provider evidence failed exact coverage",
+        ),
+        EvidenceFailure(
+            "teardown", FailedCleanupProvider(), "provider semantic cleanup failed"
+        ),
+    ],
+)
+def test_cli_semantic_failure_returns_nonzero_with_evidence(
+    case: EvidenceFailure,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     plan_path, runtime_path, state_path = _write_prepared_inputs(tmp_path)
     evidence_path = tmp_path / "evidence.json"
+    args = [case.command, "--runtime", str(runtime_path), "--state", str(state_path)]
+    if case.command == "run":
+        args.extend(["--plan", str(plan_path)])
+    args.extend(["--evidence", str(evidence_path)])
 
-    _assert_failed_with_evidence(
-        IncompleteRunEvidenceProvider(),
-        [
-            "run",
-            "--plan",
-            str(plan_path),
-            "--runtime",
-            str(runtime_path),
-            "--state",
-            str(state_path),
-            "--evidence",
-            str(evidence_path),
-        ],
+    _assert_provider_failure(
+        case.provider,
+        args,
         capsys,
-        (evidence_path, "provider evidence failed exact coverage"),
+        ArtifactFailure(evidence_path, case.expected_error, retained=True),
     )
-    assert ScenarioEvidence.model_validate_json(evidence_path.read_text()).results == ()
-
-
-def test_cli_failed_cleanup_returns_nonzero_with_evidence(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _, runtime_path, state_path = _write_prepared_inputs(tmp_path)
-    evidence_path = tmp_path / "cleanup.json"
-
-    _assert_failed_with_evidence(
-        FailedCleanupProvider(),
-        [
-            "teardown",
-            "--runtime",
-            str(runtime_path),
-            "--state",
-            str(state_path),
-            "--evidence",
-            str(evidence_path),
-        ],
-        capsys,
-        (evidence_path, "provider semantic cleanup failed"),
-    )
-    assert (
-        CleanupEvidence.model_validate_json(evidence_path.read_text()).status
-        == "failed"
-    )
+    if case.command == "run":
+        assert (
+            ScenarioEvidence.model_validate_json(evidence_path.read_text()).results
+            == ()
+        )
+    else:
+        assert (
+            CleanupEvidence.model_validate_json(evidence_path.read_text()).status
+            == "failed"
+        )
 
 
 def test_cli_sanitizes_unexpected_provider_failures(
