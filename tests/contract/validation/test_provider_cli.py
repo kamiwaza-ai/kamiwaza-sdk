@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from kamiwaza_sdk.validation import (
     CleanupEvidence,
@@ -304,6 +305,43 @@ class DowngradedRequiredResolveProvider(GoldenProvider):
         return plan.model_copy(update={"selected": (selected,)})
 
 
+class DowngradedClusterResolveProvider(GoldenProvider):
+    def describe(self):  # type: ignore[no-untyped-def]
+        descriptor = super().describe()[0]
+        matcher = descriptor.applies_when[0].model_copy(
+            update={
+                "path": "cluster.roles",
+                "operator": "contains",
+                "value": "controller",
+            }
+        )
+        return (
+            descriptor.model_copy(
+                update={"target_scope": "cluster", "applies_when": (matcher,)}
+            ),
+        )
+
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        plan = super().resolve(profile)
+        selected = plan.selected[0].model_copy(
+            update={
+                "target_id": profile.clusters[0].id,
+                "cluster_id": profile.clusters[0].id,
+                "required": False,
+            }
+        )
+        return plan.model_copy(update={"selected": (selected,)})
+
+
+class InvalidMatcherDescribeProvider(GoldenProvider):
+    def describe(self):  # type: ignore[no-untyped-def]
+        descriptor = super().describe()[0]
+        matcher = descriptor.applies_when[0].model_copy(
+            update={"path": "target.model_dump"}
+        )
+        return (descriptor.model_copy(update={"applies_when": (matcher,)}),)
+
+
 class UndescribedResolveCaseProvider(GoldenProvider):
     def resolve(self, profile):  # type: ignore[no-untyped-def]
         plan = super().resolve(profile)
@@ -319,6 +357,21 @@ class ExplodingResolveProvider(GoldenProvider):
 class ContractExplodingResolveProvider(GoldenProvider):
     def resolve(self, profile):  # type: ignore[no-untyped-def]
         raise ProviderContractError("credential=sensitive-provider-value")
+
+
+class ValidationExplodingResolveProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        raise ValidationError.from_exception_data(
+            "provider",
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("sensitive-provider-location",),
+                    "input": None,
+                    "ctx": {"error": ValueError("sensitive-provider-value")},
+                }
+            ],
+        )
 
 
 class WrongRunOutputProvider(GoldenProvider):
@@ -442,6 +495,10 @@ class SwallowedPersistenceFailureProvider(GoldenProvider):
         (
             DowngradedRequiredResolveProvider(),
             "plan downgraded a required target",
+        ),
+        (
+            DowngradedClusterResolveProvider(),
+            "plan downgraded a cluster scenario",
         ),
     ],
 )
@@ -808,6 +865,7 @@ def test_cli_semantic_failure_returns_nonzero_with_evidence(
     [
         (ExplodingResolveProvider(), "provider execution failed"),
         (ContractExplodingResolveProvider(), "provider contract failed"),
+        (ValidationExplodingResolveProvider(), "provider contract failed"),
         (SensitiveInvalidResolveOutputProvider(), "provider contract failed"),
     ],
 )
@@ -829,7 +887,18 @@ def test_cli_sanitizes_provider_failures(
     captured = capsys.readouterr()
     assert expected_error in captured.err
     assert "sensitive-provider-value" not in captured.err
+    assert "sensitive-provider-location" not in captured.err
     assert not plan_path.exists()
+
+
+def test_cli_rejects_an_invalid_matcher_during_describe(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert provider_main(InvalidMatcherDescribeProvider(), ["describe", "--json"]) == 2
+
+    captured = capsys.readouterr()
+    assert "provider contract failed" in captured.err
+    assert "model_dump" not in captured.err
 
 
 def test_fixture_state_write_fsyncs_file_and_parent_directory(

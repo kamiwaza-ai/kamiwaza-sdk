@@ -6,6 +6,7 @@ import hashlib
 import hmac
 from collections.abc import Sequence
 
+from kamiwaza_sdk.validation.applicability import descriptor_is_active
 from kamiwaza_sdk.validation.models import (
     CaseResult,
     CleanupEvidence,
@@ -57,11 +58,17 @@ class GoldenProvider:
 
     def resolve(self, profile: ValidationProfile) -> ScenarioPlan:
         self._validate_requested_scenarios(profile)
-        selected = self._resolve_targets(
-            profile.inference_targets, profile.validation.fixture_mode
+        active = descriptor_is_active(profile, self.describe()[0])
+        selected = (
+            self._resolve_targets(
+                profile.inference_targets, profile.validation.fixture_mode
+            )
+            if active
+            else ()
         )
-        self._validate_required_targets(profile.inference_targets)
-        self._validate_required_selection(profile, selected)
+        if active:
+            self._validate_required_targets(profile.inference_targets)
+            self._validate_required_selection(profile, selected)
         return ScenarioPlan(
             schema="kamiwaza.scenario-plan/v1",
             profile_digest=model_digest(profile),
@@ -222,8 +229,6 @@ class GoldenProvider:
             raise ProviderContractError(
                 f"unknown requested scenario: {sorted(unknown)[0]}"
             )
-        if GOLDEN_SCENARIO_ID in profile.validation.exclude:
-            raise ProviderContractError("requested scenario is explicitly excluded")
 
     @staticmethod
     def _validate_revision(revision: str) -> None:

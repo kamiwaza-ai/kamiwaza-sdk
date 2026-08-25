@@ -95,13 +95,14 @@ def test_golden_provider_rejects_include_exclude_deselection() -> None:
         ValidationProfile.model_validate(payload)
 
 
-def test_golden_provider_rejects_explicit_deselection() -> None:
+def test_golden_provider_resolves_explicit_deselection_to_an_empty_plan() -> None:
     payload = profile_payload()
     payload["validation"]["include"] = []  # type: ignore[index]
     payload["validation"]["exclude"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
 
-    with pytest.raises(ProviderContractError, match="explicitly excluded"):
-        GoldenProvider().resolve(ValidationProfile.model_validate(payload))
+    plan = GoldenProvider().resolve(ValidationProfile.model_validate(payload))
+
+    assert plan.selected == ()
 
 
 def test_golden_provider_rejects_changed_plan_revision_during_run() -> None:

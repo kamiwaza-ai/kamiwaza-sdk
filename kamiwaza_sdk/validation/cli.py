@@ -146,6 +146,8 @@ def _provider_callback(callback: Callable[[], CallbackT]) -> CallbackT:
         return callback()
     except _AdapterContractError:
         raise
+    except ValidationError:
+        raise ProviderContractError("provider callback failed") from None
     except ProviderContractError:
         raise ProviderContractError("provider callback failed") from None
 

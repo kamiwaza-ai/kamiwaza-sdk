@@ -109,6 +109,8 @@ def validate_plan_completeness(
     selected_by_scenario = _selected_targets_by_scenario(plan)
     applicable_by_scenario = _applicable_by_scenario(profile, descriptors)
     _validate_selected_applicability(applicable_by_scenario, plan)
+    _validate_cluster_requiredness(descriptors, plan)
+    _validate_applicable_requiredness(applicable_by_scenario, plan)
     for descriptor in descriptors:
         _validate_descriptor_resolution(
             profile,
@@ -199,6 +201,37 @@ def _validate_selected_applicability(
         raise ProviderContractError(
             "plan selected a target outside descriptor scope or applicability"
         )
+
+
+def _validate_cluster_requiredness(
+    descriptors: Sequence[ScenarioDescriptor], plan: ScenarioPlan
+) -> None:
+    cluster_scenarios = {
+        descriptor.scenario_id
+        for descriptor in descriptors
+        if descriptor.target_scope == "cluster"
+    }
+    if any(
+        item.scenario_id in cluster_scenarios and not item.required
+        for item in plan.selected
+    ):
+        raise ProviderContractError("plan downgraded a cluster scenario")
+
+
+def _validate_applicable_requiredness(
+    applicable_by_scenario: Mapping[str, Sequence[ApplicableTarget]],
+    plan: ScenarioPlan,
+) -> None:
+    expected = {
+        (scenario_id, target.target_id): target.required
+        for scenario_id, targets in applicable_by_scenario.items()
+        for target in targets
+    }
+    if any(
+        item.required != expected[(item.scenario_id, item.target_id)]
+        for item in plan.selected
+    ):
+        raise ProviderContractError("plan changed an applicable target requiredness")
 
 
 def _validate_selected_descriptor_requirements(
@@ -413,6 +446,10 @@ def validate_descriptor_registry(descriptors: Sequence[ScenarioDescriptor]) -> N
     scenario_ids = [descriptor.scenario_id for descriptor in descriptors]
     if len(scenario_ids) != len(set(scenario_ids)):
         raise ProviderContractError("describe returned a duplicate scenario ID")
+    from kamiwaza_sdk.validation.fact_schema import validate_descriptor_matchers
+
+    for descriptor in descriptors:
+        validate_descriptor_matchers(descriptor)
 
 
 def require_passed(status: str, message: str) -> None:
