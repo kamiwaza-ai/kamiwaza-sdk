@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -25,14 +24,44 @@ from kamiwaza_sdk.validation.inference_runtime import (
     InferenceClusterFactory,
     SelectedModel,
 )
+from kamiwaza_sdk.validation.inference_spec import (
+    INFERENCE_CASE_IDS,
+    INFERENCE_PROVIDER_ID as INFERENCE_PROVIDER_ID,
+    INFERENCE_PROVIDER_REVISION,
+    INFERENCE_SCENARIO_ID as INFERENCE_SCENARIO_ID,
+    TargetParameters as _TargetParameters,
+    install_requirements as _install_requirements,
+    parameters as _parameters,
+    resolve_candidate as _resolve_candidate,
+    scenario_descriptor as _scenario_descriptor,
+)
+from kamiwaza_sdk.validation.inference_evidence import (
+    case_result as _case_result,
+    chat_outcome as _chat_outcome,
+    cleanup_failure as _cleanup_failure,
+    elapsed_ms as _elapsed_ms,
+    failed as _failed,
+    failure as _failure,
+    mapping as _mapping,
+    optional_text as _optional_text,
+    owned_deployments as _owned_deployments,
+    passed as _passed,
+    reconcile_deployment as _reconcile_deployment,
+    required_image_digest as _required_image_digest,
+    residual_outcome as _residual_outcome,
+    runtime_evidence as _runtime_evidence,
+    stop_outcome as _stop_outcome,
+    stored_result as _stored_result,
+    target_clusters as _target_clusters,
+    target_state as _target_state,
+    validate_expected_image as _validate_expected_image,
+)
 from kamiwaza_sdk.validation.models import (
     CaseResult,
     CleanupEvidence,
     CleanupResult,
-    FactMatcher,
     FixtureMutation,
     FixtureState,
-    InferenceTarget,
     ResolvedScenario,
     RuntimeCluster,
     RuntimeContext,
@@ -50,34 +79,7 @@ from kamiwaza_sdk.validation.provider import (
 )
 from kamiwaza_sdk.validation.registry import model_digest
 
-INFERENCE_PROVIDER_ID = "sdk.inference"
-INFERENCE_PROVIDER_REVISION = "sdk.inference.lifecycle@v1"
-INFERENCE_SCENARIO_ID = "sdk.inference.lifecycle/v1"
-INFERENCE_CASE_IDS = (
-    "catalog-discovery",
-    "download-readiness",
-    "exact-model-file-selection",
-    "explicit-engine-deployment",
-    "deployment-readiness",
-    "openai-multi-turn-chat",
-    "deployment-stop",
-    "residual-cleanup",
-)
 _PREPARE_CASE_IDS = INFERENCE_CASE_IDS[:5]
-_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
-_SUPPORTED_FORMATS = {"llamacpp": "gguf", "vllm": "safetensors"}
-_VLLM_ACCELERATORS = frozenset({"amd", "nvidia"})
-
-
-@dataclass(frozen=True)
-class _TargetParameters:
-    repository: str
-    engine: str
-    model_format: str
-    quantization: str
-    runtime_profile: str
-    expected_image: str | None
-    accelerators: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True)
@@ -103,31 +105,7 @@ class InferenceLifecycleProvider:
         self._cluster_factory = cluster_factory or _default_cluster_factory()
 
     def describe(self) -> tuple[ScenarioDescriptor, ...]:
-        return (
-            ScenarioDescriptor(
-                scenario_id=INFERENCE_SCENARIO_ID,
-                provider_id=INFERENCE_PROVIDER_ID,
-                protocol_version="v1",
-                target_scope="inference_target",
-                minimum_level="smoke",
-                capability_ids=("inference.chat", "inference.model-lifecycle"),
-                applies_when=(
-                    FactMatcher(
-                        path=("cluster", "roles"),
-                        operator="contains",
-                        value="inference",
-                    ),
-                    FactMatcher(
-                        path=("target", "engine"),
-                        operator="in",
-                        value=cast(JsonValue, sorted(_SUPPORTED_FORMATS)),
-                    ),
-                ),
-                requires=("cluster-api", "kube-api"),
-                fixture_modes=("owned", "external"),
-                case_ids=INFERENCE_CASE_IDS,
-            ),
-        )
+        return (_scenario_descriptor(),)
 
     def resolve(self, profile: ValidationProfile) -> ScenarioPlan:
         descriptor = self.describe()[0]
@@ -329,91 +307,6 @@ def _default_cluster_factory() -> InferenceClusterFactory:
     from kamiwaza_sdk.validation.sdk_inference_runtime import SdkInferenceClusterFactory
 
     return SdkInferenceClusterFactory()
-
-
-def _compatibility_error(target: InferenceTarget, cluster: Any) -> str | None:
-    expected_format = _SUPPORTED_FORMATS.get(target.engine)
-    if expected_format != target.model_format:
-        return "engine/model format mismatch"
-    if target.runtime_profile != "product-default":
-        return "unsupported semantic runtime profile"
-    vendors = {item.vendor for item in cluster.hardware.accelerators}
-    if target.engine == "vllm" and not vendors & _VLLM_ACCELERATORS:
-        return "vllm requires a supported accelerator"
-    return None
-
-
-def _resolve_candidate(
-    target: InferenceTarget, cluster: Any, explicit: bool
-) -> ResolvedScenario | None:
-    reason = _compatibility_error(target, cluster)
-    if reason and target.required:
-        raise ProviderContractError(
-            f"incompatible required target: {target.id} ({reason})"
-        )
-    if reason or not (target.required or explicit):
-        return None
-    return _resolved_target(target, cluster)
-
-
-def _resolved_target(target: InferenceTarget, cluster: Any) -> ResolvedScenario:
-    accelerators = [
-        item.model_dump(mode="json") for item in cluster.hardware.accelerators
-    ]
-    return ResolvedScenario(
-        target_id=target.id,
-        cluster_id=target.cluster_id,
-        scenario_id=INFERENCE_SCENARIO_ID,
-        required=target.required,
-        case_ids=INFERENCE_CASE_IDS,
-        redacted_parameters={
-            "repository": target.repository,
-            "engine": target.engine,
-            "model_format": target.model_format,
-            "quantization": target.quantization,
-            "runtime_profile": target.runtime_profile,
-            "expected_image": target.expected_image,
-            "accelerators": accelerators,
-        },
-    )
-
-
-def _install_requirements(
-    selected: Sequence[ResolvedScenario],
-) -> dict[str, Any]:
-    images = {
-        item.target_id: image
-        for item in selected
-        if isinstance(image := item.redacted_parameters.get("expected_image"), str)
-    }
-    return {"inference_images": images} if images else {}
-
-
-def _parameters(values: Mapping[str, Any]) -> _TargetParameters:
-    expected_image = values.get("expected_image")
-    accelerators = values.get("accelerators")
-    if expected_image is not None and not isinstance(expected_image, str):
-        raise ProviderContractError("resolved target has invalid expected image")
-    if not isinstance(accelerators, list) or not all(
-        isinstance(item, dict) for item in accelerators
-    ):
-        raise ProviderContractError("resolved target has invalid accelerator facts")
-    return _TargetParameters(
-        repository=_required_text(values, "repository"),
-        engine=_required_text(values, "engine"),
-        model_format=_required_text(values, "model_format"),
-        quantization=_required_text(values, "quantization"),
-        runtime_profile=_required_text(values, "runtime_profile"),
-        expected_image=expected_image,
-        accelerators=tuple(dict(item) for item in accelerators),
-    )
-
-
-def _required_text(values: Mapping[str, Any], key: str) -> str:
-    value = values.get(key)
-    if not isinstance(value, str) or not value:
-        raise ProviderContractError(f"resolved target has invalid {key}")
-    return value
 
 
 def _initial_state(
@@ -634,11 +527,16 @@ def _ready_target_files(
     files = _target_files(model, parameters)
     if not files:
         raise RuntimeError("no exact ready model files")
-    if any(not item.ready for item in files):
-        raise RuntimeError("no exact ready model files")
-    if any(not item.file_id for item in files):
-        raise RuntimeError("no exact ready model files")
+    _validate_ready_files(files)
     return files
+
+
+def _validate_ready_files(files: Sequence[CatalogFile]) -> None:
+    for item in files:
+        if not item.ready:
+            raise RuntimeError("no exact ready model files")
+        if not item.file_id:
+            raise RuntimeError("no exact ready model files")
 
 
 def _select_config(configs: Sequence[CatalogConfig]) -> CatalogConfig:
@@ -735,202 +633,6 @@ def _replace_target_state(
     targets[target_id] = dict(target)
     opaque["targets"] = targets
     return state.model_copy(update={"opaque": opaque})
-
-
-def _target_state(state: FixtureState, target_id: str) -> Mapping[str, Any]:
-    targets = _mapping(state.opaque.get("targets"), "fixture targets")
-    return _mapping(targets.get(target_id), "fixture target")
-
-
-def _target_clusters(state: FixtureState) -> dict[str, str]:
-    targets = _mapping(state.opaque.get("targets"), "fixture targets")
-    return {
-        target_id: _required_text(_mapping(value, "fixture target"), "cluster_id")
-        for target_id, value in targets.items()
-    }
-
-
-def _mapping(value: Any, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ProviderContractError(f"{label} is invalid")
-    return value
-
-
-def _stored_result(
-    selected: ResolvedScenario,
-    target_state: Mapping[str, Any],
-    case_id: str,
-) -> CaseResult:
-    phases = _mapping(target_state.get("phases"), "target phases")
-    outcome = _mapping(phases.get(case_id), "phase outcome")
-    return _case_result(selected, case_id, outcome)
-
-
-def _case_result(
-    selected: ResolvedScenario, case_id: str, outcome: Mapping[str, Any]
-) -> CaseResult:
-    status = outcome.get("status")
-    duration = outcome.get("duration_ms")
-    detail = outcome.get("detail")
-    if status not in {"passed", "failed"} or not isinstance(duration, int):
-        raise ProviderContractError("phase outcome is invalid")
-    if detail is not None and not isinstance(detail, str):
-        raise ProviderContractError("phase detail is invalid")
-    return CaseResult(
-        target_id=selected.target_id,
-        scenario_id=selected.scenario_id,
-        case_id=case_id,
-        status=status,
-        duration_ms=duration,
-        detail=detail,
-    )
-
-
-def _chat_outcome(
-    cluster: InferenceCluster,
-    deployment_id: str,
-    target_state: Mapping[str, Any],
-) -> dict[str, Any]:
-    phases = _mapping(target_state.get("phases"), "target phases")
-    readiness = _mapping(phases.get("deployment-readiness"), "readiness phase")
-    if readiness.get("status") != "passed":
-        return _failed("blocked by deployment-readiness")
-    started = time.monotonic()
-    try:
-        first_messages = (
-            {"role": "user", "content": "Reply with one short greeting."},
-        )
-        first = cluster.chat(deployment_id, first_messages).strip()
-        if not first:
-            raise RuntimeError("first chat turn was empty")
-        second_messages = (
-            first_messages[0],
-            {"role": "assistant", "content": first},
-            {"role": "user", "content": "Reply with one short farewell."},
-        )
-        if not cluster.chat(deployment_id, second_messages).strip():
-            raise RuntimeError("second chat turn was empty")
-    except Exception as exc:
-        return _failure("openai-multi-turn-chat", exc, _elapsed_ms(started))
-    return _passed(started)
-
-
-def _stop_outcome(cluster: InferenceCluster, deployment_id: str) -> dict[str, Any]:
-    started = time.monotonic()
-    try:
-        if not cluster.stop(deployment_id):
-            raise RuntimeError("platform did not confirm deployment stop")
-    except Exception as exc:
-        return _failure("deployment-stop", exc, _elapsed_ms(started))
-    return _passed(started)
-
-
-def _residual_outcome(cluster: InferenceCluster, deployment_id: str) -> dict[str, Any]:
-    started = time.monotonic()
-    try:
-        if cluster.is_active(deployment_id):
-            raise RuntimeError("run-owned deployment remains active")
-    except Exception as exc:
-        return _failure("residual-cleanup", exc, _elapsed_ms(started))
-    return _passed(started)
-
-
-def _runtime_evidence(target_state: Mapping[str, Any]) -> dict[str, Any]:
-    return dict(_mapping(target_state.get("runtime"), "target runtime"))
-
-
-def _owned_deployments(state: FixtureState) -> tuple[FixtureMutation, ...]:
-    resources: dict[tuple[str, str, str], FixtureMutation] = {}
-    for item in state.journal:
-        if item.resource_type == "model-deployment":
-            resources[(item.target_id, item.resource_type, item.resource_id)] = item
-    return tuple(resources[key] for key in sorted(resources))
-
-
-def _reconcile_deployment(
-    cluster: InferenceCluster, mutation: FixtureMutation
-) -> CleanupResult:
-    try:
-        if not cluster.is_active(mutation.resource_id):
-            return _cleanup_result(mutation, "absent")
-        stopped = cluster.stop(mutation.resource_id)
-        if not stopped or cluster.is_active(mutation.resource_id):
-            raise RuntimeError("owned deployment remains active")
-    except Exception as exc:
-        return _cleanup_failure(mutation, exc)
-    return _cleanup_result(mutation, "removed")
-
-
-def _cleanup_result(
-    mutation: FixtureMutation,
-    status: Literal["removed", "absent", "retained_foreign", "failed"],
-) -> CleanupResult:
-    return CleanupResult(
-        target_id=mutation.target_id,
-        resource_type=mutation.resource_type,
-        resource_id=mutation.resource_id,
-        status=status,
-        detail=None,
-    )
-
-
-def _cleanup_failure(mutation: FixtureMutation, exc: Exception) -> CleanupResult:
-    return CleanupResult(
-        target_id=mutation.target_id,
-        resource_type=mutation.resource_type,
-        resource_id=mutation.resource_id,
-        status="failed",
-        detail=_safe_error("cleanup", exc),
-    )
-
-
-def _required_image_digest(value: str | None) -> str:
-    digest = _image_digest(value)
-    if digest is None:
-        raise RuntimeError("actual image digest is unavailable")
-    return digest
-
-
-def _validate_expected_image(expected: str | None, actual: str | None) -> None:
-    if expected is None:
-        return
-    if _image_digest(expected) != _image_digest(actual):
-        raise RuntimeError("actual image does not match expected image")
-
-
-def _image_digest(value: str | None) -> str | None:
-    if value is None:
-        return None
-    match = _DIGEST_RE.search(value)
-    return match.group(0) if match else None
-
-
-def _passed(started: float) -> dict[str, Any]:
-    return {"status": "passed", "duration_ms": _elapsed_ms(started), "detail": None}
-
-
-def _failed(detail: str) -> dict[str, Any]:
-    return {"status": "failed", "duration_ms": 0, "detail": detail}
-
-
-def _failure(phase: str, exc: Exception, duration_ms: int) -> dict[str, Any]:
-    return {
-        "status": "failed",
-        "duration_ms": duration_ms,
-        "detail": _safe_error(phase, exc),
-    }
-
-
-def _safe_error(phase: str, exc: Exception) -> str:
-    return f"{phase} failed ({type(exc).__name__})"
-
-
-def _elapsed_ms(started: float) -> int:
-    return max(0, int((time.monotonic() - started) * 1000))
-
-
-def _optional_text(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
 
 
 def main(argv: Sequence[str] | None = None) -> int:

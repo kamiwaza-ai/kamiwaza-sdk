@@ -270,12 +270,24 @@ def _read_api_key(reference: str) -> str:
 
 def _file_reference(reference: str) -> Path:
     parsed = urlsplit(reference)
-    if parsed.scheme != "file" or parsed.netloc or not parsed.path:
-        raise RuntimeError("runtime file reference is invalid")
-    path = Path(unquote(parsed.path))
+    _validate_file_location(parsed.scheme, parsed.netloc, parsed.path)
+    return _absolute_file_path(parsed.path)
+
+
+def _absolute_file_path(encoded_path: str) -> Path:
+    path = Path(unquote(encoded_path))
     if not path.is_absolute():
         raise RuntimeError("runtime file reference must be absolute")
     return path
+
+
+def _validate_file_location(scheme: str, authority: str, path: str) -> None:
+    if scheme != "file":
+        raise RuntimeError("runtime file reference is invalid")
+    if authority:
+        raise RuntimeError("runtime file reference is invalid")
+    if not path:
+        raise RuntimeError("runtime file reference is invalid")
 
 
 def _catalog_model(model: Any, repository: str) -> CatalogModel:
