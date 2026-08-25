@@ -41,6 +41,7 @@ def test_runtime_context_rejects_url_userinfo_without_exposing_it() -> None:
     with pytest.raises(ValidationError, match="base_url") as error:
         RuntimeContext.model_validate(payload)
 
+    assert secret not in str(error.value)
     assert secret not in str(error.value.errors(include_input=False))
     assert _schema_rejects("kamiwaza.runtime-context/v1", payload)
 

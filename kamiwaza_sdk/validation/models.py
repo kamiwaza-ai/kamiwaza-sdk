@@ -79,6 +79,7 @@ class ClosedModel(BaseModel):
         allow_inf_nan=False,
         extra="forbid",
         frozen=True,
+        hide_input_in_errors=True,
         populate_by_name=True,
     )
 
