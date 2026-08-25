@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -40,15 +39,11 @@ from kamiwaza_sdk.validation.inference_spec import (
 from kamiwaza_sdk.validation.inference_evidence import (
     case_result as _case_result,
     chat_outcome as _chat_outcome,
-    cleanup_failure as _cleanup_failure,
     elapsed_ms as _elapsed_ms,
     failed as _failed,
     failure as _failure,
     mapping as _mapping,
-    deployment_resources as _deployment_resources,
-    owned_deployment_id as _owned_deployment_id,
     passed as _passed,
-    reconcile_deployment as _reconcile_deployment,
     required_image_digest as _required_image_digest,
     residual_outcome as _residual_outcome,
     runtime_evidence as _runtime_evidence,
@@ -57,6 +52,15 @@ from kamiwaza_sdk.validation.inference_evidence import (
     target_clusters as _target_clusters,
     target_state as _target_state,
     validate_expected_image as _validate_expected_image,
+)
+from kamiwaza_sdk.validation.inference_ownership import (
+    cleanup_failure as _cleanup_failure,
+    close_cluster as _close_cluster,
+    compensate_unjournaled_deployment as _compensate_unjournaled_deployment,
+    deployment_resources as _deployment_resources,
+    owned_deployment_id as _owned_deployment_id,
+    reconcile_deployment as _reconcile_deployment,
+    validate_owner_digest as _validate_owner_digest,
 )
 from kamiwaza_sdk.validation.models import (
     CaseResult,
@@ -163,7 +167,7 @@ class InferenceLifecycleProvider:
     ) -> ScenarioEvidence:
         self._validate_revision(plan.provider_revision)
         validate_state_identity(plan, runtime, state)
-        _validate_owner_digest(runtime, state)
+        _validate_owner_digest(runtime, state, INFERENCE_PROVIDER_REVISION)
         clusters = {item.id: item for item in runtime.clusters}
         results: list[CaseResult] = []
         resolved_runtime: dict[str, Any] = {}
@@ -190,7 +194,7 @@ class InferenceLifecycleProvider:
     def teardown(self, runtime: RuntimeContext, state: FixtureState) -> CleanupEvidence:
         self._validate_revision(state.provider_revision)
         validate_state_runtime_identity(runtime, state)
-        _validate_owner_digest(runtime, state)
+        _validate_owner_digest(runtime, state, INFERENCE_PROVIDER_REVISION)
         clusters = {item.id: item for item in runtime.clusters}
         target_clusters = _target_clusters(state)
         results = tuple(
@@ -320,13 +324,6 @@ def _default_cluster_factory() -> InferenceClusterFactory:
     return SdkInferenceClusterFactory()
 
 
-def _close_cluster(cluster: InferenceCluster) -> None:
-    try:
-        cluster.close()
-    except Exception:
-        pass
-
-
 def _initial_state(
     plan: ScenarioPlan,
     runtime: RuntimeContext,
@@ -354,14 +351,6 @@ def _initial_state(
         journal=(),
         opaque={"targets": cast(JsonValue, targets)},
     )
-
-
-def _validate_owner_digest(runtime: RuntimeContext, state: FixtureState) -> None:
-    owner = hashlib.sha256(
-        f"{runtime.run_id}:{INFERENCE_PROVIDER_REVISION}".encode()
-    ).hexdigest()
-    if not hmac.compare_digest(state.owner_token_digest, f"sha256:{owner}"):
-        raise ProviderContractError("fixture state ownership digest mismatch")
 
 
 def _parameter_payload(parameters: _TargetParameters) -> dict[str, Any]:
@@ -484,25 +473,6 @@ def _deployment_phase(
         raise
     state = _record_phase(state, context, _PREPARE_CASE_IDS[3], _passed(started))
     return state, deployment_id
-
-
-def _compensate_unjournaled_deployment(
-    cluster: InferenceCluster, deployment_id: str
-) -> None:
-    try:
-        cluster.stop(deployment_id)
-    except Exception:
-        pass
-    try:
-        remains_active = cluster.is_active(deployment_id)
-    except Exception:
-        raise ProviderContractError(
-            "deployment journal failed and cleanup could not be verified"
-        ) from None
-    if remains_active:
-        raise ProviderContractError(
-            "deployment journal failed and deployment remains active"
-        )
 
 
 def _readiness_phase(
