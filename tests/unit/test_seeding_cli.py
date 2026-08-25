@@ -69,8 +69,10 @@ class FakeClient:
         )
         self.conversations = SimpleNamespace(
             create=RecordingService(SimpleNamespace(id="conv-1")),
+            create_canonical=RecordingService(SimpleNamespace(id="conv-2")),
             wait_until_ready=RecordingService(SimpleNamespace(id="conv-1")),
             chat=RecordingService("Hello! I am claude."),
+            chat_canonical=RecordingService("Hello from canonical."),
         )
         self.skills = SimpleNamespace(
             import_skill_package=RecordingService(SimpleNamespace(id="skill-1"))
@@ -694,6 +696,8 @@ def test_create_conversation(capsys):
     _run(
         [
             "create-conversation",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "https://kamiwaza.test/kaizen",
             "--agent-id",
@@ -879,6 +883,8 @@ def test_chat_creates_conversation_and_returns_reply(capsys, monkeypatch):
     _run(
         [
             "chat",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "https://kamiwaza.test/kaizen",
             "--agent-id",
@@ -915,6 +921,8 @@ def test_chat_sandbox_timeout_flag_controls_ready_wait(capsys, monkeypatch):
     _run(
         [
             "chat",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "u",
             "--agent-id",
@@ -941,7 +949,7 @@ def test_chat_sandbox_wait_timeout_exits_before_messaging(monkeypatch):
 
     with pytest.raises(SystemExit, match="sandbox not ready"):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
 
@@ -953,7 +961,7 @@ def test_chat_raw_prints_bare_reply(capsys, monkeypatch):
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
 
     _run(
-        ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m", "--raw"],
+        ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m", "--raw"],
         client,
     )
 
@@ -967,7 +975,7 @@ def test_chat_empty_reply_exits_nonzero(monkeypatch):
 
     with pytest.raises(SystemExit):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
 
@@ -980,6 +988,8 @@ def test_chat_fire_and_forget_allows_empty_reply(capsys, monkeypatch):
     _run(
         [
             "chat",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url", "u",
             "--agent-id", "a",
             "--message", "m",
@@ -1005,7 +1015,7 @@ def test_chat_agent_error_exits_nonzero(monkeypatch):
 
     with pytest.raises(SystemExit, match="agent boom"):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
 
@@ -1063,6 +1073,160 @@ def test_chat_timeout_exits_nonzero(monkeypatch):
 
     with pytest.raises(SystemExit, match="no reply in time"):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
+
+
+# --- canonical vs legacy Kaizen turn contract -------------------------------
+
+
+def test_chat_defaults_to_the_canonical_contract(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "chat",
+            "--kaizen-base-url",
+            "https://kamiwaza.test/kaizen",
+            "--agent-id",
+            "agent-1",
+            "--message",
+            "hello there",
+            "--workroom-id",
+            "wr-1",
+        ],
+        client,
+    )
+
+    # Canonical create takes no agent_id and none of the v3 body fields.
+    create = client.conversations.create_canonical.calls[0]["kwargs"]
+    assert create["base_url"] == "https://kamiwaza.test/kaizen"
+    assert "agent_id" not in create
+    assert client.conversations.create.calls == []
+    # Canonical selects the agent per input, not at create.
+    chat = client.conversations.chat_canonical.calls[0]
+    assert chat["args"] == ("conv-2", "hello there")
+    assert chat["kwargs"]["agent"] == "agent-1"
+    assert chat["kwargs"]["workroom_id"] == "wr-1"
+    # Nothing to wait on: canonical exposes no sandbox container_status.
+    assert client.conversations.wait_until_ready.calls == []
+    assert json.loads(capsys.readouterr().out) == {
+        "conversation_id": "conv-2",
+        "reply": "Hello from canonical.",
+    }
+
+
+def test_chat_legacy_extension_keeps_the_v3_turn(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "chat",
+            "--extension-name",
+            "kaizen-legacy",
+            "--kaizen-base-url",
+            "https://kamiwaza.test/kaizen",
+            "--agent-id",
+            "agent-1",
+            "--message",
+            "hello there",
+        ],
+        client,
+    )
+
+    assert client.conversations.create.calls[0]["kwargs"]["agent_id"] == "agent-1"
+    assert client.conversations.create_canonical.calls == []
+    assert client.conversations.chat_canonical.calls == []
+    assert client.conversations.chat.calls[0]["args"] == ("conv-1", "hello there")
+
+
+def test_chat_unknown_extension_identity_is_rejected_locally(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit):
+        _run(
+            [
+                "chat",
+                "--extension-name",
+                "kaizen-next",
+                "--kaizen-base-url",
+                "https://kamiwaza.test/kaizen",
+                "--agent-id",
+                "agent-1",
+                "--message",
+                "hi",
+            ],
+            client,
+        )
+
+
+def test_chat_canonical_fire_and_forget_passes_no_wait_budget(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "chat",
+            "--kaizen-base-url",
+            "https://kamiwaza.test/kaizen",
+            "--agent-id",
+            "agent-1",
+            "--message",
+            "hi",
+            "--timeout",
+            "0",
+        ],
+        client,
+    )
+
+    # `0` is the CLI's fire-and-forget spelling; canonical spells it None.
+    call = client.conversations.chat_canonical.calls[0]
+    assert call["kwargs"]["timeout_seconds"] is None
+
+
+def test_create_conversation_defaults_to_the_canonical_contract(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "create-conversation",
+            "--kaizen-base-url",
+            "https://kamiwaza.test/kaizen",
+            "--agent-id",
+            "agent-1",
+        ],
+        client,
+    )
+
+    assert client.conversations.create_canonical.calls
+    assert client.conversations.create.calls == []
+    assert json.loads(capsys.readouterr().out) == {"conversation_id": "conv-2"}
+
+
+def test_create_conversation_legacy_extension_keeps_the_v3_body(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "create-conversation",
+            "--extension-name",
+            "kaizen-legacy",
+            "--kaizen-base-url",
+            "https://kamiwaza.test/kaizen",
+            "--agent-id",
+            "agent-1",
+            "--max-iterations",
+            "12",
+        ],
+        client,
+    )
+
+    create = client.conversations.create.calls[0]["kwargs"]
+    assert (create["agent_id"], create["max_iterations"]) == ("agent-1", 12)
+    assert client.conversations.create_canonical.calls == []
