@@ -310,7 +310,7 @@ class DowngradedClusterResolveProvider(GoldenProvider):
         descriptor = super().describe()[0]
         matcher = descriptor.applies_when[0].model_copy(
             update={
-                "path": "cluster.roles",
+                "path": ("cluster", "roles"),
                 "operator": "contains",
                 "value": "controller",
             }
@@ -337,7 +337,7 @@ class InvalidMatcherDescribeProvider(GoldenProvider):
     def describe(self):  # type: ignore[no-untyped-def]
         descriptor = super().describe()[0]
         matcher = descriptor.applies_when[0].model_copy(
-            update={"path": "target.model_dump"}
+            update={"path": ("target", "model_dump")}
         )
         return (descriptor.model_copy(update={"applies_when": (matcher,)}),)
 

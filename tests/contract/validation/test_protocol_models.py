@@ -114,6 +114,19 @@ def test_scenario_catalog_rejects_empty_and_duplicate_scenario_ids() -> None:
         ScenarioCatalog((descriptor, descriptor))
 
 
+def test_matcher_path_is_an_unambiguous_segment_array() -> None:
+    descriptor = GoldenProvider().describe()[0]
+
+    assert descriptor.model_dump(mode="json")["applies_when"][0]["path"] == [
+        "target",
+        "engine",
+    ]
+    payload = descriptor.model_dump(mode="json")
+    payload["applies_when"][0]["path"] = "target.engine"
+    with pytest.raises(ValidationError, match="path"):
+        ScenarioDescriptor.model_validate(payload)
+
+
 @pytest.mark.parametrize("field", ["target_scope", "minimum_level"])
 def test_scenario_descriptor_requires_activation_metadata(field: str) -> None:
     payload = GoldenProvider().describe()[0].model_dump(mode="python")

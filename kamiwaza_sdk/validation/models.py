@@ -207,7 +207,7 @@ class ValidationProfile(ClosedModel):
 
 
 class FactMatcher(ClosedModel):
-    path: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
+    path: Annotated[tuple[StableId, ...], Field(min_length=2, max_length=16)]
     operator: Literal["eq", "in", "contains", "gte", "lte"]
     value: JsonValue
 

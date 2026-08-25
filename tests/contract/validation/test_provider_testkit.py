@@ -278,7 +278,7 @@ def test_plan_completeness_allows_requested_cluster_scoped_scenario() -> None:
             "applies_when": (
                 source_descriptor.applies_when[0].model_copy(
                     update={
-                        "path": "cluster.roles",
+                        "path": ("cluster", "roles"),
                         "operator": "contains",
                         "value": "controller",
                     }
@@ -316,7 +316,7 @@ def test_plan_completeness_rejects_cluster_requiredness_downgrade() -> None:
             "applies_when": (
                 source_descriptor.applies_when[0].model_copy(
                     update={
-                        "path": "cluster.roles",
+                        "path": ("cluster", "roles"),
                         "operator": "contains",
                         "value": "controller",
                     }
@@ -436,13 +436,13 @@ def test_plan_completeness_rejects_an_inapplicable_explicit_scenario() -> None:
 @pytest.mark.parametrize(
     ("path", "operator", "value", "expected_error"),
     [
-        ("clusters.roles", "contains", "controller", "invalid fact root"),
-        ("target.missing", "eq", "value", "missing fact"),
-        ("target.engine", "gte", 1, "incompatible value types"),
+        (("clusters", "roles"), "contains", "controller", "invalid fact root"),
+        (("target", "missing"), "eq", "value", "missing fact"),
+        (("target", "engine"), "gte", 1, "incompatible value types"),
     ],
 )
 def test_plan_completeness_rejects_invalid_matchers(
-    path: str, operator: str, value: object, expected_error: str
+    path: tuple[str, ...], operator: str, value: object, expected_error: str
 ) -> None:
     profile = _profile()
     source_descriptor = GoldenProvider().describe()[0]
@@ -462,14 +462,19 @@ def test_plan_completeness_rejects_invalid_matchers(
 @pytest.mark.parametrize(
     ("path", "operator", "value", "expected_error"),
     [
-        ("target.model_dump", "eq", "anything", "missing fact"),
-        ("target.engine", "eq", 1, "incompatible value types"),
-        ("cluster.node_count", "eq", True, "incompatible value types"),
-        ("cluster.features.rebac", "in", [1], "incompatible value types"),
+        (("target", "model_dump"), "eq", "anything", "missing fact"),
+        (("target", "engine"), "eq", 1, "incompatible value types"),
+        (("cluster", "node_count"), "eq", True, "incompatible value types"),
+        (
+            ("cluster", "features", "rebac"),
+            "in",
+            [1],
+            "incompatible value types",
+        ),
     ],
 )
 def test_plan_completeness_rejects_non_fact_or_type_invalid_matchers(
-    path: str, operator: str, value: object, expected_error: str
+    path: tuple[str, ...], operator: str, value: object, expected_error: str
 ) -> None:
     profile = _profile()
     source_descriptor = GoldenProvider().describe()[0]
@@ -489,13 +494,13 @@ def test_plan_completeness_rejects_non_fact_or_type_invalid_matchers(
 @pytest.mark.parametrize(
     ("path", "value"),
     [
-        ("cluster.hardware.accelerators.vendor", "missing"),
-        ("cluster.features.not-declared", False),
-        ("mesh.edges.identity_mode", "missing"),
+        (("cluster", "hardware", "accelerators", "vendor"), "missing"),
+        (("cluster", "features", "not-declared"), False),
+        (("mesh", "edges", "identity_mode"), "missing"),
     ],
 )
 def test_valid_sparse_fact_paths_evaluate_as_non_matching(
-    path: str, value: object
+    path: tuple[str, ...], value: object
 ) -> None:
     source_profile = _profile()
     cluster = source_profile.clusters[0].model_copy(
@@ -542,7 +547,7 @@ def test_matcher_equality_does_not_conflate_json_booleans_and_numbers() -> None:
             "applies_when": (
                 source_descriptor.applies_when[0].model_copy(
                     update={
-                        "path": "cluster.features.rebac",
+                        "path": ("cluster", "features", "rebac"),
                         "operator": "eq",
                         "value": 1,
                     }
@@ -565,7 +570,7 @@ def test_every_matcher_is_validated_before_runtime_short_circuiting() -> None:
     )
     source_descriptor = GoldenProvider().describe()[0]
     first = source_descriptor.applies_when[0].model_copy(update={"value": "vllm"})
-    invalid = first.model_copy(update={"path": "target.model_dump"})
+    invalid = first.model_copy(update={"path": ("target", "model_dump")})
     descriptor = source_descriptor.model_copy(update={"applies_when": (first, invalid)})
     empty_plan = GoldenProvider().resolve(source_profile).model_copy(update={"selected": ()})
 
@@ -576,7 +581,7 @@ def test_every_matcher_is_validated_before_runtime_short_circuiting() -> None:
 def test_descriptor_registry_rejects_a_non_fact_path_before_resolution() -> None:
     source_descriptor = GoldenProvider().describe()[0]
     matcher = source_descriptor.applies_when[0].model_copy(
-        update={"path": "target.model_dump"}
+        update={"path": ("target", "model_dump")}
     )
     descriptor = source_descriptor.model_copy(update={"applies_when": (matcher,)})
 

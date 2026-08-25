@@ -16,9 +16,16 @@
           "type": "string"
         },
         "path": {
-          "pattern": "^[A-Za-z0-9_.-]+$",
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 2,
           "title": "Path",
-          "type": "string"
+          "type": "array"
         },
         "value": {
           "$ref": "#/$defs/JsonValue"

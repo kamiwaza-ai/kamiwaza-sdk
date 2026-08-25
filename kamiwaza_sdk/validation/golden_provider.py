@@ -45,7 +45,7 @@ class GoldenProvider:
                 capability_ids=("inference.chat",),
                 applies_when=(
                     FactMatcher(
-                        path="target.engine",
+                        path=("target", "engine"),
                         operator="eq",
                         value="llamacpp",
                     ),

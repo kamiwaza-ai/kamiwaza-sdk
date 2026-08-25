@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import types
 from collections.abc import Callable, Mapping, Sequence
-from typing import Annotated, Literal, Union, get_args, get_origin
+from typing import Annotated, Union, get_args, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from kamiwaza_sdk.validation.models import (
     ClusterFacts,
@@ -40,9 +40,7 @@ def validate_descriptor_matchers(descriptor: ScenarioDescriptor) -> None:
 def _matcher_annotation(
     descriptor: ScenarioDescriptor, matcher: FactMatcher
 ) -> object:
-    root_name, *parts = matcher.path.split(".")
-    if not parts:
-        raise ProviderContractError("descriptor matcher references a missing fact")
+    root_name, *parts = matcher.path
     root_model = _FACT_ROOT_MODELS.get(root_name)
     if root_model is None:
         raise ProviderContractError("descriptor matcher uses an invalid fact root")
@@ -52,9 +50,9 @@ def _matcher_annotation(
 
 
 def _resolve_annotation(annotation: object, parts: Sequence[str]) -> object:
-    annotation = _unwrap_annotated(annotation)
     if not parts:
         return annotation
+    annotation = _unwrap_annotated(annotation)
     if _is_union(annotation):
         return _resolve_union_annotation(annotation, parts)
     if _is_model_annotation(annotation):
@@ -72,7 +70,7 @@ def _resolve_model_annotation(annotation: object, parts: Sequence[str]) -> objec
     field = annotation.model_fields.get(parts[0])
     if field is None:
         raise ProviderContractError("descriptor matcher references a missing fact")
-    return _resolve_annotation(field.annotation, parts[1:])
+    return _resolve_annotation(field.rebuild_annotation(), parts[1:])
 
 
 def _resolve_container_annotation(annotation: object, parts: Sequence[str]) -> object:
@@ -80,7 +78,12 @@ def _resolve_container_annotation(annotation: object, parts: Sequence[str]) -> o
     if origin in (tuple, list, Sequence):
         return _resolve_annotation(get_args(annotation)[0], parts)
     if origin in (dict, Mapping):
-        return _resolve_annotation(get_args(annotation)[1], parts[1:])
+        key_annotation, value_annotation = get_args(annotation)
+        if not _annotation_accepts(key_annotation, parts[0]):
+            raise ProviderContractError(
+                "descriptor matcher has incompatible value types"
+            )
+        return _resolve_annotation(value_annotation, parts[1:])
     raise ProviderContractError("descriptor matcher references a missing fact")
 
 
@@ -132,39 +135,11 @@ _OPERATOR_VALIDATORS: dict[str, _OperatorValidator] = {
 
 
 def _annotation_accepts(annotation: object, value: object) -> bool:
-    annotation = _unwrap_annotated(annotation)
-    if _is_union(annotation):
-        return any(_annotation_accepts(option, value) for option in get_args(annotation))
-    if get_origin(annotation) is Literal:
-        return any(_same_literal(value, option) for option in get_args(annotation))
-    validator = _SCALAR_VALIDATORS.get(annotation)
-    return validator(value) if validator is not None else False
-
-
-def _is_none(value: object) -> bool:
-    return value is None
-
-
-def _is_bool(value: object) -> bool:
-    return isinstance(value, bool)
-
-
-def _is_text(value: object) -> bool:
-    return isinstance(value, str)
-
-
-def _is_json_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-_ScalarValidator = Callable[[object], bool]
-_SCALAR_VALIDATORS: dict[object, _ScalarValidator] = {
-    type(None): _is_none,
-    bool: _is_bool,
-    int: _is_json_number,
-    float: _is_json_number,
-    str: _is_text,
-}
+    try:
+        TypeAdapter(annotation).validate_python(value, strict=True)
+    except ValidationError:
+        return False
+    return True
 
 
 def _contained_annotation(annotation: object) -> object:
@@ -199,6 +174,10 @@ def _annotation_is_numeric(annotation: object) -> bool:
     return bool(options) and all(_annotation_is_numeric(option) for option in options)
 
 
+def _is_json_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _unwrap_annotated(annotation: object) -> object:
     while get_origin(annotation) is Annotated:
         annotation = get_args(annotation)[0]
@@ -213,9 +192,3 @@ def _json_array(value: object) -> Sequence[object]:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         return value
     return ()
-
-
-def _same_literal(left: object, right: object) -> bool:
-    if _is_json_number(left) and _is_json_number(right):
-        return left == right
-    return type(left) is type(right) and left == right

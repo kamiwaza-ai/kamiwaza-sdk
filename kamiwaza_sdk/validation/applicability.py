@@ -106,9 +106,7 @@ def _matches(
     candidate: _CandidateContext,
     matcher: FactMatcher,
 ) -> bool:
-    root_name, *parts = matcher.path.split(".")
-    if not parts:
-        raise ProviderContractError("descriptor matcher references a missing fact")
+    root_name, *parts = matcher.path
     root = _matcher_root(profile, candidate, root_name)
     values = _path_values(root, parts)
     return _apply_operator(values, matcher)
@@ -167,17 +165,21 @@ def _matches_in(values: Sequence[object], expected: object) -> bool:
 
 
 def _matches_contains(values: Sequence[object], expected: object) -> bool:
-    return any(_contains(value, expected) for value in values)
+    return any(_contains(value, expected) for value in values if value is not None)
 
 
 def _matches_gte(values: Sequence[object], expected: object) -> bool:
     threshold = _require_number(expected)
-    return any(_require_number(value) >= threshold for value in values)
+    return any(
+        _require_number(value) >= threshold for value in values if value is not None
+    )
 
 
 def _matches_lte(values: Sequence[object], expected: object) -> bool:
     threshold = _require_number(expected)
-    return any(_require_number(value) <= threshold for value in values)
+    return any(
+        _require_number(value) <= threshold for value in values if value is not None
+    )
 
 
 _OperatorMatcher = Callable[[Sequence[object], object], bool]
