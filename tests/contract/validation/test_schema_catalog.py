@@ -54,6 +54,16 @@ def test_packaged_profile_schema_rejects_selector_fields() -> None:
     assert any("markers" in error.message for error in errors)
 
 
+def test_packaged_profile_schema_rejects_invalid_feature_key() -> None:
+    schema = load_packaged_schema("kamiwaza.validation-profile/v1")
+    payload = profile_payload()
+    payload["clusters"][0]["features"] = {"bad key": True}  # type: ignore[index]
+
+    errors = list(Draft202012Validator(schema).iter_errors(payload))
+
+    assert errors
+
+
 @pytest.mark.parametrize(
     ("schema_id", "payload"),
     [

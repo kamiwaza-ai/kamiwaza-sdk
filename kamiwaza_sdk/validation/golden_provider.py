@@ -114,16 +114,14 @@ class GoldenProvider:
         state = FixtureState(
             schema="kamiwaza.fixture-state/v1",
             provider_revision=GOLDEN_PROVIDER_REVISION,
+            plan_digest=model_digest(plan),
             run_id=runtime.run_id,
             owner_token_digest=f"sha256:{owner_digest}",
             journal=(),
             opaque={},
         )
         state_writer.write(state)
-        fixture_modes = {
-            item.target_id: item.redacted_parameters["fixture_mode"]
-            for item in plan.selected
-        }
+        fixture_modes = self._fixture_modes(plan)
         for index, target_id in enumerate(sorted(target_ids), start=1):
             mutation = FixtureMutation(
                 sequence=index,
@@ -200,6 +198,16 @@ class GoldenProvider:
                 "fixture_mode": fixture_mode,
             },
         )
+
+    @staticmethod
+    def _fixture_modes(plan: ScenarioPlan) -> dict[str, str]:
+        modes: dict[str, str] = {}
+        for item in plan.selected:
+            mode = item.redacted_parameters.get("fixture_mode")
+            if not isinstance(mode, str) or mode not in {"owned", "external"}:
+                raise ProviderContractError("resolved target has invalid fixture mode")
+            modes[item.target_id] = mode
+        return modes
 
     @staticmethod
     def _validate_requested_scenarios(profile: ValidationProfile) -> None:

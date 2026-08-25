@@ -74,6 +74,11 @@
       "title": "Owner Token Digest",
       "type": "string"
     },
+    "plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Plan Digest",
+      "type": "string"
+    },
     "provider_revision": {
       "maxLength": 4096,
       "minLength": 1,
@@ -96,6 +101,7 @@
   "required": [
     "schema",
     "provider_revision",
+    "plan_digest",
     "run_id",
     "owner_token_digest",
     "journal"

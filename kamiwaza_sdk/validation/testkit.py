@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TypeVar
 
@@ -20,10 +20,14 @@ from kamiwaza_sdk.validation.models import (
 from kamiwaza_sdk.validation.provider import (
     ProviderContractError,
     ScenarioProvider,
+    validate_cleanup_identity,
+    validate_evidence_identity,
     validate_fixture_state_snapshots,
+    validate_plan_identity,
     validate_provider_output,
+    validate_state_identity,
 )
-from kamiwaza_sdk.validation.registry import evaluate_coverage, model_digest
+from kamiwaza_sdk.validation.registry import evaluate_coverage
 
 ResultT = TypeVar("ResultT")
 
@@ -59,18 +63,17 @@ def exercise_provider_contract(
     _validate_descriptor_registry(descriptors)
     plan = _resolve_deterministically(provider, profile)
     _validate_plan_registry(descriptors, plan)
-    _validate_plan_identity(profile, plan)
+    validate_plan_identity(profile, plan)
     state = _prepare(provider, plan, runtime)
-    _validate_state_identity(plan, runtime, state)
+    validate_state_identity(plan, runtime, state)
     evidence, coverage, cleanup = _run_and_cleanup(provider, plan, runtime, state)
-    _validate_cleanup_identity(plan, runtime, state, cleanup)
+    validate_evidence_identity(plan, evidence)
+    validate_cleanup_identity(runtime, state, cleanup)
     _require_passed(coverage.status, "provider evidence failed exact coverage")
     _require_passed(cleanup.status, "provider semantic cleanup failed")
     repeated_cleanup = _teardown(provider, runtime, state)
-    _validate_cleanup_identity(plan, runtime, state, repeated_cleanup)
-    _require_passed(
-        repeated_cleanup.status, "provider teardown is not idempotent"
-    )
+    validate_cleanup_identity(runtime, state, repeated_cleanup)
+    _require_passed(repeated_cleanup.status, "provider teardown is not idempotent")
     return ProviderContractResult(plan, state, evidence, coverage, cleanup)
 
 
@@ -87,14 +90,10 @@ def _resolve_deterministically(
     provider: ScenarioProvider, profile: ValidationProfile
 ) -> ScenarioPlan:
     plan = _resolve(provider, profile)
-    return _require_deterministic(
-        plan, lambda: _resolve(provider, profile), "resolve"
-    )
+    return _require_deterministic(plan, lambda: _resolve(provider, profile), "resolve")
 
 
-def _resolve(
-    provider: ScenarioProvider, profile: ValidationProfile
-) -> ScenarioPlan:
+def _resolve(provider: ScenarioProvider, profile: ValidationProfile) -> ScenarioPlan:
     return validate_provider_output(provider.resolve(profile), ScenarioPlan)
 
 
@@ -140,9 +139,7 @@ def _run_and_cleanup(
 def _teardown(
     provider: ScenarioProvider, runtime: RuntimeContext, state: FixtureState
 ) -> CleanupEvidence:
-    return validate_provider_output(
-        provider.teardown(runtime, state), CleanupEvidence
-    )
+    return validate_provider_output(provider.teardown(runtime, state), CleanupEvidence)
 
 
 def _require_passed(status: str, message: str) -> None:
@@ -162,62 +159,6 @@ def _validate_plan_registry(
             raise ProviderContractError("plan selected an undescribed scenario")
         if not set(selected.case_ids) <= registered:
             raise ProviderContractError("plan selected an undescribed case")
-
-
-def _validate_plan_identity(profile: ValidationProfile, plan: ScenarioPlan) -> None:
-    if plan.profile_digest != model_digest(profile):
-        raise ProviderContractError("plan profile digest mismatch")
-
-
-def _validate_state_identity(
-    plan: ScenarioPlan, runtime: RuntimeContext, state: FixtureState
-) -> None:
-    _require_equal(
-        state.provider_revision,
-        plan.provider_revision,
-        "fixture state provider revision mismatch",
-    )
-    _require_equal(state.run_id, runtime.run_id, "fixture state run identity mismatch")
-    _validate_target_ids(
-        plan,
-        (item.target_id for item in state.journal),
-        "fixture state references an unplanned target",
-    )
-
-
-def _validate_cleanup_identity(
-    plan: ScenarioPlan,
-    runtime: RuntimeContext,
-    state: FixtureState,
-    cleanup: CleanupEvidence,
-) -> None:
-    _require_equal(
-        cleanup.provider_revision,
-        plan.provider_revision,
-        "cleanup provider revision mismatch",
-    )
-    _require_equal(cleanup.run_id, runtime.run_id, "cleanup run identity mismatch")
-    _require_equal(
-        cleanup.state_digest, model_digest(state), "cleanup state digest mismatch"
-    )
-    _validate_target_ids(
-        plan,
-        (item.target_id for item in cleanup.results),
-        "cleanup references an unplanned target",
-    )
-
-
-def _require_equal(actual: object, expected: object, message: str) -> None:
-    if actual != expected:
-        raise ProviderContractError(message)
-
-
-def _validate_target_ids(
-    plan: ScenarioPlan, target_ids: Iterable[str], message: str
-) -> None:
-    selected_targets = {item.target_id for item in plan.selected}
-    if not set(target_ids) <= selected_targets:
-        raise ProviderContractError(message)
 
 
 def _validate_descriptor_registry(

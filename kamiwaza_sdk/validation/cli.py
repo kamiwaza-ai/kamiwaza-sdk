@@ -24,8 +24,13 @@ from kamiwaza_sdk.validation.models import (
 from kamiwaza_sdk.validation.provider import (
     ProviderContractError,
     ScenarioProvider,
+    validate_cleanup_identity,
+    validate_evidence_identity,
     validate_fixture_state_snapshots,
+    validate_plan_identity,
     validate_provider_output,
+    validate_state_identity,
+    validate_state_runtime_identity,
 )
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -44,7 +49,7 @@ def provider_main(provider: ScenarioProvider, argv: Sequence[str] | None = None)
     except ProviderContractError as error:
         print(f"provider contract failed: {error}", file=sys.stderr)
         return 2
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         print("protocol input/output failed", file=sys.stderr)
         return 2
     return 0
@@ -59,6 +64,7 @@ def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
     if args.command == "resolve":
         profile = _read_model(args.profile, ValidationProfile)
         plan = validate_provider_output(provider.resolve(profile), ScenarioPlan)
+        validate_plan_identity(profile, plan)
         _write_model(args.plan, plan)
         return
     runtime = _read_model(args.runtime, RuntimeContext)
@@ -69,18 +75,23 @@ def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
             provider.prepare(plan, runtime, writer), FixtureState
         )
         validate_fixture_state_snapshots(writer.snapshots, state)
+        validate_state_identity(plan, runtime, state)
         return
     state = _read_model(args.state, FixtureState)
     if args.command == "run":
         plan = _read_model(args.plan, ScenarioPlan)
+        validate_state_identity(plan, runtime, state)
         evidence = validate_provider_output(
             provider.run(plan, runtime, state), ScenarioEvidence
         )
+        validate_evidence_identity(plan, evidence)
         _write_model(args.evidence, evidence)
         return
+    validate_state_runtime_identity(runtime, state)
     cleanup = validate_provider_output(
         provider.teardown(runtime, state), CleanupEvidence
     )
+    validate_cleanup_identity(runtime, state, cleanup)
     _write_model(args.evidence, cleanup)
 
 

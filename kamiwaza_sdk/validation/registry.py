@@ -45,6 +45,7 @@ def evaluate_coverage(
     issues.extend(_result_issues(expected, evidence.results))
 
     return CoverageSummary(
+        schema="kamiwaza.coverage-summary/v1",
         status="failed" if issues else "passed",
         plan_digest=model_digest(plan),
         issues=tuple(issues),

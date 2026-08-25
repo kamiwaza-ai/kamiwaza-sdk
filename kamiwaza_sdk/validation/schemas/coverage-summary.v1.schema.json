@@ -122,7 +122,6 @@
     },
     "schema": {
       "const": "kamiwaza.coverage-summary/v1",
-      "default": "kamiwaza.coverage-summary/v1",
       "title": "Schema",
       "type": "string"
     },
@@ -136,6 +135,7 @@
     }
   },
   "required": [
+    "schema",
     "status",
     "plan_digest",
     "issues"

@@ -92,11 +92,27 @@ class WrongProfileDigestGoldenProvider(GoldenProvider):
         )
 
 
+class ForeignPlanTargetGoldenProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        plan = super().resolve(profile)
+        selected = plan.selected[0].model_copy(update={"target_id": "foreign-target"})
+        return plan.model_copy(update={"selected": (selected,)})
+
+
 class UnplannedStateTargetGoldenProvider(GoldenProvider):
     def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
         state = super().prepare(plan, runtime, state_writer)
         mutation = state.journal[0].model_copy(update={"target_id": "foreign-target"})
         changed = state.model_copy(update={"journal": (mutation,)})
+        state_writer.write(changed)
+        return changed
+
+
+class WrongStatePlanDigestGoldenProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
+        changed = state.model_copy(update={"plan_digest": "sha256:" + "0" * 64})
+        state_writer.write(changed.model_copy(update={"journal": ()}))
         state_writer.write(changed)
         return changed
 
@@ -108,6 +124,11 @@ class WrongCleanupDigestGoldenProvider(GoldenProvider):
             .teardown(runtime, state)
             .model_copy(update={"state_digest": "sha256:" + "0" * 64})
         )
+
+
+class MissingCleanupResultGoldenProvider(GoldenProvider):
+    def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
+        return super().teardown(runtime, state).model_copy(update={"results": ()})
 
 
 def test_contract_kit_rejects_cases_absent_from_descriptor_registry() -> None:
@@ -124,6 +145,13 @@ def test_contract_kit_binds_plan_to_input_profile() -> None:
         )
 
 
+def test_contract_kit_rejects_plan_target_absent_from_profile() -> None:
+    with pytest.raises(ProviderContractError, match="undeclared target"):
+        exercise_provider_contract(
+            ForeignPlanTargetGoldenProvider(), _profile(), _runtime()
+        )
+
+
 def test_contract_kit_binds_fixture_mutations_to_selected_targets() -> None:
     with pytest.raises(ProviderContractError, match="unplanned target"):
         exercise_provider_contract(
@@ -131,10 +159,26 @@ def test_contract_kit_binds_fixture_mutations_to_selected_targets() -> None:
         )
 
 
+def test_contract_kit_binds_fixture_state_to_exact_plan() -> None:
+    with pytest.raises(
+        ProviderContractError, match="fixture state plan digest mismatch"
+    ):
+        exercise_provider_contract(
+            WrongStatePlanDigestGoldenProvider(), _profile(), _runtime()
+        )
+
+
 def test_contract_kit_binds_cleanup_to_runtime_plan_and_state() -> None:
     with pytest.raises(ProviderContractError, match="cleanup state digest mismatch"):
         exercise_provider_contract(
             WrongCleanupDigestGoldenProvider(), _profile(), _runtime()
+        )
+
+
+def test_contract_kit_requires_cleanup_for_every_journaled_resource() -> None:
+    with pytest.raises(ProviderContractError, match="resource inventory mismatch"):
+        exercise_provider_contract(
+            MissingCleanupResultGoldenProvider(), _profile(), _runtime()
         )
 
 

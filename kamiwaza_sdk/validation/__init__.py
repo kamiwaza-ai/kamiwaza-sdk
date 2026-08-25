@@ -31,8 +31,13 @@ from kamiwaza_sdk.validation.provider import (
     FixtureStateWriter,
     ProviderContractError,
     ScenarioProvider,
+    validate_cleanup_identity,
+    validate_evidence_identity,
     validate_fixture_state_snapshots,
+    validate_plan_identity,
     validate_provider_output,
+    validate_state_identity,
+    validate_state_runtime_identity,
 )
 
 __all__ = [
@@ -65,6 +70,11 @@ __all__ = [
     "ValidationProfile",
     "evaluate_coverage",
     "model_digest",
+    "validate_cleanup_identity",
+    "validate_evidence_identity",
     "validate_fixture_state_snapshots",
+    "validate_plan_identity",
     "validate_provider_output",
+    "validate_state_identity",
+    "validate_state_runtime_identity",
 ]

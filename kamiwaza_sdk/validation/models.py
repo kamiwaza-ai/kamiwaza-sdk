@@ -84,7 +84,12 @@ class ClusterFacts(ClosedModel):
     ]
     node_count: int = Field(ge=1)
     hardware: HardwareFacts
-    features: dict[StableId, bool] = Field(default_factory=dict)
+    features: dict[StableId, bool] = Field(
+        default_factory=dict,
+        json_schema_extra={
+            "propertyNames": {"pattern": r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"}
+        },
+    )
 
     @model_validator(mode="after")
     def validate_roles(self) -> ClusterFacts:
@@ -360,6 +365,7 @@ class FixtureMutation(ClosedModel):
 class FixtureState(ClosedModel):
     schema_id: Literal["kamiwaza.fixture-state/v1"] = Field(alias="schema")
     provider_revision: NonEmptyText
+    plan_digest: Digest
     run_id: StableId
     owner_token_digest: Digest
     journal: tuple[FixtureMutation, ...]
@@ -442,9 +448,7 @@ class CoverageIssue(ClosedModel):
 
 
 class CoverageSummary(ClosedModel):
-    schema_id: Literal["kamiwaza.coverage-summary/v1"] = Field(
-        default="kamiwaza.coverage-summary/v1", alias="schema"
-    )
+    schema_id: Literal["kamiwaza.coverage-summary/v1"] = Field(alias="schema")
     status: Literal["passed", "failed"]
     plan_digest: Digest
     issues: tuple[CoverageIssue, ...]

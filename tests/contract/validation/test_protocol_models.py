@@ -200,6 +200,7 @@ def test_cleanup_evidence_cannot_pass_with_a_failed_cleanup_result() -> None:
 def test_coverage_summary_status_must_match_its_issue_inventory() -> None:
     with pytest.raises(ValidationError, match="passed coverage contains issues"):
         CoverageSummary(
+            schema="kamiwaza.coverage-summary/v1",
             status="passed",
             plan_digest="sha256:" + "2" * 64,
             issues=(
@@ -215,7 +216,19 @@ def test_coverage_summary_status_must_match_its_issue_inventory() -> None:
 
     with pytest.raises(ValidationError, match="failed coverage has no issues"):
         CoverageSummary(
+            schema="kamiwaza.coverage-summary/v1",
             status="failed",
             plan_digest="sha256:" + "2" * 64,
             issues=(),
+        )
+
+
+def test_coverage_summary_requires_explicit_wire_version() -> None:
+    with pytest.raises(ValidationError, match="schema"):
+        CoverageSummary.model_validate(
+            {
+                "status": "passed",
+                "plan_digest": "sha256:" + "2" * 64,
+                "issues": [],
+            }
         )

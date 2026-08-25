@@ -126,3 +126,29 @@ def test_golden_provider_rejects_changed_plan_revision_during_run() -> None:
 
     with pytest.raises(ProviderContractError, match="provider revision mismatch"):
         provider.run(changed_plan, runtime, state)
+
+
+def test_golden_provider_rejects_plan_without_fixture_mode() -> None:
+    provider = GoldenProvider()
+    plan = provider.resolve(_golden_profile())
+    selected = plan.selected[0].model_copy(
+        update={"redacted_parameters": {"engine": "llamacpp"}}
+    )
+    changed_plan = plan.model_copy(update={"selected": (selected,)})
+    runtime = RuntimeContext.model_validate(
+        {
+            "schema": "kamiwaza.runtime-context/v1",
+            "run_id": "fixture-mode-check",
+            "clusters": [
+                {
+                    "id": "evo-x2-2",
+                    "base_url": "https://evo-x2-2.example.test/api",
+                    "api_key_ref": "secret://evo-x2-2/admin-pat",
+                    "kubeconfig_ref": "file:///run/secrets/evo-x2-2.kubeconfig",
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ProviderContractError, match="fixture mode"):
+        provider.prepare(changed_plan, runtime, RecordingFixtureStateWriter())
