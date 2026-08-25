@@ -29,18 +29,21 @@ ImmutableImageReference = Annotated[
 ]
 
 
-def _validate_ids(
-    values: Sequence[Hashable],
-    label: str,
-    *,
-    required: bool = False,
-    empty_message: str | None = None,
-    duplicate_message: str | None = None,
+def _require_values(values: Sequence[object], message: str) -> None:
+    if not values:
+        raise ValueError(message)
+
+
+def _require_values_when(
+    values: Sequence[object], required: bool, message: str
 ) -> None:
     if required and not values:
-        raise ValueError(empty_message or f"{label} must not be empty")
+        raise ValueError(message)
+
+
+def _reject_duplicate_values(values: Sequence[Hashable], message: str) -> None:
     if len(values) != len(set(values)):
-        raise ValueError(duplicate_message or f"{label} IDs contain a duplicate")
+        raise ValueError(message)
 
 
 def _reject_unknown_references(
@@ -82,13 +85,8 @@ class ClusterFacts(ClosedModel):
 
     @model_validator(mode="after")
     def validate_roles(self) -> ClusterFacts:
-        _validate_ids(
-            self.roles,
-            "cluster roles",
-            required=True,
-            empty_message="cluster must declare at least one role",
-            duplicate_message="cluster roles contain a duplicate",
-        )
+        _require_values(self.roles, "cluster must declare at least one role")
+        _reject_duplicate_values(self.roles, "cluster roles contain a duplicate")
         return self
 
 
@@ -112,9 +110,7 @@ class MeshFacts(ClosedModel):
         keys = [
             (edge.initiator, edge.receiver, edge.identity_mode) for edge in self.edges
         ]
-        _validate_ids(
-            keys, "mesh edge", duplicate_message="mesh contains a duplicate edge"
-        )
+        _reject_duplicate_values(keys, "mesh contains a duplicate edge")
         return self
 
 
@@ -128,8 +124,12 @@ class ValidationIntent(ClosedModel):
     def validate_scenario_overrides(self) -> ValidationIntent:
         if set(self.include) & set(self.exclude):
             raise ValueError("validation include and exclude overlap")
-        _validate_ids(self.include, "validation include")
-        _validate_ids(self.exclude, "validation exclude")
+        _reject_duplicate_values(
+            self.include, "validation include IDs contain a duplicate"
+        )
+        _reject_duplicate_values(
+            self.exclude, "validation exclude IDs contain a duplicate"
+        )
         return self
 
 
@@ -158,8 +158,11 @@ class ValidationProfile(ClosedModel):
         cluster_ids = [cluster.id for cluster in self.clusters]
         target_ids = [target.id for target in self.inference_targets]
         known_clusters = set(cluster_ids)
-        _validate_ids(cluster_ids, "profile cluster", required=True)
-        _validate_ids(target_ids, "profile inference target")
+        _require_values(cluster_ids, "profile clusters must not be empty")
+        _reject_duplicate_values(cluster_ids, "profile cluster IDs contain a duplicate")
+        _reject_duplicate_values(
+            target_ids, "profile inference target IDs contain a duplicate"
+        )
         _reject_unknown_references(
             {target.cluster_id for target in self.inference_targets},
             known_clusters,
@@ -192,7 +195,10 @@ class ScenarioDescriptor(ClosedModel):
 
     @model_validator(mode="after")
     def validate_case_registry(self) -> ScenarioDescriptor:
-        _validate_ids(self.case_ids, "scenario descriptor case", required=True)
+        _require_values(self.case_ids, "scenario descriptor case must not be empty")
+        _reject_duplicate_values(
+            self.case_ids, "scenario descriptor case IDs contain a duplicate"
+        )
         return self
 
 
@@ -204,12 +210,9 @@ class ScenarioCatalog(RootModel[tuple[ScenarioDescriptor, ...]]):
     @model_validator(mode="after")
     def validate_descriptors(self) -> ScenarioCatalog:
         scenario_ids = [descriptor.scenario_id for descriptor in self.root]
-        _validate_ids(
-            scenario_ids,
-            "scenario catalog scenario",
-            required=True,
-            empty_message="scenario catalog needs at least one descriptor",
-            duplicate_message="scenario catalog contains a duplicate scenario ID",
+        _require_values(scenario_ids, "scenario catalog needs at least one descriptor")
+        _reject_duplicate_values(
+            scenario_ids, "scenario catalog contains a duplicate scenario ID"
         )
         return self
 
@@ -223,11 +226,13 @@ class ResolvedScenario(ClosedModel):
 
     @model_validator(mode="after")
     def validate_cases(self) -> ResolvedScenario:
-        _validate_ids(
+        _require_values_when(
             self.case_ids,
-            "resolved scenario case",
-            required=self.required,
-            empty_message="required scenario must select at least one case",
+            self.required,
+            "required scenario must select at least one case",
+        )
+        _reject_duplicate_values(
+            self.case_ids, "resolved scenario case IDs contain a duplicate"
         )
         return self
 
@@ -243,10 +248,9 @@ class ScenarioPlan(ClosedModel):
     @model_validator(mode="after")
     def validate_selected_scenarios(self) -> ScenarioPlan:
         keys = [(item.target_id, item.scenario_id) for item in self.selected]
-        _validate_ids(
+        _reject_duplicate_values(
             keys,
-            "scenario plan target/scenario cell",
-            duplicate_message="scenario plan contains a duplicate target/scenario cell",
+            "scenario plan contains a duplicate target/scenario cell",
         )
         return self
 
@@ -288,12 +292,10 @@ class RuntimeContext(ClosedModel):
     @model_validator(mode="after")
     def validate_clusters(self) -> RuntimeContext:
         cluster_ids = [cluster.id for cluster in self.clusters]
-        _validate_ids(
-            cluster_ids,
-            "runtime cluster",
-            required=True,
-            empty_message="runtime context must declare at least one cluster",
+        _require_values(
+            cluster_ids, "runtime context must declare at least one cluster"
         )
+        _reject_duplicate_values(cluster_ids, "runtime cluster IDs contain a duplicate")
         return self
 
 
