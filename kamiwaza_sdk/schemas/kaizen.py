@@ -112,6 +112,35 @@ class Agent(BaseModel):
     created_at: Optional[str] = None
 
 
+class CanonicalConversation(BaseModel):
+    """Conversation as canonical Kaizen returns it on create.
+
+    Deliberately not :class:`Conversation`: canonical Kaizen returns the id
+    alone and binds no agent at create time (the agent is selected per input),
+    so reusing the legacy model would fail validation on its required
+    ``agent_id``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+
+
+class ConversationInputAccepted(BaseModel):
+    """Canonical Kaizen's 202 response to an accepted conversation input.
+
+    ``accepted_position`` is the input's position in the conversation journal;
+    replaying the event stream from it is what makes reading the reply
+    race-free when the agent finishes before the stream is open.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    input_id: str
+    accepted_position: int
+    status: Optional[str] = None
+
+
 class Conversation(BaseModel):
     """Conversation response from Kaizen (sandbox auto-started on create)."""
 

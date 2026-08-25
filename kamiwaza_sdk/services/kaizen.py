@@ -5,7 +5,9 @@
 Kaizen runs as a per-workroom extension behind its own ingress, so every call
 takes an explicit ``base_url`` (the Kaizen instance API root). Resolve it once
 from the platform extensions API with :func:`resolve_base_url`, then pass it to
-``agents.create`` / ``conversations.create``.
+the agent / conversation services. Two Kaizen products ship side by side and
+speak different contracts; select with :func:`agent_contract_for_extension`
+rather than by hand (see :class:`AgentService` and :class:`ConversationService`).
 
 Workroom scope is carried as the ``X-Workroom-Id`` header. The authoritative
 scope is the caller's identity; with a global PAT (no workroom claim) the
@@ -13,13 +15,25 @@ platform honors this header. A workroom-scoped token is the durable fix
 (tracked for the nightly-seeding work).
 """
 
+import json
 import math
 import re
 import time
-from typing import Any, Dict, List, Optional, Union
+import uuid
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+
+import requests
 
 from ..exceptions import APIError, AuthorizationError, KamiwazaError, NotFoundError
-from ..schemas.kaizen import Agent, AgentDefinition, Conversation, LLMConfig
+from ..schemas.kaizen import (
+    Agent,
+    AgentDefinition,
+    CanonicalConversation,
+    Conversation,
+    ConversationInputAccepted,
+    LLMConfig,
+)
 from .base_service import BaseService
 
 # Kaizen route prefixes, relative to the extension's ingress root. The collection
@@ -30,6 +44,35 @@ _AGENTS_PATH = "api/agents"
 _CONVERSATIONS_PATH = "api/conversations"
 _OPS_MODELS_PATH = "api/ops/models"
 _OPS_CHAT_MODEL_PATH = "api/ops/models/chat"
+
+# Canonical Kaizen's Idempotency-Key bounds, mirrored from the member API's
+# Header(min_length=1, max_length=200) so a bad key fails here — with the fix in
+# the message — instead of as an opaque HTTP 422 from the server.
+_IDEMPOTENCY_KEY_MAX_LEN = 200
+
+# Pause before reopening a dropped event stream. The server ends the stream
+# immediately when its live bus is unavailable, so an unthrottled reopen would
+# turn an extension-side outage into a request storm against that same
+# extension — each reopen costs it a journal replay and an authorization
+# resolve — for the whole wait budget.
+_RECONNECT_BACKOFF_SECONDS = 1.0
+
+# Canonical Kaizen journal event types that end a turn. `assistant_message`
+# carries the reply text; the run is only over once one of these lands, so an
+# interim narration is never mistaken for the final answer.
+_CANONICAL_REPLY_EVENT = "assistant_message"
+_CANONICAL_TERMINAL_OK = "agent_run_completed"
+# A salvaged run recovered partial output after a runtime fault: terminal, but
+# only a success if it actually carried a reply.
+_CANONICAL_TERMINAL_SALVAGED = "agent_run_salvaged"
+_CANONICAL_TERMINAL_EVENTS = frozenset(
+    {
+        _CANONICAL_TERMINAL_OK,
+        _CANONICAL_TERMINAL_SALVAGED,
+        "agent_run_failed",
+        "agent_run_cancelled",
+    }
+)
 
 # Catalog identities. Two Kaizen products ship side by side and answer different
 # agent-create contracts, so the identity — not the ingress, which looks the same
@@ -84,6 +127,191 @@ class ConversationError(KamiwazaError):
     callers must NOT keep polling for a reply — distinct from the transient
     "no reply yet" state that resolves on a later poll.
     """
+
+
+def _idempotency_headers(
+    workroom_id: Optional[Union[str, object]],
+    idempotency_key: Optional[str],
+) -> Dict[str, str]:
+    """Build the workroom + Idempotency-Key headers canonical Kaizen requires.
+
+    A fresh UUID4 is generated per call when the caller supplies no key, so two
+    separate creates never collapse into one conversation server-side. Callers
+    retrying a single logical operation should pass their own stable key.
+
+    Raises:
+        ValueError: when a supplied key is blank or longer than the server's
+            200-character bound.
+    """
+    if idempotency_key is None:
+        key = str(uuid.uuid4())
+    else:
+        key = idempotency_key.strip()
+        if not key:
+            raise ValueError("Idempotency-Key must be a non-empty string.")
+        if len(key) > _IDEMPOTENCY_KEY_MAX_LEN:
+            raise ValueError(
+                f"Idempotency-Key must be at most {_IDEMPOTENCY_KEY_MAX_LEN} "
+                f"characters (got {len(key)})."
+            )
+    headers = _workroom_headers(workroom_id)
+    headers["Idempotency-Key"] = key
+    return headers
+
+
+def _sse_line(raw: Any) -> str:
+    """Normalize one line off ``iter_lines`` to text (it may yield bytes)."""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw or ""
+
+
+def _apply_sse_field(line: str, event: str, data_lines: List[str]) -> str:
+    """Fold one ``event:``/``data:`` field into the frame being accumulated.
+
+    Returns the frame's event name, which a ``data:`` line leaves unchanged.
+    """
+    if line.startswith("event: "):
+        return line[7:]
+    if line.startswith("data: "):
+        data_lines.append(line[6:])
+    return event
+
+
+def _iter_sse_events(response: Any) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    """Yield ``(event, payload)`` pairs from a Kaizen SSE response.
+
+    Frames are blank-line delimited with ``event:`` / ``data:`` fields. A frame
+    whose data is not a JSON object is skipped rather than raised on: the stream
+    also carries transient keepalive and presence frames that a chat caller has
+    no interest in, and one unparseable frame must not abort the turn.
+    """
+    event = "message"
+    data_lines: List[str] = []
+    for raw in response.iter_lines(decode_unicode=True):
+        line = _sse_line(raw)
+        if line:
+            event = _apply_sse_field(line, event, data_lines)
+            continue
+        # Blank line terminates the frame.
+        payload = _sse_payload(data_lines)
+        if payload is not None:
+            yield event, payload
+        event = "message"
+        data_lines = []
+
+
+def _sse_payload(data_lines: List[str]) -> Optional[Dict[str, Any]]:
+    """Decode an SSE frame's data lines into a dict, or None if undecodable."""
+    if not data_lines:
+        return None
+    try:
+        value = json.loads("\n".join(data_lines))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _canonical_event_text(payload: Dict[str, Any]) -> Optional[str]:
+    """Pull the assistant reply text out of a durable ``assistant_message``."""
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    text = data.get("text")
+    return text if isinstance(text, str) and text else None
+
+
+def _canonical_failure_reason(payload: Dict[str, Any]) -> str:
+    """Describe why a canonical run ended without a reply."""
+    data = payload.get("data")
+    reason = data.get("reason") if isinstance(data, dict) else None
+    return str(reason) if reason else str(payload.get("event", "unknown"))
+
+
+def _is_turn_event(payload: Dict[str, Any], input_id: str) -> bool:
+    """Is this durable event part of the turn we submitted?
+
+    A shared conversation replays other members' turns onto the same stream, so
+    matching the ``input_id`` is what keeps a stale reply from being returned as
+    this turn's. Events with no ``input_id`` are conversation-level (presence,
+    keepalive) and belong to no turn.
+    """
+    return payload.get("input_id") == input_id
+
+
+def _canonical_terminal_reply(
+    event: str,
+    payload: Dict[str, Any],
+    reply: Optional[str],
+) -> Optional[str]:
+    """Resolve a terminal turn event into a reply, or raise if the run failed.
+
+    A salvaged run is terminal but only counts as a reply when it actually
+    carried one; treating it as success unconditionally would report an empty
+    answer as a passing chat verification.
+    """
+    if event == _CANONICAL_TERMINAL_OK:
+        return reply
+    if event == _CANONICAL_TERMINAL_SALVAGED and reply:
+        return reply
+    raise ConversationError(
+        f"Kaizen agent run ended as '{event}': {_canonical_failure_reason(payload)}"
+    )
+
+
+def _append_reply_text(reply: Optional[str], payload: Dict[str, Any]) -> Optional[str]:
+    """Accumulate an assistant_message chunk; a turn may emit more than one."""
+    text = _canonical_event_text(payload)
+    if not text:
+        return reply
+    return text if reply is None else f"{reply}\n{text}"
+
+
+def _event_position(payload: Dict[str, Any], fallback: int) -> int:
+    """Journal position of a durable frame, for resuming a dropped stream."""
+    position = payload.get("position")
+    return position if isinstance(position, int) else fallback
+
+
+def _pause_before_reconnect(deadline: float) -> None:
+    """Throttle a stream reopen, never sleeping past the caller's budget."""
+    time.sleep(max(0.0, min(_RECONNECT_BACKOFF_SECONDS, deadline - time.monotonic())))
+
+
+def _safe_sse_events(
+    response: Any,
+    turn: "_CanonicalTurn",
+) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    """Iterate SSE events, mapping transport faults onto this service's contract.
+
+    ``requests`` timeouts derive from ``RequestException``/``OSError``, not from
+    the builtin ``TimeoutError``, so an unwrapped read timeout would bypass both
+    the documented ``Raises`` of :meth:`ConversationService.chat_canonical` and
+    the seeder CLI's handler — surfacing as a raw traceback instead of the clean
+    non-zero exit every other seeder command produces.
+    """
+    try:
+        yield from _iter_sse_events(response)
+    except requests.exceptions.Timeout as exc:
+        raise TimeoutError(
+            f"Timed out reading the event stream for conversation "
+            f"{turn.conversation_id} (input {turn.input_id}): {exc}"
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        raise ConversationError(
+            f"Event stream for conversation {turn.conversation_id} failed "
+            f"(input {turn.input_id}): {exc}"
+        ) from exc
+
+
+@dataclass(frozen=True)
+class _CanonicalTurn:
+    """Everything needed to route one canonical turn's event stream."""
+
+    conversation_id: str
+    input_id: str
+    base_url: str
+    workroom_id: Optional[Union[str, object]]
 
 
 def _workroom_headers(workroom_id: Optional[Union[str, object]]) -> Dict[str, str]:
@@ -624,7 +852,263 @@ def _reply_from_events(events: List[Dict[str, Any]]) -> Optional[str]:
 
 
 class ConversationService(BaseService):
-    """Create Kaizen conversations (auto-starts the agent sandbox)."""
+    """Drive Kaizen conversations.
+
+    Two turn contracts, one per catalog identity — pick with
+    :func:`agent_contract_for_extension` rather than by hand. They diverge
+    across the whole turn, not just at create:
+
+    * **canonical** (``kaizen``) — :meth:`create_canonical` (no body, an
+      ``Idempotency-Key`` header), :meth:`send_input_canonical` (one
+      ``/inputs`` route replacing send+run, agent selected per input), and an
+      SSE event stream. :meth:`chat_canonical` wraps all three.
+    * **legacy** (``kaizen-legacy``, v3) — :meth:`create` (flat body),
+      :meth:`send_message` + :meth:`run`, and paginated JSON events.
+      :meth:`chat` wraps those.
+
+    The canonical routes do not exist on legacy and vice versa, so crossing the
+    contracts is an HTTP 422 or 404 rather than a degraded success.
+    """
+
+    def create_canonical(
+        self,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> CanonicalConversation:
+        """Open a conversation on canonical Kaizen.
+
+        The route declares no body parameter and requires an ``Idempotency-Key``
+        header; the legacy body fields (``agent_id``, ``max_iterations``,
+        ``stuck_detection``, ``ephemeral``) are rejected outright. No agent is
+        bound here — canonical Kaizen selects one per input, so pass ``agent``
+        to :meth:`send_input_canonical` instead.
+
+        Args:
+            base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
+            workroom_id: Workroom to scope the conversation to.
+            idempotency_key: Stable key for retrying one logical create; a fresh
+                UUID4 is used when omitted.
+
+        Returns:
+            CanonicalConversation: carries the new conversation's ``id``.
+        """
+        response = self.client._request(
+            "POST",
+            _CONVERSATIONS_PATH,
+            base_url=base_url,
+            headers=_idempotency_headers(workroom_id, idempotency_key),
+        )
+        return CanonicalConversation.model_validate(response)
+
+    def send_input_canonical(
+        self,
+        conversation_id: str,
+        message: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        agent: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> ConversationInputAccepted:
+        """Submit a member message and start the agent's run (canonical Kaizen).
+
+        Replaces legacy's :meth:`send_message` + :meth:`run` pair: canonical
+        Kaizen has a single ``/inputs`` route that both enqueues and schedules.
+
+        Returns:
+            ConversationInputAccepted: the ``input_id`` identifying this turn and
+            the ``accepted_position`` to replay the event stream from.
+        """
+        body: Dict[str, Any] = {"kind": "message", "message": message}
+        if agent is not None:
+            body["agent"] = agent
+        response = self.client._request(
+            "POST",
+            f"{_CONVERSATIONS_PATH}/{conversation_id}/inputs",
+            base_url=base_url,
+            json=body,
+            headers=_idempotency_headers(workroom_id, idempotency_key),
+        )
+        return ConversationInputAccepted.model_validate(response)
+
+    def stream_events_canonical(
+        self,
+        conversation_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        after: Optional[int] = None,
+        read_timeout_seconds: float = 30.0,
+    ) -> Any:
+        """Open canonical Kaizen's SSE event stream for a conversation.
+
+        Returns the raw streamed response; the caller owns closing it. ``after``
+        replays durable events from that journal position, which is what makes
+        reading a reply race-free — an agent that finishes before the stream is
+        open still delivers, because the events are replayed rather than missed.
+        """
+        params: Dict[str, Any] = {}
+        if after is not None:
+            params["after"] = after
+        return self.client._request(
+            "GET",
+            f"{_CONVERSATIONS_PATH}/{conversation_id}/events",
+            base_url=base_url,
+            params=params,
+            headers=_workroom_headers(workroom_id),
+            expect_json=False,
+            stream=True,
+            timeout=read_timeout_seconds,
+        )
+
+    def chat_canonical(
+        self,
+        conversation_id: str,
+        message: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        agent: Optional[str] = None,
+        timeout_seconds: Optional[float] = 60.0,
+        idempotency_key: Optional[str] = None,
+    ) -> Optional[str]:
+        """Send a message on canonical Kaizen and return the agent's reply.
+
+        Wraps :meth:`send_input_canonical` and then reads the SSE stream from
+        the accepted position until this turn reaches a terminal event. Used to
+        exercise an agent end to end (proving a freshly seeded agent actually
+        responds, not merely that it was created).
+
+        ``timeout_seconds`` is the wait budget; ``None`` is fire-and-forget —
+        the input is submitted and the method returns ``None`` without opening
+        the stream. Only this turn's events count, so a replayed reply from an
+        earlier turn in a shared conversation is never returned as this one's.
+
+        Raises:
+            ConversationError: the run reached a terminal non-success event.
+            TimeoutError: no terminal event arrived within the budget.
+        """
+        accepted = self.send_input_canonical(
+            conversation_id,
+            message,
+            base_url=base_url,
+            workroom_id=workroom_id,
+            agent=agent,
+            idempotency_key=idempotency_key,
+        )
+        if timeout_seconds is None:
+            return None
+        turn = _CanonicalTurn(
+            conversation_id=conversation_id,
+            input_id=accepted.input_id,
+            base_url=base_url,
+            workroom_id=workroom_id,
+        )
+        return self._await_canonical_reply(
+            turn,
+            after=accepted.accepted_position,
+            deadline=time.monotonic() + timeout_seconds,
+        )
+
+    def _await_canonical_reply(
+        self,
+        turn: "_CanonicalTurn",
+        *,
+        after: int,
+        deadline: float,
+    ) -> Optional[str]:
+        """Read this turn's events until it ends, reconnecting if the stream drops.
+
+        A canonical event stream can close before the turn finishes — an ingress
+        idle timeout, a proxy drop, or the server's own degraded-fanout path.
+        That is recoverable rather than fatal precisely because the stream
+        replays from a journal position, so reopen from the last position seen
+        and keep going while budget remains.
+        """
+        reply: Optional[str] = None
+        cursor = after
+        open_error: Optional[Exception] = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                response = self.stream_events_canonical(
+                    turn.conversation_id,
+                    base_url=turn.base_url,
+                    workroom_id=turn.workroom_id,
+                    after=cursor,
+                    # Floor the socket read so a zero/near-zero budget never
+                    # reads as "no timeout" to the transport.
+                    read_timeout_seconds=max(remaining, 1.0),
+                )
+            except APIError as exc:
+                # The client maps every transport fault at connect time onto
+                # APIError, so a blip while (re)opening arrives here rather than
+                # out of the iterator. It is retryable while budget remains;
+                # aborting the turn on it would make a momentary blip
+                # indistinguishable from a dead agent.
+                open_error = exc
+                _pause_before_reconnect(deadline)
+                continue
+            open_error = None
+            try:
+                done, reply, cursor = self._read_turn_events(
+                    response, turn, reply=reply, cursor=cursor, deadline=deadline
+                )
+            finally:
+                response.close()
+            if done:
+                return reply
+            _pause_before_reconnect(deadline)
+        if open_error is not None:
+            # Budget ran out while the stream could not even be opened: report
+            # the transport cause rather than an unqualified timeout.
+            raise ConversationError(
+                f"Could not read the event stream for conversation "
+                f"{turn.conversation_id} (input {turn.input_id}): {open_error}"
+            ) from open_error
+        raise TimeoutError(
+            f"No agent reply on conversation {turn.conversation_id} within the "
+            f"wait budget (input {turn.input_id} never reached a terminal event)."
+        )
+
+    def _read_turn_events(
+        self,
+        response: Any,
+        turn: "_CanonicalTurn",
+        *,
+        reply: Optional[str],
+        cursor: int,
+        deadline: float,
+    ) -> Tuple[bool, Optional[str], int]:
+        """Consume one event stream; return (turn_finished, reply, next cursor).
+
+        Returning instead of raising on a dropped stream is what lets the caller
+        reconnect. Transport failures are re-raised as the two exception types
+        this service's contract documents, so a caller catching those does not
+        get a bare ``requests`` error through the seeder CLI.
+        """
+        for event, payload in _safe_sse_events(response, turn):
+            cursor = _event_position(payload, cursor)
+            if _is_turn_event(payload, turn.input_id):
+                if event == _CANONICAL_REPLY_EVENT:
+                    reply = _append_reply_text(reply, payload)
+                elif event in _CANONICAL_TERMINAL_EVENTS:
+                    return True, _canonical_terminal_reply(event, payload, reply), cursor
+            # The budget check runs on EVERY frame, not just this turn's: the
+            # stream also carries conversation-level keepalive and presence
+            # frames, and gating the check behind the turn filter would let a
+            # stalled run hold the loop open for as long as the server keeps
+            # sending them. Checking after the frame is handled also means a
+            # terminal event that arrived inside the budget is never discarded
+            # for being dequeued a hair past it.
+            if time.monotonic() >= deadline:
+                return False, reply, cursor
+        # Stream ended without a terminal event — recoverable, not a timeout.
+        return False, reply, cursor
 
     def create(
         self,

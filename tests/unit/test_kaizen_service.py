@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,7 @@ from kamiwaza_sdk.exceptions import (
     BrokeredUserNotAllowlistedError,
     NotFoundError,
 )
+from kamiwaza_sdk.seeding import kaizen_turns
 from kamiwaza_sdk.schemas.kaizen import AgentDefinition, LLMConfig
 from kamiwaza_sdk.services.kaizen import (
     AGENT_CONTRACT_CANONICAL,
@@ -22,6 +25,7 @@ from kamiwaza_sdk.services.kaizen import (
     ConversationService,
     KaizenOpsService,
     agent_contract_for_extension,
+    _CONVERSATIONS_PATH,
     _agent_error_from_events,
     _has_finish_action,
     _is_serving,
@@ -1701,3 +1705,536 @@ def test_chat_times_out_when_no_reply(monkeypatch):
 
     with pytest.raises(TimeoutError, match="No agent reply"):
         service.chat("conv-1", "hi", base_url=KAIZEN_URL, timeout_seconds=1)
+
+
+# --- canonical (Kaizen v4) conversation contract ----------------------------
+#
+# Canonical Kaizen and legacy Kaizen diverge across the whole turn, not just at
+# create: canonical has no `/messages` and no `/run` route at all, and streams
+# its events as SSE. These tests pin the wire contract on both sides of the
+# split, because a mismatch is invisible locally and only surfaces as an HTTP
+# 422/404 against a real deployment.
+
+
+class _FakeSSEResponse:
+    """Stands in for a streamed ``requests.Response`` carrying SSE frames."""
+
+    def __init__(self, frames):
+        self._frames = list(frames)
+        self.closed = False
+
+    def iter_lines(self, decode_unicode=False):
+        for frame in self._frames:
+            for line in frame.split("\n"):
+                yield line
+
+    def close(self):
+        self.closed = True
+
+
+def _durable_frame(event, data, *, input_id="input-1"):
+    body = {
+        "schema_version": 1,
+        "stream_kind": "durable",
+        "event": event,
+        "input_id": input_id,
+        "data": data,
+    }
+    return f"event: {event}\ndata: {json.dumps(body)}\n\n"
+
+
+class CanonicalChatClient:
+    """Answers create/inputs with JSON and events with an SSE stream.
+
+    ``streams`` is a list of frame-lists, one per expected ``/events`` open, so
+    a test can model a stream that drops and is reconnected.
+    """
+
+    def __init__(self, frames, *, accepted_position=7, streams=None):
+        self.frames = frames
+        self.accepted_position = accepted_position
+        self.calls: list[tuple[str, str, dict]] = []
+        self.response = _FakeSSEResponse(frames)
+        self._streams = list(streams) if streams is not None else None
+        self.responses: list[_FakeSSEResponse] = [self.response]
+
+    def _request(self, method: str, path: str, **kwargs):
+        self.calls.append((method, path, kwargs))
+        if path == _CONVERSATIONS_PATH:
+            return {"id": "conv-9"}
+        if path.endswith("/inputs"):
+            return {
+                "input_id": "input-1",
+                "accepted_position": self.accepted_position,
+                "status": "accepted",
+            }
+        if path.endswith("/events"):
+            if self._streams is None:
+                return self.response
+            nxt = self._streams.pop(0) if self._streams else []
+            resp = _FakeSSEResponse(nxt)
+            self.responses.append(resp)
+            return resp
+        raise AssertionError(f"unexpected path {path}")
+
+
+def test_conversation_create_canonical_sends_idempotency_key_and_no_body():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    conv = service.create_canonical(base_url=KAIZEN_URL, workroom_id="wr-123")
+
+    assert conv.id == "conv-9"
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("POST", "api/conversations")
+    # The route declares no body param, and the v3 fields are exactly what
+    # canonical Kaizen rejects with the 422 this split exists to fix.
+    assert "json" not in kwargs
+    key = kwargs["headers"]["Idempotency-Key"]
+    assert 1 <= len(key) <= 200
+    assert kwargs["headers"]["X-Workroom-Id"] == "wr-123"
+
+
+def test_conversation_create_canonical_uses_a_fresh_key_per_call():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    service.create_canonical(base_url=KAIZEN_URL)
+    service.create_canonical(base_url=KAIZEN_URL)
+
+    first, second = (call[2]["headers"]["Idempotency-Key"] for call in client.calls)
+    # Two separate creates must not collapse into one conversation server-side.
+    assert first != second
+
+
+def test_conversation_create_canonical_honors_a_caller_supplied_key():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    service.create_canonical(base_url=KAIZEN_URL, idempotency_key="seed-run-1")
+
+    assert client.calls[0][2]["headers"]["Idempotency-Key"] == "seed-run-1"
+
+
+@pytest.mark.parametrize("bad_key", ["", "   ", "k" * 201])
+def test_conversation_create_canonical_rejects_a_key_the_server_would_reject(bad_key):
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    # Fail locally with the fix in the message rather than as an opaque 422.
+    with pytest.raises(ValueError, match="Idempotency-Key"):
+        service.create_canonical(base_url=KAIZEN_URL, idempotency_key=bad_key)
+    assert client.calls == []
+
+
+def test_conversation_create_legacy_still_sends_the_v3_body_and_no_header():
+    responses = {("POST", "api/conversations"): {"id": "conv-1", "agent_id": "agent-1"}}
+    client = DummyClient(responses)
+    service = ConversationService(client)
+
+    service.create(base_url=KAIZEN_URL, agent_id="agent-1", workroom_id="wr-1")
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["json"]["max_iterations"] == 500
+    assert kwargs["json"]["stuck_detection"] is True
+    # The legacy route never reads the header; sending it here would be the
+    # mirror image of the bug being fixed.
+    assert "Idempotency-Key" not in kwargs["headers"]
+
+
+def test_send_input_canonical_posts_a_message_kind_with_an_idempotency_key():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    accepted = service.send_input_canonical(
+        "conv-9", "hello there", base_url=KAIZEN_URL, workroom_id="wr-1"
+    )
+
+    assert (accepted.input_id, accepted.accepted_position) == ("input-1", 7)
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("POST", "api/conversations/conv-9/inputs")
+    assert kwargs["json"] == {"kind": "message", "message": "hello there"}
+    assert kwargs["headers"]["Idempotency-Key"]
+    assert kwargs["headers"]["X-Workroom-Id"] == "wr-1"
+
+
+def test_send_input_canonical_carries_an_agent_selector_when_asked():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    service.send_input_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, agent="uat-bedrock-agent"
+    )
+
+    # Canonical Kaizen selects the agent per input, not at conversation create.
+    assert client.calls[0][2]["json"]["agent"] == "uat-bedrock-agent"
+
+
+def test_chat_canonical_returns_the_assistant_text_once_the_run_completes():
+    frames = [
+        _durable_frame("agent_run_started", {"v": 1}),
+        _durable_frame("assistant_message", {"v": 1, "text": "Hello! I am claude."}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+    client = CanonicalChatClient(frames)
+    service = ConversationService(client)
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5
+    )
+
+    assert reply == "Hello! I am claude."
+    # The stream must replay from the accepted position, or an agent that
+    # finishes before the stream opens loses its reply.
+    events_call = [c for c in client.calls if c[1].endswith("/events")][0]
+    assert events_call[2]["params"]["after"] == 7
+    assert client.response.closed is True
+
+
+def test_chat_canonical_raises_a_terminal_error_when_the_run_fails():
+    frames = [
+        _durable_frame("agent_run_started", {"v": 1}),
+        _durable_frame(
+            "agent_run_failed", {"v": 1, "status": "failed", "reason": "no model bound"}
+        ),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    with pytest.raises(ConversationError, match="no model bound"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+
+
+def test_chat_canonical_ignores_events_belonging_to_another_input():
+    frames = [
+        _durable_frame(
+            "assistant_message", {"v": 1, "text": "stale"}, input_id="input-0"
+        ),
+        _durable_frame(
+            "agent_run_completed", {"v": 1, "status": "completed"}, input_id="input-0"
+        ),
+        _durable_frame("assistant_message", {"v": 1, "text": "fresh"}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5
+    )
+
+    # A shared conversation replays other turns; only this turn's reply counts.
+    assert reply == "fresh"
+
+
+def test_chat_canonical_times_out_when_the_run_never_finishes():
+    frames = [_durable_frame("agent_run_started", {"v": 1})]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    with pytest.raises(TimeoutError, match="conv-9"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=0)
+
+
+def test_chat_canonical_fire_and_forget_skips_the_event_stream():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=None
+    )
+
+    assert reply is None
+    assert [c for c in client.calls if c[1].endswith("/events")] == []
+
+
+# --- canonical turn: budget, terminals, transport faults --------------------
+
+
+def _transient_frame(event):
+    """A conversation-level frame carrying no input_id (keepalive/presence)."""
+    body = {"schema_version": 1, "stream_kind": "transient", "event": event, "data": {}}
+    return f"event: {event}\ndata: {json.dumps(body)}\n\n"
+
+
+class _EndlessKeepaliveResponse(_FakeSSEResponse):
+    """A stream that never stops emitting conversation-level keepalives.
+
+    Deliberately unbounded: the server emits one roughly every 10s for the life
+    of the stream and they carry no input_id, so a budget check sitting behind
+    the turn filter never runs on them. Against this response, that bug does not
+    merely mis-report — it hangs, which is exactly what it did to the seeder.
+    """
+
+    def iter_lines(self, decode_unicode=False):
+        while True:
+            for line in _transient_frame("keepalive").split("\n"):
+                yield line
+
+
+def test_chat_canonical_times_out_while_only_keepalives_arrive(monkeypatch):
+    client = CanonicalChatClient([])
+    client.response = _EndlessKeepaliveResponse([])
+    service = ConversationService(client)
+
+    ticks = itertools.count(0.0, 1.0)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.kaizen.time.monotonic", lambda: next(ticks)
+    )
+
+    with pytest.raises(TimeoutError, match="conv-9"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+    assert client.response.closed is True
+
+
+def test_chat_canonical_accepts_a_salvaged_run_that_carried_a_reply():
+    # SALVAGED is a real terminal input status server-side; without it the loop
+    # never ends on a salvaged run.
+    frames = [
+        _durable_frame("assistant_message", {"v": 1, "text": "partial answer"}),
+        _durable_frame("agent_run_salvaged", {"v": 1, "status": "salvaged"}),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5
+    )
+
+    assert reply == "partial answer"
+
+
+def test_chat_canonical_faults_a_salvaged_run_with_no_reply():
+    frames = [
+        _durable_frame(
+            "agent_run_salvaged", {"v": 1, "status": "salvaged", "reason": "runtime lost"}
+        ),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    # Reporting an empty salvaged run as success would pass chat verification
+    # without the agent ever answering.
+    with pytest.raises(ConversationError, match="runtime lost"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+
+
+def test_chat_canonical_accumulates_multi_part_assistant_messages():
+    frames = [
+        _durable_frame("assistant_message", {"v": 1, "text": "first"}),
+        _durable_frame("assistant_message", {"v": 1, "text": "second"}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5
+    )
+
+    # Nothing in the journal contract caps a turn at one assistant_message.
+    assert reply == "first\nsecond"
+
+
+def test_chat_canonical_reconnects_when_the_stream_drops_early():
+    # An ingress idle timeout or degraded fanout closes the stream mid-turn.
+    # Replay-from-position is exactly what makes that recoverable, so it must
+    # not surface as a timeout.
+    first = [
+        _durable_frame("agent_run_started", {"v": 1}),
+    ]
+    first[0] = first[0].replace('"input_id"', '"position": 9, "input_id"')
+    second = [
+        _durable_frame("assistant_message", {"v": 1, "text": "after reconnect"}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+    client = CanonicalChatClient([], streams=[first, second])
+    service = ConversationService(client)
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=30
+    )
+
+    assert reply == "after reconnect"
+    events_calls = [c for c in client.calls if c[1].endswith("/events")]
+    assert len(events_calls) == 2
+    # The reopen resumes from the last position seen, not from the start.
+    assert events_calls[0][2]["params"]["after"] == 7
+    assert events_calls[1][2]["params"]["after"] == 9
+    assert all(r.closed for r in client.responses[1:])
+
+
+def test_chat_canonical_maps_a_read_timeout_onto_the_documented_contract():
+    import requests
+
+    class _BoomResponse(_FakeSSEResponse):
+        def iter_lines(self, decode_unicode=False):
+            raise requests.exceptions.ReadTimeout("read timed out")
+
+    client = CanonicalChatClient([])
+    client.response = _BoomResponse([])
+    service = ConversationService(client)
+
+    # requests' timeouts do NOT subclass the builtin TimeoutError, so unwrapped
+    # they bypass both this method's Raises contract and the seeder CLI handler.
+    with pytest.raises(TimeoutError, match="conv-9"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+    assert client.response.closed is True
+
+
+def test_chat_canonical_maps_a_connection_error_onto_the_documented_contract():
+    import requests
+
+    class _BoomResponse(_FakeSSEResponse):
+        def iter_lines(self, decode_unicode=False):
+            raise requests.exceptions.ConnectionError("peer reset")
+
+    client = CanonicalChatClient([])
+    client.response = _BoomResponse([])
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError, match="peer reset"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+    assert client.response.closed is True
+
+
+def test_chat_canonical_closes_the_stream_when_the_run_fails():
+    frames = [
+        _durable_frame("agent_run_failed", {"v": 1, "status": "failed", "reason": "boom"}),
+    ]
+    client = CanonicalChatClient(frames)
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+    # The error path must release the connection too, not just the happy path.
+    assert client.response.closed is True
+
+
+@pytest.mark.parametrize("bad_key", ["", "   ", "k" * 201])
+def test_send_input_canonical_rejects_a_key_the_server_would_reject(bad_key):
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    with pytest.raises(ValueError, match="Idempotency-Key"):
+        service.send_input_canonical(
+            "conv-9", "hi", base_url=KAIZEN_URL, idempotency_key=bad_key
+        )
+    assert client.calls == []
+
+
+# --- canonical turn: reconnect throttling and stream-open faults ------------
+
+
+class _AlwaysEmptyResponse(_FakeSSEResponse):
+    """A stream that closes immediately without ever sending a terminal event."""
+
+    def iter_lines(self, decode_unicode=False):
+        return iter(())
+
+
+class _EmptyStreamClient(CanonicalChatClient):
+    """Every /events open yields a stream that closes with no progress."""
+
+    def _request(self, method: str, path: str, **kwargs):
+        if path.endswith("/events"):
+            self.calls.append((method, path, kwargs))
+            resp = _AlwaysEmptyResponse([])
+            self.responses.append(resp)
+            return resp
+        return super()._request(method, path, **kwargs)
+
+
+def test_chat_canonical_throttles_reconnects_when_the_stream_makes_no_progress(
+    monkeypatch,
+):
+    # The server ends the stream immediately while its live bus is down, so an
+    # unthrottled reopen would amplify an extension outage into a request storm
+    # against that same extension for the whole budget.
+    client = _EmptyStreamClient([])
+    service = ConversationService(client)
+
+    slept: list[float] = []
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.kaizen.time.sleep", lambda s: slept.append(s)
+    )
+    ticks = itertools.count(0.0, 1.0)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.kaizen.time.monotonic", lambda: next(ticks)
+    )
+
+    with pytest.raises(TimeoutError):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+
+    events_opens = [c for c in client.calls if c[1].endswith("/events")]
+    # Bounded by the budget rather than by round-trip latency, and every reopen
+    # is preceded by a pause that never exceeds the remaining budget.
+    assert len(events_opens) <= 5
+    assert slept and all(s <= 1.0 for s in slept)
+    assert all(r.closed for r in client.responses[1:])
+
+
+def test_chat_canonical_retries_a_transport_failure_at_stream_open():
+    # The client maps a connect-phase transport fault onto APIError, so it never
+    # reaches the SSE iterator's handler; a momentary blip must not abort a turn.
+    frames = [
+        _durable_frame("assistant_message", {"v": 1, "text": "after retry"}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+
+    class _FlakyOpenClient(CanonicalChatClient):
+        opens = 0
+
+        def _request(self, method: str, path: str, **kwargs):
+            if path.endswith("/events"):
+                _FlakyOpenClient.opens += 1
+                self.calls.append((method, path, kwargs))
+                if _FlakyOpenClient.opens == 1:
+                    raise APIError("connection reset by peer")
+                return self.response
+            return super()._request(method, path, **kwargs)
+
+    client = _FlakyOpenClient(frames)
+    service = ConversationService(client)
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=30
+    )
+
+    assert reply == "after retry"
+
+
+def test_chat_canonical_reports_the_transport_cause_when_open_never_succeeds(
+    monkeypatch,
+):
+    class _DeadOpenClient(CanonicalChatClient):
+        def _request(self, method: str, path: str, **kwargs):
+            if path.endswith("/events"):
+                raise APIError("name resolution failed")
+            return super()._request(method, path, **kwargs)
+
+    client = _DeadOpenClient([])
+    service = ConversationService(client)
+    monkeypatch.setattr("kamiwaza_sdk.services.kaizen.time.sleep", lambda s: None)
+
+    # An unqualified TimeoutError here would hide the real cause from the
+    # operator reading a failed seed run.
+    with pytest.raises(ConversationError, match="name resolution failed"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=3)
+
+
+def test_chat_canonical_keeps_a_terminal_event_that_landed_inside_the_budget():
+    frames = [
+        _durable_frame("assistant_message", {"v": 1, "text": "just in time"}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    # The frame is handled before the budget is re-checked, so a terminal event
+    # that arrived in time is never discarded for being dequeued a hair late.
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5
+    )
+    assert reply == "just in time"
+
+
+def test_conversation_contract_rejects_an_unknown_identity_directly():
+    # Exercised directly: argparse `choices` shields the CLI path, so this
+    # branch would otherwise never run under test.
+    args = SimpleNamespace(extension_name="kaizen-next")
+    with pytest.raises(SystemExit, match="not a known Kaizen catalog identity"):
+        kaizen_turns.conversation_contract(args)

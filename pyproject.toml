@@ -127,6 +127,10 @@ dev = [
     "isort>=5.12",
     "ruff>=0.1",
     "mypy>=1.0",
+    # `requests` ships no inline types, and the SDK type-checks modules that
+    # import it directly; without the stubs mypy fails those files on
+    # import-untyped rather than on anything about the code.
+    "types-requests>=2.31",
     "build>=1.0",
     "twine>=4.0",
     "radon>=5.1",

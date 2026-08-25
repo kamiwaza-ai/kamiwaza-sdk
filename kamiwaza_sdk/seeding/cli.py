@@ -61,6 +61,7 @@ from ..services.kaizen import (
     agent_contract_for_extension,
     wait_for_base_url,
 )
+from . import kaizen_turns
 from .client import build_client_from_env, scoped_client_for_workroom
 
 
@@ -495,51 +496,28 @@ def cmd_bind_chat_model(args: argparse.Namespace, *, client) -> dict:
 
 
 def cmd_create_conversation(args: argparse.Namespace, *, client) -> dict:
+    create = kaizen_turns.CREATE_CONVERSATION_BY_CONTRACT[
+        kaizen_turns.conversation_contract(args)
+    ]
     client = _client_for_workroom(client, args.workroom_id)
-    conversation = client.conversations.create(
-        base_url=args.kaizen_base_url,
-        agent_id=args.agent_id,
-        title=args.title,
-        max_iterations=args.max_iterations,
-        ephemeral=args.ephemeral,
-        workroom_id=args.workroom_id,
-    )
-    return {"conversation_id": conversation.id}
+    return {"conversation_id": create(args, client).id}
 
 
 def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
     """Send a prompt to an agent and return its reply (exercises it end to end).
 
-    Opens a fresh conversation against ``--agent-id``, sends ``--message``, and
-    (with a positive ``--timeout``) waits for the agent's reply — proving the
-    agent can actually respond, not just that it was created. ``--raw`` prints
-    only the reply text. Exits non-zero on an agent error, an empty reply, or a
-    wait timeout (mirrors cmd_deploy_model / cmd_resolve_kaizen_url).
+    Opens a fresh conversation, sends ``--message``, and (with a positive
+    ``--timeout``) waits for the agent's reply — proving the agent can actually
+    respond, not just that it was created. ``--extension-name`` selects the turn
+    contract, which differs between the two Kaizen products across create, send,
+    and event delivery alike. ``--raw`` prints only the reply text. Exits
+    non-zero on an agent error, an empty reply, or a wait timeout (mirrors
+    cmd_deploy_model / cmd_resolve_kaizen_url).
     """
+    turn = kaizen_turns.CHAT_TURN_BY_CONTRACT[kaizen_turns.conversation_contract(args)]
     client = _client_for_workroom(client, args.workroom_id)
-    conversation = client.conversations.create(
-        base_url=args.kaizen_base_url,
-        agent_id=args.agent_id,
-        title=args.title,
-        workroom_id=args.workroom_id,
-    )
     try:
-        if args.timeout:
-            client.conversations.wait_until_ready(
-                conversation.id,
-                base_url=args.kaizen_base_url,
-                workroom_id=args.workroom_id,
-                timeout_seconds=args.sandbox_timeout,
-                poll_interval_seconds=args.poll_interval,
-            )
-        reply = client.conversations.chat(
-            conversation.id,
-            args.message,
-            base_url=args.kaizen_base_url,
-            workroom_id=args.workroom_id,
-            timeout_seconds=args.timeout,
-            poll_interval_seconds=args.poll_interval,
-        )
+        conversation_id, reply = turn(args, client)
     except (TimeoutError, ConversationError) as exc:
         raise SystemExit(str(exc))
     # timeout=0 is fire-and-forget (no reply to assert); only fault an empty
@@ -550,7 +528,7 @@ def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
         if reply:
             print(reply)
         return None
-    return {"conversation_id": conversation.id, "reply": reply}
+    return {"conversation_id": conversation_id, "reply": reply}
 
 
 def cmd_configure_connector(args: argparse.Namespace, *, client) -> dict:
@@ -589,6 +567,109 @@ def cmd_import_skill(args: argparse.Namespace, *, client) -> dict:
 
 
 # --- parser ----------------------------------------------------------------
+
+
+def _add_create_conversation_parser(sub) -> None:
+    """Register the ``create-conversation`` subcommand."""
+    p = sub.add_parser(
+        "create-conversation",
+        help="Start a Kaizen conversation.",
+        allow_abbrev=False,
+    )
+    p.add_argument(
+        "--kaizen-base-url",
+        required=True,
+        help="Kaizen instance API root (per-workroom).",
+    )
+    p.add_argument(
+        "--extension-name",
+        default=CANONICAL_EXTENSION_NAME,
+        choices=[CANONICAL_EXTENSION_NAME, LEGACY_EXTENSION_NAME],
+        help=(
+            "Kaizen catalog identity, which selects the conversation contract "
+            f"(default: {CANONICAL_EXTENSION_NAME})."
+        ),
+    )
+    p.add_argument(
+        "--agent-id",
+        default=None,
+        help=(
+            f"Agent to converse with. Required for '{LEGACY_EXTENSION_NAME}'; "
+            f"rejected for '{CANONICAL_EXTENSION_NAME}', which selects the "
+            "agent per message instead."
+        ),
+    )
+    p.add_argument(
+        "--title", default=None, help=f"Legacy-only ('{LEGACY_EXTENSION_NAME}')."
+    )
+    p.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help=f"Agent step ceiling; legacy-only ('{LEGACY_EXTENSION_NAME}', default 500).",
+    )
+    p.add_argument(
+        "--ephemeral",
+        action="store_true",
+        help=f"Legacy-only ('{LEGACY_EXTENSION_NAME}').",
+    )
+    p.add_argument("--workroom-id", default=None)
+    p.set_defaults(func=cmd_create_conversation)
+
+
+def _add_chat_parser(sub) -> None:
+    """Register the ``chat`` subcommand."""
+    p = sub.add_parser(
+        "chat",
+        help="Send a prompt to an agent and return its reply (exercises the agent end to end).",
+        allow_abbrev=False,
+    )
+    p.add_argument(
+        "--kaizen-base-url",
+        required=True,
+        help="Kaizen instance API root (per-workroom).",
+    )
+    p.add_argument(
+        "--extension-name",
+        default=CANONICAL_EXTENSION_NAME,
+        choices=[CANONICAL_EXTENSION_NAME, LEGACY_EXTENSION_NAME],
+        help=(
+            "Kaizen catalog identity, which selects the conversation contract "
+            f"(default: {CANONICAL_EXTENSION_NAME})."
+        ),
+    )
+    p.add_argument("--agent-id", required=True)
+    p.add_argument("--message", required=True, help="Prompt to send to the agent.")
+    p.add_argument("--workroom-id", default=None)
+    p.add_argument(
+        "--title",
+        default=None,
+        help=f"Conversation title; legacy-only ('{LEGACY_EXTENSION_NAME}').",
+    )
+    p.add_argument(
+        "--raw",
+        action="store_true",
+        help='Print only the bare reply text (for REPLY="$(... --raw)").',
+    )
+    p.add_argument(
+        "--timeout",
+        type=_non_negative_float,
+        default=60.0,
+        help="Max seconds to wait for the reply (0 = fire-and-forget, don't wait).",
+    )
+    p.add_argument(
+        "--sandbox-timeout",
+        type=_non_negative_float,
+        default=120.0,
+        help="Max seconds to wait for the agent sandbox before sending the message.",
+    )
+    p.add_argument(
+        "--poll-interval",
+        type=_non_negative_float,
+        default=3.0,
+        help="Seconds between event polls while waiting (default: 3).",
+    )
+    p.set_defaults(func=cmd_chat)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -793,56 +874,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workroom-id", default=None)
     p.set_defaults(func=cmd_bind_chat_model)
 
-    p = sub.add_parser("create-conversation", help="Start a Kaizen conversation.")
-    p.add_argument(
-        "--kaizen-base-url",
-        required=True,
-        help="Kaizen instance API root (per-workroom).",
-    )
-    p.add_argument("--agent-id", required=True)
-    p.add_argument("--title", default=None)
-    p.add_argument("--max-iterations", type=int, default=500)
-    p.add_argument("--ephemeral", action="store_true")
-    p.add_argument("--workroom-id", default=None)
-    p.set_defaults(func=cmd_create_conversation)
+    _add_create_conversation_parser(sub)
 
-    p = sub.add_parser(
-        "chat",
-        help="Send a prompt to an agent and return its reply (exercises the agent end to end).",
-    )
-    p.add_argument(
-        "--kaizen-base-url",
-        required=True,
-        help="Kaizen instance API root (per-workroom).",
-    )
-    p.add_argument("--agent-id", required=True)
-    p.add_argument("--message", required=True, help="Prompt to send to the agent.")
-    p.add_argument("--workroom-id", default=None)
-    p.add_argument("--title", default=None, help="Conversation title (optional).")
-    p.add_argument(
-        "--raw",
-        action="store_true",
-        help='Print only the bare reply text (for REPLY="$(... --raw)").',
-    )
-    p.add_argument(
-        "--timeout",
-        type=_non_negative_float,
-        default=60.0,
-        help="Max seconds to wait for the reply (0 = fire-and-forget, don't wait).",
-    )
-    p.add_argument(
-        "--sandbox-timeout",
-        type=_non_negative_float,
-        default=120.0,
-        help="Max seconds to wait for the agent sandbox before sending the message.",
-    )
-    p.add_argument(
-        "--poll-interval",
-        type=_non_negative_float,
-        default=3.0,
-        help="Seconds between event polls while waiting (default: 3).",
-    )
-    p.set_defaults(func=cmd_chat)
+    _add_chat_parser(sub)
 
     p = sub.add_parser("import-skill", help="Import a skill package (.zip).")
     p.add_argument("--file", required=True)

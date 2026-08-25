@@ -69,8 +69,10 @@ class FakeClient:
         )
         self.conversations = SimpleNamespace(
             create=RecordingService(SimpleNamespace(id="conv-1")),
+            create_canonical=RecordingService(SimpleNamespace(id="conv-2")),
             wait_until_ready=RecordingService(SimpleNamespace(id="conv-1")),
             chat=RecordingService("Hello! I am claude."),
+            chat_canonical=RecordingService("Hello from canonical."),
         )
         self.skills = SimpleNamespace(
             import_skill_package=RecordingService(SimpleNamespace(id="skill-1"))
@@ -694,6 +696,8 @@ def test_create_conversation(capsys):
     _run(
         [
             "create-conversation",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "https://kamiwaza.test/kaizen",
             "--agent-id",
@@ -879,6 +883,8 @@ def test_chat_creates_conversation_and_returns_reply(capsys, monkeypatch):
     _run(
         [
             "chat",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "https://kamiwaza.test/kaizen",
             "--agent-id",
@@ -915,6 +921,8 @@ def test_chat_sandbox_timeout_flag_controls_ready_wait(capsys, monkeypatch):
     _run(
         [
             "chat",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "u",
             "--agent-id",
@@ -941,7 +949,7 @@ def test_chat_sandbox_wait_timeout_exits_before_messaging(monkeypatch):
 
     with pytest.raises(SystemExit, match="sandbox not ready"):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
 
@@ -953,7 +961,7 @@ def test_chat_raw_prints_bare_reply(capsys, monkeypatch):
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
 
     _run(
-        ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m", "--raw"],
+        ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m", "--raw"],
         client,
     )
 
@@ -967,7 +975,7 @@ def test_chat_empty_reply_exits_nonzero(monkeypatch):
 
     with pytest.raises(SystemExit):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
 
@@ -980,6 +988,8 @@ def test_chat_fire_and_forget_allows_empty_reply(capsys, monkeypatch):
     _run(
         [
             "chat",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url", "u",
             "--agent-id", "a",
             "--message", "m",
@@ -1005,7 +1015,7 @@ def test_chat_agent_error_exits_nonzero(monkeypatch):
 
     with pytest.raises(SystemExit, match="agent boom"):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
 
@@ -1063,6 +1073,7 @@ def test_chat_timeout_exits_nonzero(monkeypatch):
 
     with pytest.raises(SystemExit, match="no reply in time"):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
+
