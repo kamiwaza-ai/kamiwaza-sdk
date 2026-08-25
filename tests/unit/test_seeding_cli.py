@@ -1315,3 +1315,51 @@ def test_create_conversation_legacy_defaults_max_iterations_when_unset(monkeypat
     # The flag defaults to None so canonical can tell "operator asked" from
     # "never supplied"; the legacy body must still carry the v3 server default.
     assert client.conversations.create.calls[0]["kwargs"]["max_iterations"] == 500
+
+
+def test_chat_rejects_title_on_the_canonical_contract(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    # --agent-id is legitimately used on canonical (per-input selector), but
+    # --title has nowhere to go: canonical create sends no body.
+    with pytest.raises(SystemExit, match="--title"):
+        _run(
+            [
+                "chat",
+                "--kaizen-base-url",
+                "https://kamiwaza.test/kaizen",
+                "--agent-id",
+                "agent-1",
+                "--message",
+                "hi",
+                "--title",
+                "seed convo",
+            ],
+            client,
+        )
+    assert client.conversations.create_canonical.calls == []
+
+
+def test_chat_legacy_still_accepts_a_title(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "chat",
+            "--extension-name",
+            "kaizen-legacy",
+            "--kaizen-base-url",
+            "https://kamiwaza.test/kaizen",
+            "--agent-id",
+            "agent-1",
+            "--message",
+            "hi",
+            "--title",
+            "seed convo",
+        ],
+        client,
+    )
+
+    assert client.conversations.create.calls[0]["kwargs"]["title"] == "seed convo"

@@ -103,6 +103,16 @@ def _chat_canonical(args: argparse.Namespace, client) -> Tuple[str, Optional[str
     Canonical Kaizen selects the agent per input and exposes no sandbox status,
     so there is nothing to wait on between create and send.
     """
+    # --agent-id IS used here (as the per-input selector), but --title has
+    # nowhere to go: canonical create sends no body. Accepting it would drop an
+    # operator's choice exactly as silently as create-conversation used to.
+    if getattr(args, "title", None) is not None:
+        raise SystemExit(
+            f"--title is a v3 conversation setting that canonical Kaizen "
+            f"('{CANONICAL_EXTENSION_NAME}') does not support: it creates a "
+            "conversation with no body. Pass --extension-name "
+            f"{LEGACY_EXTENSION_NAME} to use the legacy contract."
+        )
     conversation = client.conversations.create_canonical(
         base_url=args.kaizen_base_url,
         workroom_id=args.workroom_id,

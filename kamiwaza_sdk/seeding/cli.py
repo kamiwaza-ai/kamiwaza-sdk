@@ -641,7 +641,11 @@ def _add_chat_parser(sub) -> None:
     p.add_argument("--agent-id", required=True)
     p.add_argument("--message", required=True, help="Prompt to send to the agent.")
     p.add_argument("--workroom-id", default=None)
-    p.add_argument("--title", default=None, help="Conversation title (optional).")
+    p.add_argument(
+        "--title",
+        default=None,
+        help=f"Conversation title; legacy-only ('{LEGACY_EXTENSION_NAME}').",
+    )
     p.add_argument(
         "--raw",
         action="store_true",

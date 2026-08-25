@@ -50,6 +50,13 @@ _OPS_CHAT_MODEL_PATH = "api/ops/models/chat"
 # the message — instead of as an opaque HTTP 422 from the server.
 _IDEMPOTENCY_KEY_MAX_LEN = 200
 
+# Pause before reopening a dropped event stream. The server ends the stream
+# immediately when its live bus is unavailable, so an unthrottled reopen would
+# turn an extension-side outage into a request storm against that same
+# extension — each reopen costs it a journal replay and an authorization
+# resolve — for the whole wait budget.
+_RECONNECT_BACKOFF_SECONDS = 1.0
+
 # Canonical Kaizen journal event types that end a turn. `assistant_message`
 # carries the reply text; the run is only over once one of these lands, so an
 # interim narration is never mistaken for the final answer.
@@ -264,6 +271,11 @@ def _event_position(payload: Dict[str, Any], fallback: int) -> int:
     """Journal position of a durable frame, for resuming a dropped stream."""
     position = payload.get("position")
     return position if isinstance(position, int) else fallback
+
+
+def _pause_before_reconnect(deadline: float) -> None:
+    """Throttle a stream reopen, never sleeping past the caller's budget."""
+    time.sleep(max(0.0, min(_RECONNECT_BACKOFF_SECONDS, deadline - time.monotonic())))
 
 
 def _safe_sse_events(
@@ -1017,19 +1029,31 @@ class ConversationService(BaseService):
         """
         reply: Optional[str] = None
         cursor = after
+        open_error: Optional[Exception] = None
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            response = self.stream_events_canonical(
-                turn.conversation_id,
-                base_url=turn.base_url,
-                workroom_id=turn.workroom_id,
-                after=cursor,
-                # Floor the socket read so a zero/near-zero budget never reads
-                # as "no timeout" to the transport.
-                read_timeout_seconds=max(remaining, 1.0),
-            )
+            try:
+                response = self.stream_events_canonical(
+                    turn.conversation_id,
+                    base_url=turn.base_url,
+                    workroom_id=turn.workroom_id,
+                    after=cursor,
+                    # Floor the socket read so a zero/near-zero budget never
+                    # reads as "no timeout" to the transport.
+                    read_timeout_seconds=max(remaining, 1.0),
+                )
+            except APIError as exc:
+                # The client maps every transport fault at connect time onto
+                # APIError, so a blip while (re)opening arrives here rather than
+                # out of the iterator. It is retryable while budget remains;
+                # aborting the turn on it would make a momentary blip
+                # indistinguishable from a dead agent.
+                open_error = exc
+                _pause_before_reconnect(deadline)
+                continue
+            open_error = None
             try:
                 done, reply, cursor = self._read_turn_events(
                     response, turn, reply=reply, cursor=cursor, deadline=deadline
@@ -1038,6 +1062,14 @@ class ConversationService(BaseService):
                 response.close()
             if done:
                 return reply
+            _pause_before_reconnect(deadline)
+        if open_error is not None:
+            # Budget ran out while the stream could not even be opened: report
+            # the transport cause rather than an unqualified timeout.
+            raise ConversationError(
+                f"Could not read the event stream for conversation "
+                f"{turn.conversation_id} (input {turn.input_id}): {open_error}"
+            ) from open_error
         raise TimeoutError(
             f"No agent reply on conversation {turn.conversation_id} within the "
             f"wait budget (input {turn.input_id} never reached a terminal event)."
@@ -1060,19 +1092,21 @@ class ConversationService(BaseService):
         get a bare ``requests`` error through the seeder CLI.
         """
         for event, payload in _safe_sse_events(response, turn):
-            # The budget check must precede the turn filter: the stream carries
-            # conversation-level keepalive and presence frames that belong to no
-            # turn, and skipping the check on those would let a stalled run hold
-            # the loop open indefinitely.
+            cursor = _event_position(payload, cursor)
+            if _is_turn_event(payload, turn.input_id):
+                if event == _CANONICAL_REPLY_EVENT:
+                    reply = _append_reply_text(reply, payload)
+                elif event in _CANONICAL_TERMINAL_EVENTS:
+                    return True, _canonical_terminal_reply(event, payload, reply), cursor
+            # The budget check runs on EVERY frame, not just this turn's: the
+            # stream also carries conversation-level keepalive and presence
+            # frames, and gating the check behind the turn filter would let a
+            # stalled run hold the loop open for as long as the server keeps
+            # sending them. Checking after the frame is handled also means a
+            # terminal event that arrived inside the budget is never discarded
+            # for being dequeued a hair past it.
             if time.monotonic() >= deadline:
                 return False, reply, cursor
-            cursor = _event_position(payload, cursor)
-            if not _is_turn_event(payload, turn.input_id):
-                continue
-            if event == _CANONICAL_REPLY_EVENT:
-                reply = _append_reply_text(reply, payload)
-            elif event in _CANONICAL_TERMINAL_EVENTS:
-                return True, _canonical_terminal_reply(event, payload, reply), cursor
         # Stream ended without a terminal event — recoverable, not a timeout.
         return False, reply, cursor
 
