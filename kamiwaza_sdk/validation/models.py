@@ -87,7 +87,10 @@ class ClusterFacts(ClosedModel):
     features: dict[StableId, bool] = Field(
         default_factory=dict,
         json_schema_extra={
-            "propertyNames": {"pattern": r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"}
+            "propertyNames": {
+                "maxLength": 256,
+                "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            }
         },
     )
 
@@ -309,6 +312,7 @@ class ScenarioEvidence(ClosedModel):
     provider_revision: NonEmptyText
     profile_digest: Digest
     plan_digest: Digest
+    state_digest: Digest
     results: tuple[CaseResult, ...]
     resolved_runtime: dict[str, JsonValue]
 
@@ -366,6 +370,7 @@ class FixtureState(ClosedModel):
     schema_id: Literal["kamiwaza.fixture-state/v1"] = Field(alias="schema")
     provider_revision: NonEmptyText
     plan_digest: Digest
+    runtime_digest: Digest
     run_id: StableId
     owner_token_digest: Digest
     journal: tuple[FixtureMutation, ...]
@@ -416,6 +421,16 @@ class CleanupEvidence(ClosedModel):
                             }
                         }
                     },
+                    "else": {
+                        "properties": {
+                            "results": {
+                                "contains": {
+                                    "properties": {"status": {"const": "failed"}},
+                                    "required": ["status"],
+                                }
+                            }
+                        }
+                    },
                 }
             ]
         }
@@ -423,9 +438,11 @@ class CleanupEvidence(ClosedModel):
 
     @model_validator(mode="after")
     def validate_status(self) -> CleanupEvidence:
-        if self.status == "passed":
-            if any(result.status == "failed" for result in self.results):
-                raise ValueError("passed cleanup contains a failure")
+        contains_failure = any(result.status == "failed" for result in self.results)
+        if self.status == "passed" and contains_failure:
+            raise ValueError("passed cleanup contains a failure")
+        if self.status == "failed" and not contains_failure:
+            raise ValueError("failed cleanup contains no failure")
         return self
 
 

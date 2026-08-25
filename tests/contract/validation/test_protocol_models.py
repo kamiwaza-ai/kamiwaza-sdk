@@ -197,6 +197,26 @@ def test_cleanup_evidence_cannot_pass_with_a_failed_cleanup_result() -> None:
         )
 
 
+def test_failed_cleanup_evidence_must_name_a_failed_result() -> None:
+    with pytest.raises(ValidationError, match="failed cleanup contains no failure"):
+        CleanupEvidence(
+            schema="kamiwaza.cleanup-evidence/v1",
+            provider_revision="sdk.golden@v1",
+            run_id="run-123",
+            state_digest="sha256:" + "1" * 64,
+            status="failed",
+            results=(
+                CleanupResult(
+                    target_id="evo-x2-2-llamacpp-chat",
+                    resource_type="deployment",
+                    resource_id="owned-deployment",
+                    status="removed",
+                    detail=None,
+                ),
+            ),
+        )
+
+
 def test_coverage_summary_status_must_match_its_issue_inventory() -> None:
     with pytest.raises(ValidationError, match="passed coverage contains issues"):
         CoverageSummary(

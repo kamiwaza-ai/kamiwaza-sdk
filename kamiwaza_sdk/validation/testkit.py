@@ -12,7 +12,6 @@ from kamiwaza_sdk.validation.models import (
     FixtureState,
     RuntimeContext,
     ScenarioCatalog,
-    ScenarioDescriptor,
     ScenarioEvidence,
     ScenarioPlan,
     ValidationProfile,
@@ -20,10 +19,13 @@ from kamiwaza_sdk.validation.models import (
 from kamiwaza_sdk.validation.provider import (
     ProviderContractError,
     ScenarioProvider,
+    require_passed,
     validate_cleanup_identity,
+    validate_descriptor_registry,
     validate_evidence_identity,
     validate_fixture_state_snapshots,
     validate_plan_identity,
+    validate_plan_registry,
     validate_provider_output,
     validate_state_identity,
 )
@@ -60,20 +62,20 @@ def exercise_provider_contract(
 
     catalog = _describe_deterministically(provider)
     descriptors = catalog.root
-    _validate_descriptor_registry(descriptors)
+    validate_descriptor_registry(descriptors)
     plan = _resolve_deterministically(provider, profile)
-    _validate_plan_registry(descriptors, plan)
+    validate_plan_registry(descriptors, plan)
     validate_plan_identity(profile, plan)
     state = _prepare(provider, plan, runtime)
     validate_state_identity(plan, runtime, state)
     evidence, coverage, cleanup = _run_and_cleanup(provider, plan, runtime, state)
-    validate_evidence_identity(plan, evidence)
+    validate_evidence_identity(plan, state, evidence)
     validate_cleanup_identity(runtime, state, cleanup)
-    _require_passed(coverage.status, "provider evidence failed exact coverage")
-    _require_passed(cleanup.status, "provider semantic cleanup failed")
+    require_passed(coverage.status, "provider evidence failed exact coverage")
+    require_passed(cleanup.status, "provider semantic cleanup failed")
     repeated_cleanup = _teardown(provider, runtime, state)
     validate_cleanup_identity(runtime, state, repeated_cleanup)
-    _require_passed(repeated_cleanup.status, "provider teardown is not idempotent")
+    require_passed(repeated_cleanup.status, "provider teardown is not idempotent")
     return ProviderContractResult(plan, state, evidence, coverage, cleanup)
 
 
@@ -140,32 +142,3 @@ def _teardown(
     provider: ScenarioProvider, runtime: RuntimeContext, state: FixtureState
 ) -> CleanupEvidence:
     return validate_provider_output(provider.teardown(runtime, state), CleanupEvidence)
-
-
-def _require_passed(status: str, message: str) -> None:
-    if status != "passed":
-        raise ProviderContractError(message)
-
-
-def _validate_plan_registry(
-    descriptors: tuple[ScenarioDescriptor, ...], plan: ScenarioPlan
-) -> None:
-    registry = {
-        descriptor.scenario_id: set(descriptor.case_ids) for descriptor in descriptors
-    }
-    for selected in plan.selected:
-        registered = registry.get(selected.scenario_id)
-        if registered is None:
-            raise ProviderContractError("plan selected an undescribed scenario")
-        if not set(selected.case_ids) <= registered:
-            raise ProviderContractError("plan selected an undescribed case")
-
-
-def _validate_descriptor_registry(
-    descriptors: tuple[ScenarioDescriptor, ...],
-) -> None:
-    if not descriptors:
-        raise ProviderContractError("describe returned no scenario descriptors")
-    scenario_ids = [descriptor.scenario_id for descriptor in descriptors]
-    if len(scenario_ids) != len(set(scenario_ids)):
-        raise ProviderContractError("describe returned a duplicate scenario ID")

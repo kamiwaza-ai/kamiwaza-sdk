@@ -115,6 +115,7 @@ class GoldenProvider:
             schema="kamiwaza.fixture-state/v1",
             provider_revision=GOLDEN_PROVIDER_REVISION,
             plan_digest=model_digest(plan),
+            runtime_digest=model_digest(runtime),
             run_id=runtime.run_id,
             owner_token_digest=f"sha256:{owner_digest}",
             journal=(),
@@ -161,6 +162,7 @@ class GoldenProvider:
             provider_revision=GOLDEN_PROVIDER_REVISION,
             profile_digest=plan.profile_digest,
             plan_digest=model_digest(plan),
+            state_digest=model_digest(state),
             results=results,
             resolved_runtime={"provider": GOLDEN_PROVIDER_ID},
         )
@@ -229,6 +231,8 @@ class GoldenProvider:
     def _validate_state(runtime: RuntimeContext, state: FixtureState) -> None:
         if state.run_id != runtime.run_id:
             raise ProviderContractError("fixture state run does not match runtime")
+        if state.runtime_digest != model_digest(runtime):
+            raise ProviderContractError("fixture state runtime digest mismatch")
         GoldenProvider._validate_revision(state.provider_revision)
         owner_digest = hashlib.sha256(runtime.run_id.encode()).hexdigest()
         expected = f"sha256:{owner_digest}"

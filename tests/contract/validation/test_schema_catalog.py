@@ -64,6 +64,20 @@ def test_packaged_profile_schema_rejects_invalid_feature_key() -> None:
     assert errors
 
 
+def test_profile_feature_keys_have_identical_schema_and_runtime_constraints() -> None:
+    schema = load_packaged_schema("kamiwaza.validation-profile/v1")
+    payload = profile_payload()
+    payload["clusters"][0]["features"] = {"gpu/vendor:v1": True}  # type: ignore[index]
+
+    assert ValidationProfile.model_validate(payload)
+    assert not list(Draft202012Validator(schema).iter_errors(payload))
+
+    payload["clusters"][0]["features"] = {"f" * 257: True}  # type: ignore[index]
+    with pytest.raises(ValueError, match="string_too_long"):
+        ValidationProfile.model_validate(payload)
+    assert list(Draft202012Validator(schema).iter_errors(payload))
+
+
 @pytest.mark.parametrize(
     ("schema_id", "payload"),
     [

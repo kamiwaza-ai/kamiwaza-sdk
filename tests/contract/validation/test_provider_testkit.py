@@ -6,7 +6,12 @@ import pytest
 
 from kamiwaza_sdk.validation import RuntimeContext, ValidationProfile
 from kamiwaza_sdk.validation.golden_provider import GoldenProvider
-from kamiwaza_sdk.validation.provider import ProviderContractError
+from kamiwaza_sdk.validation.provider import (
+    ProviderContractError,
+    validate_cleanup_identity,
+    validate_fixture_state_snapshots,
+    validate_state_identity,
+)
 from kamiwaza_sdk.validation.testkit import (
     RecordingFixtureStateWriter,
     exercise_provider_contract,
@@ -17,9 +22,10 @@ from .support import profile_payload
 pytestmark = pytest.mark.contract
 
 
-def _profile() -> ValidationProfile:
+def _profile(fixture_mode: str = "owned") -> ValidationProfile:
     payload = profile_payload()
     payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
+    payload["validation"]["fixture_mode"] = fixture_mode  # type: ignore[index]
     return ValidationProfile.model_validate(payload)
 
 
@@ -101,9 +107,10 @@ class ForeignPlanTargetGoldenProvider(GoldenProvider):
 
 class UnplannedStateTargetGoldenProvider(GoldenProvider):
     def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
-        state = super().prepare(plan, runtime, state_writer)
+        state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
         mutation = state.journal[0].model_copy(update={"target_id": "foreign-target"})
         changed = state.model_copy(update={"journal": (mutation,)})
+        state_writer.write(changed.model_copy(update={"journal": ()}))
         state_writer.write(changed)
         return changed
 
@@ -126,9 +133,38 @@ class WrongCleanupDigestGoldenProvider(GoldenProvider):
         )
 
 
+class WrongEvidenceStateDigestGoldenProvider(GoldenProvider):
+    def run(self, plan, runtime, state):  # type: ignore[no-untyped-def]
+        return (
+            super()
+            .run(plan, runtime, state)
+            .model_copy(update={"state_digest": "sha256:" + "0" * 64})
+        )
+
+
 class MissingCleanupResultGoldenProvider(GoldenProvider):
     def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
         return super().teardown(runtime, state).model_copy(update={"results": ()})
+
+
+class DuplicateCleanupResultGoldenProvider(GoldenProvider):
+    def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
+        cleanup = super().teardown(runtime, state)
+        return cleanup.model_copy(update={"results": cleanup.results * 2})
+
+
+class RetainedCreatedResourceGoldenProvider(GoldenProvider):
+    def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
+        cleanup = super().teardown(runtime, state)
+        retained = cleanup.results[0].model_copy(update={"status": "retained_foreign"})
+        return cleanup.model_copy(update={"results": (retained,)})
+
+
+class RemovedAdoptedResourceGoldenProvider(GoldenProvider):
+    def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
+        cleanup = super().teardown(runtime, state)
+        removed = cleanup.results[0].model_copy(update={"status": "removed"})
+        return cleanup.model_copy(update={"results": (removed,)})
 
 
 def test_contract_kit_rejects_cases_absent_from_descriptor_registry() -> None:
@@ -175,10 +211,80 @@ def test_contract_kit_binds_cleanup_to_runtime_plan_and_state() -> None:
         )
 
 
+def test_contract_kit_binds_evidence_to_exact_fixture_state() -> None:
+    with pytest.raises(ProviderContractError, match="evidence state digest mismatch"):
+        exercise_provider_contract(
+            WrongEvidenceStateDigestGoldenProvider(), _profile(), _runtime()
+        )
+
+
 def test_contract_kit_requires_cleanup_for_every_journaled_resource() -> None:
     with pytest.raises(ProviderContractError, match="resource inventory mismatch"):
         exercise_provider_contract(
             MissingCleanupResultGoldenProvider(), _profile(), _runtime()
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "fixture_mode"),
+    [
+        (RetainedCreatedResourceGoldenProvider(), "owned"),
+        (RemovedAdoptedResourceGoldenProvider(), "external"),
+    ],
+)
+def test_contract_kit_rejects_cleanup_that_violates_fixture_ownership(
+    provider: GoldenProvider, fixture_mode: str
+) -> None:
+    with pytest.raises(ProviderContractError, match="cleanup ownership outcome"):
+        exercise_provider_contract(provider, _profile(fixture_mode), _runtime())
+
+
+def test_contract_kit_rejects_duplicate_cleanup_resource_evidence() -> None:
+    with pytest.raises(ProviderContractError, match="duplicate resource"):
+        exercise_provider_contract(
+            DuplicateCleanupResultGoldenProvider(), _profile(), _runtime()
+        )
+
+
+def test_fixture_state_is_bound_to_exact_runtime_content() -> None:
+    provider = GoldenProvider()
+    plan = provider.resolve(_profile())
+    runtime = _runtime()
+    state = provider.prepare(plan, runtime, RecordingFixtureStateWriter())
+    changed_cluster = runtime.clusters[0].model_copy(
+        update={"base_url": "https://other.example.test/api"}
+    )
+    changed_runtime = runtime.model_copy(update={"clusters": (changed_cluster,)})
+
+    with pytest.raises(ProviderContractError, match="runtime digest mismatch"):
+        validate_state_identity(plan, changed_runtime, state)
+
+
+def test_fixture_snapshot_journal_cannot_regress() -> None:
+    provider = GoldenProvider()
+    writer = RecordingFixtureStateWriter()
+    state = provider.prepare(provider.resolve(_profile()), _runtime(), writer)
+    initial = writer.snapshots[0]
+
+    with pytest.raises(ProviderContractError, match="journal snapshot regressed"):
+        validate_fixture_state_snapshots(
+            (initial, state, initial, state),
+            state,
+        )
+
+
+def test_cleanup_identity_rejects_duplicate_results_directly() -> None:
+    provider = GoldenProvider()
+    runtime = _runtime()
+    plan = provider.resolve(_profile())
+    state = provider.prepare(plan, runtime, RecordingFixtureStateWriter())
+    cleanup = provider.teardown(runtime, state)
+
+    with pytest.raises(ProviderContractError, match="duplicate resource"):
+        validate_cleanup_identity(
+            runtime,
+            state,
+            cleanup.model_copy(update={"results": cleanup.results * 2}),
         )
 
 

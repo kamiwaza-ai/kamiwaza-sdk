@@ -41,6 +41,7 @@ def _evidence(plan: ScenarioPlan, results: tuple[CaseResult, ...]) -> ScenarioEv
         provider_revision=plan.provider_revision,
         profile_digest=plan.profile_digest,
         plan_digest=model_digest(plan),
+        state_digest="sha256:" + "2" * 64,
         results=results,
         resolved_runtime={},
     )

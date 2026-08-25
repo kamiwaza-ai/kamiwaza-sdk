@@ -24,14 +24,18 @@ from kamiwaza_sdk.validation.models import (
 from kamiwaza_sdk.validation.provider import (
     ProviderContractError,
     ScenarioProvider,
+    require_passed,
     validate_cleanup_identity,
+    validate_descriptor_registry,
     validate_evidence_identity,
     validate_fixture_state_snapshots,
     validate_plan_identity,
+    validate_plan_registry,
     validate_provider_output,
     validate_state_identity,
     validate_state_runtime_identity,
 )
+from kamiwaza_sdk.validation.registry import evaluate_coverage
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -52,25 +56,32 @@ def provider_main(provider: ScenarioProvider, argv: Sequence[str] | None = None)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         print("protocol input/output failed", file=sys.stderr)
         return 2
+    except Exception:
+        print("provider execution failed", file=sys.stderr)
+        return 2
     return 0
 
 
 def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
     if args.command == "describe":
         catalog = validate_provider_output(tuple(provider.describe()), ScenarioCatalog)
+        validate_descriptor_registry(catalog.root)
         payload = catalog.model_dump(mode="json", by_alias=True)
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return
     if args.command == "resolve":
         profile = _read_model(args.profile, ValidationProfile)
+        catalog = validate_provider_output(tuple(provider.describe()), ScenarioCatalog)
+        validate_descriptor_registry(catalog.root)
         plan = validate_provider_output(provider.resolve(profile), ScenarioPlan)
+        validate_plan_registry(catalog.root, plan)
         validate_plan_identity(profile, plan)
         _write_model(args.plan, plan)
         return
     runtime = _read_model(args.runtime, RuntimeContext)
     if args.command == "prepare":
         plan = _read_model(args.plan, ScenarioPlan)
-        writer = _FixtureStateFileWriter(args.state)
+        writer = _FixtureStateFileWriter(args.state, plan, runtime)
         state = validate_provider_output(
             provider.prepare(plan, runtime, writer), FixtureState
         )
@@ -84,8 +95,10 @@ def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
         evidence = validate_provider_output(
             provider.run(plan, runtime, state), ScenarioEvidence
         )
-        validate_evidence_identity(plan, evidence)
+        validate_evidence_identity(plan, state, evidence)
         _write_model(args.evidence, evidence)
+        coverage = evaluate_coverage(plan, evidence)
+        require_passed(coverage.status, "provider evidence failed exact coverage")
         return
     validate_state_runtime_identity(runtime, state)
     cleanup = validate_provider_output(
@@ -93,6 +106,7 @@ def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
     )
     validate_cleanup_identity(runtime, state, cleanup)
     _write_model(args.evidence, cleanup)
+    require_passed(cleanup.status, "provider semantic cleanup failed")
 
 
 def _read_model(path: Path, model_type: type[ModelT]) -> ModelT:
@@ -106,7 +120,7 @@ def _write_model(path: Path, model: BaseModel, *, private: bool = False) -> None
     )
     temporary = Path(temporary_name)
     try:
-        os.fchmod(descriptor, mode)
+        os.chmod(temporary, mode)
         stream = os.fdopen(descriptor, "w", encoding="utf-8")
         descriptor = -1
         with stream:
@@ -131,6 +145,8 @@ def _write_model(path: Path, model: BaseModel, *, private: bool = False) -> None
 
 
 def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(descriptor)
@@ -147,12 +163,15 @@ def _validation_fields(error: ValidationError) -> str:
 
 
 class _FixtureStateFileWriter:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, plan: ScenarioPlan, runtime: RuntimeContext) -> None:
         self.path = path
+        self.plan = plan
+        self.runtime = runtime
         self.snapshots: list[FixtureState] = []
 
     def write(self, state: FixtureState) -> None:
         validated = validate_provider_output(state, FixtureState)
+        validate_state_identity(self.plan, self.runtime, validated)
         _write_model(self.path, validated, private=True)
         self.snapshots.append(validated)
 

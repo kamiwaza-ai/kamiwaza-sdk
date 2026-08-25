@@ -103,6 +103,11 @@
       "const": "kamiwaza.scenario-evidence/v1",
       "title": "Schema",
       "type": "string"
+    },
+    "state_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "State Digest",
+      "type": "string"
     }
   },
   "required": [
@@ -110,6 +115,7 @@
     "provider_revision",
     "profile_digest",
     "plan_digest",
+    "state_digest",
     "results",
     "resolved_runtime"
   ],

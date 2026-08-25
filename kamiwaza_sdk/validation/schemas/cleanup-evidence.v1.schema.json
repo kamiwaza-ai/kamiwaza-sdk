@@ -63,6 +63,22 @@
   "additionalProperties": false,
   "allOf": [
     {
+      "else": {
+        "properties": {
+          "results": {
+            "contains": {
+              "properties": {
+                "status": {
+                  "const": "failed"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            }
+          }
+        }
+      },
       "if": {
         "properties": {
           "status": {

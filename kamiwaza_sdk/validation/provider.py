@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Protocol, Sequence, TypeVar
+from typing import Literal, Protocol, Sequence, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 from kamiwaza_sdk.validation.models import (
     CleanupEvidence,
+    CleanupResult,
+    FixtureMutation,
     FixtureState,
     RuntimeContext,
     ScenarioDescriptor,
@@ -68,6 +70,11 @@ def validate_state_runtime_identity(
     """Bind fixture state to the runtime that owns its cleanup lifecycle."""
 
     _require_equal(state.run_id, runtime.run_id, "fixture state run identity mismatch")
+    _require_equal(
+        state.runtime_digest,
+        model_digest(runtime),
+        "fixture state runtime digest mismatch",
+    )
 
 
 def validate_state_identity(
@@ -91,8 +98,10 @@ def validate_state_identity(
     )
 
 
-def validate_evidence_identity(plan: ScenarioPlan, evidence: ScenarioEvidence) -> None:
-    """Bind execution evidence to the exact plan that produced it."""
+def validate_evidence_identity(
+    plan: ScenarioPlan, state: FixtureState, evidence: ScenarioEvidence
+) -> None:
+    """Bind execution evidence to the exact plan and state that produced it."""
 
     _require_equal(
         evidence.provider_revision,
@@ -104,6 +113,9 @@ def validate_evidence_identity(plan: ScenarioPlan, evidence: ScenarioEvidence) -
     )
     _require_equal(
         evidence.plan_digest, model_digest(plan), "evidence plan digest mismatch"
+    )
+    _require_equal(
+        evidence.state_digest, model_digest(state), "evidence state digest mismatch"
     )
     _require_target_subset(
         (item.target_id for item in evidence.results),
@@ -127,18 +139,86 @@ def validate_cleanup_identity(
     _require_equal(
         cleanup.state_digest, model_digest(state), "cleanup state digest mismatch"
     )
-    journal_resources = {
-        (item.target_id, item.resource_type, item.resource_id) for item in state.journal
-    }
-    cleanup_resources = {
-        (item.target_id, item.resource_type, item.resource_id)
-        for item in cleanup.results
-    }
+    journal_actions = _journal_resource_actions(state)
+    cleanup_results = _cleanup_resource_results(cleanup)
     _require_equal(
-        cleanup_resources,
-        journal_resources,
+        set(cleanup_results),
+        set(journal_actions),
         "cleanup resource inventory mismatch",
     )
+    _validate_cleanup_outcomes(journal_actions, cleanup_results)
+
+
+ResourceKey = tuple[str, str, str]
+CleanupAction = Literal["created", "adopted", "removed"]
+
+
+def _journal_resource_actions(state: FixtureState) -> dict[ResourceKey, CleanupAction]:
+    return {
+        (item.target_id, item.resource_type, item.resource_id): item.action
+        for item in state.journal
+    }
+
+
+def _cleanup_resource_results(
+    cleanup: CleanupEvidence,
+) -> dict[ResourceKey, CleanupResult]:
+    keys = [
+        (item.target_id, item.resource_type, item.resource_id)
+        for item in cleanup.results
+    ]
+    if len(keys) != len(set(keys)):
+        raise ProviderContractError("cleanup contains a duplicate resource result")
+    return dict(zip(keys, cleanup.results, strict=True))
+
+
+def _validate_cleanup_outcomes(
+    actions: dict[ResourceKey, CleanupAction],
+    results: dict[ResourceKey, CleanupResult],
+) -> None:
+    allowed = {
+        "created": {"removed", "absent"},
+        "adopted": {"retained_foreign", "absent"},
+        "removed": {"removed", "absent"},
+    }
+    for key, result in results.items():
+        if result.status == "failed":
+            continue
+        if result.status not in allowed[actions[key]]:
+            raise ProviderContractError("cleanup ownership outcome mismatch")
+
+
+def validate_plan_registry(
+    descriptors: Sequence[ScenarioDescriptor], plan: ScenarioPlan
+) -> None:
+    """Require every resolved scenario and case to exist in describe output."""
+
+    registry = {
+        descriptor.scenario_id: set(descriptor.case_ids) for descriptor in descriptors
+    }
+    for selected in plan.selected:
+        registered = registry.get(selected.scenario_id)
+        if registered is None:
+            raise ProviderContractError("plan selected an undescribed scenario")
+        if not set(selected.case_ids) <= registered:
+            raise ProviderContractError("plan selected an undescribed case")
+
+
+def validate_descriptor_registry(descriptors: Sequence[ScenarioDescriptor]) -> None:
+    """Require a nonempty catalog with unique scenario identifiers."""
+
+    if not descriptors:
+        raise ProviderContractError("describe returned no scenario descriptors")
+    scenario_ids = [descriptor.scenario_id for descriptor in descriptors]
+    if len(scenario_ids) != len(set(scenario_ids)):
+        raise ProviderContractError("describe returned a duplicate scenario ID")
+
+
+def require_passed(status: str, message: str) -> None:
+    """Turn a semantic failure status into a provider contract failure."""
+
+    if status != "passed":
+        raise ProviderContractError(message)
 
 
 def _require_equal(actual: object, expected: object, message: str) -> None:
@@ -209,13 +289,26 @@ def _validate_snapshot_bounds(
 def _validate_snapshot_journals(
     snapshots: Sequence[FixtureState], final_state: FixtureState
 ) -> None:
+    actual_journals = [snapshot.journal for snapshot in snapshots]
+    _validate_snapshot_prefixes(actual_journals, final_state)
     expected_journals = [
         final_state.journal[:length] for length in range(len(final_state.journal) + 1)
     ]
-    actual_journals = [snapshot.journal for snapshot in snapshots]
     for expected in expected_journals:
         if expected not in actual_journals:
             raise ProviderContractError("prepare skipped a fixture journal snapshot")
+
+
+def _validate_snapshot_prefixes(
+    journals: Sequence[tuple[FixtureMutation, ...]], final_state: FixtureState
+) -> None:
+    previous_length = 0
+    for journal in journals:
+        if len(journal) < previous_length:
+            raise ProviderContractError("fixture journal snapshot regressed")
+        if journal != final_state.journal[: len(journal)]:
+            raise ProviderContractError("fixture journal snapshot is out of order")
+        previous_length = len(journal)
 
 
 def _validate_snapshot_identity(
@@ -227,10 +320,11 @@ def _validate_snapshot_identity(
             raise ProviderContractError("fixture snapshot identity changed")
 
 
-def _fixture_state_identity(state: FixtureState) -> tuple[str, str, str, str]:
+def _fixture_state_identity(state: FixtureState) -> tuple[str, str, str, str, str]:
     return (
         state.run_id,
         state.provider_revision,
         state.plan_digest,
+        state.runtime_digest,
         state.owner_token_digest,
     )

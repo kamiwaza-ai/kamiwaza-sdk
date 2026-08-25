@@ -19,7 +19,7 @@ from kamiwaza_sdk.validation import (
     ScenarioEvidence,
     ScenarioPlan,
 )
-from kamiwaza_sdk.validation.cli import provider_main
+from kamiwaza_sdk.validation.cli import _fsync_directory, provider_main
 from kamiwaza_sdk.validation.golden_provider import GoldenProvider
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.testkit import RecordingFixtureStateWriter
@@ -69,6 +69,18 @@ def _assert_provider_failure(
     assert provider_main(provider, args) == 2
     assert expected_error in capsys.readouterr().err
     assert not output_path.exists()
+
+
+def _assert_failed_with_evidence(
+    provider: GoldenProvider,
+    args: list[str],
+    capsys: pytest.CaptureFixture[str],
+    artifact: tuple[Path, str],
+) -> None:
+    output_path, expected_error = artifact
+    assert provider_main(provider, args) == 2
+    assert expected_error in capsys.readouterr().err
+    assert output_path.exists()
 
 
 def _write_golden_profile(tmp_path: Path) -> Path:
@@ -267,6 +279,18 @@ class ForeignResolveTargetProvider(GoldenProvider):
         return plan.model_copy(update={"selected": (selected,)})
 
 
+class UndescribedResolveCaseProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        plan = super().resolve(profile)
+        selected = plan.selected[0].model_copy(update={"case_ids": ("other",)})
+        return plan.model_copy(update={"selected": (selected,)})
+
+
+class ExplodingResolveProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        raise RuntimeError("sensitive-provider-value")
+
+
 class WrongRunOutputProvider(GoldenProvider):
     def run(self, plan, runtime, state):  # type: ignore[no-untyped-def]
         return state
@@ -279,6 +303,20 @@ class WrongRunDigestProvider(GoldenProvider):
             .run(plan, runtime, state)
             .model_copy(update={"plan_digest": "sha256:" + "0" * 64})
         )
+
+
+class WrongRunStateDigestProvider(GoldenProvider):
+    def run(self, plan, runtime, state):  # type: ignore[no-untyped-def]
+        return (
+            super()
+            .run(plan, runtime, state)
+            .model_copy(update={"state_digest": "sha256:" + "0" * 64})
+        )
+
+
+class IncompleteRunEvidenceProvider(GoldenProvider):
+    def run(self, plan, runtime, state):  # type: ignore[no-untyped-def]
+        return super().run(plan, runtime, state).model_copy(update={"results": ()})
 
 
 class WrongTeardownOutputProvider(GoldenProvider):
@@ -300,10 +338,33 @@ class WrongCleanupDigestProvider(GoldenProvider):
         )
 
 
+class FailedCleanupProvider(GoldenProvider):
+    def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
+        cleanup = super().teardown(runtime, state)
+        failed = cleanup.results[0].model_copy(update={"status": "failed"})
+        return cleanup.model_copy(update={"status": "failed", "results": (failed,)})
+
+
 class WrongSnapshotOutputProvider(GoldenProvider):
     def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
         state_writer.write(plan)
         return super().prepare(plan, runtime, state_writer)
+
+
+class RegressiveSnapshotProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
+        initial = state.model_copy(update={"journal": ()})
+        for snapshot in (initial, state, initial, state):
+            state_writer.write(snapshot)
+        return state
+
+
+class InvalidPartialIdentityProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
+        state_writer.write(state.model_copy(update={"run_id": "foreign-run"}))
+        raise ProviderContractError("simulated invalid partial state")
 
 
 def test_cli_preserves_private_partial_state_when_prepare_fails(
@@ -362,6 +423,7 @@ def test_cli_rejects_provider_that_does_not_persist_prepare_state(
         (WrongResolveOutputProvider(), "provider contract failed"),
         (WrongResolveDigestProvider(), "plan profile digest mismatch"),
         (ForeignResolveTargetProvider(), "undeclared target"),
+        (UndescribedResolveCaseProvider(), "undescribed case"),
     ],
 )
 def test_cli_rejects_invalid_or_detached_plans(
@@ -394,6 +456,9 @@ def test_cli_rejects_invalid_or_detached_plans(
         ),
         EvidenceFailure(
             "run", WrongRunDigestProvider(), "evidence plan digest mismatch"
+        ),
+        EvidenceFailure(
+            "run", WrongRunStateDigestProvider(), "evidence state digest mismatch"
         ),
         EvidenceFailure(
             "teardown",
@@ -447,6 +512,43 @@ def test_cli_rejects_state_detached_from_runtime_before_run(
         ],
         capsys,
         (evidence_path, "fixture state run identity mismatch"),
+    )
+
+
+def test_cli_rejects_runtime_content_changed_after_prepare(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan_path, runtime_path, state_path = _write_prepared_inputs(tmp_path)
+    evidence_path = tmp_path / "evidence.json"
+    runtime = RuntimeContext.model_validate_json(runtime_path.read_text())
+    changed_cluster = runtime.clusters[0].model_copy(
+        update={
+            "base_url": "https://other.example.test/api",
+            "api_key_ref": "secret://other/admin-pat",
+        }
+    )
+    runtime_path.write_text(
+        runtime.model_copy(update={"clusters": (changed_cluster,)}).model_dump_json(
+            by_alias=True
+        ),
+        encoding="utf-8",
+    )
+
+    _assert_provider_failure(
+        GoldenProvider(),
+        [
+            "run",
+            "--plan",
+            str(plan_path),
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+            "--evidence",
+            str(evidence_path),
+        ],
+        capsys,
+        (evidence_path, "fixture state runtime digest mismatch"),
     )
 
 
@@ -519,6 +621,126 @@ def test_cli_rejects_wrong_fixture_snapshot_model(
     )
 
 
+def test_cli_rejects_regressive_fixture_snapshots_but_retains_final_state(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = RegressiveSnapshotProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+
+    assert (
+        provider_main(
+            provider,
+            [
+                "prepare",
+                "--plan",
+                str(plan_path),
+                "--runtime",
+                str(runtime_path),
+                "--state",
+                str(state_path),
+            ],
+        )
+        == 2
+    )
+    assert "fixture journal snapshot regressed" in capsys.readouterr().err
+    assert state_path.exists()
+
+
+def test_cli_refuses_invalid_partial_state_before_persisting_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = InvalidPartialIdentityProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+
+    assert (
+        provider_main(
+            provider,
+            [
+                "prepare",
+                "--plan",
+                str(plan_path),
+                "--runtime",
+                str(runtime_path),
+                "--state",
+                str(state_path),
+            ],
+        )
+        == 2
+    )
+    assert "fixture state run identity mismatch" in capsys.readouterr().err
+    assert not state_path.exists()
+
+
+def test_cli_semantic_run_failure_returns_nonzero_with_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan_path, runtime_path, state_path = _write_prepared_inputs(tmp_path)
+    evidence_path = tmp_path / "evidence.json"
+
+    _assert_failed_with_evidence(
+        IncompleteRunEvidenceProvider(),
+        [
+            "run",
+            "--plan",
+            str(plan_path),
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+            "--evidence",
+            str(evidence_path),
+        ],
+        capsys,
+        (evidence_path, "provider evidence failed exact coverage"),
+    )
+    assert ScenarioEvidence.model_validate_json(evidence_path.read_text()).results == ()
+
+
+def test_cli_failed_cleanup_returns_nonzero_with_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, runtime_path, state_path = _write_prepared_inputs(tmp_path)
+    evidence_path = tmp_path / "cleanup.json"
+
+    _assert_failed_with_evidence(
+        FailedCleanupProvider(),
+        [
+            "teardown",
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+            "--evidence",
+            str(evidence_path),
+        ],
+        capsys,
+        (evidence_path, "provider semantic cleanup failed"),
+    )
+    assert (
+        CleanupEvidence.model_validate_json(evidence_path.read_text()).status
+        == "failed"
+    )
+
+
+def test_cli_sanitizes_unexpected_provider_failures(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile_path = _write_golden_profile(tmp_path)
+    plan_path = tmp_path / "plan.json"
+
+    assert (
+        provider_main(
+            ExplodingResolveProvider(),
+            ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert "provider execution failed" in captured.err
+    assert "sensitive-provider-value" not in captured.err
+    assert not plan_path.exists()
+
+
 def test_fixture_state_write_fsyncs_file_and_parent_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -544,6 +766,38 @@ def test_fixture_state_write_fsyncs_file_and_parent_directory(
     )
 
     assert fsync_targets == ["file", "directory", "file", "directory"]
+
+
+def test_file_writes_do_not_require_posix_fchmod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = GoldenProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+    monkeypatch.delattr(os, "fchmod")
+
+    _assert_provider_command(
+        provider,
+        "prepare",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+    )
+
+
+def test_directory_sync_is_skipped_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(
+        os,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("Windows must not open directories"),
+    )
+
+    _fsync_directory(tmp_path)
 
 
 def test_fixture_state_write_does_not_reuse_another_attempts_temporary_file(

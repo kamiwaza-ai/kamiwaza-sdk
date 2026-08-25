@@ -92,6 +92,11 @@
       "title": "Run Id",
       "type": "string"
     },
+    "runtime_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Runtime Digest",
+      "type": "string"
+    },
     "schema": {
       "const": "kamiwaza.fixture-state/v1",
       "title": "Schema",
@@ -102,6 +107,7 @@
     "schema",
     "provider_revision",
     "plan_digest",
+    "runtime_digest",
     "run_id",
     "owner_token_digest",
     "journal"
