@@ -31,10 +31,14 @@ A selected required case that cannot run is `failed`, never `skipped`.
 - An owned-fixture target whose engine, model format, quantization, accelerator,
   architecture, and semantic runtime profile match the version 1 support
   policy. Version 1 accepts `llamacpp` with a recognized GGUF quantization on
-  AMD gfx1151, Apple M5, NVIDIA Turing, GB10, or Ampere-and-newer targets. It
+  AMD gfx1151, NVIDIA Turing, GB10, or Ampere-and-newer targets. It
   accepts `vllm` with unquantized safetensors on AMD gfx1151, NVIDIA GB10, or
   Ampere-and-newer targets. NVIDIA Turing vLLM remains outside this provider's
   version 1 policy.
+
+Apple M5 targets remain outside version 1 because the runtime observer currently
+proves Kubernetes pod state only; the macOS host-process observer is tracked in
+the later platform-qualification slice.
 
 External fixture adoption is not implemented by this provider version. An
 `external` profile fails during resolution instead of creating or deleting a
@@ -94,9 +98,12 @@ Save a validation profile as `profile.json`:
 ```
 
 Use an immutable `repository@sha256:...` or `sha256:...` value for
-`expected_image` when a run must verify an exact image candidate. The resolved
-plan publishes that image as an install requirement and the readiness case
-compares it with the digest reported by the running pod.
+`expected_image` when a run must verify an exact image candidate. Resolution
+publishes that image as an install requirement before execution; configuration
+owners remain responsible for selecting a candidate compatible with the target
+engine and accelerator. The readiness case then proves the running pod pulled
+the exact requested digest. The SDK does not claim it can infer compatibility
+from an opaque digest alone.
 
 Save the runtime references as `runtime.json`:
 
@@ -119,6 +126,9 @@ The provider reads the PAT only from the referenced file. It never writes the
 token, kubeconfig, or their contents to the plan, state, evidence, or error
 details. A `secret://` reference must be materialized to a temporary `file://`
 reference by the invoking orchestrator before the provider process starts.
+Every persisted state snapshot is authenticated with a keyed MAC derived in
+memory from those materialized API credentials. `run` and `teardown` reject a
+changed state or changed credential before issuing product API calls.
 
 ## Execute and always clean up
 

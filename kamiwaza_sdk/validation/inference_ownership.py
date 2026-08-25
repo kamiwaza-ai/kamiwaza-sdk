@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 from collections.abc import Mapping
 from typing import Any, Literal
 
@@ -13,19 +11,8 @@ from kamiwaza_sdk.validation.models import (
     CleanupResult,
     FixtureMutation,
     FixtureState,
-    RuntimeContext,
 )
 from kamiwaza_sdk.validation.provider import ProviderContractError
-
-
-def validate_owner_digest(
-    runtime: RuntimeContext,
-    state: FixtureState,
-    provider_revision: str,
-) -> None:
-    owner = hashlib.sha256(f"{runtime.run_id}:{provider_revision}".encode()).hexdigest()
-    if not hmac.compare_digest(state.owner_token_digest, f"sha256:{owner}"):
-        raise ProviderContractError("fixture state ownership digest mismatch")
 
 
 def deployment_resources(state: FixtureState) -> tuple[FixtureMutation, ...]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,10 @@ from kamiwaza_sdk.validation.inference_provider import (
     INFERENCE_PROVIDER_REVISION,
     INFERENCE_SCENARIO_ID,
     InferenceLifecycleProvider,
+)
+from kamiwaza_sdk.validation.inference_state import (
+    runtime_ownership_key,
+    sign_state,
 )
 from kamiwaza_sdk.validation.inference_runtime import (
     CatalogConfig,
@@ -42,6 +47,7 @@ def _profile(**target_updates: object) -> ValidationProfile:
 
 
 def _runtime() -> RuntimeContext:
+    api_key_ref = Path(__file__).with_name("test-api-key.txt").resolve().as_uri()
     return RuntimeContext.model_validate(
         {
             "schema": "kamiwaza.runtime-context/v1",
@@ -50,7 +56,7 @@ def _runtime() -> RuntimeContext:
                 {
                     "id": "evo-x2-2",
                     "base_url": "https://evo-x2-2.test/api",
-                    "api_key_ref": "file:///run/secrets/evo-x2-2.pat",
+                    "api_key_ref": api_key_ref,
                     "kubeconfig_ref": "file:///run/secrets/evo-x2-2.kubeconfig",
                 }
             ],
@@ -299,6 +305,7 @@ def test_happy_lifecycle_records_exact_selection_runtime_and_cleanup() -> None:
 
     assert len(writer.snapshots) >= 2
     assert writer.snapshots[0].journal == ()
+    assert all("ownership_mac" in snapshot.opaque for snapshot in writer.snapshots)
     assert len(state.journal) == 1
     assert state.journal[0].action == "created"
     assert state.journal[0].resource_id == "44444444-4444-4444-4444-444444444444"
@@ -425,7 +432,7 @@ def test_run_rejects_opaque_deployment_id_not_bound_to_created_journal() -> None
     targets["evo-x2-2-llamacpp-chat"] = target
     tampered = state.model_copy(update={"opaque": {"targets": targets}})
 
-    with pytest.raises(ProviderContractError, match="owned deployment"):
+    with pytest.raises(ProviderContractError, match="ownership MAC"):
         provider.run(plan, _runtime(), tampered)
 
     assert cluster.messages == []
@@ -438,6 +445,7 @@ def test_run_rejects_adopted_deployment_without_chat_or_stop() -> None:
     plan, _writer, state = _prepared(provider)
     adopted = state.journal[0].model_copy(update={"action": "adopted"})
     tampered = state.model_copy(update={"journal": (adopted,)})
+    tampered = sign_state(tampered, runtime_ownership_key(_runtime()))
 
     with pytest.raises(ProviderContractError, match="owned deployment"):
         provider.run(plan, _runtime(), tampered)
@@ -465,6 +473,7 @@ def test_teardown_retains_adopted_deployment_without_mutation() -> None:
     _plan, _writer, state = _prepared(provider)
     adopted = state.journal[0].model_copy(update={"action": "adopted"})
     tampered = state.model_copy(update={"journal": (adopted,)})
+    tampered = sign_state(tampered, runtime_ownership_key(_runtime()))
 
     cleanup = provider.teardown(_runtime(), tampered)
 
@@ -485,6 +494,7 @@ def test_teardown_rejects_removed_deployment_state_without_mutation() -> None:
         action="removed",
     )
     transitioned = state.model_copy(update={"journal": (*state.journal, removed)})
+    transitioned = sign_state(transitioned, runtime_ownership_key(_runtime()))
 
     cleanup = provider.teardown(_runtime(), transitioned)
 
@@ -507,6 +517,7 @@ def test_teardown_rejects_multiple_deployments_for_one_target_without_mutation()
         action="created",
     )
     tampered = state.model_copy(update={"journal": (*state.journal, foreign)})
+    tampered = sign_state(tampered, runtime_ownership_key(_runtime()))
 
     with pytest.raises(ProviderContractError, match="multiple model deployments"):
         provider.teardown(_runtime(), tampered)

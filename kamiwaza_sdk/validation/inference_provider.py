@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, cast
-
-from pydantic import JsonValue
+from typing import Any, Literal
 
 from kamiwaza_sdk.utils.quant_manager import QuantizationManager
 from kamiwaza_sdk.validation.applicability import (
@@ -42,7 +39,6 @@ from kamiwaza_sdk.validation.inference_evidence import (
     elapsed_ms as _elapsed_ms,
     failed as _failed,
     failure as _failure,
-    mapping as _mapping,
     passed as _passed,
     required_image_digest as _required_image_digest,
     residual_outcome as _residual_outcome,
@@ -60,7 +56,11 @@ from kamiwaza_sdk.validation.inference_ownership import (
     deployment_resources as _deployment_resources,
     owned_deployment_id as _owned_deployment_id,
     reconcile_deployment as _reconcile_deployment,
-    validate_owner_digest as _validate_owner_digest,
+)
+from kamiwaza_sdk.validation.inference_state import (
+    InferenceStateAuthenticator as _InferenceStateAuthenticator,
+    InferenceStateStore as _InferenceStateStore,
+    OwnershipKeyResolver,
 )
 from kamiwaza_sdk.validation.models import (
     CaseResult,
@@ -93,7 +93,7 @@ class _PrepareInput:
     selected: ResolvedScenario
     parameters: _TargetParameters
     runtime_cluster: RuntimeCluster
-    writer: FixtureStateWriter
+    state_store: _InferenceStateStore
 
 
 @dataclass(frozen=True)
@@ -101,14 +101,21 @@ class _PreparationContext:
     target_id: str
     parameters: _TargetParameters
     cluster: InferenceCluster | None
-    writer: FixtureStateWriter
+    state_store: _InferenceStateStore
 
 
 class InferenceLifecycleProvider:
     """Execute one exact, fail-closed text-generation lifecycle per target."""
 
-    def __init__(self, cluster_factory: InferenceClusterFactory | None = None) -> None:
+    def __init__(
+        self,
+        cluster_factory: InferenceClusterFactory | None = None,
+        ownership_key_resolver: OwnershipKeyResolver | None = None,
+    ) -> None:
         self._cluster_factory = cluster_factory or _default_cluster_factory()
+        self._state_authenticator = _InferenceStateAuthenticator(
+            ownership_key_resolver
+        )
 
     def describe(self) -> tuple[ScenarioDescriptor, ...]:
         return (_scenario_descriptor(),)
@@ -144,8 +151,10 @@ class InferenceLifecycleProvider:
             item.target_id: _parameters(item.redacted_parameters)
             for item in plan.selected
         }
-        state = _initial_state(plan, runtime, parameters)
-        state_writer.write(state)
+        state_store = _InferenceStateStore(
+            state_writer, self._state_authenticator.key(runtime)
+        )
+        state = state_store.initial(plan, runtime, parameters)
         runtime_clusters = {item.id: item for item in runtime.clusters}
         for selected in plan.selected:
             state = self._prepare_target(
@@ -154,7 +163,7 @@ class InferenceLifecycleProvider:
                     selected=selected,
                     parameters=parameters[selected.target_id],
                     runtime_cluster=runtime_clusters[selected.cluster_id],
-                    writer=state_writer,
+                    state_store=state_store,
                 ),
             )
         return state
@@ -167,7 +176,7 @@ class InferenceLifecycleProvider:
     ) -> ScenarioEvidence:
         self._validate_revision(plan.provider_revision)
         validate_state_identity(plan, runtime, state)
-        _validate_owner_digest(runtime, state, INFERENCE_PROVIDER_REVISION)
+        self._state_authenticator.validate(runtime, state)
         clusters = {item.id: item for item in runtime.clusters}
         results: list[CaseResult] = []
         resolved_runtime: dict[str, Any] = {}
@@ -194,7 +203,7 @@ class InferenceLifecycleProvider:
     def teardown(self, runtime: RuntimeContext, state: FixtureState) -> CleanupEvidence:
         self._validate_revision(state.provider_revision)
         validate_state_runtime_identity(runtime, state)
-        _validate_owner_digest(runtime, state, INFERENCE_PROVIDER_REVISION)
+        self._state_authenticator.validate(runtime, state)
         clusters = {item.id: item for item in runtime.clusters}
         target_clusters = _target_clusters(state)
         results = tuple(
@@ -240,12 +249,18 @@ class InferenceLifecycleProvider:
             cluster = self._cluster_factory(inputs.runtime_cluster)
         except Exception as exc:
             context = _PreparationContext(
-                inputs.selected.target_id, inputs.parameters, None, inputs.writer
+                inputs.selected.target_id,
+                inputs.parameters,
+                None,
+                inputs.state_store,
             )
             failure = _failure("catalog-discovery", exc, _elapsed_ms(started))
             return _fail_remaining(state, context, 0, failure)
         context = _PreparationContext(
-            inputs.selected.target_id, inputs.parameters, cluster, inputs.writer
+            inputs.selected.target_id,
+            inputs.parameters,
+            cluster,
+            inputs.state_store,
         )
         try:
             return _prepare_with_cluster(state, context)
@@ -324,47 +339,6 @@ def _default_cluster_factory() -> InferenceClusterFactory:
     return SdkInferenceClusterFactory()
 
 
-def _initial_state(
-    plan: ScenarioPlan,
-    runtime: RuntimeContext,
-    parameters: Mapping[str, _TargetParameters],
-) -> FixtureState:
-    targets = {
-        item.target_id: {
-            "cluster_id": item.cluster_id,
-            "parameters": _parameter_payload(parameters[item.target_id]),
-            "phases": {},
-            "runtime": _parameter_payload(parameters[item.target_id]),
-        }
-        for item in plan.selected
-    }
-    owner = hashlib.sha256(
-        f"{runtime.run_id}:{INFERENCE_PROVIDER_REVISION}".encode()
-    ).hexdigest()
-    return FixtureState(
-        schema="kamiwaza.fixture-state/v1",
-        provider_revision=INFERENCE_PROVIDER_REVISION,
-        plan_digest=model_digest(plan),
-        runtime_digest=model_digest(runtime),
-        run_id=runtime.run_id,
-        owner_token_digest=f"sha256:{owner}",
-        journal=(),
-        opaque={"targets": cast(JsonValue, targets)},
-    )
-
-
-def _parameter_payload(parameters: _TargetParameters) -> dict[str, Any]:
-    return {
-        "repository": parameters.repository,
-        "engine": parameters.engine,
-        "model_format": parameters.model_format,
-        "quantization": parameters.quantization,
-        "runtime_profile": parameters.runtime_profile,
-        "expected_image": parameters.expected_image,
-        "accelerators": [dict(item) for item in parameters.accelerators],
-    }
-
-
 def _prepare_with_cluster(
     state: FixtureState, context: _PreparationContext
 ) -> FixtureState:
@@ -400,7 +374,9 @@ def _catalog_phase(
     except Exception as exc:
         failure = _failure(_PREPARE_CASE_IDS[0], exc, _elapsed_ms(started))
         return _fail_remaining(state, context, 0, failure), None
-    state = _record_phase(state, context, _PREPARE_CASE_IDS[0], _passed(started))
+    state = context.state_store.record_phase(
+        state, context.target_id, _PREPARE_CASE_IDS[0], _passed(started)
+    )
     return state, model
 
 
@@ -420,7 +396,9 @@ def _download_phase(
     except Exception as exc:
         failure = _failure(_PREPARE_CASE_IDS[1], exc, _elapsed_ms(started))
         return _fail_remaining(state, context, 1, failure), None
-    state = _record_phase(state, context, _PREPARE_CASE_IDS[1], _passed(started))
+    state = context.state_store.record_phase(
+        state, context.target_id, _PREPARE_CASE_IDS[1], _passed(started)
+    )
     return state, model
 
 
@@ -441,8 +419,12 @@ def _selection_phase(
     except Exception as exc:
         failure = _failure(_PREPARE_CASE_IDS[2], exc, _elapsed_ms(started))
         return _fail_remaining(state, context, 2, failure), None
-    state = _merge_runtime(state, context.target_id, _selection_payload(selection))
-    state = _record_phase(state, context, _PREPARE_CASE_IDS[2], _passed(started))
+    state = context.state_store.merge_runtime(
+        state, context.target_id, _selection_payload(selection)
+    )
+    state = context.state_store.record_phase(
+        state, context.target_id, _PREPARE_CASE_IDS[2], _passed(started)
+    )
     return state, selection
 
 
@@ -467,11 +449,15 @@ def _deployment_phase(
         failure = _failure(_PREPARE_CASE_IDS[3], exc, _elapsed_ms(started))
         return _fail_remaining(state, context, 3, failure), None
     try:
-        state = _record_created_deployment(state, context, deployment_id)
+        state = context.state_store.record_created(
+            state, context.target_id, deployment_id
+        )
     except Exception:
         _compensate_unjournaled_deployment(_cluster(context), deployment_id)
         raise
-    state = _record_phase(state, context, _PREPARE_CASE_IDS[3], _passed(started))
+    state = context.state_store.record_phase(
+        state, context.target_id, _PREPARE_CASE_IDS[3], _passed(started)
+    )
     return state, deployment_id
 
 
@@ -488,7 +474,7 @@ def _readiness_phase(
         observation = _cluster(context).observe_runtime(
             deployment_id, context.parameters.engine
         )
-        state = _merge_runtime(
+        state = context.state_store.merge_runtime(
             state,
             context.target_id,
             {
@@ -505,7 +491,9 @@ def _readiness_phase(
     except Exception as exc:
         failure = _failure(_PREPARE_CASE_IDS[4], exc, _elapsed_ms(started))
         return _fail_remaining(state, context, 4, failure)
-    return _record_phase(state, context, _PREPARE_CASE_IDS[4], _passed(started))
+    return context.state_store.record_phase(
+        state, context.target_id, _PREPARE_CASE_IDS[4], _passed(started)
+    )
 
 
 def _target_files(
@@ -577,24 +565,6 @@ def _selection_payload(selection: SelectedModel) -> dict[str, Any]:
     }
 
 
-def _record_created_deployment(
-    state: FixtureState,
-    context: _PreparationContext,
-    deployment_id: str,
-) -> FixtureState:
-    state = _set_target_value(state, context.target_id, "deployment_id", deployment_id)
-    mutation = FixtureMutation(
-        sequence=len(state.journal) + 1,
-        target_id=context.target_id,
-        resource_type="model-deployment",
-        resource_id=deployment_id,
-        action="created",
-    )
-    state = state.model_copy(update={"journal": (*state.journal, mutation)})
-    context.writer.write(state)
-    return state
-
-
 def _fail_remaining(
     state: FixtureState,
     context: _PreparationContext,
@@ -607,51 +577,10 @@ def _fail_remaining(
             if index == start_index
             else _failed(f"blocked by {_PREPARE_CASE_IDS[start_index]}")
         )
-        state = _record_phase(state, context, case_id, outcome)
+        state = context.state_store.record_phase(
+            state, context.target_id, case_id, outcome
+        )
     return state
-
-
-def _record_phase(
-    state: FixtureState,
-    context: _PreparationContext,
-    case_id: str,
-    outcome: Mapping[str, Any],
-) -> FixtureState:
-    target = dict(_target_state(state, context.target_id))
-    phases = dict(_mapping(target.get("phases"), "target phases"))
-    phases[case_id] = dict(outcome)
-    target["phases"] = phases
-    state = _replace_target_state(state, context.target_id, target)
-    context.writer.write(state)
-    return state
-
-
-def _merge_runtime(
-    state: FixtureState, target_id: str, values: Mapping[str, Any]
-) -> FixtureState:
-    target = dict(_target_state(state, target_id))
-    runtime = dict(_mapping(target.get("runtime"), "target runtime"))
-    runtime.update(values)
-    target["runtime"] = runtime
-    return _replace_target_state(state, target_id, target)
-
-
-def _set_target_value(
-    state: FixtureState, target_id: str, key: str, value: Any
-) -> FixtureState:
-    target = dict(_target_state(state, target_id))
-    target[key] = value
-    return _replace_target_state(state, target_id, target)
-
-
-def _replace_target_state(
-    state: FixtureState, target_id: str, target: Mapping[str, Any]
-) -> FixtureState:
-    opaque = dict(state.opaque)
-    targets = dict(_mapping(opaque.get("targets"), "fixture targets"))
-    targets[target_id] = dict(target)
-    opaque["targets"] = targets
-    return state.model_copy(update={"opaque": opaque})
 
 
 def main(argv: Sequence[str] | None = None) -> int:

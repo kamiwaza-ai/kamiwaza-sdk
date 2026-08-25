@@ -1,12 +1,26 @@
 from types import SimpleNamespace
 
 from kamiwaza_sdk.utils.quant_manager import QuantizationManager
+from kamiwaza_sdk.validation.inference_spec import SUPPORTED_QUANTIZATIONS
 
 
 def test_specific_k_quantization_variant_is_detected_in_full() -> None:
     manager = QuantizationManager()
 
     assert manager.detect_quantization("model-Q4_K_M.gguf") == "q4_k_m"
+
+
+def test_every_advertised_llamacpp_quantization_is_detected_and_selected() -> None:
+    manager = QuantizationManager()
+
+    for quantization in SUPPORTED_QUANTIZATIONS["llamacpp"]:
+        filename = f"model-{quantization.upper()}.gguf"
+        file = SimpleNamespace(name=filename)
+
+        assert manager.detect_quantization(filename) == quantization
+        assert manager.filter_files_by_quantization(
+            [file], quantization, apply_fallback=False
+        ) == [file]
 
 
 def test_specific_k_quantization_variant_selects_only_exact_variant() -> None:

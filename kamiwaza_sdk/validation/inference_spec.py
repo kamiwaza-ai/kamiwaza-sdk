@@ -99,7 +99,6 @@ SUPPORTED_ACCELERATORS = {
     "llamacpp": frozenset(
         {
             ("amd", "gfx1151"),
-            ("apple", "m5"),
             ("nvidia", "t4"),
             ("nvidia", "turing"),
         }
