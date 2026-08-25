@@ -46,6 +46,32 @@ def _runtime_payload() -> dict[str, object]:
     }
 
 
+def _assert_provider_command(provider: GoldenProvider, *args: str) -> None:
+    assert provider_main(provider, list(args)) == 0
+
+
+def _write_prepare_inputs(
+    tmp_path: Path, provider: GoldenProvider
+) -> tuple[Path, Path, Path]:
+    profile_path = tmp_path / "profile.json"
+    plan_path = tmp_path / "plan.json"
+    runtime_path = tmp_path / "runtime.json"
+    state_path = tmp_path / "state.json"
+    payload = profile_payload()
+    payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
+    _write_json(profile_path, payload)
+    _write_json(runtime_path, _runtime_payload())
+    _assert_provider_command(
+        provider,
+        "resolve",
+        "--profile",
+        str(profile_path),
+        "--plan",
+        str(plan_path),
+    )
+    return plan_path, runtime_path, state_path
+
+
 def test_golden_provider_cli_runs_the_full_json_file_lifecycle(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -59,65 +85,47 @@ def test_golden_provider_cli_runs_the_full_json_file_lifecycle(
     payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
     _write_json(profile_path, payload)
     _write_json(runtime_path, _runtime_payload())
+    provider = GoldenProvider()
 
-    assert provider_main(GoldenProvider(), ["describe", "--json"]) == 0
+    _assert_provider_command(provider, "describe", "--json")
     described = json.loads(capsys.readouterr().out)
     assert described[0]["scenario_id"] == "sdk.golden.echo/v1"
 
-    assert (
-        provider_main(
-            GoldenProvider(),
-            ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
-        )
-        == 0
+    _assert_provider_command(
+        provider, "resolve", "--profile", str(profile_path), "--plan", str(plan_path)
     )
-    assert (
-        provider_main(
-            GoldenProvider(),
-            [
-                "prepare",
-                "--plan",
-                str(plan_path),
-                "--runtime",
-                str(runtime_path),
-                "--state",
-                str(state_path),
-            ],
-        )
-        == 0
+    _assert_provider_command(
+        provider,
+        "prepare",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
     )
     assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
-    assert (
-        provider_main(
-            GoldenProvider(),
-            [
-                "run",
-                "--plan",
-                str(plan_path),
-                "--runtime",
-                str(runtime_path),
-                "--state",
-                str(state_path),
-                "--evidence",
-                str(evidence_path),
-            ],
-        )
-        == 0
+    _assert_provider_command(
+        provider,
+        "run",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+        "--evidence",
+        str(evidence_path),
     )
-    assert (
-        provider_main(
-            GoldenProvider(),
-            [
-                "teardown",
-                "--runtime",
-                str(runtime_path),
-                "--state",
-                str(state_path),
-                "--evidence",
-                str(cleanup_path),
-            ],
-        )
-        == 0
+    _assert_provider_command(
+        provider,
+        "teardown",
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+        "--evidence",
+        str(cleanup_path),
     )
 
     ScenarioPlan.model_validate_json(plan_path.read_text())
@@ -196,22 +204,8 @@ class NonJournalingProvider(GoldenProvider):
 def test_cli_preserves_private_partial_state_when_prepare_fails(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    profile_path = tmp_path / "profile.json"
-    plan_path = tmp_path / "plan.json"
-    runtime_path = tmp_path / "runtime.json"
-    state_path = tmp_path / "state.json"
-    payload = profile_payload()
-    payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
-    _write_json(profile_path, payload)
-    _write_json(runtime_path, _runtime_payload())
     provider = PartialPrepareFailureProvider()
-    assert (
-        provider_main(
-            provider,
-            ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
-        )
-        == 0
-    )
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
 
     exit_code = provider_main(
         provider,
@@ -236,22 +230,8 @@ def test_cli_preserves_private_partial_state_when_prepare_fails(
 def test_cli_rejects_provider_that_does_not_persist_prepare_state(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    profile_path = tmp_path / "profile.json"
-    plan_path = tmp_path / "plan.json"
-    runtime_path = tmp_path / "runtime.json"
-    state_path = tmp_path / "state.json"
-    payload = profile_payload()
-    payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
-    _write_json(profile_path, payload)
-    _write_json(runtime_path, _runtime_payload())
     provider = NonJournalingProvider()
-    assert (
-        provider_main(
-            provider,
-            ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
-        )
-        == 0
-    )
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
 
     exit_code = provider_main(
         provider,

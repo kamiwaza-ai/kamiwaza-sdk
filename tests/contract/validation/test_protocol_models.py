@@ -22,6 +22,14 @@ from .support import profile_payload
 pytestmark = pytest.mark.contract
 
 
+def _mesh_edge(*, initiator: str = "evo-x2-2", receiver: str) -> dict[str, str]:
+    return {
+        "initiator": initiator,
+        "receiver": receiver,
+        "identity_mode": "shared_idp",
+    }
+
+
 def test_validation_profile_accepts_only_versioned_facts_and_intent() -> None:
     profile = ValidationProfile.model_validate(profile_payload())
 
@@ -82,15 +90,7 @@ def test_scenario_catalog_rejects_empty_and_duplicate_scenario_ids() -> None:
 
 def test_validation_profile_rejects_mesh_edges_to_unknown_clusters() -> None:
     payload = profile_payload()
-    payload["mesh"] = {
-        "edges": [
-            {
-                "initiator": "evo-x2-2",
-                "receiver": "missing-cluster",
-                "identity_mode": "shared_idp",
-            }
-        ]
-    }
+    payload["mesh"] = {"edges": [_mesh_edge(receiver="missing-cluster")]}
 
     with pytest.raises(ValidationError, match="mesh edges reference unknown clusters"):
         ValidationProfile.model_validate(payload)
@@ -98,24 +98,12 @@ def test_validation_profile_rejects_mesh_edges_to_unknown_clusters() -> None:
 
 def test_validation_profile_rejects_self_and_duplicate_mesh_edges() -> None:
     self_edge = profile_payload()
-    self_edge["mesh"] = {
-        "edges": [
-            {
-                "initiator": "evo-x2-2",
-                "receiver": "evo-x2-2",
-                "identity_mode": "shared_idp",
-            }
-        ]
-    }
+    self_edge["mesh"] = {"edges": [_mesh_edge(receiver="evo-x2-2")]}
     with pytest.raises(ValidationError, match="distinct clusters"):
         ValidationProfile.model_validate(self_edge)
 
     duplicate = profile_payload()
-    edge = {
-        "initiator": "evo-x2-2",
-        "receiver": "peer-cluster",
-        "identity_mode": "shared_idp",
-    }
+    edge = _mesh_edge(receiver="peer-cluster")
     duplicate["clusters"].append(  # type: ignore[union-attr]
         {
             "id": "peer-cluster",

@@ -55,24 +55,9 @@ class GoldenProvider:
 
     def resolve(self, profile: ValidationProfile) -> ScenarioPlan:
         self._validate_requested_scenarios(profile)
-        selected = tuple(
-            self._resolve_target(target)
-            for target in profile.inference_targets
-            if target.engine == "llamacpp"
-        )
-        required_inapplicable = [
-            target.id
-            for target in profile.inference_targets
-            if target.required and target.engine != "llamacpp"
-        ]
-        if required_inapplicable:
-            raise ProviderContractError(
-                f"inapplicable required target: {required_inapplicable[0]}"
-            )
-        if GOLDEN_SCENARIO_ID in profile.validation.include and not selected:
-            raise ProviderContractError(
-                "requested scenario resolved to zero selected cases"
-            )
+        selected = self._resolve_targets(profile.inference_targets)
+        self._validate_required_targets(profile.inference_targets)
+        self._validate_required_selection(profile, selected)
         return ScenarioPlan(
             schema="kamiwaza.scenario-plan/v1",
             profile_digest=model_digest(profile),
@@ -81,6 +66,37 @@ class GoldenProvider:
             install_requirements={},
             runtime_requirements=("cluster-api",),
         )
+
+    @classmethod
+    def _resolve_targets(
+        cls, targets: Sequence[InferenceTarget]
+    ) -> tuple[ResolvedScenario, ...]:
+        return tuple(
+            cls._resolve_target(target)
+            for target in targets
+            if target.engine == "llamacpp"
+        )
+
+    @staticmethod
+    def _validate_required_targets(targets: Sequence[InferenceTarget]) -> None:
+        required_inapplicable = [
+            target.id
+            for target in targets
+            if target.required and target.engine != "llamacpp"
+        ]
+        if required_inapplicable:
+            raise ProviderContractError(
+                f"inapplicable required target: {required_inapplicable[0]}"
+            )
+
+    @staticmethod
+    def _validate_required_selection(
+        profile: ValidationProfile, selected: Sequence[ResolvedScenario]
+    ) -> None:
+        if GOLDEN_SCENARIO_ID in profile.validation.include and not selected:
+            raise ProviderContractError(
+                "requested scenario resolved to zero selected cases"
+            )
 
     def prepare(
         self,

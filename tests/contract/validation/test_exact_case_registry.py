@@ -110,34 +110,28 @@ def test_missing_duplicate_unexpected_and_wrong_target_evidence_fail_closed(
     assert {issue.code for issue in coverage.issues} == issue_codes
 
 
-def test_required_skip_is_a_failed_coverage_cell() -> None:
+@pytest.mark.parametrize(
+    ("status", "detail", "expected_issue"),
+    [
+        ("skipped", "deployment unavailable", "required_skip"),
+        ("failed", "empty assistant response", "required_failure"),
+    ],
+)
+def test_nonpassing_required_case_is_a_failed_coverage_cell(
+    status: str, detail: str, expected_issue: str
+) -> None:
     plan = _plan()
-    skipped = _result("openai-multi-turn-chat").model_copy(
-        update={"status": "skipped", "detail": "deployment unavailable"}
+    nonpassing = _result("openai-multi-turn-chat").model_copy(
+        update={"status": status, "detail": detail}
     )
 
     coverage = evaluate_coverage(
         plan,
-        _evidence(plan, (_result("catalog-discovery"), skipped)),
+        _evidence(plan, (_result("catalog-discovery"), nonpassing)),
     )
 
     assert coverage.status == "failed"
-    assert [issue.code for issue in coverage.issues] == ["required_skip"]
-
-
-def test_required_failure_is_a_failed_coverage_cell() -> None:
-    plan = _plan()
-    failed = _result("openai-multi-turn-chat").model_copy(
-        update={"status": "failed", "detail": "empty assistant response"}
-    )
-
-    coverage = evaluate_coverage(
-        plan,
-        _evidence(plan, (_result("catalog-discovery"), failed)),
-    )
-
-    assert coverage.status == "failed"
-    assert [issue.code for issue in coverage.issues] == ["required_failure"]
+    assert [issue.code for issue in coverage.issues] == [expected_issue]
 
 
 def test_evidence_from_a_different_plan_revision_fails_closed() -> None:
