@@ -12,6 +12,9 @@ pip install kamiwaza-sdk
 
 > **Version compatibility:** This SDK (version 0.5.1+) is incompatible with Kamiwaza versions before 0.5.1. Please ensure you're using the latest version of Kamiwaza.
 
+For deterministic engine validation against an existing cluster, see the
+[strict inference lifecycle provider](docs/validation/inference-lifecycle.md).
+
 ## Python SDK Usage
 
 ```python
