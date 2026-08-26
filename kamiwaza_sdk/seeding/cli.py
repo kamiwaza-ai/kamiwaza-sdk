@@ -506,13 +506,20 @@ def discover_role_deployment(
     working across environments that serve the same role from different models
     — a local offline serve on one box, a hosted endpoint on another.
 
+    An existing binding wins over any of that. Re-pointing a role that is
+    already bound would leave documents embedded by one model and searched
+    against another — the same corruption the contradiction check refuses —
+    except reached by our own write, so nothing would report it. A re-run
+    therefore keeps what is already there whenever the instance still offers
+    it.
+
     ``capabilities`` is preferred but not required: the instance already typed
-    every candidate as this role, so an entry that simply does not advertise
-    its capabilities is still a legitimate fallback rather than a reason to
-    fail a seed run. An entry that *does* advertise a capability set without
-    this capability in it is not a fallback — it has told us it cannot do the
-    job, and binding it anyway would be the silent degradation this command
-    exists to prevent.
+    every candidate as this role, so an entry that does not advertise its
+    capabilities — absent or explicitly null — is still a legitimate fallback
+    rather than a reason to fail a seed run. An entry that *does* advertise a
+    capability set without this capability in it is not a fallback — it has
+    told us it cannot do the job, and binding it anyway would be the silent
+    degradation this command exists to prevent.
 
     Returns:
         The chosen ``(deployment_id, name)``.
@@ -521,14 +528,19 @@ def discover_role_deployment(
         SystemExit: the instance offers nothing bindable for this role.
     """
     candidates = _role_inventory(settings, role)
-    preferred = [c for c in candidates if _advertises(c, capability)] or [
-        c for c in candidates if "capabilities" not in c
-    ]
+    already_bound = _bound_role_deployment_id(settings, role)
+    preferred = (
+        [c for c in candidates if str(c["id"]) == already_bound]
+        or [c for c in candidates if _advertises(c, capability)]
+        # `is None` rather than a key check: an instance that sends the key
+        # with a null value is saying the same thing as one that omits it.
+        or [c for c in candidates if c.get("capabilities") is None]
+    )
     if not preferred:
         raise SystemExit(
             f"no {role} model available to bind: the instance reports no "
             f"{role} deployment it can serve. Deploy a model advertising the "
-            f"'{capability}' capability and re-run — proceeding without a "
+            f"'{capability}' capability and re-run — proceeding without an "
             f"{role} binding would leave the instance silently degraded."
         )
     chosen = preferred[0]
@@ -556,7 +568,7 @@ _EMBEDDING_ROLE = _ModelRole(
 def _bind_role_model(
     args: argparse.Namespace,
     *,
-    client,
+    scoped,
     role: _ModelRole,
     bind: Callable[..., object],
 ) -> dict:
@@ -565,8 +577,12 @@ def _bind_role_model(
     Shared by every ``bind-<role>-model`` command: the write, the read-back a
     bodiless 2xx forces, and the contradiction check are identical across roles.
     Only the role and the ``bind`` call differ.
+
+    Takes an already-workroom-scoped client. Scoping issues a real
+    ``workrooms.enter``, so doing it here as well as in a caller that already
+    needed a scoped client for its own read would cost a second round trip and
+    a second chance to fail on it.
     """
-    scoped = _client_for_workroom(client, args.workroom_id)
     unconfirmed_reason = None
     bound = _bound_role_deployment_id(bind(scoped), role.name)
     if bound is None:
@@ -623,7 +639,7 @@ def cmd_bind_chat_model(args: argparse.Namespace, *, client) -> dict:
     """
     return _bind_role_model(
         args,
-        client=client,
+        scoped=_client_for_workroom(client, args.workroom_id),
         role=_CHAT_ROLE,
         bind=lambda scoped: scoped.kaizen_ops.set_chat_model(
             args.deployment_id,
@@ -648,8 +664,10 @@ def cmd_bind_embedding_model(args: argparse.Namespace, *, client) -> dict:
     reaching a hosted endpoint without naming either.
     """
     discovered_name = None
+    # Scope once and reuse: the inventory read below and the bind itself both
+    # need a scoped client, and scoping twice would enter the workroom twice.
+    scoped = _client_for_workroom(client, args.workroom_id)
     if not args.deployment_id:
-        scoped = _client_for_workroom(client, args.workroom_id)
         try:
             settings = scoped.kaizen_ops.get_model_settings(
                 base_url=args.kaizen_base_url,
@@ -668,7 +686,7 @@ def cmd_bind_embedding_model(args: argparse.Namespace, *, client) -> dict:
         )
     result = _bind_role_model(
         args,
-        client=client,
+        scoped=scoped,
         role=_EMBEDDING_ROLE,
         bind=lambda scoped: scoped.kaizen_ops.set_embedding_model(
             args.deployment_id,
