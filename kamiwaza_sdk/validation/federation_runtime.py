@@ -60,10 +60,7 @@ def read_file_reference(reference: str, *, label: str) -> str:
 
 def _file_reference_path(reference: str, label: str) -> Path:
     parsed = urlsplit(reference)
-    if parsed.scheme != "file":
-        raise RuntimeError(f"{label} must be materialized as a local file")
-    if parsed.netloc or not parsed.path:
-        raise RuntimeError(f"{label} must be materialized as a local file")
+    _validate_file_url(parsed.scheme, parsed.netloc, parsed.path, label)
     path = Path(unquote(parsed.path))
     if not path.is_absolute():
         raise RuntimeError(f"{label} file is unavailable")
@@ -71,6 +68,15 @@ def _file_reference_path(reference: str, label: str) -> Path:
         raise RuntimeError(f"{label} file is unavailable")
 
     return path
+
+
+def _validate_file_url(scheme: str, netloc: str, path: str, label: str) -> None:
+    if scheme != "file":
+        raise RuntimeError(f"{label} must be materialized as a local file")
+    if netloc:
+        raise RuntimeError(f"{label} must be materialized as a local file")
+    if not path:
+        raise RuntimeError(f"{label} must be materialized as a local file")
 
 
 def _read_secret_file(path: Path, label: str) -> str:

@@ -140,23 +140,39 @@ def _shared_idp_base_url() -> str:
         raise ProviderContractError(
             "KAMIWAZA_SHARED_IDP_PUBLIC_URL is required for shared-IdP resolution"
         )
+    _validate_public_url(base)
+    return base
+
+
+def _validate_public_url(base: str) -> None:
     try:
         parsed = urlsplit(base)
     except ValueError:
         raise ProviderContractError("shared-IdP public URL is invalid") from None
-    if parsed.scheme != "https":
+    _validate_scheme(parsed.scheme)
+    _validate_netloc(parsed.netloc)
+    _validate_userinfo(parsed.username)
+
+
+def _validate_scheme(scheme: str) -> None:
+    if scheme != "https":
         raise ProviderContractError(
             "shared-IdP public URL must be HTTPS and contain no userinfo"
         )
-    if not parsed.netloc:
+
+
+def _validate_netloc(netloc: str) -> None:
+    if not netloc:
         raise ProviderContractError(
             "shared-IdP public URL must be HTTPS and contain no userinfo"
         )
-    if parsed.username is not None:
+
+
+def _validate_userinfo(username: str | None) -> None:
+    if username is not None:
         raise ProviderContractError(
             "shared-IdP public URL must be HTTPS and contain no userinfo"
         )
-    return base
 
 
 def _issuer_realm(suffix_source: str) -> str:
