@@ -116,12 +116,6 @@ class ModelMeshLifecycleProvider(FederationLifecycleProvider):
             )
             requirements = {
                 "scheduler": {"trustedSharedIssuers": issuers},
-                "modelTargets": sorted(
-                    {
-                        str(item.redacted_parameters["model_target_id"])
-                        for item in selected
-                    }
-                ),
             }
         return ScenarioPlan(
             schema="kamiwaza.scenario-plan/v1",

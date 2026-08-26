@@ -10,7 +10,11 @@ from typing import Any
 
 import pytest
 
-from kamiwaza_sdk.validation import RuntimeContext, ValidationProfile, mesh_edge_target_id
+from kamiwaza_sdk.validation import (
+    RuntimeContext,
+    ValidationProfile,
+    mesh_edge_target_id,
+)
 from kamiwaza_sdk.validation.applicability import applicable_targets
 from kamiwaza_sdk.validation.model_mesh_provider import ModelMeshLifecycleProvider
 from kamiwaza_sdk.validation.federation_common import initial_tuples
@@ -134,13 +138,20 @@ def test_model_mesh_provider_publishes_the_exact_model_mesh_plan(
     assert plan.provider_revision == "sdk.federation.model-mesh@v1"
     assert len(plan.selected) == 1
     assert plan.selected[0].scenario_id == MODEL_MESH_SCENARIO_ID
-    assert plan.install_requirements["modelTargets"] == ["edge-b-llamacpp-chat"]
+    # Install requirements are consumed by Kajiya's strict allowlist.  The
+    # selected model target is already carried by the resolved scenario and
+    # must not be emitted as an unconsumed top-level requirement.
+    assert plan.install_requirements == {
+        "scheduler": {
+            "trustedSharedIssuers": [
+                "https://idp.test/realms/kz-validation-f0bad37f5cec6b3d"
+            ]
+        }
+    }
 
 
 def test_model_mesh_grant_tuple_does_not_inherit_retrieval_or_job_authority() -> None:
-    assert initial_tuples(
-        model_id="model-123", job_executor=False
-    ) == [
+    assert initial_tuples(model_id="model-123", job_executor=False) == [
         {
             "subject": "user:{{user_id}}",
             "relation": "viewer",
@@ -260,7 +271,9 @@ class _Admin:
         del realm, client_id
         return {"id": "client-uuid"}
 
-    def ensure_attribute_mapper(self, realm: str, client_uuid: str, *, attribute: str) -> None:
+    def ensure_attribute_mapper(
+        self, realm: str, client_uuid: str, *, attribute: str
+    ) -> None:
         del realm, client_uuid, attribute
 
     def ensure_user(
@@ -365,11 +378,15 @@ def test_model_mesh_prepare_owns_only_pairing_model_grant_and_no_gate_fixture(
     assert "execution-gate" not in resource_types
     receiver_users = cluster_factory.wrappers["edge-b"].client.federations.users.added
     assert receiver_users
-    user_tuples = [tuples for external_id, tuples in receiver_users if "fed-clr-u" in external_id]
-    assert user_tuples == [[
-        {
-            "subject": "user:{{user_id}}",
-            "relation": "viewer",
-            "object": "model:model-123",
-        }
-    ]]
+    user_tuples = [
+        tuples for external_id, tuples in receiver_users if "fed-clr-u" in external_id
+    ]
+    assert user_tuples == [
+        [
+            {
+                "subject": "user:{{user_id}}",
+                "relation": "viewer",
+                "object": "model:model-123",
+            }
+        ]
+    ]
