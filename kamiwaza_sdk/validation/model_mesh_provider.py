@@ -53,14 +53,20 @@ from kamiwaza_sdk.validation.registry import model_digest
 class ModelMeshLifecycleProvider(FederationLifecycleProvider):
     """Run shared-IdP setup plus an exact receiver model-mesh inventory."""
 
-    def __init__(self, *args: Any, inference_factory: Any = None, **kwargs: Any) -> None:
-        requested_revision = kwargs.pop("provider_revision", MODEL_MESH_PROVIDER_REVISION)
-        if requested_revision != MODEL_MESH_PROVIDER_REVISION:
+    def __init__(
+        self,
+        cluster_factory: Any = None,
+        admin_factory: Any = None,
+        *,
+        inference_factory: Any = None,
+        provider_revision: str = MODEL_MESH_PROVIDER_REVISION,
+    ) -> None:
+        if provider_revision != MODEL_MESH_PROVIDER_REVISION:
             raise ProviderContractError("model-mesh provider revision is fixed")
         super().__init__(
-            *args,
+            cluster_factory=cluster_factory,
+            admin_factory=admin_factory,
             provider_revision=MODEL_MESH_PROVIDER_REVISION,
-            **kwargs,
         )
         if inference_factory is None:
             from kamiwaza_sdk.validation.sdk_inference_runtime import SdkInferenceClusterFactory
