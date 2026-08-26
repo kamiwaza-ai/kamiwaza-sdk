@@ -802,29 +802,26 @@ def test_bind_embedding_model_falls_back_to_an_untagged_candidate(
     assert out["embedding_deployment_id"] == "dep-quiet"
 
 
-def test_bind_embedding_model_refuses_a_candidate_that_disclaims_the_capability(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "inventory",
+    [
+        # Nothing offered at all.
+        [],
+        # Offered, but it has told us it cannot embed — not a fallback,
+        # unlike an entry that simply says nothing (the test above).
+        [{"id": "dep-chat-only", "capabilities": ["chat"]}],
+        # Offered without a usable deployment id.
+        [{"name": "nameless"}],
+    ],
+)
+def test_bind_embedding_model_fails_loudly_when_nothing_is_bindable(
+    monkeypatch, inventory
 ):
     client = FakeClient()
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
     client.kaizen_ops.get_model_settings = RecordingService(
-        {"embedding_models": [{"id": "dep-chat-only", "capabilities": ["chat"]}]}
+        {"embedding_models": inventory}
     )
-
-    # An entry that advertises capabilities *without* embeddings has told us it
-    # cannot do the job. Falling back to it would be the silent degradation
-    # this command exists to prevent — unlike an entry that simply says
-    # nothing, which the test above accepts.
-    with pytest.raises(SystemExit, match="no embedding model available to bind"):
-        _discover(client)
-
-    assert client.kaizen_ops.set_embedding_model.calls == []
-
-
-def test_bind_embedding_model_fails_loudly_when_nothing_is_bindable(monkeypatch):
-    client = FakeClient()
-    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
-    client.kaizen_ops.get_model_settings = RecordingService({"embedding_models": []})
 
     # Skipping the bind is the defect this command exists to fix: it would
     # leave every semantic search silently degraded to lexical matching.
