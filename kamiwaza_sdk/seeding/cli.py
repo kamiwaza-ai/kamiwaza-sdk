@@ -54,6 +54,7 @@ import argparse
 import json
 import math
 import os
+import sys
 from pathlib import Path
 from typing import Callable, Dict, NamedTuple, Optional, Sequence, Tuple, Union
 
@@ -508,7 +509,10 @@ def discover_role_deployment(
     ``capabilities`` is preferred but not required: the instance already typed
     every candidate as this role, so an entry that simply does not advertise
     its capabilities is still a legitimate fallback rather than a reason to
-    fail a seed run.
+    fail a seed run. An entry that *does* advertise a capability set without
+    this capability in it is not a fallback — it has told us it cannot do the
+    job, and binding it anyway would be the silent degradation this command
+    exists to prevent.
 
     Returns:
         The chosen ``(deployment_id, name)``.
@@ -517,7 +521,9 @@ def discover_role_deployment(
         SystemExit: the instance offers nothing bindable for this role.
     """
     candidates = _role_inventory(settings, role)
-    preferred = [c for c in candidates if _advertises(c, capability)] or candidates
+    preferred = [c for c in candidates if _advertises(c, capability)] or [
+        c for c in candidates if "capabilities" not in c
+    ]
     if not preferred:
         raise SystemExit(
             f"no {role} model available to bind: the instance reports no "
@@ -561,6 +567,7 @@ def _bind_role_model(
     Only the role and the ``bind`` call differ.
     """
     scoped = _client_for_workroom(client, args.workroom_id)
+    unconfirmed_reason = None
     bound = _bound_role_deployment_id(bind(scoped), role.name)
     if bound is None:
         # The write succeeded (a non-2xx would have raised), we just couldn't
@@ -575,8 +582,18 @@ def _bind_role_model(
                 ),
                 role.name,
             )
-        except KamiwazaError:
+        except KamiwazaError as exc:
+            # Still not fatal — the write itself succeeded. But an expired
+            # token and an odd 204 body both land on `confirmed: false`, and
+            # only one of them is an operator emergency, so say which happened
+            # instead of discarding the diagnosis.
             bound = None
+            unconfirmed_reason = f"read-back failed: {exc}"
+            print(
+                f"warning: {role.name} binding read-back failed for "
+                f"{args.kaizen_base_url}: {exc}",
+                file=sys.stderr,
+            )
     if bound is not None and bound != args.deployment_id:
         # The instance contradicts us: it is bound to something else. This is
         # the state that must never exit 0 — the seed run would continue on an
@@ -587,11 +604,15 @@ def _bind_role_model(
             f"proceeding — {role.contradiction_consequence}"
         )
     # bound is None here only when neither the write nor the read-back carried
-    # a binding. Report that honestly instead of implying confirmation.
-    return {
+    # a binding. Report that honestly instead of implying confirmation — the
+    # caller is expected to gate on `confirmed`, as the UAT seed profile does.
+    result = {
         f"{role.name}_deployment_id": args.deployment_id,
         "confirmed": bound is not None,
     }
+    if unconfirmed_reason is not None:
+        result["unconfirmed_reason"] = unconfirmed_reason
+    return result
 
 
 def cmd_bind_chat_model(args: argparse.Namespace, *, client) -> dict:

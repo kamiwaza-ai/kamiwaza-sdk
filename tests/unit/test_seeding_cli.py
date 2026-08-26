@@ -661,9 +661,20 @@ def test_bind_chat_model_survives_a_failing_read_back(monkeypatch, capsys):
     client.kaizen_ops.set_chat_model = RecordingService(None)
     client.kaizen_ops.get_model_settings = _raiser(KamiwazaError("ops read failed"))
 
-    out = _bind(client, capsys)
+    # Read stdout and stderr from one capture: the helper's own readouterr()
+    # would consume both before this test could inspect stderr.
+    _bind(client)
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
 
-    assert out == {"chat_deployment_id": "dep-xyz", "confirmed": False}
+    # An expired token and an odd 204 body both land on confirmed=false, but
+    # only one is an operator emergency — the cause has to survive.
+    assert out == {
+        "chat_deployment_id": "dep-xyz",
+        "confirmed": False,
+        "unconfirmed_reason": "read-back failed: ops read failed",
+    }
+    assert "ops read failed" in captured.err
 
 
 def _bind_embedding(client, capsys=None):
@@ -789,6 +800,25 @@ def test_bind_embedding_model_falls_back_to_an_untagged_candidate(
     out = _discover(client, capsys)
 
     assert out["embedding_deployment_id"] == "dep-quiet"
+
+
+def test_bind_embedding_model_refuses_a_candidate_that_disclaims_the_capability(
+    monkeypatch,
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        {"embedding_models": [{"id": "dep-chat-only", "capabilities": ["chat"]}]}
+    )
+
+    # An entry that advertises capabilities *without* embeddings has told us it
+    # cannot do the job. Falling back to it would be the silent degradation
+    # this command exists to prevent — unlike an entry that simply says
+    # nothing, which the test above accepts.
+    with pytest.raises(SystemExit, match="no embedding model available to bind"):
+        _discover(client)
+
+    assert client.kaizen_ops.set_embedding_model.calls == []
 
 
 def test_bind_embedding_model_fails_loudly_when_nothing_is_bindable(monkeypatch):
