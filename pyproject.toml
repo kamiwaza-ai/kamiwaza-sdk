@@ -105,7 +105,7 @@ include = [
 exclude = ["tests*", "examples*", "kamiwaza_extensions_lib*"]
 
 [tool.setuptools.package-data]
-kamiwaza_sdk = ["py.typed"]
+kamiwaza_sdk = ["py.typed", "validation/schemas/*.schema.json"]
 kamiwaza_extensions = ["templates/**/*", "templates/**/.*", "validators/*.json", "compatibility.json", "agent_guidance.md"]
 
 [tool.mypy]
