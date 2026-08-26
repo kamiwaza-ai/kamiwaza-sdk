@@ -67,8 +67,10 @@ def provision_gated_dataset(state: dict[str, Any]) -> None:
     state["installed_gate_package"] = not mc._already_installed(receiver)
     mc.declare_clearance_attribute(receiver)
     mc.install_gate_package(receiver, wheel[0], wheel[1])
+    dataset_name = f"eng10096-dataset-{uuid.uuid4().hex[:10]}"
+    state["dataset_name"] = dataset_name
     urn = receiver.datasets.create(
-        name=f"eng10096-dataset-{uuid.uuid4().hex[:10]}",
+        name=dataset_name,
         platform="file",
         properties={"path": dataset_path},
     )
@@ -76,17 +78,83 @@ def provision_gated_dataset(state: dict[str, Any]) -> None:
     receiver.datasets.set_gate(urn, type=mc.GATE_CLASSPATH, config={})
 
 
+def _reconcile_dataset_urn(state: dict[str, Any]) -> None:
+    """Recover a catalog URN when creation committed before its response."""
+    if state.get("dataset_urn") or not state.get("dataset_name"):
+        return
+    datasets = state["receiver"].catalog.list_datasets(query=str(state["dataset_name"]))
+    matches = [
+        str(getattr(dataset, "urn", ""))
+        for dataset in datasets or []
+        if getattr(dataset, "name", None) == state["dataset_name"]
+        and getattr(dataset, "urn", None)
+    ]
+    if len(matches) == 1:
+        state["dataset_urn"] = matches[0]
+        return
+    if not matches:
+        raise AssertionError("timed-out dataset creation could not be reconciled")
+    raise AssertionError("timed-out dataset name matched multiple catalog rows")
+
+
+def _response_rows(body: Any) -> list[dict[str, Any]]:
+    if isinstance(body, list):
+        rows = body
+    elif isinstance(body, dict):
+        rows = body.get("items", [])
+    else:
+        rows = []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _reconcile_federation_id(client: Any, state: dict[str, Any], side: str) -> None:
+    """Recover a federation id when pair creation committed before timeout."""
+    key = f"{side}_id"
+    if state.get(key) or not state.get("name"):
+        return
+    rows = _response_rows(client._request("GET", "/cluster/federations"))
+    matches = [
+        str(row["id"])
+        for row in rows
+        if row.get("id") and row.get("remote_cluster_name") == state.get("name")
+    ]
+    if len(matches) == 1:
+        state[key] = matches[0]
+    elif len(matches) > 1:
+        raise AssertionError(f"timed-out {side} federation matched multiple rows")
+
+
+def _reconcile_federations(state: dict[str, Any]) -> None:
+    for side in ("receiver", "initiator"):
+        _reconcile_federation_id(state[side], state, side)
+
+
+def _recover_external_ids_from_queue(state: dict[str, Any]) -> set[str]:
+    markers = {str(item) for item in state.get("onboarding_request_markers", [])}
+    if not markers or not state.get("receiver_id"):
+        return set()
+    body = state["receiver"]._request(
+        "GET", f"/cluster/federations/{state['receiver_id']}/onboarding"
+    )
+    return {
+        str(row["external_id"])
+        for row in _response_rows(body)
+        if row.get("justification") in markers and row.get("external_id")
+    }
+
+
 def _recover_guest_subs(state: dict[str, Any]) -> None:
-    """Find approval-created guests when claims failed before exposing subs."""
+    """Find guests even when an onboarding mutation timed out after commit."""
     external_ids = set(state.get("onboarding_external_ids", []))
     if state.get("external_id"):
         external_ids.add(str(state["external_id"]))
+    external_ids.update(_recover_external_ids_from_queue(state))
     if not external_ids:
         return
     body = state["receiver"]._request(
         "GET", f"/cluster/federations/{state['receiver_id']}/users"
     )
-    rows = body if isinstance(body, list) else (body or {}).get("items", [])
+    rows = _response_rows(body)
     guest_subs = state.setdefault("dataset_guest_subs", [])
     known_subs = set(guest_subs)
     for row in rows:
@@ -248,6 +316,8 @@ def cleanup(state: dict[str, Any]) -> None:
     initiator = state["initiator"]
     report = _CleanupReport()
     phases = (
+        ("federation reconciliation", partial(_reconcile_federations, state)),
+        ("dataset reconciliation", partial(_reconcile_dataset_urn, state)),
         ("guest recovery", partial(_recover_guest_subs, state)),
         (
             "dataset grants",

@@ -6,8 +6,9 @@ plus ``clearance=S`` must survive the receiver's offline-token exchange and
 return the known-answer U/S rows. Missing, blank, legacy-only,
 whitespace-wrapped, and nondefault access-token claims remain fail-closed even
 when the caller spoofs a default-tenant header. A separate guest reuses one
-opaque offline credential after Core's 60-second claims cache boundary, then
-proves revocation is still enforced while the refreshed claims are cached.
+opaque offline credential: receiver-owned clearance changes remain cached for
+the documented 60-second window, then appear after expiry, and revocation is
+still enforced while the refreshed claims are cached.
 
 ``MINI_CLEARANCE_DATASET_PATH`` is the receiver-visible CSV written from
 ``mini_clearance_records.json`` by ``tests.integration._gate_fixture``. The test
@@ -130,6 +131,7 @@ def _provision_pair(state: dict[str, Any], live_peer_base_url: str) -> None:
     receiver = state["receiver"]
     name = f"eng10096-clearance-{uuid.uuid4().hex[:10]}"
     psk = uuid.uuid4().hex
+    state["name"] = name
     receiver_fed = receiver.federations.pair(
         name=name,
         role="receiver",
@@ -154,8 +156,10 @@ def _provision_requester(
     label: str,
 ) -> KamiwazaClient:
     username = f"eng10096-{label}-{uuid.uuid4().hex[:10]}"
-    state["initiator"].subjects.upsert(username, attributes={}, password=username)
+    request_marker = f"ENG-10096-{label}-{uuid.uuid4().hex}"
     state.setdefault("requester_usernames", []).append(username)
+    state.setdefault("onboarding_request_markers", []).append(request_marker)
+    state["initiator"].subjects.upsert(username, attributes={}, password=username)
     requester = mc.authed_client(live_base_url, username, username, verify=False)
     state.setdefault("requester_clients", []).append(requester)
     return requester
@@ -223,10 +227,16 @@ def _approve_and_claim(
     *,
     attributes: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
+    markers = state.get("onboarding_request_markers", [])
+    justification = (
+        str(markers[-1])
+        if markers
+        else "ENG-10096 receiver-assigned clearance gate proof."
+    )
     status = _self_request_onboarding(
         requester,
         state["initiator_id"],
-        "ENG-10096 receiver-assigned clearance gate proof.",
+        justification,
     )
     claim_token, external_id = _required_onboarding_claim_material(status)
     state.setdefault("onboarding_external_ids", []).append(external_id)
@@ -306,7 +316,9 @@ def _install_federation_credential(
         raise AssertionError("federation credential installation could not be verified")
 
 
-def _assert_clearance_retrieval(path: dict[str, Any]) -> None:
+def _assert_clearance_retrieval(
+    path: dict[str, Any], *, expected_clearance: str = "S"
+) -> None:
     requester = path["requester"]
     local_token = requester.get_bearer_token()
     assert local_token, "requester's local access token is unavailable"
@@ -318,9 +330,28 @@ def _assert_clearance_retrieval(path: dict[str, Any]) -> None:
         path["dataset_urn"],
         verify=False,
     )
-    expected = [row for row in mc.records() if row["classification"] in {"U", "S"}]
+    allowed = {
+        "U": {"U"},
+        "S": {"U", "S"},
+    }.get(expected_clearance)
+    if allowed is None:
+        raise AssertionError(f"unsupported expected clearance {expected_clearance!r}")
+    expected = [row for row in mc.records() if row["classification"] in allowed]
     assert sorted(rows, key=lambda row: row["id"]) == expected
-    mc.assert_persona_result("S", rows, gate_audits)
+    mc.assert_persona_result(expected_clearance, rows, gate_audits)
+
+
+def _set_receiver_guest_attributes(path: dict[str, Any], *, clearance: str) -> None:
+    """Change receiver-owned claims without minting a second credential."""
+    response = path["receiver"]._request(
+        "PUT",
+        f"/cluster/federations/{path['receiver_id']}/guests/"
+        f"{path['guest_sub']}/attributes",
+        json={"attributes": {"clearance": clearance}},
+    )
+    attributes = response.get("attributes") if isinstance(response, dict) else None
+    if not isinstance(attributes, dict) or attributes.get("clearance") != clearance:
+        raise AssertionError("receiver guest-attribute update did not persist")
 
 
 def _mesh_job_create_response(
@@ -389,9 +420,14 @@ def _exercise_receiver_refresh_boundary(
     credential = path["credential"]
     _install_federation_credential(path, monkeypatch)
 
-    _assert_clearance_retrieval(path)
+    _assert_clearance_retrieval(path, expected_clearance="S")
+    _set_receiver_guest_attributes(path, clearance="U")
+    # The first request still observes the receiver's cached claims. This
+    # makes the subsequent post-TTL assertion prove a fresh exchange rather
+    # than merely proving that the update endpoint works.
+    _assert_clearance_retrieval(path, expected_clearance="S")
     sleeper(_RECEIVER_REFRESH_BOUNDARY_WAIT_SECONDS)
-    _assert_clearance_retrieval(path)
+    _assert_clearance_retrieval(path, expected_clearance="U")
 
     federation = path["receiver"].federations.by_id(path["receiver_id"])
     result = federation.guests.revoke(path["guest_sub"])

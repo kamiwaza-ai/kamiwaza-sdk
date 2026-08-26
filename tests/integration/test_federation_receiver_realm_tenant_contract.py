@@ -116,6 +116,21 @@ def test_claim_identity_uses_receiver_roster_not_durable_credential(
     decode.assert_not_called()
 
 
+def test_onboarding_fixture_records_requester_ownership_before_upsert() -> None:
+    upsert = Mock(side_effect=TimeoutError("requester upsert timed out"))
+    state = {
+        "initiator": SimpleNamespace(subjects=SimpleNamespace(upsert=upsert)),
+    }
+
+    with pytest.raises(TimeoutError):
+        edge._provision_requester(state, "https://source.invalid", label="timeout")
+
+    assert len(state["requester_usernames"]) == 1
+    assert len(state["onboarding_request_markers"]) == 1
+    assert state["requester_usernames"][0].startswith("eng10096-timeout-")
+    upsert.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "rows",
     [
@@ -221,6 +236,7 @@ def test_http_trace_writer_redacts_sensitive_headers(tmp_path: Path) -> None:
         "cookie": "cookie-canary",
         "SET-cookie": "set-cookie-canary",
         "x-kz-fEDERATION-CREDENTIAL": "federation-credential-canary",
+        "X-Offline-Token": "offline-token-header-canary",
     }
 
     writer.write(
@@ -229,6 +245,7 @@ def test_http_trace_writer_redacts_sensitive_headers(tmp_path: Path) -> None:
             ("aUtHoRiZaTiOn", canaries["aUtHoRiZaTiOn"]),
             ("PROXY-authorization", canaries["PROXY-authorization"]),
             ("cookie", canaries["cookie"]),
+            ("X-Offline-Token", canaries["X-Offline-Token"]),
             ("X-Request-Id", "safe-request-id"),
         ],
     )
@@ -254,6 +271,7 @@ def test_http_trace_writer_redacts_sensitive_headers(tmp_path: Path) -> None:
         "aUtHoRiZaTiOn": "[REDACTED]",
         "PROXY-authorization": "[REDACTED]",
         "cookie": "[REDACTED]",
+        "X-Offline-Token": "[REDACTED]",
         "X-Request-Id": "safe-request-id",
     }
     assert response_headers == {
@@ -290,6 +308,7 @@ def test_http_trace_writer_redacts_recursive_json_body_credentials(
         "response": "response-credential-canary",
         "nested": "nested-credential-canary",
         "stream": "stream-credential-canary",
+        "offline": "offline-token-canary",
     }
     bodies = [
         {
@@ -299,6 +318,7 @@ def test_http_trace_writer_redacts_recursive_json_body_credentials(
         {
             "credential": canaries["response"],
             "nested": [{"CREDENTIAL": canaries["nested"]}],
+            "offline_token": canaries["offline"],
             "status": "APPROVED",
         },
         {"Credential": canaries["stream"], "event": "done"},
@@ -317,12 +337,33 @@ def test_http_trace_writer_redacts_recursive_json_body_credentials(
         {
             "credential": "[REDACTED]",
             "nested": [{"CREDENTIAL": "[REDACTED]"}],
+            "offline_token": "[REDACTED]",
             "status": "APPROVED",
         },
         {"Credential": "[REDACTED]", "event": "done"},
     ]
     assert [record["body"]["shape"] for record in records] == ["json"] * 3
     assert [record.get("streamed") for record in records] == [None, False, True]
+
+
+@pytest.mark.parametrize("key", ["offline_token", "Offline-Token", "offlineToken"])
+def test_http_trace_writer_redacts_offline_token_key_variants(
+    tmp_path: Path, key: str
+) -> None:
+    canary = "offline-token-key-variant-canary"
+    writer = integration_conftest._HTTPTraceWriter(tmp_path / "http-trace.jsonl")
+    writer.write(
+        "response-body",
+        body=integration_conftest._trace_body_payload(
+            json.dumps({"nested": {key: canary}}),
+        ),
+    )
+
+    output = (tmp_path / "http-trace.jsonl").read_text(encoding="utf-8")
+    assert canary not in output
+    record = json.loads(output)
+    body = json.loads(record["body"]["body"])
+    assert body["nested"][key] == "[REDACTED]"
 
 
 def test_http_trace_writer_redacts_opaque_body_content(tmp_path: Path) -> None:
@@ -449,6 +490,7 @@ def test_receiver_refresh_boundary_reuses_credential_then_revokes(
     decode = Mock(side_effect=AssertionError("durable credential must stay opaque"))
     install_credential = Mock()
     retrieve = timeline.retrieve
+    update = timeline.update
     sleep = timeline.sleep
     denial = timeline.denial
     denial.return_value = (
@@ -458,19 +500,27 @@ def test_receiver_refresh_boundary_reuses_credential_then_revokes(
     monkeypatch.setattr(edge, "_decode_jwt_payload", decode, raising=False)
     monkeypatch.setattr(edge, "_install_federation_credential", install_credential)
     monkeypatch.setattr(edge, "_assert_clearance_retrieval", retrieve)
+    monkeypatch.setattr(edge, "_set_receiver_guest_attributes", update)
     monkeypatch.setattr(edge, "_mesh_job_create_response", denial)
 
     edge._exercise_receiver_refresh_boundary(path, monkeypatch, sleeper=sleep)
 
     decode.assert_not_called()
     install_credential.assert_called_once_with(path, monkeypatch)
-    assert retrieve.call_args_list == [call(path), call(path)]
+    assert retrieve.call_args_list == [
+        call(path, expected_clearance="S"),
+        call(path, expected_clearance="S"),
+        call(path, expected_clearance="U"),
+    ]
+    update.assert_called_once_with(path, clearance="U")
     sleep.assert_called_once_with(edge._RECEIVER_REFRESH_BOUNDARY_WAIT_SECONDS)
     assert edge._RECEIVER_REFRESH_BOUNDARY_WAIT_SECONDS > 60
     assert timeline.mock_calls == [
-        call.retrieve(path),
+        call.retrieve(path, expected_clearance="S"),
+        call.update(path, clearance="U"),
+        call.retrieve(path, expected_clearance="S"),
         call.sleep(edge._RECEIVER_REFRESH_BOUNDARY_WAIT_SECONDS),
-        call.retrieve(path),
+        call.retrieve(path, expected_clearance="U"),
         call.revoke("guest-sub"),
         call.denial(path, "same-offline-credential"),
     ]

@@ -145,6 +145,7 @@ _HTTP_TRACE_SENSITIVE_HEADERS = frozenset(
         "set-cookie",
         "x-api-key",
         "x-kz-federation-credential",
+        "x-offline-token",
     }
 )
 _HTTP_TRACE_SENSITIVE_BODY_KEYS = frozenset(
@@ -157,6 +158,7 @@ _HTTP_TRACE_SENSITIVE_BODY_KEYS = frozenset(
         "credentials",
         "federation_credential",
         "id_token",
+        "offline_token",
         "password",
         "preshared_key",
         "refresh_token",
@@ -311,7 +313,10 @@ def _redact_http_trace_json(value: Any) -> Any:
         redacted: dict[str, Any] = {}
         for name, nested in value.items():
             key = str(name)
-            normalized = key.casefold().replace("-", "_")
+            normalized_key = key
+            if "_" not in normalized_key and "-" not in normalized_key:
+                normalized_key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized_key)
+            normalized = normalized_key.casefold().replace("-", "_")
             if normalized in _HTTP_TRACE_SENSITIVE_BODY_KEYS:
                 redacted[key] = _HTTP_TRACE_REDACTED
             else:
@@ -1744,22 +1749,6 @@ def _require_two_clusters_for_marked_tests(request: pytest.FixtureRequest) -> No
         )
 
 
-def _mark_deferred_receiver_realm_tests(items: list[pytest.Item]) -> None:
-    """Skip receiver-realm UAT before any live fixtures or network calls."""
-    enabled = os.environ.get("KAMIWAZA_TEST_RECEIVER_REALM", "").strip().lower()
-    if enabled in {"1", "true", "yes", "on"}:
-        return
-    reason = (
-        "requires_receiver_realm: deferred until the Federation Keycloak Patterns "
-        "receiver-realm contract is live; follow ENG-10585 / ENG-9808 and set "
-        "KAMIWAZA_TEST_RECEIVER_REALM=1 only on a qualifying deployment"
-    )
-    skip_marker = pytest.mark.skip(reason=reason)
-    for item in items:
-        if "requires_receiver_realm" in item.keywords:
-            item.add_marker(skip_marker)
-
-
 @pytest.fixture(scope="session")
 def cluster_capability_snapshot(
     live_kamiwaza_session_client: KamiwazaClient,
@@ -1897,7 +1886,6 @@ def pytest_collection_modifyitems(
     halves makes those fixtures live across unrelated tests and can invalidate
     workroom-scoped state before the later half resumes.
     """
-    _mark_deferred_receiver_realm_tests(items)
     _enforce_required_edge_collection(config, items)
     _enforce_delegated_workload_collection(config, items)
     peer_url = str(config.getoption("live_peer_base_url")).strip()

@@ -68,6 +68,7 @@ KAMIWAZA_PEER_API_KEY=... \
 | `live` | Tests that talk to a running Kamiwaza deployment | always selected when running `-m live` |
 | `requires_embedding_model` | Live tests that need a platform embedding deployment that can generate embeddings | auto-provisioned by `embedding_model_prerequisite`, then probed by `embedding_test_target`; skipped if provisioning or the functional probe fails, and harness-provisioned failed deployments are stopped before skip |
 | `requires_two_clusters` | Live tests that need a federation peer cluster (ENG-5784) | auto-deselected at collection when `KAMIWAZA_PEER_BASE_URL` is unset; skipped at run time with an explicit reason when peer URL is set but `KAMIWAZA_PEER_API_KEY` is missing (partial-creds case) |
+| `requires_receiver_realm` | Live tests for the receiver-owned `receiver_realm` trust posture (ENG-10585 / ENG-9808) | selected by default; requires the two-cluster prerequisites and fails on an unsupported or unhealthy receiver deployment |
 
 ## Adding a federation-aware integration test
 

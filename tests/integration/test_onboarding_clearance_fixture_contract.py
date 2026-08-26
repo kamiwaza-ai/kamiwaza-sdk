@@ -84,6 +84,8 @@ def test_cleanup_attempts_every_phase_before_reporting_failures(
 ) -> None:
     timeline: list[str] = []
     phases = (
+        ("_reconcile_federations", "federation reconciliation"),
+        ("_reconcile_dataset_urn", "dataset reconciliation"),
         ("_recover_guest_subs", "guest recovery"),
         ("_remove_dataset_grants", "dataset grants"),
         ("_remove_dataset", "dataset"),
@@ -124,3 +126,68 @@ def test_cleanup_failure_precedence(
 
     assert exc_info.value is expected_error
     assert cleanup.call_args_list == [call({"state": "owned"})]
+
+
+def test_guest_recovery_reconciles_request_committed_before_response_timeout() -> None:
+    receiver = SimpleNamespace(
+        _request=Mock(
+            side_effect=[
+                {
+                    "items": [
+                        {
+                            "external_id": "guest-source-id",
+                            "justification": "eng10096-request-marker",
+                        }
+                    ]
+                },
+                {
+                    "items": [
+                        {
+                            "external_id": "guest-realm-sub",
+                            "linked_external_user": "guest-source-id",
+                        }
+                    ]
+                },
+            ]
+        )
+    )
+    state = {
+        "receiver": receiver,
+        "receiver_id": "receiver-federation-id",
+        "onboarding_request_markers": ["eng10096-request-marker"],
+        "dataset_guest_subs": [],
+    }
+
+    fixture._recover_guest_subs(state)
+
+    assert state["dataset_guest_subs"] == ["guest-realm-sub"]
+    assert receiver._request.call_args_list == [
+        call("GET", "/cluster/federations/receiver-federation-id/onboarding"),
+        call("GET", "/cluster/federations/receiver-federation-id/users"),
+    ]
+
+
+def test_dataset_recovery_reconciles_catalog_row_after_create_timeout() -> None:
+    receiver = SimpleNamespace(
+        catalog=SimpleNamespace(
+            list_datasets=Mock(
+                return_value=[
+                    SimpleNamespace(
+                        name="eng10096-dataset-timeout",
+                        urn="urn:kamiwaza:dataset:committed",
+                    )
+                ]
+            )
+        )
+    )
+    state = {
+        "receiver": receiver,
+        "dataset_name": "eng10096-dataset-timeout",
+    }
+
+    fixture._reconcile_dataset_urn(state)
+
+    assert state["dataset_urn"] == "urn:kamiwaza:dataset:committed"
+    receiver.catalog.list_datasets.assert_called_once_with(
+        query="eng10096-dataset-timeout"
+    )
