@@ -22,6 +22,10 @@ classifiers = [
 ]
 dependencies = [
     "requests",
+    # Transitive dep of requests; floor pinned to enforce the GHSA-mf9v-mfxr-j63j /
+    # GHSA-qccp-gfcp-xxvc fix in published package metadata, not just uv.lock
+    # (a lockfile-only bump doesn't reach consumers who install the wheel directly).
+    "urllib3>=2.7.0",
     "pydantic[email]>=2.11",
     "httpx",
     "filelock>=3.20",
