@@ -11,6 +11,7 @@ from .embedding import EmbeddingService
 from .enclaves import EnclavesService
 from .federations import (
     FederationGuestsAPI,
+    FederationOnboardingAPI,
     FederationProxy,
     FederationsAPI,
     FederationUsersAPI,
@@ -48,6 +49,7 @@ __all__ = [
     "EmbeddingService",
     "EnclavesService",
     "FederationGuestsAPI",
+    "FederationOnboardingAPI",
     "FederationProxy",
     "FederationUsersAPI",
     "FederationsAPI",
