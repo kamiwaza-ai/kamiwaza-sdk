@@ -93,9 +93,11 @@ class FederationLifecycleProvider:
         self,
         cluster_factory: ClusterFactory | None = None,
         admin_factory: AdminFactory | None = None,
+        provider_revision: str = FEDERATION_PROVIDER_REVISION,
     ) -> None:
         self._cluster_factory = cluster_factory or SdkFederationClusterFactory()
         self._admin_factory = admin_factory or KeycloakAdminFactory()
+        self._provider_revision = provider_revision
 
     def describe(self) -> tuple[ScenarioDescriptor, ...]:
         return (scenario_descriptor(),)
@@ -119,7 +121,7 @@ class FederationLifecycleProvider:
         return ScenarioPlan(
             schema="kamiwaza.scenario-plan/v1",
             profile_digest=model_digest(profile),
-            provider_revision=FEDERATION_PROVIDER_REVISION,
+            provider_revision=self._provider_revision,
             selected=selected,
             install_requirements=requirements,
             runtime_requirements=descriptor.requires,
@@ -134,7 +136,7 @@ class FederationLifecycleProvider:
         self._validate_revision(plan.provider_revision)
         validate_plan_runtime_identity(plan, runtime)
         store = FederationStateStore(
-            state_writer, runtime_ownership_key(runtime), FEDERATION_PROVIDER_REVISION
+            state_writer, runtime_ownership_key(runtime), self._provider_revision
         )
         state = store.initial(plan, runtime)
         if not plan.selected:
@@ -149,7 +151,7 @@ class FederationLifecycleProvider:
                 _RealmContext(state, store, plan, runtime, admin, first.target_id)
             )
             for selected in plan.selected:
-                state = prepare_edge(
+                state = self._prepare_edge(
                     _EdgeContext(
                         state=state,
                         store=store,
@@ -166,6 +168,11 @@ class FederationLifecycleProvider:
             for cluster in clusters.values():
                 _close(cluster)
 
+    def _prepare_edge(self, context: _EdgeContext) -> FixtureState:
+        """Prepare one edge; subclasses may add owned resources before users."""
+
+        return prepare_edge(context)
+
     def run(
         self,
         plan: ScenarioPlan,
@@ -174,11 +181,11 @@ class FederationLifecycleProvider:
     ) -> ScenarioEvidence:
         self._validate_revision(plan.provider_revision)
         validate_plan_runtime_identity(plan, runtime)
-        validate_state(runtime, state, FEDERATION_PROVIDER_REVISION)
+        validate_state(runtime, state, self._provider_revision)
         if not plan.selected:
             return ScenarioEvidence(
                 schema="kamiwaza.scenario-evidence/v1",
-                provider_revision=FEDERATION_PROVIDER_REVISION,
+                provider_revision=self._provider_revision,
                 profile_digest=plan.profile_digest,
                 plan_digest=model_digest(plan),
                 state_digest=model_digest(state),
@@ -223,7 +230,7 @@ class FederationLifecycleProvider:
                 _close(cluster)
         return ScenarioEvidence(
             schema="kamiwaza.scenario-evidence/v1",
-            provider_revision=FEDERATION_PROVIDER_REVISION,
+            provider_revision=self._provider_revision,
             profile_digest=plan.profile_digest,
             plan_digest=model_digest(plan),
             state_digest=model_digest(state),
@@ -233,11 +240,11 @@ class FederationLifecycleProvider:
 
     def teardown(self, runtime: RuntimeContext, state: FixtureState) -> CleanupEvidence:
         validate_state_runtime_identity(runtime, state)
-        validate_state(runtime, state, FEDERATION_PROVIDER_REVISION)
+        validate_state(runtime, state, self._provider_revision)
         if not state.journal:
             return CleanupEvidence(
                 schema="kamiwaza.cleanup-evidence/v1",
-                provider_revision=FEDERATION_PROVIDER_REVISION,
+                provider_revision=self._provider_revision,
                 run_id=runtime.run_id,
                 state_digest=model_digest(state),
                 status="passed",
@@ -257,7 +264,7 @@ class FederationLifecycleProvider:
         failed = any(item.status == "failed" for item in results)
         return CleanupEvidence(
             schema="kamiwaza.cleanup-evidence/v1",
-            provider_revision=FEDERATION_PROVIDER_REVISION,
+            provider_revision=self._provider_revision,
             run_id=runtime.run_id,
             state_digest=model_digest(state),
             status="failed" if failed else "passed",
@@ -328,9 +335,8 @@ class FederationLifecycleProvider:
             for cluster_id in ids
         }
 
-    @staticmethod
-    def _validate_revision(revision: str) -> None:
-        if revision != FEDERATION_PROVIDER_REVISION:
+    def _validate_revision(self, revision: str) -> None:
+        if revision != self._provider_revision:
             raise ProviderContractError("provider revision mismatch")
 
 

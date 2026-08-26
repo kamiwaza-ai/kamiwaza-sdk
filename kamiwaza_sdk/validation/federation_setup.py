@@ -151,10 +151,15 @@ def prepare_realm(context: RealmContext) -> FixtureState:
     )
 
 
-def prepare_edge(context: EdgeContext) -> FixtureState:
+def prepare_edge(
+    context: EdgeContext,
+    *,
+    model_id: str | None = None,
+    include_dataset_fixture: bool = True,
+) -> FixtureState:
     _bind_edge(context)
-    _configure_edge(context)
-    _seed_brokered_users(context)
+    _configure_edge(context, include_dataset_fixture=include_dataset_fixture)
+    _seed_brokered_users(context, model_id=model_id)
     return context.state
 
 
@@ -207,40 +212,47 @@ def _bind_edge(context: EdgeContext) -> None:
         raise ProviderContractError("shared-IdP pairing resolved one cluster identity")
 
 
-def _configure_edge(context: EdgeContext) -> None:
-    for client in (context.initiator, context.receiver):
-        client.cluster.declare_attribute("clearance", type="string")
-    if _ensure_gate(context.receiver):
+def _configure_edge(
+    context: EdgeContext, *, include_dataset_fixture: bool = True
+) -> None:
+    if include_dataset_fixture:
+        for client in (context.initiator, context.receiver):
+            client.cluster.declare_attribute("clearance", type="string")
+        if _ensure_gate(context.receiver):
+            context.state = _record(
+                context.store,
+                context.state,
+                MutationSpec(
+                    context.selected.target_id, "gate-package", GATE_PACKAGE_NAME
+                ),
+            )
+        dataset_path = os.environ.get(_DATASET_PATH_ENV, _DATASET_DEFAULT_PATH).strip()
+        if not dataset_path:
+            raise ProviderContractError("shared-IdP dataset path is empty")
+        context.urn = str(
+            context.receiver.datasets.create(
+                name=f"kamiwaza-validation-{context.name}",
+                platform="file",
+                properties={"path": dataset_path},
+            )
+        )
         context.state = _record(
             context.store,
             context.state,
-            MutationSpec(context.selected.target_id, "gate-package", GATE_PACKAGE_NAME),
+            MutationSpec(context.selected.target_id, "dataset", context.urn),
+            {"dataset_urn": context.urn},
         )
-    dataset_path = os.environ.get(_DATASET_PATH_ENV, _DATASET_DEFAULT_PATH).strip()
-    if not dataset_path:
-        raise ProviderContractError("shared-IdP dataset path is empty")
-    context.urn = str(
-        context.receiver.datasets.create(
-            name=f"kamiwaza-validation-{context.name}",
-            platform="file",
-            properties={"path": dataset_path},
+        context.receiver.datasets.set_gate(context.urn, type=GATE_CLASSPATH, config={})
+        previous_gate = read_execution_gate(context.receiver)
+        context.receiver.cluster.set_execution_gate(
+            type=_ALLOW_ALL_EXECUTION_GATE, config={}
         )
-    )
-    context.state = _record(
-        context.store,
-        context.state,
-        MutationSpec(context.selected.target_id, "dataset", context.urn),
-        {"dataset_urn": context.urn},
-    )
-    context.receiver.datasets.set_gate(context.urn, type=GATE_CLASSPATH, config={})
-    previous_gate = read_execution_gate(context.receiver)
-    context.receiver.cluster.set_execution_gate(type=_ALLOW_ALL_EXECUTION_GATE, config={})
-    context.state = _record(
-        context.store,
-        context.state,
-        MutationSpec(context.selected.target_id, "execution-gate", context.receiver_id),
-        {"previous_execution_gate": _json_value(previous_gate)},
-    )
+        context.state = _record(
+            context.store,
+            context.state,
+            MutationSpec(context.selected.target_id, "execution-gate", context.receiver_id),
+            {"previous_execution_gate": _json_value(previous_gate)},
+        )
     context.state = context.store.update_edge(
         context.state,
         context.selected.target_id,
@@ -257,7 +269,7 @@ def _configure_edge(context: EdgeContext) -> None:
     )
 
 
-def _seed_brokered_users(context: EdgeContext) -> None:
+def _seed_brokered_users(context: EdgeContext, *, model_id: str | None = None) -> None:
     password_ref = context.runtime.secret_refs.get(SHARED_REALM_PERSONA_PASSWORD_REF)
     if not password_ref:
         raise ProviderContractError("shared-IdP persona password reference is missing")
@@ -268,7 +280,11 @@ def _seed_brokered_users(context: EdgeContext) -> None:
             BrokeredUserSpec(
                 username,
                 password,
-                initial_tuples(context.urn, job_executor=clearance == "U"),
+                initial_tuples(
+                    context.urn,
+                    job_executor=bool(context.urn) and clearance == "U",
+                    model_id=model_id if clearance == "U" else None,
+                ),
             ),
         )
     for case_name, (username, _attrs) in TENANT_NEGATIVE_PERSONAS.items():
