@@ -107,6 +107,13 @@ def _cleanup_gate_package(mutation: Any, context: CleanupContext) -> None:
     context.receiver.gates.packages.uninstall(mutation.resource_id)
 
 
+def _cleanup_model_deployment(mutation: Any, context: CleanupContext) -> None:
+    serving = getattr(context.receiver, "serving", None)
+    if serving is None or not callable(getattr(serving, "stop_deployment", None)):
+        raise RuntimeError("model deployment cleanup service is unavailable")
+    serving.stop_deployment(deployment_id=mutation.resource_id, force=True)
+
+
 def _cleanup_keycloak_user(mutation: Any, context: CleanupContext) -> None:
     context.admin.delete_user(_cleanup_realm(context), mutation.resource_id)
 
@@ -136,6 +143,7 @@ CLEANUP_HANDLERS: dict[str, _CleanupHandler] = {
     "initiator-federation": _cleanup_federation,
     "execution-gate": _cleanup_execution_gate,
     "gate-package": _cleanup_gate_package,
+    "model-deployment": _cleanup_model_deployment,
     "keycloak-user": _cleanup_keycloak_user,
     "keycloak-client": _cleanup_keycloak_client,
     "keycloak-realm": _cleanup_keycloak_realm,

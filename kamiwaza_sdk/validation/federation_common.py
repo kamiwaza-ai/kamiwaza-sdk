@@ -39,20 +39,35 @@ def all_personas() -> tuple[tuple[str, dict[str, str]], ...]:
     return tuple(values)
 
 
-def initial_tuples(dataset_urn: str, *, job_executor: bool) -> list[dict[str, str]]:
-    tuples = [
-        {
-            "subject": "user:{{user_id}}",
-            "relation": "viewer",
-            "object": f"dataset:{dataset_urn}",
-        }
-    ]
+def initial_tuples(
+    dataset_urn: str | None = None,
+    *,
+    job_executor: bool,
+    model_id: str | None = None,
+) -> list[dict[str, str]]:
+    tuples: list[dict[str, str]] = []
+    if dataset_urn:
+        tuples.append(
+            {
+                "subject": "user:{{user_id}}",
+                "relation": "viewer",
+                "object": f"dataset:{dataset_urn}",
+            }
+        )
     if job_executor:
         tuples.append(
             {
                 "subject": "user:{{user_id}}",
                 "relation": "executor",
                 "object": "cluster_jobs:__all__",
+            }
+        )
+    if model_id:
+        tuples.append(
+            {
+                "subject": "user:{{user_id}}",
+                "relation": "viewer",
+                "object": f"model:{model_id}",
             }
         )
     return tuples
