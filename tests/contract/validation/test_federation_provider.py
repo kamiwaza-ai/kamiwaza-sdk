@@ -362,6 +362,24 @@ def test_resolution_is_deterministic_and_publishes_issuer_trust(
     )
 
 
+@pytest.mark.parametrize(
+    "public_url",
+    (
+        "https://idp.test/realm",
+        "https://idp.test?tenant=one",
+        "https://idp.test/#fragment",
+    ),
+)
+def test_resolution_rejects_non_origin_public_url(
+    public_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KAMIWAZA_SHARED_IDP_PUBLIC_URL", public_url)
+    monkeypatch.setenv("KAMIWAZA_VALIDATION_RUN_ID", "run-federation-1")
+
+    with pytest.raises(ProviderContractError, match="HTTPS origin"):
+        planned_shared_issuer(_profile())
+
+
 def test_resolution_without_edges_is_empty_and_does_not_require_idp(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

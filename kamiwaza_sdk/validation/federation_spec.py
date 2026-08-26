@@ -152,6 +152,11 @@ def _validate_public_url(base: str) -> None:
     _validate_scheme(parsed.scheme)
     _validate_netloc(parsed.netloc)
     _validate_userinfo(parsed.username)
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ProviderContractError(
+            "shared-IdP public URL must be an HTTPS origin without a path, query, "
+            "fragment, or userinfo"
+        )
 
 
 def _validate_scheme(scheme: str) -> None:
