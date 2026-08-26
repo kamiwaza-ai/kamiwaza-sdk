@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, cast
 
 from pydantic import JsonValue
@@ -21,6 +22,13 @@ from kamiwaza_sdk.validation.registry import model_digest
 from kamiwaza_sdk.validation.inference_state import runtime_ownership_key
 
 FEDERATION_STATE_MAC_KEY = "ownership_mac"
+
+
+@dataclass(frozen=True)
+class MutationSpec:
+    target_id: str
+    resource_type: str
+    resource_id: str
 
 
 def owner_nonce(key: bytes, target_id: str) -> str:
@@ -60,21 +68,38 @@ def sign_state(state: FixtureState, key: bytes) -> FixtureState:
 
 
 def validate_state(runtime: RuntimeContext, state: FixtureState, revision: str) -> None:
+    _validate_state_identity(runtime, state, revision)
+    _validate_state_owner(runtime, state, revision)
+    _validate_state_mac(runtime, state)
+
+
+def _validate_state_identity(
+    runtime: RuntimeContext, state: FixtureState, revision: str
+) -> None:
     if state.provider_revision != revision:
         raise ProviderContractError("fixture state provider revision mismatch")
     if state.run_id != runtime.run_id:
         raise ProviderContractError("fixture state run does not match runtime")
     if state.runtime_digest != model_digest(runtime):
         raise ProviderContractError("fixture state runtime digest mismatch")
+
+
+def _validate_state_owner(
+    runtime: RuntimeContext, state: FixtureState, revision: str
+) -> None:
     if not hmac.compare_digest(
         state.owner_token_digest, owner_digest(runtime.run_id, revision)
     ):
         raise ProviderContractError("fixture state ownership digest mismatch")
-    key = runtime_ownership_key(runtime)
+
+
+def _validate_state_mac(runtime: RuntimeContext, state: FixtureState) -> None:
     actual = state.opaque.get(FEDERATION_STATE_MAC_KEY)
     if not isinstance(actual, str):
         raise ProviderContractError("fixture state ownership MAC is missing")
-    expected = sign_state(state, key).opaque[FEDERATION_STATE_MAC_KEY]
+    expected = sign_state(state, runtime_ownership_key(runtime)).opaque[
+        FEDERATION_STATE_MAC_KEY
+    ]
     if not isinstance(expected, str) or not hmac.compare_digest(actual, expected):
         raise ProviderContractError("fixture state ownership MAC mismatch")
 
@@ -112,28 +137,25 @@ class FederationStateStore:
     def record(
         self,
         state: FixtureState,
-        *,
-        target_id: str,
-        resource_type: str,
-        resource_id: str,
+        spec: MutationSpec,
         opaque: Mapping[str, Any] | None = None,
     ) -> FixtureState:
         mutation = FixtureMutation(
             sequence=len(state.journal) + 1,
-            target_id=target_id,
-            resource_type=resource_type,
-            resource_id=resource_id,
+            target_id=spec.target_id,
+            resource_type=spec.resource_type,
+            resource_id=spec.resource_id,
             action="created",
         )
         next_state = state.model_copy(update={"journal": (*state.journal, mutation)})
         if opaque:
             opaque_values = _mapping(next_state.opaque)
             edges = _mapping(opaque_values.get("edges"))
-            edge = _mapping(edges.get(target_id))
+            edge = _mapping(edges.get(mutation.target_id))
             resources = _mapping(edge.get("resources"))
             resources.update(opaque)
             edge["resources"] = resources
-            edges[target_id] = edge
+            edges[mutation.target_id] = edge
             next_state = next_state.model_copy(
                 update={
                     "opaque": cast(

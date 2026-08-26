@@ -297,23 +297,24 @@ class KeycloakAdmin:
     def delete_user(self, realm: str, user_id: str) -> bool:
         """Delete one user from an owned realm; an absent user is idempotent."""
 
-        response = self._req("DELETE", f"/realms/{quote(realm)}/users/{quote(user_id)}")
-        if response.status_code in (204, 404):
-            return response.status_code == 204
-        raise KeycloakAdminError(
-            f"delete user failed ({response.status_code}): {response.text[:200]}"
+        return self._delete_owned_resource(
+            f"/realms/{quote(realm)}/users/{quote(user_id)}", "user"
         )
 
     def delete_client(self, realm: str, client_uuid: str) -> bool:
         """Delete one client from an owned realm; absent is idempotent."""
 
-        response = self._req(
-            "DELETE", f"/realms/{quote(realm)}/clients/{quote(client_uuid)}"
+        return self._delete_owned_resource(
+            f"/realms/{quote(realm)}/clients/{quote(client_uuid)}", "client"
         )
+
+    def _delete_owned_resource(self, path: str, resource_type: str) -> bool:
+        response = self._req("DELETE", path)
         if response.status_code in (204, 404):
             return response.status_code == 204
         raise KeycloakAdminError(
-            f"delete client failed ({response.status_code}): {response.text[:200]}"
+            f"delete {resource_type} failed ({response.status_code}): "
+            f"{response.text[:200]}"
         )
 
     # -- token (test helper) ----------------------------------------------
