@@ -44,6 +44,7 @@ _AGENTS_PATH = "api/agents"
 _CONVERSATIONS_PATH = "api/conversations"
 _OPS_MODELS_PATH = "api/ops/models"
 _OPS_CHAT_MODEL_PATH = "api/ops/models/chat"
+_OPS_EMBEDDING_MODEL_PATH = "api/ops/models/embedding"
 
 # Canonical Kaizen's Idempotency-Key bounds, mirrored from the member API's
 # Header(min_length=1, max_length=200) so a bad key fails here — with the fix in
@@ -1475,6 +1476,29 @@ class ConversationService(BaseService):
 class KaizenOpsService(BaseService):
     """Operator settings on a canonical Kaizen instance."""
 
+    def _set_role_model(
+        self,
+        path: str,
+        deployment_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]],
+    ) -> Dict[str, Any]:
+        """PUT one model-role binding and return the settings view it answers with.
+
+        Kaizen resolves the endpoint and display metadata from the deployment
+        itself — only the deployment id crosses the wire, never an endpoint or
+        a credential. Every role route takes the same selector body, so the
+        role is carried entirely by ``path``.
+        """
+        return self.client._request(
+            "PUT",
+            path,
+            base_url=base_url,
+            json={"deployment_id": deployment_id},
+            headers=_workroom_headers(workroom_id),
+        )
+
     def set_chat_model(
         self,
         deployment_id: str,
@@ -1485,9 +1509,7 @@ class KaizenOpsService(BaseService):
         """Point the instance's chat role at a Kamiwaza model deployment.
 
         Canonical Kaizen binds models per instance, not per agent, so this is
-        how a caller gives its agents a backing model. Kaizen resolves the
-        endpoint and display metadata from the deployment itself — only the
-        deployment id crosses the wire, never an endpoint or a credential.
+        how a caller gives its agents a backing model.
 
         Requires an admin-ranked caller and an instance started with its config
         store enabled; without either, Kaizen answers 4xx rather than silently
@@ -1501,12 +1523,45 @@ class KaizenOpsService(BaseService):
         Returns:
             The instance's model-settings view after the update.
         """
-        return self.client._request(
-            "PUT",
+        return self._set_role_model(
             _OPS_CHAT_MODEL_PATH,
+            deployment_id,
             base_url=base_url,
-            json={"deployment_id": deployment_id},
-            headers=_workroom_headers(workroom_id),
+            workroom_id=workroom_id,
+        )
+
+    def set_embedding_model(
+        self,
+        deployment_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Dict[str, Any]:
+        """Point the instance's embedding role at a Kamiwaza model deployment.
+
+        Binding chat alone is not enough: with no embedding endpoint selected,
+        Kaizen answers semantic search by falling back to lexical matching and
+        logs a warning, so an instance that looks healthy quietly retrieves
+        worse. Selecting an embedding deployment is what turns semantic
+        retrieval on.
+
+        Same admin-and-config-store requirements as :meth:`set_chat_model`.
+
+        Args:
+            deployment_id: Kamiwaza deployment to serve embeddings. It must
+                advertise the embeddings capability; Kaizen answers 4xx when it
+                does not, rather than binding a model that cannot embed.
+            base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
+            workroom_id: Workroom scope (X-Workroom-Id header).
+
+        Returns:
+            The instance's model-settings view after the update.
+        """
+        return self._set_role_model(
+            _OPS_EMBEDDING_MODEL_PATH,
+            deployment_id,
+            base_url=base_url,
+            workroom_id=workroom_id,
         )
 
     def get_model_settings(

@@ -18,11 +18,22 @@ Example::
         --credential-env AWS_BEDROCK_CREDENTIAL_JSON
     kamiwaza-seed bind-chat-model --kaizen-base-url "$URL" \\
         --workroom-id <wid> --deployment-id <dep>
+    kamiwaza-seed bind-embedding-model --kaizen-base-url "$URL" \\
+        --workroom-id <wid>
     kamiwaza-seed create-agent --kaizen-base-url "$URL" --workroom-id <wid> \\
         --name uat-agent --persona "Answer UAT questions."
 
 Canonical Kaizen binds a model per instance, so ``bind-chat-model`` — not
 ``create-agent`` — is what gives a seeded agent a backing model.
+
+``bind-embedding-model`` is the same step for retrieval, and is just as
+required: with no embedding deployment selected, semantic search falls back to
+lexical matching and only says so in a log line, so a seed run that skips it
+produces an instance that looks healthy and retrieves badly. It takes no
+``--deployment-id`` above because nothing in a seed run deploys an embedding
+model — the one to bind is whatever the environment already serves, so the
+command selects by capability from the instance's own inventory rather than by
+a model name that would differ between an offline box and a hosted one.
 
 Legacy Kaizen still binds per agent. Selecting it means naming it in **both**
 places — the resolve and the create — or the resolve finds one product while
@@ -43,8 +54,9 @@ import argparse
 import json
 import math
 import os
+import sys
 from pathlib import Path
-from typing import Callable, Dict, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, NamedTuple, Optional, Sequence, Tuple, Union
 
 from ..exceptions import DeploymentFailedError, KamiwazaError
 from ..schemas.kaizen import AgentDefinition, LLMConfig
@@ -440,18 +452,200 @@ def cmd_create_agent(args: argparse.Namespace, *, client) -> dict:
     return _create_legacy_agent(args, client, api_key)
 
 
-def _bound_chat_deployment_id(settings: object) -> Optional[str]:
-    """Pull the currently-bound chat deployment id out of a model-settings view."""
+def _bound_role_deployment_id(settings: object, role: str) -> Optional[str]:
+    """Pull one role's currently-bound deployment id out of a model-settings view.
+
+    Every model role reports through the same ``{role: {current: {id}}}`` shape,
+    so the role name is the only thing that varies between callers.
+    """
     if not isinstance(settings, dict):
         return None
-    chat = settings.get("chat")
-    if not isinstance(chat, dict):
+    entry = settings.get(role)
+    if not isinstance(entry, dict):
         return None
-    current = chat.get("current")
+    current = entry.get("current")
     if not isinstance(current, dict):
         return None
     bound = current.get("id")
     return str(bound) if bound else None
+
+
+def _role_inventory(settings: object, role: str) -> list:
+    """List the deployments a Kaizen instance says it could bind to ``role``.
+
+    The instance has already filtered this by model type, resolved each
+    endpoint, and dropped anything it could not serve, so it is a better
+    authority on what is bindable than anything the caller could reconstruct
+    from the platform inventory itself.
+    """
+    if not isinstance(settings, dict):
+        return []
+    candidates = settings.get(f"{role}_models")
+    if not isinstance(candidates, list):
+        return []
+    return [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("id")
+    ]
+
+
+def _advertises(candidate: dict, capability: str) -> bool:
+    capabilities = candidate.get("capabilities")
+    if not isinstance(capabilities, list):
+        return False
+    return capability in {str(item) for item in capabilities}
+
+
+def _preferred_candidates(
+    candidates: list, *, already_bound: Optional[str], capability: str
+) -> list:
+    """Rank the ways a candidate can qualify, most specific first.
+
+    Each tier is a complete answer on its own; the next is consulted only when
+    the one above it is empty. A candidate that advertises a capability set
+    excluding ``capability`` qualifies under no tier at all.
+    """
+    return (
+        # Already bound, and still on offer — never repoint it.
+        [c for c in candidates if str(c["id"]) == already_bound]
+        # Says it can do the job.
+        or [c for c in candidates if _advertises(c, capability)]
+        # Says nothing either way. `is None` rather than a key check: an
+        # instance sending the key with a null value means what one that omits
+        # it means.
+        or [c for c in candidates if c.get("capabilities") is None]
+    )
+
+
+def discover_role_deployment(
+    settings: object, *, role: str, capability: str
+) -> Tuple[str, str]:
+    """Pick a deployment to bind to ``role``, preferring an explicit capability.
+
+    Selecting by capability rather than by model name is what keeps this
+    working across environments that serve the same role from different models
+    — a local offline serve on one box, a hosted endpoint on another.
+
+    An existing binding wins over any of that. Re-pointing a role that is
+    already bound would leave documents embedded by one model and searched
+    against another — the same corruption the contradiction check refuses —
+    except reached by our own write, so nothing would report it. A re-run
+    therefore keeps what is already there whenever the instance still offers
+    it.
+
+    ``capabilities`` is preferred but not required: the instance already typed
+    every candidate as this role, so an entry that does not advertise its
+    capabilities — absent or explicitly null — is still a legitimate fallback
+    rather than a reason to fail a seed run. An entry that *does* advertise a
+    capability set without this capability in it is not a fallback — it has
+    told us it cannot do the job, and binding it anyway would be the silent
+    degradation this command exists to prevent.
+
+    Returns:
+        The chosen ``(deployment_id, name)``.
+
+    Raises:
+        SystemExit: the instance offers nothing bindable for this role.
+    """
+    preferred = _preferred_candidates(
+        _role_inventory(settings, role),
+        already_bound=_bound_role_deployment_id(settings, role),
+        capability=capability,
+    )
+    if not preferred:
+        raise SystemExit(
+            f"no {role} model available to bind: the instance reports no "
+            f"{role} deployment it can serve. Deploy a model advertising the "
+            f"'{capability}' capability and re-run — proceeding without an "
+            f"{role} binding would leave the instance silently degraded."
+        )
+    chosen = preferred[0]
+    return str(chosen["id"]), str(chosen.get("name") or chosen["id"])
+
+
+class _ModelRole(NamedTuple):
+    """One bindable Kaizen model role, and what binding the wrong one costs."""
+
+    name: str
+    contradiction_consequence: str
+
+
+_CHAT_ROLE = _ModelRole(
+    "chat",
+    "an agent created now would answer on an unintended model.",
+)
+_EMBEDDING_ROLE = _ModelRole(
+    "embedding",
+    "documents indexed now would be embedded by an unintended model, and "
+    "search would compare them against a different one.",
+)
+
+
+def _bind_role_model(
+    args: argparse.Namespace,
+    *,
+    scoped,
+    role: _ModelRole,
+    bind: Callable[..., object],
+) -> dict:
+    """Bind one instance-wide model role, then confirm what the instance reports.
+
+    Shared by every ``bind-<role>-model`` command: the write, the read-back a
+    bodiless 2xx forces, and the contradiction check are identical across roles.
+    Only the role and the ``bind`` call differ.
+
+    Takes an already-workroom-scoped client. Scoping issues a real
+    ``workrooms.enter``, so doing it here as well as in a caller that already
+    needed a scoped client for its own read would cost a second round trip and
+    a second chance to fail on it.
+    """
+    unconfirmed_reason = None
+    bound = _bound_role_deployment_id(bind(scoped), role.name)
+    if bound is None:
+        # The write succeeded (a non-2xx would have raised), we just couldn't
+        # read a confirmation out of it — a 204, or a body shaped differently
+        # than we expect. Read the settings back rather than either trusting
+        # our own request or failing a binding that probably worked.
+        try:
+            bound = _bound_role_deployment_id(
+                scoped.kaizen_ops.get_model_settings(
+                    base_url=args.kaizen_base_url,
+                    workroom_id=args.workroom_id,
+                ),
+                role.name,
+            )
+        except KamiwazaError as exc:
+            # Still not fatal — the write itself succeeded. But an expired
+            # token and an odd 204 body both land on `confirmed: false`, and
+            # only one of them is an operator emergency, so say which happened
+            # instead of discarding the diagnosis.
+            bound = None
+            unconfirmed_reason = f"read-back failed: {exc}"
+            print(
+                f"warning: {role.name} binding read-back failed for "
+                f"{args.kaizen_base_url}: {exc}",
+                file=sys.stderr,
+            )
+    if bound is not None and bound != args.deployment_id:
+        # The instance contradicts us: it is bound to something else. This is
+        # the state that must never exit 0 — the seed run would continue on an
+        # unintended model and its verification would "pass" anyway.
+        raise SystemExit(
+            f"{role.name} model binding contradicted: asked for "
+            f"'{args.deployment_id}', instance reports '{bound}'. Not "
+            f"proceeding — {role.contradiction_consequence}"
+        )
+    # bound is None here only when neither the write nor the read-back carried
+    # a binding. Report that honestly instead of implying confirmation — the
+    # caller is expected to gate on `confirmed`, as the UAT seed profile does.
+    result = {
+        f"{role.name}_deployment_id": args.deployment_id,
+        "confirmed": bound is not None,
+    }
+    if unconfirmed_reason is not None:
+        result["unconfirmed_reason"] = unconfirmed_reason
+    return result
 
 
 def cmd_bind_chat_model(args: argparse.Namespace, *, client) -> dict:
@@ -460,39 +654,68 @@ def cmd_bind_chat_model(args: argparse.Namespace, *, client) -> dict:
     Canonical Kaizen resolves a model instance-wide rather than per agent, so
     this is what actually gives seeded agents a backing model.
     """
-    client = _client_for_workroom(client, args.workroom_id)
-    settings = client.kaizen_ops.set_chat_model(
-        args.deployment_id,
-        base_url=args.kaizen_base_url,
-        workroom_id=args.workroom_id,
+    return _bind_role_model(
+        args,
+        scoped=_client_for_workroom(client, args.workroom_id),
+        role=_CHAT_ROLE,
+        bind=lambda scoped: scoped.kaizen_ops.set_chat_model(
+            args.deployment_id,
+            base_url=args.kaizen_base_url,
+            workroom_id=args.workroom_id,
+        ),
     )
-    bound = _bound_chat_deployment_id(settings)
-    if bound is None:
-        # The write succeeded (a non-2xx would have raised), we just couldn't
-        # read a confirmation out of it — a 204, or a body shaped differently
-        # than we expect. Read the settings back rather than either trusting
-        # our own request or failing a binding that probably worked.
+
+
+def cmd_bind_embedding_model(args: argparse.Namespace, *, client) -> dict:
+    """Point a canonical Kaizen instance's embedding role at a model deployment.
+
+    Without this, Kaizen has no embedding endpoint and answers semantic search
+    by silently falling back to lexical matching — a seeded instance looks
+    healthy while retrieving materially worse.
+
+    ``--deployment-id`` is optional here, unlike the chat role: nothing in a
+    seed run deploys an embedding model, so the one to bind is whatever the
+    environment already serves. Omitting it discovers a deployment advertising
+    the ``embeddings`` capability from the instance's own inventory, which is
+    what keeps this working on an offline box serving a local model and on one
+    reaching a hosted endpoint without naming either.
+    """
+    discovered_name = None
+    # Scope once and reuse: the inventory read below and the bind itself both
+    # need a scoped client, and scoping twice would enter the workroom twice.
+    scoped = _client_for_workroom(client, args.workroom_id)
+    if not args.deployment_id:
         try:
-            bound = _bound_chat_deployment_id(
-                client.kaizen_ops.get_model_settings(
-                    base_url=args.kaizen_base_url,
-                    workroom_id=args.workroom_id,
-                )
+            settings = scoped.kaizen_ops.get_model_settings(
+                base_url=args.kaizen_base_url,
+                workroom_id=args.workroom_id,
             )
-        except KamiwazaError:
-            bound = None
-    if bound is not None and bound != args.deployment_id:
-        # The instance contradicts us: it is bound to something else. This is
-        # the state that must never exit 0 — an agent created now would answer
-        # on an unintended model, and chat verification would "pass" anyway.
-        raise SystemExit(
-            f"chat model binding contradicted: asked for '{args.deployment_id}', "
-            f"instance reports '{bound}'. Not proceeding — an agent created now "
-            "would answer on an unintended model."
+        except KamiwazaError as exc:
+            # Unlike the post-write read-back, this one is load-bearing: with
+            # no inventory there is nothing to bind, and continuing would leave
+            # the instance unbound while reporting success.
+            raise SystemExit(
+                f"could not read the instance's model inventory to choose an "
+                f"embedding deployment: {exc}"
+            ) from exc
+        args.deployment_id, discovered_name = discover_role_deployment(
+            settings, role=_EMBEDDING_ROLE.name, capability="embeddings"
         )
-    # bound is None here only when neither the write nor the read-back carried
-    # a binding. Report that honestly instead of implying confirmation.
-    return {"chat_deployment_id": args.deployment_id, "confirmed": bound is not None}
+    result = _bind_role_model(
+        args,
+        scoped=scoped,
+        role=_EMBEDDING_ROLE,
+        bind=lambda scoped: scoped.kaizen_ops.set_embedding_model(
+            args.deployment_id,
+            base_url=args.kaizen_base_url,
+            workroom_id=args.workroom_id,
+        ),
+    )
+    if discovered_name is not None:
+        # Name what discovery picked: the caller passed no id, so this is the
+        # only record of which model the instance now embeds with.
+        result["discovered_model"] = discovered_name
+    return result
 
 
 def cmd_create_conversation(args: argparse.Namespace, *, client) -> dict:
@@ -567,6 +790,48 @@ def cmd_import_skill(args: argparse.Namespace, *, client) -> dict:
 
 
 # --- parser ----------------------------------------------------------------
+
+
+def _add_bind_model_parser(
+    sub,
+    role: str,
+    func: Callable[..., dict],
+    *,
+    discoverable: bool = False,
+) -> None:
+    """Register one ``bind-<role>-model`` subcommand.
+
+    Every model role takes the same three arguments — the instance root, the
+    deployment to bind, and the workroom scope — so the role name is all that
+    distinguishes the parsers. ``discoverable`` marks a role whose deployment
+    the command can choose from the instance's own inventory, which makes
+    ``--deployment-id`` an override rather than a requirement.
+    """
+    p = sub.add_parser(
+        f"bind-{role}-model",
+        help=(
+            f"Bind a canonical Kaizen instance's {role} role to a model "
+            "deployment."
+        ),
+    )
+    p.add_argument(
+        "--kaizen-base-url",
+        required=True,
+        help="Kaizen instance API root (per-workroom).",
+    )
+    deployment_help = f"Kamiwaza model deployment to serve Kaizen {role}."
+    if discoverable:
+        deployment_help += (
+            " Defaults to one the instance already offers for this role."
+        )
+    p.add_argument(
+        "--deployment-id",
+        required=not discoverable,
+        default=None,
+        help=deployment_help,
+    )
+    p.add_argument("--workroom-id", default=None)
+    p.set_defaults(func=func)
 
 
 def _add_create_conversation_parser(sub) -> None:
@@ -857,22 +1122,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workroom-id", default=None)
     p.set_defaults(func=cmd_create_agent)
 
-    p = sub.add_parser(
-        "bind-chat-model",
-        help="Bind a canonical Kaizen instance's chat role to a model deployment.",
+    _add_bind_model_parser(sub, "chat", cmd_bind_chat_model)
+
+    _add_bind_model_parser(
+        sub, "embedding", cmd_bind_embedding_model, discoverable=True
     )
-    p.add_argument(
-        "--kaizen-base-url",
-        required=True,
-        help="Kaizen instance API root (per-workroom).",
-    )
-    p.add_argument(
-        "--deployment-id",
-        required=True,
-        help="Kamiwaza model deployment to serve Kaizen chat.",
-    )
-    p.add_argument("--workroom-id", default=None)
-    p.set_defaults(func=cmd_bind_chat_model)
 
     _add_create_conversation_parser(sub)
 

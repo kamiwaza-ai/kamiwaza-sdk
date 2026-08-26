@@ -133,6 +133,51 @@ def test_ops_model_settings_carry_the_shape_bind_chat_model_reads(canonical_kaiz
     ), f"chat.current is neither None nor an object carrying 'id': {current!r}"
 
 
+def test_ops_model_settings_carry_the_inventory_embedding_discovery_reads(
+    canonical_kaizen,
+):
+    """Anchor the shape `bind-embedding-model` discovers a deployment from.
+
+    With no `--deployment-id`, the command picks one out of `embedding_models`
+    and binds it, so both the list and the `id` / `capabilities` fields on its
+    entries are load-bearing. Nothing else checks them against a real instance.
+
+    Read-only for the same reason as the chat anchor: repointing a live
+    instance's embedding model would re-target retrieval for everyone on the
+    box. An empty inventory is a legitimate state here — it is exactly what
+    the command refuses to proceed past — so this asserts the shape, not that
+    the environment happens to serve an embedding model.
+    """
+    client, workroom_id, base_url = canonical_kaizen
+
+    settings = client.kaizen_ops.get_model_settings(
+        base_url=base_url, workroom_id=workroom_id
+    )
+
+    assert "embedding" in settings, (
+        f"no 'embedding' key in ops model settings: {sorted(settings)}"
+    )
+    current = settings["embedding"].get("current")
+    assert current is None or (
+        isinstance(current, dict) and "id" in current
+    ), f"embedding.current is neither None nor an object carrying 'id': {current!r}"
+
+    inventory = settings.get("embedding_models")
+    assert isinstance(inventory, list), (
+        f"expected 'embedding_models' to be a list, got {type(inventory)}"
+    )
+    for entry in inventory:
+        assert isinstance(entry, dict), f"inventory entry is not an object: {entry!r}"
+        assert entry.get("id"), f"inventory entry carries no deployment id: {entry!r}"
+        # Absent capabilities is tolerated by discovery (the instance already
+        # typed the entry as an embedding model); a non-list is not, because it
+        # would silently never match the capability preference.
+        capabilities = entry.get("capabilities")
+        assert capabilities is None or isinstance(capabilities, list), (
+            f"'capabilities' is neither absent nor a list: {capabilities!r}"
+        )
+
+
 def test_canonical_agent_create_rejects_the_legacy_body(canonical_kaizen):
     """The legacy contract must fail loudly here, not create a stray agent.
 
