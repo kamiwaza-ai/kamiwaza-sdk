@@ -54,6 +54,14 @@ OwnershipKeyReference = Annotated[
         json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
     ),
 ]
+RuntimeSecretReference = Annotated[
+    str,
+    Field(
+        pattern=r"^(?:secret|file)://[^\s]+$",
+        max_length=4096,
+        json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
+    ),
+]
 
 
 def _require_values(values: Sequence[object], message: str) -> None:
@@ -331,7 +339,9 @@ class ResolvedScenario(ClosedModel):
 
     @model_validator(mode="after")
     def validate_cases(self) -> ResolvedScenario:
-        _require_values(self.case_ids, "resolved scenario must select at least one case")
+        _require_values(
+            self.case_ids, "resolved scenario must select at least one case"
+        )
         _reject_duplicate_values(
             self.case_ids, "resolved scenario case IDs contain a duplicate"
         )
@@ -428,6 +438,21 @@ class RuntimeContext(ClosedModel):
     schema_id: Literal["kamiwaza.runtime-context/v1"] = Field(alias="schema")
     run_id: StableId
     ownership_key_ref: OwnershipKeyReference | None = Field(default=None, repr=False)
+    # Provider-specific credentials remain opaque references.  Values are
+    # materialized by the orchestrator and are never serialized into plans,
+    # evidence, or fixture state.  Keeping this map optional preserves the v1
+    # wire shape for providers that do not need additional secrets.
+    secret_refs: dict[StableId, RuntimeSecretReference] = Field(
+        default_factory=dict,
+        repr=False,
+        json_schema_extra={
+            "propertyNames": {
+                "maxLength": 256,
+                "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                **_NO_LINE_TERMINATORS_SCHEMA,
+            }
+        },
+    )
     clusters: Annotated[
         tuple[RuntimeCluster, ...],
         Field(min_length=1, json_schema_extra={"uniqueItems": True}),

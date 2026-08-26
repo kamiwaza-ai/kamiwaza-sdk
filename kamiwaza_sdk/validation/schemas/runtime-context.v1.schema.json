@@ -96,6 +96,27 @@
       "const": "kamiwaza.runtime-context/v1",
       "title": "Schema",
       "type": "string"
+    },
+    "secret_refs": {
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._:/-]*$": {
+          "maxLength": 4096,
+          "not": {
+            "pattern": "[\\r\\n\\u2028\\u2029]"
+          },
+          "pattern": "^(?:secret|file)://[^\\s]+$",
+          "type": "string"
+        }
+      },
+      "propertyNames": {
+        "maxLength": 256,
+        "not": {
+          "pattern": "[\\r\\n\\u2028\\u2029]"
+        },
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+      },
+      "title": "Secret Refs",
+      "type": "object"
     }
   },
   "required": [
