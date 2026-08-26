@@ -136,7 +136,7 @@ class KeycloakAdminFactory:
         self._admin_user = (
             admin_user or os.environ.get("KAMIWAZA_SHARED_IDP_ADMIN_USER", "admin")
         ).strip()
-        self._verify = verify
+        self._verify = _verify_ssl_from_env() if verify is None else verify
 
     def __call__(
         self, runtime: RuntimeContext, runtime_cluster: RuntimeCluster
@@ -154,8 +154,17 @@ class KeycloakAdminFactory:
             self._admin_url,
             admin_user=self._admin_user,
             admin_password=password,
-            verify=True if self._verify is None else self._verify,
+            verify=self._verify,
         )
+
+
+def _verify_ssl_from_env() -> bool:
+    """Resolve the SDK-wide TLS switch for the Keycloak admin channel."""
+
+    value = os.environ.get("KAMIWAZA_VERIFY_SSL")
+    if value is None:
+        return True
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _build_client(base_url: str, api_key: str) -> Any:

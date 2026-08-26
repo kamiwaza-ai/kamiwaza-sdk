@@ -28,6 +28,7 @@ from kamiwaza_sdk.validation.federation_provider import (
     FEDERATION_PROVIDER_REVISION,
     FederationLifecycleProvider,
 )
+from kamiwaza_sdk.validation.federation_runtime import KeycloakAdminFactory
 from kamiwaza_sdk.validation.federation_spec import (
     FEDERATION_CASE_IDS,
     FEDERATION_SCENARIO_ID,
@@ -483,6 +484,43 @@ def test_runtime_secret_reference_is_exported_without_exposing_repr() -> None:
     )
     assert "admin.password" not in repr(runtime)
     assert model_digest(runtime).startswith("sha256:")
+
+
+def test_keycloak_admin_factory_honors_sdk_tls_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The provider's Keycloak channel must share the SDK TLS policy.
+
+    Existing validation clusters use a self-signed ingress certificate, so the
+    documented ``KAMIWAZA_VERIFY_SSL=false`` setting must reach the admin
+    client.  A hard-coded ``verify=True`` makes the provider fail before it can
+    create its owned realm.
+    """
+    admin_password = tmp_path / "admin.password"
+    admin_password.write_text("admin-secret\n", encoding="utf-8")
+    runtime = _runtime(tmp_path).model_copy(
+        update={
+            "secret_refs": {
+                "shared-idp-admin-password": admin_password.as_uri(),
+            }
+        }
+    )
+    captured: dict[str, Any] = {}
+
+    class _StubAdmin:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured["args"] = args
+            captured.update(kwargs)
+
+    import kamiwaza_sdk.seeding.federation.keycloak as keycloak_module
+
+    monkeypatch.setattr(keycloak_module, "KeycloakAdmin", _StubAdmin)
+    monkeypatch.setenv("KAMIWAZA_SHARED_IDP_ADMIN_URL", "https://idp.test")
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+
+    KeycloakAdminFactory()(runtime, runtime.clusters[0])
+
+    assert captured["verify"] is False
 
 
 def test_explicit_scenario_without_mesh_edge_fails_closed(
