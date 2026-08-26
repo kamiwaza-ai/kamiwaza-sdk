@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Hashable, Sequence
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -146,6 +147,24 @@ class MeshEdge(ClosedModel):
         return self
 
 
+def mesh_edge_target_id(edge: MeshEdge) -> str:
+    """Return the stable, collision-resistant target ID for one mesh edge.
+
+    Endpoint and identity strings are length-prefixed before hashing so valid
+    stable IDs containing delimiters cannot produce an ambiguous edge key.
+    The digest is deliberately derived only from profile facts; it is therefore
+    reproducible across SDK/Kajiya processes without trusting an orchestrator-
+    supplied identifier.
+    """
+
+    material = "".join(
+        f"{len(value)}:{value}\0"
+        for value in (edge.initiator, edge.receiver, edge.identity_mode)
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return f"mesh-edge:sha256:{digest}"
+
+
 class MeshFacts(ClosedModel):
     edges: Annotated[
         tuple[MeshEdge, ...], Field(json_schema_extra={"uniqueItems": True})
@@ -231,6 +250,15 @@ class ValidationProfile(ClosedModel):
             for endpoint in (edge.initiator, edge.receiver)
         }
         _reject_unknown_references(edge_cluster_ids, known_clusters, "mesh edges")
+        edge_target_ids = [mesh_edge_target_id(edge) for edge in self.mesh.edges]
+        _reject_duplicate_values(
+            edge_target_ids, "profile mesh-edge target IDs contain a duplicate"
+        )
+        overlap = set(edge_target_ids) & (known_clusters | set(target_ids))
+        if overlap:
+            raise ValueError(
+                "profile mesh-edge target IDs overlap another target namespace"
+            )
         return self
 
 
@@ -244,7 +272,7 @@ class ScenarioDescriptor(ClosedModel):
     scenario_id: StableId
     provider_id: StableId
     protocol_version: Literal["v1"]
-    target_scope: Literal["cluster", "inference_target"]
+    target_scope: Literal["cluster", "inference_target", "mesh_edge"]
     minimum_level: Literal["smoke", "standard", "comprehensive"]
     capability_ids: tuple[StableId, ...]
     applies_when: tuple[FactMatcher, ...]
@@ -289,6 +317,17 @@ class ResolvedScenario(ClosedModel):
         Field(min_length=1, json_schema_extra={"uniqueItems": True}),
     ]
     redacted_parameters: dict[str, JsonValue]
+    # Empty preserves the original v1 wire shape for cluster and inference
+    # targets. Mesh-edge selections must carry both endpoint IDs; the
+    # descriptor-aware plan validator enforces that stronger invariant.
+    cluster_ids: Annotated[
+        tuple[StableId, ...],
+        Field(
+            max_length=2,
+            json_schema_extra={"uniqueItems": True},
+            exclude_if=lambda value: not value,
+        ),
+    ] = ()
 
     @model_validator(mode="after")
     def validate_cases(self) -> ResolvedScenario:
@@ -296,6 +335,12 @@ class ResolvedScenario(ClosedModel):
         _reject_duplicate_values(
             self.case_ids, "resolved scenario case IDs contain a duplicate"
         )
+        if self.cluster_ids:
+            _reject_duplicate_values(
+                self.cluster_ids, "resolved scenario cluster IDs contain a duplicate"
+            )
+            if self.cluster_id not in self.cluster_ids:
+                raise ValueError("resolved scenario cluster IDs omit cluster_id")
         return self
 
 

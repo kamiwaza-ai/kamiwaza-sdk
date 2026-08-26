@@ -13,10 +13,12 @@ from kamiwaza_sdk.validation.models import (
     FixtureMutation,
     FixtureState,
     RuntimeContext,
+    ResolvedScenario,
     ScenarioDescriptor,
     ScenarioEvidence,
     ScenarioPlan,
     ValidationProfile,
+    mesh_edge_target_id,
 )
 from kamiwaza_sdk.validation.registry import model_digest
 
@@ -67,23 +69,37 @@ def validate_plan_identity(profile: ValidationProfile, plan: ScenarioPlan) -> No
     _validate_plan_required_targets(profile, plan)
 
 
-def _profile_target_clusters(profile: ValidationProfile) -> dict[str, str]:
-    target_clusters = {cluster.id: cluster.id for cluster in profile.clusters}
+def _profile_target_clusters(profile: ValidationProfile) -> dict[str, tuple[str, ...]]:
+    target_clusters: dict[str, tuple[str, ...]] = {
+        cluster.id: (cluster.id,) for cluster in profile.clusters
+    }
     target_clusters.update(
-        {target.id: target.cluster_id for target in profile.inference_targets}
+        {target.id: (target.cluster_id,) for target in profile.inference_targets}
+    )
+    target_clusters.update(
+        {
+            mesh_edge_target_id(edge): (edge.initiator, edge.receiver)
+            for edge in profile.mesh.edges
+        }
     )
     return target_clusters
 
 
 def _validate_plan_target_clusters(
-    target_clusters: dict[str, str], plan: ScenarioPlan
+    target_clusters: dict[str, tuple[str, ...]], plan: ScenarioPlan
 ) -> None:
     for item in plan.selected:
         _require_equal(
-            item.cluster_id,
+            _selected_cluster_ids(item),
             target_clusters[item.target_id],
-            "plan target cluster mismatch",
+            "plan target cluster binding mismatch",
         )
+
+
+def _selected_cluster_ids(item: ResolvedScenario) -> tuple[str, ...]:
+    """Return the canonical cluster binding, including both edge endpoints."""
+
+    return item.cluster_ids or (item.cluster_id,)
 
 
 def _validate_plan_required_targets(
@@ -289,7 +305,7 @@ def validate_plan_runtime_identity(
     """Require every selected target's bound cluster in the runtime context."""
 
     _require_target_subset(
-        (item.cluster_id for item in plan.selected),
+        (cluster_id for item in plan.selected for cluster_id in _selected_cluster_ids(item)),
         {cluster.id for cluster in runtime.clusters},
         "runtime missing a selected cluster",
     )

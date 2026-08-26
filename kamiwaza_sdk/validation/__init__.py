@@ -25,6 +25,7 @@ from kamiwaza_sdk.validation.models import (
     ScenarioPlan,
     ValidationIntent,
     ValidationProfile,
+    mesh_edge_target_id,
 )
 from kamiwaza_sdk.validation.registry import evaluate_coverage, model_digest
 from kamiwaza_sdk.validation.provider import (
@@ -80,6 +81,7 @@ __all__ = [
     "ScenarioProvider",
     "ValidationIntent",
     "ValidationProfile",
+    "mesh_edge_target_id",
     "applicable_targets",
     "descriptor_is_active",
     "evaluate_coverage",
