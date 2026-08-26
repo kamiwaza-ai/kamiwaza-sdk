@@ -131,11 +131,23 @@ original name (so TLS SNI matches your local cert) and get an
 
 ## `kz-ext dev` — deploy onto a cluster
 
-Targets the cluster pointed at by your `kubectl` context. Builds your
-images, pushes them to the configured registry, then applies the CR.
-The deployed name is `<your-extension-name>-dev-<short-sha>` so multiple
-people can develop side-by-side without collision; the CLI prints it on
-success / timeout / failure (P9, M1).
+Targets the cluster your active `kz-ext login` connection points at —
+**not** your `kubectl` context. Builds your images, pushes them to the
+resolved dev registry, then creates the CR through the platform API.
+The deployed name is `<slug>-dev-<hash6>`, where `<slug>` is your
+extension name as a DNS-1123 label and `<hash6>` is derived from your
+user id, so two people on the same commit do not collide and your own
+name stays stable across runs; the CLI prints it on success / timeout /
+failure (P9, M1).
+
+> **Where `kubectl` still matters.** Only for registry discovery, and
+> only when your connection is local. For a loopback or explicit dev
+> hostname, `kz-ext` reads the extension registry from the cluster's
+> `core-config` ConfigMap via `kubectl` — so a wrong kube context can
+> still give you a wrong registry. For any non-local connection it
+> skips that deliberately and derives `registry.<connection-hostname>`
+> instead, because your kube context may point at an unrelated cluster
+> (ENG-5719). `KAMIWAZA_REGISTRY` overrides both.
 
 The first run on a new cluster: confirm `kz-ext doctor` is green
 (`cluster_extension_readiness` probe added in M1). A red doctor means
