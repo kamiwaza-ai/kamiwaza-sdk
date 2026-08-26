@@ -162,6 +162,29 @@ def test_ops_set_chat_model_sends_only_the_deployment_id():
     assert kwargs["headers"] == {"X-Workroom-Id": "wr-123"}
 
 
+def test_ops_set_embedding_model_targets_the_embedding_role():
+    responses = {
+        ("PUT", "api/ops/models/embedding"): {
+            "embedding": {"current": {"id": "dep-embed"}}
+        }
+    }
+    client = DummyClient(responses)
+    service = KaizenOpsService(client)
+
+    result = service.set_embedding_model(
+        "dep-embed", base_url=KAIZEN_URL, workroom_id="wr-123"
+    )
+
+    assert result == {"embedding": {"current": {"id": "dep-embed"}}}
+    method, path, kwargs = client.calls[0]
+    # The embedding role has its own route: binding chat leaves this one unset,
+    # which is what silently degrades semantic search to lexical matching.
+    assert (method, path) == ("PUT", "api/ops/models/embedding")
+    assert kwargs["base_url"] == KAIZEN_URL
+    assert kwargs["json"] == {"deployment_id": "dep-embed"}
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-123"}
+
+
 def test_agent_create_merges_llm_and_targets_kaizen_base_url():
     responses = {("POST", "api/agents"): {"id": "agent-1", "name": "seed-agent"}}
     client = DummyClient(responses)

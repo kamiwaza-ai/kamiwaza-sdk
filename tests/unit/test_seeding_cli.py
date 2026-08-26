@@ -65,7 +65,10 @@ class FakeClient:
             create_canonical=RecordingService(SimpleNamespace(id="agent-1", version=1)),
         )
         self.kaizen_ops = SimpleNamespace(
-            set_chat_model=RecordingService({"chat": {"current": {"id": "dep-xyz"}}})
+            set_chat_model=RecordingService({"chat": {"current": {"id": "dep-xyz"}}}),
+            set_embedding_model=RecordingService(
+                {"embedding": {"current": {"id": "dep-xyz"}}}
+            ),
         )
         self.conversations = SimpleNamespace(
             create=RecordingService(SimpleNamespace(id="conv-1")),
@@ -579,16 +582,19 @@ def test_bind_chat_model_sends_only_the_deployment_id(capsys, monkeypatch):
     }
 
 
-def _bind(client, capsys=None):
+def _run_bind(client, command, *extra, capsys=None):
+    """Run one bind-*-model command and return its JSON output, if captured."""
     _run(
-        [
-            "bind-chat-model",
-            "--kaizen-base-url", "https://kamiwaza.test/kaizen",
-            "--deployment-id", "dep-xyz",
-        ],
+        [command, "--kaizen-base-url", "https://kamiwaza.test/kaizen", *extra],
         client,
     )
     return json.loads(capsys.readouterr().out) if capsys else None
+
+
+def _bind(client, capsys=None):
+    return _run_bind(
+        client, "bind-chat-model", "--deployment-id", "dep-xyz", capsys=capsys
+    )
 
 
 @pytest.mark.parametrize(
@@ -658,6 +664,172 @@ def test_bind_chat_model_survives_a_failing_read_back(monkeypatch, capsys):
     out = _bind(client, capsys)
 
     assert out == {"chat_deployment_id": "dep-xyz", "confirmed": False}
+
+
+def _bind_embedding(client, capsys=None):
+    return _run_bind(
+        client, "bind-embedding-model", "--deployment-id", "dep-xyz", capsys=capsys
+    )
+
+
+def test_bind_embedding_model_sends_only_the_deployment_id(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "bind-embedding-model",
+            "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+            "--deployment-id", "dep-xyz",
+            "--workroom-id", "wr-1",
+        ],
+        client,
+    )
+
+    # Binding chat does not bind embedding: without this call the instance has
+    # no embedding endpoint and semantic search degrades to lexical matching.
+    assert client.kaizen_ops.set_chat_model.calls == []
+    call = client.kaizen_ops.set_embedding_model.calls[0]
+    assert call["args"] == ("dep-xyz",)
+    assert call["kwargs"]["base_url"] == "https://kamiwaza.test/kaizen"
+    assert call["kwargs"]["workroom_id"] == "wr-1"
+    assert json.loads(capsys.readouterr().out) == {
+        "embedding_deployment_id": "dep-xyz",
+        "confirmed": True,
+    }
+
+
+def test_bind_embedding_model_fails_when_instance_reports_a_different_binding(
+    monkeypatch,
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_embedding_model = RecordingService(
+        {"embedding": {"current": {"id": "some-other-dep"}}}
+    )
+
+    # Reads the embedding role, not chat: documents indexed against one model
+    # and searched against another retrieve nothing useful, and every later
+    # check would still "pass".
+    with pytest.raises(SystemExit, match="embedding model binding contradicted"):
+        _bind_embedding(client)
+
+
+def test_bind_embedding_model_reads_back_when_the_write_carries_no_binding(
+    monkeypatch, capsys
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_embedding_model = RecordingService(None)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        # The read-back carries every role; only the embedding one answers here.
+        {"chat": {"current": {"id": "dep-chat"}}, "embedding": {"current": {"id": "dep-xyz"}}}
+    )
+
+    out = _bind_embedding(client, capsys)
+
+    assert len(client.kaizen_ops.get_model_settings.calls) == 1
+    assert out == {"embedding_deployment_id": "dep-xyz", "confirmed": True}
+
+
+def _discover(client, capsys=None):
+    """Bind embedding with no --deployment-id, so the command must discover one."""
+    return _run_bind(client, "bind-embedding-model", capsys=capsys)
+
+
+def test_bind_embedding_model_discovers_a_deployment_by_capability(
+    monkeypatch, capsys
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        {
+            "embedding_models": [
+                # No capabilities advertised, so not the preferred candidate
+                # even though it is listed first.
+                {"id": "dep-unknown", "name": "mystery"},
+                {
+                    "id": "dep-local",
+                    "name": "all-MiniLM-L6-v2",
+                    "capabilities": ["embeddings"],
+                },
+            ]
+        }
+    )
+    client.kaizen_ops.set_embedding_model = RecordingService(
+        {"embedding": {"current": {"id": "dep-local"}}}
+    )
+
+    out = _discover(client, capsys)
+
+    # Selection is by capability, never by model name: the same seed run has to
+    # work against an offline local serve and a hosted endpoint.
+    assert client.kaizen_ops.set_embedding_model.calls[0]["args"] == ("dep-local",)
+    assert out == {
+        "embedding_deployment_id": "dep-local",
+        "confirmed": True,
+        "discovered_model": "all-MiniLM-L6-v2",
+    }
+
+
+def test_bind_embedding_model_falls_back_to_an_untagged_candidate(
+    monkeypatch, capsys
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        {"embedding_models": [{"id": "dep-quiet", "name": "quiet-embedder"}]}
+    )
+    client.kaizen_ops.set_embedding_model = RecordingService(
+        {"embedding": {"current": {"id": "dep-quiet"}}}
+    )
+
+    # The instance already typed this as an embedding model; not advertising a
+    # capability list is not a reason to fail a seed run.
+    out = _discover(client, capsys)
+
+    assert out["embedding_deployment_id"] == "dep-quiet"
+
+
+def test_bind_embedding_model_fails_loudly_when_nothing_is_bindable(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.get_model_settings = RecordingService({"embedding_models": []})
+
+    # Skipping the bind is the defect this command exists to fix: it would
+    # leave every semantic search silently degraded to lexical matching.
+    with pytest.raises(SystemExit, match="no embedding model available to bind"):
+        _discover(client)
+
+    assert client.kaizen_ops.set_embedding_model.calls == []
+
+
+def test_bind_embedding_model_fails_loudly_when_the_inventory_is_unreadable(
+    monkeypatch,
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.get_model_settings = _raiser(KamiwazaError("inventory down"))
+
+    with pytest.raises(SystemExit, match="could not read the instance's model"):
+        _discover(client)
+
+    assert client.kaizen_ops.set_embedding_model.calls == []
+
+
+def test_bind_embedding_model_prefers_an_explicit_deployment_id(monkeypatch, capsys):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        {"embedding_models": [{"id": "dep-discovered"}]}
+    )
+
+    out = _bind_embedding(client, capsys)
+
+    # An explicit id skips discovery entirely — no inventory read, and the
+    # output carries no discovered_model to misattribute the choice to.
+    assert client.kaizen_ops.get_model_settings.calls == []
+    assert out == {"embedding_deployment_id": "dep-xyz", "confirmed": True}
 
 
 def test_create_agent_legacy_reads_the_secret_before_scoping_the_client(
