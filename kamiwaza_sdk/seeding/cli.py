@@ -497,6 +497,27 @@ def _advertises(candidate: dict, capability: str) -> bool:
     return capability in {str(item) for item in capabilities}
 
 
+def _preferred_candidates(
+    candidates: list, *, already_bound: Optional[str], capability: str
+) -> list:
+    """Rank the ways a candidate can qualify, most specific first.
+
+    Each tier is a complete answer on its own; the next is consulted only when
+    the one above it is empty. A candidate that advertises a capability set
+    excluding ``capability`` qualifies under no tier at all.
+    """
+    return (
+        # Already bound, and still on offer — never repoint it.
+        [c for c in candidates if str(c["id"]) == already_bound]
+        # Says it can do the job.
+        or [c for c in candidates if _advertises(c, capability)]
+        # Says nothing either way. `is None` rather than a key check: an
+        # instance sending the key with a null value means what one that omits
+        # it means.
+        or [c for c in candidates if c.get("capabilities") is None]
+    )
+
+
 def discover_role_deployment(
     settings: object, *, role: str, capability: str
 ) -> Tuple[str, str]:
@@ -527,14 +548,10 @@ def discover_role_deployment(
     Raises:
         SystemExit: the instance offers nothing bindable for this role.
     """
-    candidates = _role_inventory(settings, role)
-    already_bound = _bound_role_deployment_id(settings, role)
-    preferred = (
-        [c for c in candidates if str(c["id"]) == already_bound]
-        or [c for c in candidates if _advertises(c, capability)]
-        # `is None` rather than a key check: an instance that sends the key
-        # with a null value is saying the same thing as one that omits it.
-        or [c for c in candidates if c.get("capabilities") is None]
+    preferred = _preferred_candidates(
+        _role_inventory(settings, role),
+        already_bound=_bound_role_deployment_id(settings, role),
+        capability=capability,
     )
     if not preferred:
         raise SystemExit(

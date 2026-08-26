@@ -748,122 +748,87 @@ def _discover(client, capsys=None):
     return _run_bind(client, "bind-embedding-model", capsys=capsys)
 
 
-def test_bind_embedding_model_discovers_a_deployment_by_capability(
-    monkeypatch, capsys
-):
-    client = FakeClient()
-    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
-    client.kaizen_ops.get_model_settings = RecordingService(
-        {
-            "embedding_models": [
-                # No capabilities advertised, so not the preferred candidate
-                # even though it is listed first.
-                {"id": "dep-unknown", "name": "mystery"},
-                {
-                    "id": "dep-local",
-                    "name": "all-MiniLM-L6-v2",
-                    "capabilities": ["embeddings"],
-                },
-            ]
-        }
-    )
-    client.kaizen_ops.set_embedding_model = RecordingService(
-        {"embedding": {"current": {"id": "dep-local"}}}
-    )
-
-    out = _discover(client, capsys)
-
-    # Selection is by capability, never by model name: the same seed run has to
-    # work against an offline local serve and a hosted endpoint.
-    assert client.kaizen_ops.set_embedding_model.calls[0]["args"] == ("dep-local",)
-    assert out == {
-        "embedding_deployment_id": "dep-local",
-        "confirmed": True,
-        "discovered_model": "all-MiniLM-L6-v2",
-    }
-
-
 @pytest.mark.parametrize(
-    "candidate",
+    "settings, expected",
     [
-        # The key is absent entirely...
-        {"id": "dep-quiet", "name": "quiet-embedder"},
-        # ...or present but null. An instance sending the key with no value is
-        # saying the same thing as one that omits it, and the live anchor test
-        # accepts both, so discovery has to as well.
-        {"id": "dep-quiet", "name": "quiet-embedder", "capabilities": None},
+        # Capability-tagged wins over an untagged sibling listed before it.
+        pytest.param(
+            {
+                "embedding_models": [
+                    {"id": "dep-unknown", "name": "mystery"},
+                    {
+                        "id": "dep-local",
+                        "name": "all-MiniLM-L6-v2",
+                        "capabilities": ["embeddings"],
+                    },
+                ]
+            },
+            "dep-local",
+            id="prefers-the-capability-tagged-candidate",
+        ),
+        # Untagged is still bindable: the instance already typed it as an
+        # embedding model, so silence is not a reason to fail a seed run.
+        pytest.param(
+            {"embedding_models": [{"id": "dep-quiet", "name": "quiet-embedder"}]},
+            "dep-quiet",
+            id="falls-back-to-an-absent-capability-list",
+        ),
+        # An explicit null means what an absent key means. The live anchor
+        # test accepts this shape, so discovery has to as well.
+        pytest.param(
+            {"embedding_models": [{"id": "dep-quiet", "capabilities": None}]},
+            "dep-quiet",
+            id="falls-back-to-a-null-capability-list",
+        ),
+        # Already bound beats everything: repointing would leave documents
+        # embedded by one model and searched against another, which is the
+        # corruption the contradiction check refuses — except reached by our
+        # own write, so nothing would report it.
+        pytest.param(
+            {
+                "embedding": {"current": {"id": "dep-already-bound"}},
+                "embedding_models": [
+                    {"id": "dep-newcomer", "capabilities": ["embeddings"]},
+                    {"id": "dep-already-bound", "capabilities": ["embeddings"]},
+                ],
+            },
+            "dep-already-bound",
+            id="keeps-an-existing-binding-on-a-re-seed",
+        ),
+        # ...unless the instance can no longer serve it, which is the
+        # release-state failure that started this ticket.
+        pytest.param(
+            {
+                "embedding": {"current": {"id": "dep-retired"}},
+                "embedding_models": [
+                    {"id": "dep-live", "capabilities": ["embeddings"]}
+                ],
+            },
+            "dep-live",
+            id="rebinds-when-the-bound-model-is-gone",
+        ),
     ],
 )
-def test_bind_embedding_model_falls_back_to_an_untagged_candidate(
-    monkeypatch, capsys, candidate
+def test_bind_embedding_model_selection_precedence(
+    monkeypatch, capsys, settings, expected
 ):
+    """Selection is by capability and by what is already bound, never by name.
+
+    The same seed run has to work against an offline box serving a local model
+    and one reaching a hosted endpoint, so no model name appears here.
+    """
     client = FakeClient()
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
-    client.kaizen_ops.get_model_settings = RecordingService(
-        {"embedding_models": [candidate]}
-    )
+    client.kaizen_ops.get_model_settings = RecordingService(settings)
     client.kaizen_ops.set_embedding_model = RecordingService(
-        {"embedding": {"current": {"id": "dep-quiet"}}}
-    )
-
-    # The instance already typed this as an embedding model; not advertising a
-    # capability list is not a reason to fail a seed run.
-    out = _discover(client, capsys)
-
-    assert out["embedding_deployment_id"] == "dep-quiet"
-
-
-def test_bind_embedding_model_keeps_an_existing_binding_on_a_re_seed(
-    monkeypatch, capsys
-):
-    client = FakeClient()
-    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
-    client.kaizen_ops.get_model_settings = RecordingService(
-        {
-            "embedding": {"current": {"id": "dep-already-bound"}},
-            "embedding_models": [
-                # Listed first and capability-tagged, so it would win on a
-                # first bind — but the role is already pointed elsewhere.
-                {"id": "dep-newcomer", "capabilities": ["embeddings"]},
-                {"id": "dep-already-bound", "capabilities": ["embeddings"]},
-            ],
-        }
-    )
-    client.kaizen_ops.set_embedding_model = RecordingService(
-        {"embedding": {"current": {"id": "dep-already-bound"}}}
+        {"embedding": {"current": {"id": expected}}}
     )
 
     out = _discover(client, capsys)
 
-    # Re-pointing a bound role would leave documents embedded by one model and
-    # searched against another — the corruption the contradiction check exists
-    # to refuse, except reached by our own write, so nothing would report it.
-    assert client.kaizen_ops.set_embedding_model.calls[0]["args"] == (
-        "dep-already-bound",
-    )
-    assert out["embedding_deployment_id"] == "dep-already-bound"
+    assert client.kaizen_ops.set_embedding_model.calls[0]["args"] == (expected,)
+    assert out["embedding_deployment_id"] == expected
 
-
-def test_bind_embedding_model_rebinds_when_the_bound_model_is_gone(
-    monkeypatch, capsys
-):
-    client = FakeClient()
-    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
-    client.kaizen_ops.get_model_settings = RecordingService(
-        {
-            # Bound to something the instance can no longer serve — which is
-            # the release-state failure this whole change is chasing.
-            "embedding": {"current": {"id": "dep-retired"}},
-            "embedding_models": [{"id": "dep-live", "capabilities": ["embeddings"]}],
-        }
-    )
-    client.kaizen_ops.set_embedding_model = RecordingService(
-        {"embedding": {"current": {"id": "dep-live"}}}
-    )
-
-    out = _discover(client, capsys)
-
-    assert out["embedding_deployment_id"] == "dep-live"
 
 
 @pytest.mark.parametrize(
