@@ -17,8 +17,15 @@ from kamiwaza_sdk.validation import (
     ScenarioCatalog,
     ScenarioDescriptor,
     ValidationProfile,
+    mesh_edge_target_id,
 )
 from kamiwaza_sdk.validation.golden_provider import GoldenProvider
+from kamiwaza_sdk.validation.provider import (
+    ProviderContractError,
+    validate_plan_identity,
+    validate_plan_runtime_identity,
+)
+from kamiwaza_sdk.validation.registry import model_digest
 
 from .support import profile_payload
 
@@ -164,6 +171,99 @@ def test_validation_profile_rejects_self_and_duplicate_mesh_edges() -> None:
     duplicate["mesh"] = {"edges": [edge, edge]}
     with pytest.raises(ValidationError, match="duplicate"):
         ValidationProfile.model_validate(duplicate)
+
+
+def test_mesh_edge_target_id_is_stable_and_profile_namespaces_are_disjoint() -> None:
+    payload = profile_payload()
+    payload["clusters"].append(  # type: ignore[union-attr]
+        {
+            "id": "peer-cluster",
+            "roles": ["controller"],
+            "node_count": 1,
+            "hardware": {"accelerators": []},
+            "features": {},
+        }
+    )
+    payload["mesh"] = {"edges": [_mesh_edge(receiver="peer-cluster")]}  # type: ignore[index]
+    profile = ValidationProfile.model_validate(payload)
+    edge = profile.mesh.edges[0]
+
+    assert mesh_edge_target_id(edge) == mesh_edge_target_id(edge)
+    assert mesh_edge_target_id(edge).startswith("mesh-edge:sha256:")
+    assert mesh_edge_target_id(edge) not in {
+        cluster.id for cluster in profile.clusters
+    }
+
+
+def test_mesh_edge_plan_binds_both_endpoint_clusters() -> None:
+    payload = profile_payload()
+    payload["clusters"].append(  # type: ignore[union-attr]
+        {
+            "id": "peer-cluster",
+            "roles": ["controller"],
+            "node_count": 1,
+            "hardware": {"accelerators": []},
+            "features": {},
+        }
+    )
+    payload["mesh"] = {"edges": [_mesh_edge(receiver="peer-cluster")]}  # type: ignore[index]
+    profile = ValidationProfile.model_validate(payload)
+    edge = profile.mesh.edges[0]
+    selected = ResolvedScenario(
+        target_id=mesh_edge_target_id(edge),
+        cluster_id=edge.initiator,
+        scenario_id="sdk.federation.shared-idp/v1",
+        required=True,
+        case_ids=("pairing",),
+        redacted_parameters={},
+        cluster_ids=(edge.initiator, edge.receiver),
+    )
+    from kamiwaza_sdk.validation import ScenarioPlan
+
+    plan = ScenarioPlan(
+        schema="kamiwaza.scenario-plan/v1",
+        profile_digest=model_digest(profile),
+        provider_revision="sdk.federation.shared-idp@v1",
+        selected=(selected,),
+        install_requirements={},
+        runtime_requirements=(),
+    )
+
+    validate_plan_identity(profile, plan)
+    runtime = RuntimeContext.model_validate(
+        {
+            "schema": "kamiwaza.runtime-context/v1",
+            "run_id": "run-123",
+            "clusters": [
+                {
+                    "id": edge.initiator,
+                    "base_url": "https://initiator.example.test/api",
+                    "api_key_ref": "secret://initiator/admin-pat",
+                    "kubeconfig_ref": "file:///run/secrets/initiator.kubeconfig",
+                },
+                {
+                    "id": edge.receiver,
+                    "base_url": "https://receiver.example.test/api",
+                    "api_key_ref": "secret://receiver/admin-pat",
+                    "kubeconfig_ref": "file:///run/secrets/receiver.kubeconfig",
+                },
+            ],
+        }
+    )
+    validate_plan_runtime_identity(plan, runtime)
+
+    with pytest.raises(ProviderContractError, match="target cluster binding"):
+        validate_plan_identity(
+            profile,
+            plan.model_copy(
+                update={"selected": (selected.model_copy(update={"cluster_ids": ()}),)}
+            ),
+        )
+    with pytest.raises(ProviderContractError, match="runtime missing"):
+        validate_plan_runtime_identity(
+            plan,
+            runtime.model_copy(update={"clusters": runtime.clusters[:1]}),
+        )
 
 
 def test_runtime_context_rejects_inline_secrets_and_hides_references() -> None:

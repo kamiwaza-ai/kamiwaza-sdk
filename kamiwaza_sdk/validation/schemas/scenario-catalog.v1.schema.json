@@ -142,7 +142,8 @@
         "target_scope": {
           "enum": [
             "cluster",
-            "inference_target"
+            "inference_target",
+            "mesh_edge"
           ],
           "title": "Target Scope",
           "type": "string"

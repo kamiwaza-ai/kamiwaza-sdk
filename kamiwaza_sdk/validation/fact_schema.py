@@ -15,6 +15,7 @@ from kamiwaza_sdk.validation.models import (
     DeploymentFacts,
     FactMatcher,
     InferenceTarget,
+    MeshEdge,
     MeshFacts,
     ScenarioDescriptor,
     ValidationIntent,
@@ -24,6 +25,7 @@ from kamiwaza_sdk.validation.provider import ProviderContractError
 _FACT_ROOT_MODELS: dict[str, type[BaseModel]] = {
     "target": InferenceTarget,
     "cluster": ClusterFacts,
+    "edge": MeshEdge,
     "deployment": DeploymentFacts,
     "mesh": MeshFacts,
     "validation": ValidationIntent,
@@ -47,6 +49,10 @@ def _matcher_annotation(
     if root_model is None:
         raise ProviderContractError("descriptor matcher uses an invalid fact root")
     if root_name == "target" and descriptor.target_scope != "inference_target":
+        raise ProviderContractError("descriptor matcher uses an invalid fact root")
+    if root_name == "cluster" and descriptor.target_scope == "mesh_edge":
+        raise ProviderContractError("descriptor matcher uses an invalid fact root")
+    if root_name == "edge" and descriptor.target_scope != "mesh_edge":
         raise ProviderContractError("descriptor matcher uses an invalid fact root")
     return _resolve_annotation(root_model, parts)
 

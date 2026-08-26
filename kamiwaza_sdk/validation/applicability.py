@@ -14,19 +14,22 @@ from kamiwaza_sdk.validation.models import (
     ClusterFacts,
     FactMatcher,
     InferenceTarget,
+    MeshEdge,
     ScenarioDescriptor,
     ValidationProfile,
+    mesh_edge_target_id,
 )
 from kamiwaza_sdk.validation.provider import ProviderContractError
 
 
 @dataclass(frozen=True)
 class ApplicableTarget:
-    """One descriptor candidate bound to its runtime cluster."""
+    """One descriptor candidate bound to one or more runtime clusters."""
 
     target_id: str
     cluster_id: str
     required: bool
+    cluster_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,8 @@ class _CandidateContext:
     target_id: str
     cluster: ClusterFacts
     inference_target: InferenceTarget | None
+    mesh_edge: MeshEdge | None
+    cluster_ids: tuple[str, ...]
     required: bool
 
 
@@ -72,6 +77,7 @@ def applicable_targets(
             target_id=item.target_id,
             cluster_id=item.cluster.id,
             required=item.required,
+            cluster_ids=item.cluster_ids,
         )
         for item in matches
     )
@@ -87,15 +93,31 @@ def _candidate_contexts(
                 target_id=target.id,
                 cluster=clusters[target.cluster_id],
                 inference_target=target,
+                mesh_edge=None,
+                cluster_ids=(target.cluster_id,),
                 required=target.required,
             )
             for target in profile.inference_targets
+        )
+    if descriptor.target_scope == "mesh_edge":
+        return tuple(
+            _CandidateContext(
+                target_id=mesh_edge_target_id(edge),
+                cluster=clusters[edge.initiator],
+                inference_target=None,
+                mesh_edge=edge,
+                cluster_ids=(edge.initiator, edge.receiver),
+                required=True,
+            )
+            for edge in profile.mesh.edges
         )
     return tuple(
         _CandidateContext(
             target_id=cluster.id,
             cluster=cluster,
             inference_target=None,
+            mesh_edge=None,
+            cluster_ids=(cluster.id,),
             required=True,
         )
         for cluster in profile.clusters
@@ -119,6 +141,7 @@ def _matcher_root(
     roots: dict[str, object | None] = {
         "target": candidate.inference_target,
         "cluster": candidate.cluster,
+        "edge": candidate.mesh_edge,
         "deployment": profile.deployment,
         "mesh": profile.mesh,
         "validation": profile.validation,

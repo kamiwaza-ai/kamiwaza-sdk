@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kamiwaza_sdk.validation import ValidationProfile
+from kamiwaza_sdk.validation import FactMatcher, ValidationProfile
 from kamiwaza_sdk.validation.applicability import applicable_targets
 from kamiwaza_sdk.validation.golden_provider import GoldenProvider
 from kamiwaza_sdk.validation.provider import (
@@ -104,6 +104,68 @@ def test_matcher_path_segments_address_every_valid_feature_key(
     assert [target.target_id for target in applicable_targets(profile, descriptor)] == [
         cluster.id
     ]
+
+
+def test_mesh_edge_scope_matches_edge_facts_and_binds_both_clusters() -> None:
+    payload = profile_payload()
+    payload["clusters"].append(  # type: ignore[union-attr]
+        {
+            "id": "peer-cluster",
+            "roles": ["controller"],
+            "node_count": 1,
+            "hardware": {"accelerators": []},
+            "features": {},
+        }
+    )
+    payload["mesh"] = {  # type: ignore[index]
+        "edges": [
+            {
+                "initiator": "evo-x2-2",
+                "receiver": "peer-cluster",
+                "identity_mode": "shared_idp",
+            }
+        ]
+    }
+    profile = ValidationProfile.model_validate(payload)
+    descriptor = GoldenProvider().describe()[0].model_copy(
+        update={
+            "scenario_id": "sdk.federation.shared-idp/v1",
+            "target_scope": "mesh_edge",
+            "applies_when": (
+                FactMatcher(
+                    path=("edge", "identity_mode"),
+                    operator="eq",
+                    value="shared_idp",
+                ),
+            ),
+        }
+    )
+
+    matches = applicable_targets(profile, descriptor)
+
+    assert len(matches) == 1
+    assert matches[0].cluster_ids == ("evo-x2-2", "peer-cluster")
+    assert matches[0].cluster_id == "evo-x2-2"
+
+
+def test_mesh_edge_scope_rejects_single_cluster_matcher_root() -> None:
+    descriptor = GoldenProvider().describe()[0].model_copy(
+        update={
+            "target_scope": "mesh_edge",
+            "applies_when": (
+                GoldenProvider().describe()[0].applies_when[0].model_copy(
+                    update={
+                        "path": ("cluster", "roles"),
+                        "operator": "contains",
+                        "value": "controller",
+                    }
+                ),
+            ),
+        }
+    )
+
+    with pytest.raises(ProviderContractError, match="invalid fact root"):
+        applicable_targets(_profile(), descriptor)
 
 
 @pytest.mark.parametrize(
