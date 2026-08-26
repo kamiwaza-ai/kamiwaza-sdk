@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
-from kamiwaza_sdk.validation.applicability import applicable_targets, descriptor_is_active
+from kamiwaza_sdk.validation.applicability import (
+    applicable_targets,
+    descriptor_is_active,
+)
 from kamiwaza_sdk.validation.federation_common import (
     edge_state,
     read_persona_password,
@@ -50,6 +54,15 @@ from kamiwaza_sdk.validation.provider import (
 from kamiwaza_sdk.validation.registry import model_digest
 
 
+@dataclass(frozen=True)
+class _DeploymentCapture:
+    config: Any
+    deployment_id: str
+    served_model_id: str
+    ready: Any
+    observation: Any
+
+
 class ModelMeshLifecycleProvider(FederationLifecycleProvider):
     """Run shared-IdP setup plus an exact receiver model-mesh inventory."""
 
@@ -69,7 +82,9 @@ class ModelMeshLifecycleProvider(FederationLifecycleProvider):
             provider_revision=MODEL_MESH_PROVIDER_REVISION,
         )
         if inference_factory is None:
-            from kamiwaza_sdk.validation.sdk_inference_runtime import SdkInferenceClusterFactory
+            from kamiwaza_sdk.validation.sdk_inference_runtime import (
+                SdkInferenceClusterFactory,
+            )
 
             inference_factory = SdkInferenceClusterFactory()
         self._inference_factory = inference_factory
@@ -83,7 +98,9 @@ class ModelMeshLifecycleProvider(FederationLifecycleProvider):
         requirements: dict[str, Any] = {}
         if descriptor_is_active(profile, descriptor):
             if profile.validation.fixture_mode not in descriptor.fixture_modes:
-                raise ProviderContractError("model-mesh scenario does not support fixture mode")
+                raise ProviderContractError(
+                    "model-mesh scenario does not support fixture mode"
+                )
             candidates = applicable_targets(profile, descriptor)
             selected = resolve_candidates(
                 profile,
@@ -123,83 +140,10 @@ class ModelMeshLifecycleProvider(FederationLifecycleProvider):
         target = model_target_parameters(context.selected)
         receiver_runtime = context.runtime_clusters[context.receiver_id]
         inference = self._inference_factory(receiver_runtime)
-        deployment_id: str | None = None
-        model_id_for_grant: str | None = None
         try:
-            catalog = inference.ensure_download(
-                required_text(target, "model_repository"),
-                required_text(target, "model_quantization"),
-            )
-            if not catalog.model_id:
-                raise ProviderContractError("model target discovery returned no model id")
-            model_id_for_grant = catalog.model_id
-            config = _select_model(
-                catalog,
-                inference.list_configs(catalog.model_id),
-                TargetParameters(
-                    repository=required_text(target, "model_repository"),
-                    engine=required_text(target, "model_engine"),
-                    model_format=required_text(target, "model_format"),
-                    quantization=required_text(target, "model_quantization"),
-                    runtime_profile=required_text(target, "model_runtime_profile"),
-                    expected_image=target.get("model_expected_image"),
-                    accelerators=tuple(),
-                ),
-            )
-            deployment_id = inference.deploy(
-                DeploymentRequest(
-                    model_id=config.model_id,
-                    config_id=config.config_id,
-                    model_file_id=config.model_file_id,
-                    engine=required_text(target, "model_engine"),
-                    runtime_profile=required_text(target, "model_runtime_profile"),
-                )
-            )
-            ready = inference.wait_ready(deployment_id)
-            if ready.engine != required_text(target, "model_engine") or ready.instance_count < 1:
-                raise ProviderContractError("model-mesh deployment did not become ready")
-            observation = inference.observe_runtime(
-                deployment_id, required_text(target, "model_engine")
-            )
-            served_model_id = _served_model_id(inference, deployment_id)
-            context.state = context.store.record(
-                context.state,
-                _mutation(context.selected.target_id, "model-deployment", deployment_id),
-                {
-                    "model_id": config.model_id,
-                    "model_config_id": config.config_id,
-                    "model_file_id": config.model_file_id,
-                    "deployment_id": deployment_id,
-                    "served_model_id": served_model_id,
-                    "model_target_id": required_text(target, "model_target_id"),
-                    "actual_engine": ready.engine,
-                    "actual_image_digest": observation.image_digest,
-                    "effective_runtime_args": list(observation.effective_args),
-                },
-            )
-            context.state = context.store.update_edge(
-                context.state,
-                context.selected.target_id,
-                {
-                    "model_id": config.model_id,
-                    "model_config_id": config.config_id,
-                    "model_file_id": config.model_file_id,
-                    "deployment_id": deployment_id,
-                    "served_model_id": served_model_id,
-                    "model_target_id": required_text(target, "model_target_id"),
-                },
-            )
-        except Exception:
-            if deployment_id:
-                try:
-                    inference.stop(deployment_id)
-                except Exception:
-                    pass
-            raise
+            model_id_for_grant = _deploy_model(context, target, inference)
         finally:
             _close(inference)
-        if not model_id_for_grant:
-            raise ProviderContractError("model-mesh deployment did not resolve a model id")
         _seed_brokered_users(context, model_id=model_id_for_grant)
         return context.state
 
@@ -271,31 +215,148 @@ class ModelMeshLifecycleProvider(FederationLifecycleProvider):
             resolved_runtime=resolved,
         )
 
+
 def _mutation(target_id: str, resource_type: str, resource_id: str) -> Any:
     from kamiwaza_sdk.validation.federation_state import MutationSpec
 
     return MutationSpec(target_id, resource_type, resource_id)
 
 
+def _deploy_model(context: EdgeContext, target: dict[str, Any], inference: Any) -> str:
+    """Download, deploy, observe, and journal the selected receiver model."""
+
+    deployment_id: str | None = None
+    try:
+        catalog = inference.ensure_download(
+            required_text(target, "model_repository"),
+            required_text(target, "model_quantization"),
+        )
+        model_id = str(catalog.model_id or "").strip()
+        if not model_id:
+            raise ProviderContractError("model target discovery returned no model id")
+        config = _select_model(
+            catalog,
+            inference.list_configs(model_id),
+            TargetParameters(
+                repository=required_text(target, "model_repository"),
+                engine=required_text(target, "model_engine"),
+                model_format=required_text(target, "model_format"),
+                quantization=required_text(target, "model_quantization"),
+                runtime_profile=required_text(target, "model_runtime_profile"),
+                expected_image=target.get("model_expected_image"),
+                accelerators=tuple(),
+            ),
+        )
+        engine = required_text(target, "model_engine")
+        deployment_id = inference.deploy(
+            DeploymentRequest(
+                model_id=config.model_id,
+                config_id=config.config_id,
+                model_file_id=config.model_file_id,
+                engine=engine,
+                runtime_profile=required_text(target, "model_runtime_profile"),
+            )
+        )
+        ready = inference.wait_ready(deployment_id)
+        _assert_ready(ready, engine)
+        observation = inference.observe_runtime(deployment_id, engine)
+        served_model_id = _served_model_id(inference, deployment_id)
+        _record_deployment(
+            context,
+            target,
+            _DeploymentCapture(
+                config, deployment_id, served_model_id, ready, observation
+            ),
+        )
+        return model_id
+    except Exception:
+        _stop_failed_deployment(inference, deployment_id)
+        raise
+
+
+def _assert_ready(ready: Any, engine: str) -> None:
+    if ready.engine != engine:
+        raise ProviderContractError("model-mesh deployment used an unexpected engine")
+    if ready.instance_count < 1:
+        raise ProviderContractError("model-mesh deployment did not become ready")
+
+
+def _record_deployment(
+    context: EdgeContext,
+    target: dict[str, Any],
+    capture: _DeploymentCapture,
+) -> None:
+    model_target_id = required_text(target, "model_target_id")
+    resource = {
+        "model_id": capture.config.model_id,
+        "model_config_id": capture.config.config_id,
+        "model_file_id": capture.config.model_file_id,
+        "deployment_id": capture.deployment_id,
+        "served_model_id": capture.served_model_id,
+        "model_target_id": model_target_id,
+        "actual_engine": capture.ready.engine,
+        "actual_image_digest": capture.observation.image_digest,
+        "effective_runtime_args": list(capture.observation.effective_args),
+    }
+    context.state = context.store.record(
+        context.state,
+        _mutation(
+            context.selected.target_id, "model-deployment", capture.deployment_id
+        ),
+        resource,
+    )
+    context.state = context.store.update_edge(
+        context.state,
+        context.selected.target_id,
+        {
+            "model_id": capture.config.model_id,
+            "model_config_id": capture.config.config_id,
+            "model_file_id": capture.config.model_file_id,
+            "deployment_id": capture.deployment_id,
+            "served_model_id": capture.served_model_id,
+            "model_target_id": model_target_id,
+        },
+    )
+
+
+def _stop_failed_deployment(inference: Any, deployment_id: str | None) -> None:
+    if not deployment_id:
+        return
+    try:
+        inference.stop(deployment_id)
+    except Exception:
+        pass
+
+
 def _served_model_id(inference: Any, deployment_id: str) -> str:
     client = getattr(inference, "_client", None)
     if client is None:
-        method = getattr(inference, "served_model_id", None)
-        if callable(method):
-            value = method(deployment_id)
-            if value:
-                return str(value)
-        raise ProviderContractError("model-mesh runtime did not expose a served model id")
+        return _fallback_served_model_id(inference, deployment_id)
     openai_client = client.openai.get_client(deployment_id=deployment_id)
     try:
-        models = openai_client.models.list()
-        for item in getattr(models, "data", None) or []:
-            value = str(getattr(item, "id", "") or "").strip()
-            if value:
-                return value
+        served_model_id = _first_served_model_id(openai_client.models.list())
     finally:
         openai_client.close()
+    if served_model_id:
+        return served_model_id
     raise ProviderContractError("model-mesh runtime did not expose a served model id")
+
+
+def _fallback_served_model_id(inference: Any, deployment_id: str) -> str:
+    method = getattr(inference, "served_model_id", None)
+    if callable(method):
+        value = method(deployment_id)
+        if value:
+            return str(value)
+    raise ProviderContractError("model-mesh runtime did not expose a served model id")
+
+
+def _first_served_model_id(models: Any) -> str | None:
+    for item in getattr(models, "data", None) or []:
+        value = str(getattr(item, "id", "") or "").strip()
+        if value:
+            return value
+    return None
 
 
 def main(argv: Sequence[str] | None = None) -> int:

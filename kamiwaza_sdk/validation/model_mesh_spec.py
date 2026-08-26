@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from kamiwaza_sdk.validation.applicability import ApplicableTarget
@@ -33,6 +34,14 @@ MODEL_MESH_CASE_IDS = (
     "model-remote-chat-provenance",
     "model-unauthorized-negative",
 )
+
+
+@dataclass(frozen=True)
+class _ResolutionInputs:
+    clusters: dict[str, Any]
+    targets: Sequence[InferenceTarget]
+    shared_issuer: str
+    realm: str
 
 
 def scenario_descriptor() -> ScenarioDescriptor:
@@ -79,34 +88,50 @@ def resolve_candidates(
 
     if not candidates:
         if explicit:
-            raise ProviderContractError("requested model-mesh scenario has no compatible mesh edge")
+            raise ProviderContractError(
+                "requested model-mesh scenario has no compatible mesh edge"
+            )
         return ()
 
     clusters = {item.id: item for item in profile.clusters}
-    targets = {item.id: item for item in profile.inference_targets}
+    targets = tuple(profile.inference_targets)
     shared_issuer = planned_shared_issuer(profile)
     realm = shared_issuer.rsplit("/", 1)[-1]
-    resolved: list[ResolvedScenario] = []
-    for candidate in candidates:
-        if len(candidate.cluster_ids) != 2:
-            raise ProviderContractError("model-mesh edge must bind both endpoint clusters")
-        receiver_id = candidate.cluster_ids[1]
-        receiver = clusters.get(receiver_id)
-        if receiver is None:
-            raise ProviderContractError("model-mesh edge receiver cluster is undeclared")
-        compatible = tuple(
-            target
-            for target in targets.values()
-            if target.cluster_id == receiver_id
-            and _compatibility_error(target, receiver) is None
+    inputs = _ResolutionInputs(clusters, targets, shared_issuer, realm)
+    return tuple(_resolve_candidate(candidate, inputs) for candidate in candidates)
+
+
+def _resolve_candidate(
+    candidate: ApplicableTarget,
+    inputs: _ResolutionInputs,
+) -> ResolvedScenario:
+    if len(candidate.cluster_ids) != 2:
+        raise ProviderContractError("model-mesh edge must bind both endpoint clusters")
+    receiver_id = candidate.cluster_ids[1]
+    receiver = inputs.clusters.get(receiver_id)
+    if receiver is None:
+        raise ProviderContractError("model-mesh edge receiver cluster is undeclared")
+    target = _select_receiver_target(inputs.targets, receiver_id, receiver)
+    if target is None:
+        raise ProviderContractError(
+            f"no compatible model target for mesh edge receiver {receiver_id}"
         )
-        if not compatible:
-            raise ProviderContractError(
-                f"no compatible model target for mesh edge receiver {receiver_id}"
-            )
-        target = min(compatible, key=lambda item: item.id)
-        resolved.append(_resolved_candidate(candidate, target, shared_issuer, realm))
-    return tuple(resolved)
+    return _resolved_candidate(candidate, target, inputs.shared_issuer, inputs.realm)
+
+
+def _select_receiver_target(
+    targets: Sequence[InferenceTarget], receiver_id: str, receiver: Any
+) -> InferenceTarget | None:
+    compatible = tuple(
+        target for target in targets if _target_matches(target, receiver_id, receiver)
+    )
+    return min(compatible, key=lambda item: item.id) if compatible else None
+
+
+def _target_matches(target: InferenceTarget, receiver_id: str, receiver: Any) -> bool:
+    if target.cluster_id != receiver_id:
+        return False
+    return _compatibility_error(target, receiver) is None
 
 
 def _resolved_candidate(
