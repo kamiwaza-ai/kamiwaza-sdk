@@ -78,6 +78,7 @@ class EdgeContext:
     receiver_id: str = ""
     initiator: Any = None
     receiver: Any = None
+    receiver_federation_id: str = ""
     realm: str = ""
     issuer: str = ""
     name: str = ""
@@ -121,8 +122,10 @@ def prepare_realm(context: RealmContext) -> FixtureState:
     client = context.admin.ensure_ropc_client(realm, SHARED_REALM_CLIENT_ID)
     client_uuid = required_text(client, "id")
     state = _record(
-        context.store, state, MutationSpec(context.target_id, "keycloak-client", client_uuid),
-        {"client_uuid": client_uuid}
+        context.store,
+        state,
+        MutationSpec(context.target_id, "keycloak-client", client_uuid),
+        {"client_uuid": client_uuid},
     )
     for attribute in ("clearance", "tenant_id", "tenant"):
         context.admin.ensure_attribute_mapper(realm, client_uuid, attribute=attribute)
@@ -180,6 +183,7 @@ def _bind_edge(context: EdgeContext) -> None:
         name=context.name, role="receiver", preshared_key=psk, **shared
     )
     receiver_id = required_text(receiver_record, "id")
+    context.receiver_federation_id = receiver_id
     context.state = _record(
         context.store,
         context.state,
@@ -201,11 +205,15 @@ def _bind_edge(context: EdgeContext) -> None:
         {"initiator_federation_id": initiator_id},
     )
     context.source_cluster_id = (
-        optional_text(context.receiver.federations.get(receiver_id), "remote_cluster_id")
+        optional_text(
+            context.receiver.federations.get(receiver_id), "remote_cluster_id"
+        )
         or context.initiator_id
     )
     context.resolved_receiver_id = (
-        optional_text(context.initiator.federations.get(initiator_id), "remote_cluster_id")
+        optional_text(
+            context.initiator.federations.get(initiator_id), "remote_cluster_id"
+        )
         or context.receiver_id
     )
     if context.source_cluster_id == context.resolved_receiver_id:
@@ -250,7 +258,9 @@ def _configure_edge(
         context.state = _record(
             context.store,
             context.state,
-            MutationSpec(context.selected.target_id, "execution-gate", context.receiver_id),
+            MutationSpec(
+                context.selected.target_id, "execution-gate", context.receiver_id
+            ),
             {"previous_execution_gate": _json_value(previous_gate)},
         )
     context.state = context.store.update_edge(
@@ -301,9 +311,12 @@ def _seed_brokered_user(
         context.realm, SHARED_REALM_CLIENT_ID, spec.username, spec.password
     )
     external_id = f"{jwt_subject(token)}@{context.source_cluster_id}"
-    context.receiver.federations[context.name].users.add(
-        external_id, initial_tuples=spec.tuples
+    if not context.receiver_federation_id:
+        raise ProviderContractError("receiver federation identity is unavailable")
+    receiver_federation = context.receiver.federations.by_id(
+        context.receiver_federation_id, remote_name=context.name
     )
+    receiver_federation.users.add(external_id, initial_tuples=spec.tuples)
     resource_label = spec.label or spec.username
     return _record(
         context.store,
@@ -348,7 +361,9 @@ def _install_gate_package(receiver: Any) -> None:
 def _validate_gate_discovery(receiver: Any) -> None:
     gate = receiver.gates.discover(GATE_CLASSPATH)
     if getattr(gate, "name", None) != GATE_NAME:
-        raise ProviderContractError("shared-IdP gate classpath resolved unexpected gate")
+        raise ProviderContractError(
+            "shared-IdP gate classpath resolved unexpected gate"
+        )
 
 
 def _persona_password(runtime: RuntimeContext) -> str:

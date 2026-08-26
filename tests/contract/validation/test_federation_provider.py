@@ -144,12 +144,15 @@ class _Federations:
         self.cluster_id = cluster_id
         self.remote_id = remote_id
         self.proxies: dict[str, _FederationProxy] = {}
+        self.id_proxies: dict[str, _FederationProxy] = {}
         self.deleted: list[str] = []
 
     def pair(self, *, name: str, role: str, **kwargs: Any) -> dict[str, str]:
         del kwargs
-        self.proxies.setdefault(name, _FederationProxy())
-        return {"id": f"{role}-{self.cluster_id}-fed", "name": name}
+        proxy = self.proxies.setdefault(name, _FederationProxy())
+        federation_id = f"{role}-{self.cluster_id}-fed"
+        self.id_proxies[federation_id] = proxy
+        return {"id": federation_id, "name": name}
 
     def get(self, federation_id: str) -> dict[str, str]:
         del federation_id
@@ -157,6 +160,12 @@ class _Federations:
 
     def __getitem__(self, name: str) -> _FederationProxy:
         return self.proxies[name]
+
+    def by_id(
+        self, federation_id: str, *, remote_name: str | None = None
+    ) -> _FederationProxy:
+        del remote_name
+        return self.id_proxies[federation_id]
 
 
 class _ClusterAPI:

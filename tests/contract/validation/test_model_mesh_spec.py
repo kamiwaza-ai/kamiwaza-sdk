@@ -225,9 +225,12 @@ class _Federations:
         del federation_id
         return {"remote_cluster_id": self.remote_id}
 
-    def __getitem__(self, name: str) -> Any:
-        del name
+    def by_id(self, federation_id: str, *, remote_name: str | None = None) -> Any:
+        del federation_id, remote_name
         return SimpleNamespace(users=self.users)
+
+    def __getitem__(self, name: str) -> Any:
+        raise AssertionError(f"name-based federation lookup is not allowed: {name}")
 
 
 class _Client:
