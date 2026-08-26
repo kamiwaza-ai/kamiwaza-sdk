@@ -54,12 +54,26 @@ AdminFactory = Callable[[RuntimeContext, RuntimeCluster], FederationAdmin]
 def read_file_reference(reference: str, *, label: str) -> str:
     """Read a materialized file reference without accepting inline secrets."""
 
+    path = _file_reference_path(reference, label)
+    return _read_secret_file(path, label)
+
+
+def _file_reference_path(reference: str, label: str) -> Path:
     parsed = urlsplit(reference)
-    if parsed.scheme != "file" or parsed.netloc or not parsed.path:
+    if parsed.scheme != "file":
+        raise RuntimeError(f"{label} must be materialized as a local file")
+    if parsed.netloc or not parsed.path:
         raise RuntimeError(f"{label} must be materialized as a local file")
     path = Path(unquote(parsed.path))
-    if not path.is_absolute() or not path.is_file():
+    if not path.is_absolute():
         raise RuntimeError(f"{label} file is unavailable")
+    if not path.is_file():
+        raise RuntimeError(f"{label} file is unavailable")
+
+    return path
+
+
+def _read_secret_file(path: Path, label: str) -> str:
     try:
         value = path.read_text(encoding="utf-8").strip()
     except OSError:

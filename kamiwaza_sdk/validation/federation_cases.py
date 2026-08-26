@@ -63,22 +63,21 @@ class TenantDenialRequest:
     expected_status: int
 
 
+@dataclass(frozen=True)
+class CaseHooks:
+    mesh_retrieve: Callable[[RetrievalRequest], tuple[list[dict[str, Any]], list[dict[str, Any]]]]
+    assert_tenant_denial: Callable[[TenantDenialRequest], None]
+    make_client: Callable[[str, str], Any]
+
+
 def run_edge(
     context: RunContext,
     *,
-    mesh_retrieve: Callable[[RetrievalRequest], tuple[list[dict[str, Any]], list[dict[str, Any]]]]
-    | None = None,
-    assert_tenant_denial: Callable[[TenantDenialRequest], None] | None = None,
-    make_client: Callable[[str, str], Any] | None = None,
+    hooks: CaseHooks | None = None,
 ) -> list[CaseResult]:
+    active_hooks = hooks or CaseHooks(_mesh_retrieve, _assert_tenant_denial, token_client)
     return [
-        _run_one_case(
-            context,
-            case_id,
-            mesh_retrieve=mesh_retrieve,
-            assert_tenant_denial=assert_tenant_denial,
-            make_client=make_client,
-        )
+        _run_one_case(context, case_id, active_hooks)
         for case_id in context.selected.case_ids
     ]
 
@@ -86,21 +85,11 @@ def run_edge(
 def _run_one_case(
     context: RunContext,
     case_id: str,
-    *,
-    mesh_retrieve: Callable[[RetrievalRequest], tuple[list[dict[str, Any]], list[dict[str, Any]]]]
-    | None,
-    assert_tenant_denial: Callable[[TenantDenialRequest], None] | None,
-    make_client: Callable[[str, str], Any] | None,
+    hooks: CaseHooks,
 ) -> CaseResult:
     started = time.monotonic()
     try:
-        _dispatch_case(
-            context,
-            case_id,
-            mesh_retrieve=mesh_retrieve,
-            assert_tenant_denial=assert_tenant_denial,
-            make_client=make_client,
-        )
+        _dispatch_case(context, case_id, hooks)
     except Exception as exc:
         return CaseResult(
             target_id=context.selected.target_id,
@@ -123,25 +112,20 @@ def _run_one_case(
 def _dispatch_case(
     context: RunContext,
     case_id: str,
-    *,
-    mesh_retrieve: Callable[[RetrievalRequest], tuple[list[dict[str, Any]], list[dict[str, Any]]]]
-    | None,
-    assert_tenant_denial: Callable[[TenantDenialRequest], None] | None,
-    make_client: Callable[[str, str], Any] | None,
+    hooks: CaseHooks,
 ) -> None:
     if case_id.startswith("retrieval-clearance-"):
         _run_clearance_case(
             context,
             case_id.rsplit("-", 1)[-1].upper(),
-            mesh_retrieve=mesh_retrieve,
-            make_client=make_client,
+            hooks,
         )
         return
     if case_id.startswith("retrieval-invalid-tenant-"):
         _run_tenant_case(
             context,
             case_id.removeprefix("retrieval-invalid-tenant-"),
-            assert_tenant_denial=assert_tenant_denial,
+            hooks,
         )
         return
     handler = {
@@ -152,26 +136,19 @@ def _dispatch_case(
     if handler is None:
         raise ProviderContractError("provider case is not registered")
     if handler is _run_dataset_case:
-        _run_dataset_case(context, make_client=make_client)
+        _run_dataset_case(context, hooks)
     elif handler is _run_job_case:
-        _run_job_case(context, make_client=make_client)
+        _run_job_case(context, hooks)
     else:
-        _run_unonboarded_case(context, make_client=make_client)
+        _run_unonboarded_case(context, hooks)
 
 
-def _run_clearance_case(
-    context: RunContext,
-    clearance: str,
-    *,
-    mesh_retrieve: Callable[[RetrievalRequest], tuple[list[dict[str, Any]], list[dict[str, Any]]]]
-    | None,
-    make_client: Callable[[str, str], Any] | None,
-) -> None:
-    username = PERSONAS[clearance]
-    token = _issue_token(context, username)
-    persona = (make_client or token_client)(context.initiator_base, token)
+def _retrieve_rows(
+    context: RunContext, token: str, hooks: CaseHooks
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    persona = hooks.make_client(context.initiator_base, token)
     try:
-        rows, audits = (mesh_retrieve or _mesh_retrieve)(
+        return hooks.mesh_retrieve(
             RetrievalRequest(
                 persona=persona,
                 base_url=context.initiator_base,
@@ -182,6 +159,16 @@ def _run_clearance_case(
         )
     finally:
         close_client(persona)
+
+
+def _run_clearance_case(
+    context: RunContext,
+    clearance: str,
+    hooks: CaseHooks,
+) -> None:
+    username = PERSONAS[clearance]
+    token = _issue_token(context, username)
+    rows, audits = _retrieve_rows(context, token, hooks)
     included, allowed = KNOWN[clearance]
     expected = [row for row in records() if row["classification"] in allowed]
     if len(rows) != included or _sort_rows(rows) != _sort_rows(expected):
@@ -190,16 +177,11 @@ def _run_clearance_case(
         raise AssertionError("gated retrieval emitted no gate audit")
 
 
-def _run_tenant_case(
-    context: RunContext,
-    case_name: str,
-    *,
-    assert_tenant_denial: Callable[[TenantDenialRequest], None] | None,
-) -> None:
+def _run_tenant_case(context: RunContext, case_name: str, hooks: CaseHooks) -> None:
     username, _attrs = TENANT_NEGATIVE_PERSONAS[case_name]
     token = _issue_token(context, username)
     expected_status = 403 if case_name == "canonical-nondefault" else 401
-    (assert_tenant_denial or _assert_tenant_denial)(
+    hooks.assert_tenant_denial(
         TenantDenialRequest(
             initiator=context.initiator,
             base_url=context.initiator_base,
@@ -211,11 +193,9 @@ def _run_tenant_case(
     )
 
 
-def _run_dataset_case(
-    context: RunContext, *, make_client: Callable[[str, str], Any] | None
-) -> None:
+def _run_dataset_case(context: RunContext, hooks: CaseHooks) -> None:
     token = _issue_token(context, PERSONAS["U"])
-    persona = (make_client or token_client)(context.initiator_base, token)
+    persona = hooks.make_client(context.initiator_base, token)
     try:
         datasets = persona.catalog.datasets.list(
             target_cluster=required_text(context.params, "federation_name")
@@ -227,11 +207,9 @@ def _run_dataset_case(
         close_client(persona)
 
 
-def _run_job_case(
-    context: RunContext, *, make_client: Callable[[str, str], Any] | None
-) -> None:
+def _run_job_case(context: RunContext, hooks: CaseHooks) -> None:
     token = _issue_token(context, PERSONAS["U"])
-    persona = (make_client or token_client)(context.initiator_base, token)
+    persona = hooks.make_client(context.initiator_base, token)
     marker = f"kamiwaza-validation-{context.selected.target_id}"
     script = (
         "import json; print('KZ_MESH_RUN_ON_JSON::' + json.dumps({'probe': "
@@ -256,11 +234,9 @@ def _run_job_case(
         close_client(persona)
 
 
-def _run_unonboarded_case(
-    context: RunContext, *, make_client: Callable[[str, str], Any] | None
-) -> None:
+def _run_unonboarded_case(context: RunContext, hooks: CaseHooks) -> None:
     token = _issue_token(context, UNONBOARDED_PERSONA)
-    persona = (make_client or token_client)(context.initiator_base, token)
+    persona = hooks.make_client(context.initiator_base, token)
     name = required_text(context.params, "federation_name")
     try:
         try:

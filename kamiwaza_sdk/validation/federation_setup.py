@@ -86,19 +86,21 @@ class EdgeContext:
     resolved_receiver_id: str = ""
 
 
+@dataclass(frozen=True)
+class BrokeredUserSpec:
+    username: str
+    password: str
+    tuples: list[dict[str, str]]
+    label: str | None = None
+
+
 def _record(
     store: FederationStateStore,
     state: FixtureState,
-    target_id: str,
-    resource_type: str,
-    resource_id: str,
+    spec: MutationSpec,
     opaque: Mapping[str, Any] | None = None,
 ) -> FixtureState:
-    return store.record(
-        state,
-        MutationSpec(target_id, resource_type, resource_id),
-        opaque,
-    )
+    return store.record(state, spec, opaque)
 
 
 def prepare_realm(context: RealmContext) -> FixtureState:
@@ -109,9 +111,7 @@ def prepare_realm(context: RealmContext) -> FixtureState:
     state = _record(
         context.store,
         context.state,
-        context.target_id,
-        "keycloak-realm",
-        realm,
+        MutationSpec(context.target_id, "keycloak-realm", realm),
         {"realm": realm, "issuer": required_text(params, "issuer")},
     )
     created = context.admin.create_owned_realm(realm, nonce)
@@ -121,7 +121,7 @@ def prepare_realm(context: RealmContext) -> FixtureState:
     client = context.admin.ensure_ropc_client(realm, SHARED_REALM_CLIENT_ID)
     client_uuid = required_text(client, "id")
     state = _record(
-        context.store, state, context.target_id, "keycloak-client", client_uuid,
+        context.store, state, MutationSpec(context.target_id, "keycloak-client", client_uuid),
         {"client_uuid": client_uuid}
     )
     for attribute in ("clearance", "tenant_id", "tenant"):
@@ -135,9 +135,7 @@ def prepare_realm(context: RealmContext) -> FixtureState:
         state = _record(
             context.store,
             state,
-            context.target_id,
-            "keycloak-user",
-            user_id,
+            MutationSpec(context.target_id, "keycloak-user", user_id),
             {f"user:{username}": user_id},
         )
     return context.store.update_edge(
@@ -180,9 +178,7 @@ def _bind_edge(context: EdgeContext) -> None:
     context.state = _record(
         context.store,
         context.state,
-        context.selected.target_id,
-        "receiver-federation",
-        receiver_id,
+        MutationSpec(context.selected.target_id, "receiver-federation", receiver_id),
         {"receiver_federation_id": receiver_id},
     )
     initiator_record = context.initiator.federations.pair(
@@ -196,9 +192,7 @@ def _bind_edge(context: EdgeContext) -> None:
     context.state = _record(
         context.store,
         context.state,
-        context.selected.target_id,
-        "initiator-federation",
-        initiator_id,
+        MutationSpec(context.selected.target_id, "initiator-federation", initiator_id),
         {"initiator_federation_id": initiator_id},
     )
     context.source_cluster_id = (
@@ -220,9 +214,7 @@ def _configure_edge(context: EdgeContext) -> None:
         context.state = _record(
             context.store,
             context.state,
-            context.selected.target_id,
-            "gate-package",
-            GATE_PACKAGE_NAME,
+            MutationSpec(context.selected.target_id, "gate-package", GATE_PACKAGE_NAME),
         )
     dataset_path = os.environ.get(_DATASET_PATH_ENV, _DATASET_DEFAULT_PATH).strip()
     if not dataset_path:
@@ -237,9 +229,7 @@ def _configure_edge(context: EdgeContext) -> None:
     context.state = _record(
         context.store,
         context.state,
-        context.selected.target_id,
-        "dataset",
-        context.urn,
+        MutationSpec(context.selected.target_id, "dataset", context.urn),
         {"dataset_urn": context.urn},
     )
     context.receiver.datasets.set_gate(context.urn, type=GATE_CLASSPATH, config={})
@@ -248,9 +238,7 @@ def _configure_edge(context: EdgeContext) -> None:
     context.state = _record(
         context.store,
         context.state,
-        context.selected.target_id,
-        "execution-gate",
-        context.receiver_id,
+        MutationSpec(context.selected.target_id, "execution-gate", context.receiver_id),
         {"previous_execution_gate": _json_value(previous_gate)},
     )
     context.state = context.store.update_edge(
@@ -277,34 +265,34 @@ def _seed_brokered_users(context: EdgeContext) -> None:
     for clearance, username in PERSONAS.items():
         context.state = _seed_brokered_user(
             context,
-            username,
-            password,
-            initial_tuples(context.urn, job_executor=clearance == "U"),
+            BrokeredUserSpec(
+                username,
+                password,
+                initial_tuples(context.urn, job_executor=clearance == "U"),
+            ),
         )
     for case_name, (username, _attrs) in TENANT_NEGATIVE_PERSONAS.items():
-        context.state = _seed_brokered_user(context, username, password, [], label=case_name)
+        context.state = _seed_brokered_user(
+            context, BrokeredUserSpec(username, password, [], case_name)
+        )
 
 
 def _seed_brokered_user(
     context: EdgeContext,
-    username: str,
-    password: str,
-    tuples: list[dict[str, str]],
-    *,
-    label: str | None = None,
+    spec: BrokeredUserSpec,
 ) -> FixtureState:
     token = context.admin.ropc_token(
-        context.realm, SHARED_REALM_CLIENT_ID, username, password
+        context.realm, SHARED_REALM_CLIENT_ID, spec.username, spec.password
     )
     external_id = f"{jwt_subject(token)}@{context.source_cluster_id}"
-    context.receiver.federations[context.name].users.add(external_id, initial_tuples=tuples)
-    resource_label = label or username
+    context.receiver.federations[context.name].users.add(
+        external_id, initial_tuples=spec.tuples
+    )
+    resource_label = spec.label or spec.username
     return _record(
         context.store,
         context.state,
-        context.selected.target_id,
-        "brokered-user",
-        external_id,
+        MutationSpec(context.selected.target_id, "brokered-user", external_id),
         {f"brokered:{resource_label}": external_id},
     )
 

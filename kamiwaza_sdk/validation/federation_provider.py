@@ -12,6 +12,7 @@ from typing import Any
 
 from kamiwaza_sdk.validation.applicability import applicable_targets, descriptor_is_active
 from kamiwaza_sdk.validation.federation_cases import (
+    CaseHooks as _CaseHooks,
     RetrievalRequest as _RetrievalRequest,
     RunContext as _RunContext,
     TenantDenialRequest as _TenantDenialRequest,
@@ -266,9 +267,7 @@ class FederationLifecycleProvider:
     def _run_edge(self, context: _RunContext) -> list[CaseResult]:
         return _run_edge_cases(
             context,
-            mesh_retrieve=_mesh_retrieve,
-            assert_tenant_denial=_assert_tenant_denial,
-            make_client=_token_client,
+            hooks=_CaseHooks(_mesh_retrieve, _assert_tenant_denial, _token_client),
         )
 
     def _cleanup_one(self, context: _TeardownContext, mutation: Any) -> CleanupResult:
