@@ -133,6 +133,12 @@ attributes.
 kz.cluster.declare_attribute("clearance", type="string")
 kz.cluster.declare_attribute("country",   type="string")
 kz.cluster.declare_attribute("programs",  type="string[]")  # multivalued
+kz.cluster.declare_attribute(
+    "classification",
+    type="string",
+    values=["U", "S", "TS"],
+    ordered=True,
+)  # values are ranked in list order
 ```
 
 `declare_attribute` is idempotent on identical shape — safe to re-run
@@ -142,18 +148,11 @@ the old shape. See `kz.cluster.list_attributes()` to inspect the
 current vocabulary, and `kz.cluster.deprecate_attribute(name)` /
 `kz.cluster.withdraw_attribute(name, force=True)` for retirement.
 
-For PII-grade attributes the gate consumes via the mesh-envelope
-`user_attrs` channel (not as a JWT claim), pass `sensitive=True`:
-
-```python
-kz.cluster.declare_attribute("ssn_last4", type="string", sensitive=True)
-```
-
-For attributes attested by a peer cluster's brokered-user provisioning
-(rather than set by local admin), pass `authority="mesh_peer"` —
-local admin attempts to set these on local users return 400
-`wrong_authority_for_subject`. Defaults (`sensitive=False`,
-`authority="local_admin"`) match the demo flow's normal case.
+Attribute declarations are always local-admin-owned and carried in the
+authenticated claims. The SDK intentionally does not expose `sensitive` or
+`authority` declaration inputs because the platform does not enforce either
+governance model. For an ordered enumeration, list position is the rank;
+removing or reordering values requires `confirm_narrowing=True`.
 
 **Step 2b — Seed personas.** The single PUT writes attributes in one
 round-trip, infers multivalued KC entries for list-shaped values, and

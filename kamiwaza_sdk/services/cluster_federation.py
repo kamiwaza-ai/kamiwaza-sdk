@@ -152,22 +152,32 @@ class ClusterAPI(FederationTrustLifecycleMixin, ClusterService):
         name: str,
         *,
         type: str,
-        sensitive: bool = False,
-        authority: str = "local_admin",
+        values: Optional[List[str]] = None,
+        ordered: bool = False,
+        confirm_narrowing: bool = False,
         schema_version: str = "1.0",
     ) -> AttributeSchema:
         """Register an attribute in the realm's declared vocabulary (ENG-4946).
 
         Required BEFORE ``kz.subjects.upsert(...)`` writes for any attribute
         name not already declared. Idempotent on identical shape; shape
-        change on a declared-state attribute returns 400.
+        change on a declared-state attribute returns 400. ``values`` carries
+        an optional enumeration whose list position is its rank; set
+        ``ordered=True`` when gates may compare those ranks. Removing or
+        reordering values requires ``confirm_narrowing=True``.
+
+        Attribute authority is always the local administrator and attributes
+        are always carried in the authenticated claims. Those unenforceable
+        governance controls are intentionally not SDK inputs.
         """
         body = {
             "type": type,
-            "sensitive": sensitive,
-            "authority": authority,
+            "values": values,
+            "ordered": ordered,
             "schema_version": schema_version,
         }
+        if confirm_narrowing:
+            body["confirm_narrowing"] = True
         response = self.client._request(
             "PUT", f"/cluster/attribute-schema/{name}", json=body
         )

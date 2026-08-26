@@ -366,17 +366,23 @@ class AttributeSchema(BaseModel):
     name: str
     """Canonical attribute name; matches KC user-profile + OIDC claim."""
 
-    type: Literal["string", "int", "bool", "string[]"]
+    type: Literal["string", "int", "bool", "string[]", "date"]
     """Wire-level attribute type. ``string[]`` is the multivalued shape."""
+
+    values: Optional[List[str]] = None
+    """Optional declared enumeration; list position is the comparison rank."""
+
+    ordered: bool = False
+    """Whether gates may compare values by their declared list position."""
 
     state: Literal["declared", "deprecated", "withdrawn"]
     """Lifecycle state."""
 
     authority: Literal["local_admin", "self", "mesh_peer", "system"] = "local_admin"
-    """Which actor may set values on subjects; defaults to local_admin."""
+    """Response compatibility field; declarations are always local-admin-owned."""
 
     sensitive: bool = False
-    """If True, mapper exists but JWT claim is not issued (OQ-14)."""
+    """Response compatibility field; declarations are always claim-carried."""
 
     schema_version: str = "1.0"
     """Cross-cluster contract version (OQ-13); semver string."""
