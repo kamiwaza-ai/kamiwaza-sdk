@@ -446,6 +446,14 @@ def test_prepare_and_teardown_journal_every_owned_resource(
     assert {item.status for item in cleanup.results} == {"removed"}
     assert admin.deleted_realms
     assert len(admin.deleted_users) == len(PERSONAS) + 1 + len(TENANT_NEGATIVE_PERSONAS)
+    assert any(
+        method == "DELETE" and path.startswith("/cluster/federations/")
+        for method, path in factory.clients["edge-a"].client.requests
+    )
+    assert any(
+        method == "DELETE" and path.startswith("/cluster/federations/")
+        for method, path in factory.clients["edge-b"].client.requests
+    )
 
 
 def test_run_emits_all_nine_cases_with_redacted_failure_details(

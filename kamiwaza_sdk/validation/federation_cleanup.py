@@ -24,11 +24,13 @@ class CleanupContext:
         receiver: Any,
         admin: Any,
         runtime: RuntimeContext,
+        initiator: Any | None = None,
     ) -> None:
         self.resources = resources
         self.receiver = receiver
         self.admin = admin
         self.runtime = runtime
+        self.initiator = initiator
 
 
 def cleanup_mutation(mutation: Any, context: CleanupContext) -> CleanupResult:
@@ -84,7 +86,14 @@ def _cleanup_dataset(mutation: Any, context: CleanupContext) -> None:
 
 
 def _cleanup_federation(mutation: Any, context: CleanupContext) -> None:
-    context.receiver._request(
+    client = (
+        context.initiator
+        if mutation.resource_type == "initiator-federation"
+        else context.receiver
+    )
+    if client is None:
+        raise RuntimeError("initiator federation cleanup client is unavailable")
+    client._request(
         "DELETE", f"/cluster/federations/{quote(mutation.resource_id, safe='')}"
     )
 

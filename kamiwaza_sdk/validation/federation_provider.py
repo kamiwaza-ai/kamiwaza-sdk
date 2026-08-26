@@ -10,7 +10,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from kamiwaza_sdk.validation.applicability import applicable_targets, descriptor_is_active
+from kamiwaza_sdk.validation.applicability import (
+    applicable_targets,
+    descriptor_is_active,
+)
 from kamiwaza_sdk.validation.federation_cases import (
     CaseHooks as _CaseHooks,
     RetrievalRequest as _RetrievalRequest,
@@ -53,7 +56,10 @@ from kamiwaza_sdk.validation.federation_spec import (
     resolve_candidates,
     scenario_descriptor,
 )
-from kamiwaza_sdk.validation.federation_state import FederationStateStore, validate_state
+from kamiwaza_sdk.validation.federation_state import (
+    FederationStateStore,
+    validate_state,
+)
 from kamiwaza_sdk.validation.inference_state import runtime_ownership_key
 from kamiwaza_sdk.validation.models import (
     CaseResult,
@@ -286,6 +292,13 @@ class FederationLifecycleProvider:
             client_wrapper = context.clusters.get(receiver_id)
             if receiver_cluster is None or client_wrapper is None:
                 raise RuntimeError("cleanup runtime omits receiver cluster")
+            edge = _edge_state(context.state, mutation.target_id)
+            edge_clusters = _edge_cluster_ids(edge)
+            if not edge_clusters:
+                raise RuntimeError("cleanup runtime omits initiator cluster")
+            initiator_wrapper = context.clusters.get(edge_clusters[0])
+            if initiator_wrapper is None:
+                raise RuntimeError("cleanup runtime omits initiator cluster")
             admin = context.admins.setdefault(
                 receiver_id, self._admin_factory(context.runtime, receiver_cluster)
             )
@@ -298,6 +311,7 @@ class FederationLifecycleProvider:
                     receiver=client_wrapper.client,
                     admin=admin,
                     runtime=context.runtime,
+                    initiator=initiator_wrapper.client,
                 ),
             )
         except Exception as exc:
