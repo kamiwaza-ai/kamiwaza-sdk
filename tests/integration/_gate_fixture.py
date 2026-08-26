@@ -94,13 +94,10 @@ def kubectl_argv(kubectl: str) -> list[str]:
 
 
 def locate_source() -> Path:
-    """The acme-gates fixture package lives in the kamiwaza repo, not here."""
-    candidate = REPO.parent / "kamiwaza" / "tests" / "fixtures" / "acme-gates"
+    """Return the SDK-owned gate fixture source used for live validation."""
+    candidate = REPO / "tests" / "integration" / "fixtures" / "acme-gates"
     if not (candidate / "pyproject.toml").exists():
-        raise SystemExit(
-            f"acme-gates source not found at {candidate}. It ships in the kamiwaza "
-            "repo at tests/fixtures/acme-gates; clone it beside kamiwaza-sdk."
-        )
+        raise SystemExit(f"SDK gate fixture source not found at {candidate}")
     return candidate
 
 
