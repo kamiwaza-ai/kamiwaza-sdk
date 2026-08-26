@@ -246,3 +246,16 @@ def test_teardown_removes_only_the_owned_fixture_paths(
         fixture.MOUNT,
         fixture.DATASET_PATH,
     ]
+
+def test_gate_fixture_source_is_owned_by_sdk() -> None:
+    source = fixture.locate_source()
+
+    assert source == (
+        Path(fixture.REPO)
+        / "tests"
+        / "integration"
+        / "fixtures"
+        / "acme-gates"
+    )
+    assert (source / "pyproject.toml").is_file()
+    assert (source / "acme_gates" / "mini_clearance_gate.py").is_file()

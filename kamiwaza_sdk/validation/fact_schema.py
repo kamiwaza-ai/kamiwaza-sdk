@@ -48,13 +48,21 @@ def _matcher_annotation(
     root_model = _FACT_ROOT_MODELS.get(root_name)
     if root_model is None:
         raise ProviderContractError("descriptor matcher uses an invalid fact root")
-    if root_name == "target" and descriptor.target_scope != "inference_target":
-        raise ProviderContractError("descriptor matcher uses an invalid fact root")
-    if root_name == "cluster" and descriptor.target_scope == "mesh_edge":
-        raise ProviderContractError("descriptor matcher uses an invalid fact root")
-    if root_name == "edge" and descriptor.target_scope != "mesh_edge":
-        raise ProviderContractError("descriptor matcher uses an invalid fact root")
+    _validate_matcher_scope(descriptor.target_scope, root_name)
     return _resolve_annotation(root_model, parts)
+
+
+def _validate_matcher_scope(target_scope: str, root_name: str) -> None:
+    if root_name == "target":
+        valid = target_scope == "inference_target"
+    elif root_name == "cluster":
+        valid = target_scope != "mesh_edge"
+    elif root_name == "edge":
+        valid = target_scope == "mesh_edge"
+    else:
+        valid = True
+    if not valid:
+        raise ProviderContractError("descriptor matcher uses an invalid fact root")
 
 
 def _resolve_annotation(annotation: object, parts: Sequence[str]) -> object:

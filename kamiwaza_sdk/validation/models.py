@@ -54,6 +54,14 @@ OwnershipKeyReference = Annotated[
         json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
     ),
 ]
+RuntimeSecretReference = Annotated[
+    str,
+    Field(
+        pattern=r"^(?:secret|file)://[^\s]+$",
+        max_length=4096,
+        json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
+    ),
+]
 
 
 def _require_values(values: Sequence[object], message: str) -> None:
@@ -214,6 +222,48 @@ class InferenceTarget(ClosedModel):
     expected_image: ImmutableImageReference | None = None
 
 
+def _validate_profile_clusters(clusters: Sequence[ClusterFacts]) -> set[str]:
+    cluster_ids = [cluster.id for cluster in clusters]
+    _require_values(cluster_ids, "profile clusters must not be empty")
+    _reject_duplicate_values(cluster_ids, "profile cluster IDs contain a duplicate")
+    return set(cluster_ids)
+
+
+def _validate_profile_targets(
+    targets: Sequence[InferenceTarget], known_clusters: set[str]
+) -> set[str]:
+    target_ids = [target.id for target in targets]
+    _reject_duplicate_values(
+        target_ids, "profile inference target IDs contain a duplicate"
+    )
+    if known_clusters & set(target_ids):
+        raise ValueError("profile target IDs overlap cluster IDs")
+    _reject_unknown_references(
+        {target.cluster_id for target in targets}, known_clusters, "inference targets"
+    )
+    return set(target_ids)
+
+
+def _validate_profile_mesh(
+    edges: Sequence[MeshEdge], known_clusters: set[str], target_ids: set[str]
+) -> None:
+    edge_cluster_ids = {
+        endpoint
+        for edge in edges
+        for endpoint in (edge.initiator, edge.receiver)
+    }
+    _reject_unknown_references(edge_cluster_ids, known_clusters, "mesh edges")
+    edge_target_ids = [mesh_edge_target_id(edge) for edge in edges]
+    _reject_duplicate_values(
+        edge_target_ids, "profile mesh-edge target IDs contain a duplicate"
+    )
+    overlap = set(edge_target_ids) & (known_clusters | target_ids)
+    if overlap:
+        raise ValueError(
+            "profile mesh-edge target IDs overlap another target namespace"
+        )
+
+
 class ValidationProfile(ClosedModel):
     schema_id: Literal["kamiwaza.validation-profile/v1"] = Field(alias="schema")
     deployment: DeploymentFacts
@@ -229,36 +279,9 @@ class ValidationProfile(ClosedModel):
 
     @model_validator(mode="after")
     def validate_references(self) -> ValidationProfile:
-        cluster_ids = [cluster.id for cluster in self.clusters]
-        target_ids = [target.id for target in self.inference_targets]
-        known_clusters = set(cluster_ids)
-        _require_values(cluster_ids, "profile clusters must not be empty")
-        _reject_duplicate_values(cluster_ids, "profile cluster IDs contain a duplicate")
-        _reject_duplicate_values(
-            target_ids, "profile inference target IDs contain a duplicate"
-        )
-        if set(cluster_ids) & set(target_ids):
-            raise ValueError("profile target IDs overlap cluster IDs")
-        _reject_unknown_references(
-            {target.cluster_id for target in self.inference_targets},
-            known_clusters,
-            "inference targets",
-        )
-        edge_cluster_ids = {
-            endpoint
-            for edge in self.mesh.edges
-            for endpoint in (edge.initiator, edge.receiver)
-        }
-        _reject_unknown_references(edge_cluster_ids, known_clusters, "mesh edges")
-        edge_target_ids = [mesh_edge_target_id(edge) for edge in self.mesh.edges]
-        _reject_duplicate_values(
-            edge_target_ids, "profile mesh-edge target IDs contain a duplicate"
-        )
-        overlap = set(edge_target_ids) & (known_clusters | set(target_ids))
-        if overlap:
-            raise ValueError(
-                "profile mesh-edge target IDs overlap another target namespace"
-            )
+        known_clusters = _validate_profile_clusters(self.clusters)
+        target_ids = _validate_profile_targets(self.inference_targets, known_clusters)
+        _validate_profile_mesh(self.mesh.edges, known_clusters, target_ids)
         return self
 
 
@@ -331,7 +354,9 @@ class ResolvedScenario(ClosedModel):
 
     @model_validator(mode="after")
     def validate_cases(self) -> ResolvedScenario:
-        _require_values(self.case_ids, "resolved scenario must select at least one case")
+        _require_values(
+            self.case_ids, "resolved scenario must select at least one case"
+        )
         _reject_duplicate_values(
             self.case_ids, "resolved scenario case IDs contain a duplicate"
         )
@@ -428,6 +453,21 @@ class RuntimeContext(ClosedModel):
     schema_id: Literal["kamiwaza.runtime-context/v1"] = Field(alias="schema")
     run_id: StableId
     ownership_key_ref: OwnershipKeyReference | None = Field(default=None, repr=False)
+    # Provider-specific credentials remain opaque references.  Values are
+    # materialized by the orchestrator and are never serialized into plans,
+    # evidence, or fixture state.  Keeping this map optional preserves the v1
+    # wire shape for providers that do not need additional secrets.
+    secret_refs: dict[StableId, RuntimeSecretReference] = Field(
+        default_factory=dict,
+        repr=False,
+        json_schema_extra={
+            "propertyNames": {
+                "maxLength": 256,
+                "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                **_NO_LINE_TERMINATORS_SCHEMA,
+            }
+        },
+    )
     clusters: Annotated[
         tuple[RuntimeCluster, ...],
         Field(min_length=1, json_schema_extra={"uniqueItems": True}),
