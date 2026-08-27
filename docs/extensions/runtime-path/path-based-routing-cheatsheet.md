@@ -15,6 +15,12 @@
 > cd my-app
 > kz-ext update
 > ```
+> If you previously edited `frontend/src/app/layout.tsx`, update may preserve
+> your copy as a conflict. Manually add `<KamiwazaRuntimeBootstrap />` in
+> `<head>` and route `public/` icon strings through `appAsset()`. The old
+> `frontend/start.mjs` spawn-time builder is obsolete and may be removed after
+> confirming the new Dockerfile entrypoint is installed. A customized
+> `docker-compose.yml` must also retain the template's routing-env passthrough.
 > The SDK app scaffold
 > (`kamiwaza_extensions/templates/app/frontend/Dockerfile`) is the source of
 > truth for the **dual-artifact Next.js runtime**: the exact
@@ -46,7 +52,7 @@ Key facts about path mode:
   shared Next route proxy then removes that prefix before forwarding `/api/*`
   and auth/session calls to the internal FastAPI backend.
 - **Trailing-slash canonicalization**: `GET <prefix>/` responds `308` redirecting to `<prefix>` (Next's base-path canonicalization). Expected; don't "fix" it.
-- The deployment prefix is applied **at container start** by byte relocation of a prebuilt artifact — never by a runtime `next build`, and never via `NEXT_PUBLIC_APP_BASE_PATH` (that variable is gone; do not reintroduce it).
+- The deployment prefix is applied **at container start** by byte relocation of a prebuilt artifact — never by a runtime `next build`. `NEXT_PUBLIC_APP_BASE_PATH` remains only as a one-release compatibility fallback for unwrapped apps; do not set or reintroduce it in updated scaffolds.
 
 ### Services and Tools
 
@@ -92,7 +98,7 @@ Next.js bakes `basePath`/`assetPrefix` at build time, but the deployment prefix 
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-The final `runner` image contains only the two artifacts, the relocation manifest, and two stdlib-Node scripts. There is **no** app source, npm, TypeScript, or dev dependency tree in the runner.
+The final `runner` image contains only the two artifacts, the relocation manifest, and five stdlib-Node runtime scripts. There is **no** app source, npm, TypeScript, or dev dependency tree in the runner.
 
 Each `next build` result must be assembled with all three production surfaces:
 
@@ -108,7 +114,11 @@ verbatim `public/` assets. Preserve the compatible SDK scaffold's
 `build-port`, `build-path`, `runtime-assembly`, and `runner` stages rather than
 maintaining an abbreviated second recipe.
 
-**Measured cost** (canary against real Next 15.5.19): relocation takes **~24 ms at ~53 MiB RSS**. The old spawn-time rebuild took minutes and 1.5–3 GB. The host canary allows 10 seconds for boot-to-health and enforces the runtime's reported preparation ≤ 5,000 ms and preparation RSS ≤ 96 MiB. The scaffold defaults the frontend memory limit to 512 MiB; repository validation requires a limit to be present but does not enforce that exact value.
+**Measured cost** (canary against real Next 15.5.19): relocation takes **~24 ms at ~53 MiB RSS**. The old spawn-time rebuild took minutes and 1.5–3 GB. The host canary allows 10 seconds for boot-to-health and enforces the runtime's reported preparation ≤ 5,000 ms and preparation RSS ≤ 96 MiB. The scaffold compose does not set a memory limit; deploy-time transformation defaults frontend services to 1 GiB, and repository validation reports a missing limit as informational.
+
+The tradeoff is image size: production images carry both complete standalone
+artifacts (including traced dependencies), so the frontend portion is roughly
+twice the size of a single-artifact Next image.
 
 ---
 
@@ -153,10 +163,15 @@ KAMIWAZA_DEPLOYMENT_ID="550e8400-..."
 KAMIWAZA_ORIGIN="https://host"                   # optional origin fallback
 ```
 
+`KAMIWAZA_APP_PATH_URL` is a platform/control-plane value, not currently
+constructed by this SDK's CR payload builder. SDK-generated workloads always
+receive mode/path; when the full URL is absent, both runtime libraries derive
+it from `KAMIWAZA_APP_URL` or `KAMIWAZA_ORIGIN` plus the validated prefix.
+
 Rules:
 
 - **Env is authoritative.** Browser-supplied `x-forwarded-*` headers are not forwarded by the shared proxy. Server code may compare a trusted, separately supplied `x-forwarded-prefix` for diagnostics, but it never selects the app path.
-- **Do not set `NEXT_PUBLIC_APP_BASE_PATH`** anywhere — compose, metadata, or code. The wrapper defines a reserved internal compile constant instead; author-facing base-path env is gone.
+- **Do not set `NEXT_PUBLIC_APP_BASE_PATH`** anywhere — compose, metadata, or code. The wrapper defines a reserved internal compile constant instead. A one-release fallback remains only for older unwrapped apps.
 - `BACKEND_URL=http://backend:8000` stays internal and unprefixed.
 
 ---
@@ -322,7 +337,7 @@ external mount context while the backend declares ordinary routes.
   and the launcher supplies that same prefix as the ASGI `root_path`.
   Browser-side fetch helpers must retain the public prefix when calling into
   App Garden.
-- **Cookies** use `RuntimeRouting.cookie_path` — the app prefix in path mode, `/` in port mode — to avoid accidental name collisions between deployments. Cookie `Path` is not a security boundary between same-origin apps:
+- **Backend code that sets cookies** can use `RuntimeRouting.cookie_path` — the app prefix in path mode, `/` in port mode — to avoid accidental name collisions between deployments. The library exposes this value but does not automatically apply it to author-created cookies. Cookie `Path` is not a security boundary between same-origin apps:
 
 ```python
 from kamiwaza_extensions_lib import RuntimeRouting, normalize_app_path, with_app_path
@@ -354,7 +369,7 @@ When the app (or the shared auth libraries) needs its own public URL — login `
 
 ### Cookies
 
-- Extension-set cookies use `Path=<appPath>` in path mode and `Path=/` in port mode (`RuntimeRouting.cookie_path`) to avoid accidental collisions. Same-origin apps can still set broader or sibling paths, so cookie `Path` must not be treated as a per-deployment security boundary.
+- When backend code sets a cookie, it should explicitly use `RuntimeRouting.cookie_path` (`Path=<appPath>` in path mode, `/` in port mode) to avoid accidental collisions; the helper is not applied automatically. Same-origin apps can still set broader or sibling paths, so cookie `Path` must not be treated as a per-deployment security boundary.
 - The shared Next proxy **drops `Set-Cookie` by default**. Its default allowlist is empty; trusted routes must opt in explicitly with `setCookiePaths`. The scaffold enables `/session` and `/auth/logout`. Every passed cookie is rebased to `Path=<appPath>` in path mode (or `/` in port mode), and root-relative `Location` responses are rebased under the same prefix. An allowlisted `__Host-` cookie cannot be scoped below `/`, so in path mode the proxy deliberately returns 502 instead of weakening its host-wide semantics; this fail-closed behavior is pinned by the proxy runtime-path tests.
 - `SessionProvider` from `@kamiwaza-ai/extensions-lib/client` derives its base
   path from `getAppPath()` automatically; the explicit `basePath` prop remains
@@ -461,7 +476,7 @@ The entrypoint emits single-line JSON events tagged `kz_next_runtime`:
 | `another start (pid N) holds the runtime lock` | Concurrent boot against the same target | Second container/process racing the first; stale locks from dead owners or reused pids are stolen automatically |
 | `patched JSON does not parse` | Replacement corrupted a JSON file | Fail-closed guard — rebuild; report if reproducible |
 | `invalid runtime path segment` / `forbidden characters` / `control characters` | `KAMIWAZA_APP_PATH` failed validation | Fix the env value (watch for trailing newlines and URL-encoded chars) |
-| `KAMIWAZA_ROUTING_MODE=path requires a nonempty KAMIWAZA_APP_PATH` | Explicit path mode without a path | Fix the deployment env |
+| `runtime path is empty` | Explicit path mode without a path on the container boot path | Fix the deployment env |
 | `artifact next@X does not match relocation manifest next@Y` | Version drift between build stages | Rebuild the image from one lockfile |
 | `Next A.B.C is not validated for runtime relocation` | Build-time pin violation | See version policy below |
 
@@ -489,8 +504,9 @@ that no relocation copy was created.
 
 `KZ_RUNTIME_IMAGE_ROOT` and `KZ_RUNTIME_TARGET` are internal
 launcher/canary overrides for selecting an assembled artifact root and a
-writable relocation target. Generated production images set them in the
-entrypoint; application code should not depend on them.
+writable relocation target. Generated images use the launcher's built-in
+defaults; build validation and operator diagnostics may override them.
+Application code should not depend on either value.
 
 ---
 
@@ -534,7 +550,7 @@ There is no local "rebuild with a path" step anymore. If you need to eyeball pat
 
 ## Summary
 
-1. **Don't manage the base path.** `withKamiwazaAppGarden()` + the boot relocator own it end-to-end; there is no entrypoint rebuild and no `NEXT_PUBLIC_APP_BASE_PATH`.
+1. **Don't manage the base path.** `withKamiwazaAppGarden()` + the boot relocator own it end-to-end; there is no entrypoint rebuild. `NEXT_PUBLIC_APP_BASE_PATH` is a temporary compatibility fallback only, not a supported input for updated apps.
 2. **Use the helpers for the two things Next can't rewrite**: `appFetch()` for fetch calls, `appAsset()`/static imports for `public/` assets.
 3. **Backends declare unprefixed routes** and start via
    `python -m kamiwaza_extensions_lib.asgi`; the shared frontend proxy strips

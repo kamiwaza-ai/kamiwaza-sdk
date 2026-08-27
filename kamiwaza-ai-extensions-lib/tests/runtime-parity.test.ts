@@ -67,4 +67,10 @@ describe("runtime routing parity vectors", () => {
             expect(runtime.appPort).toBe(vector.expect.app_port);
         });
     }
+
+    it("rejects an over-length all-slash legacy path in every implementation", () => {
+        const env = { KAMIWAZA_APP_PATH: "/".repeat(513) };
+        expect(() => getKamiwazaRuntimeServer(env)).toThrow(/length/i);
+        expect(() => resolveBootRouting(env)).toThrow(/length/i);
+    });
 });

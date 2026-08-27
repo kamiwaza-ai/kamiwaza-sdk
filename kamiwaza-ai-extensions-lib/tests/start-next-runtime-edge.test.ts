@@ -173,6 +173,11 @@ describe("transformRscBuffer (B1)", () => {
         expect(() => transformRscBuffer(input, SENTINEL, REAL)).toThrow(/length-framed|frame/i);
     });
 
+    it("fails closed on an unparseable sentinel-bearing Flight row", () => {
+        const input = Buffer.from(`not-a-flight-row ${SENTINEL}`);
+        expect(() => transformRscBuffer(input, SENTINEL, REAL)).toThrow(/unparseable/i);
+    });
+
     it("passes through sentinel-free content unchanged", () => {
         const input = Buffer.from(`0:{"a":1}\n4:T3,abc5:2\n`);
         expect(transformRscBuffer(input, SENTINEL, REAL).equals(input)).toBe(true);
@@ -223,6 +228,36 @@ describe("transformHtmlBuffer", () => {
         expect(relocated).not.toContain(SENTINEL);
         expect(relocated).toContain(`${REAL}/_next/app.css`);
         expect(relocatedFlight.equals(expectedFlight)).toBe(true);
+    });
+
+    it("keeps multi-byte Flight text valid when relocation shifts push boundaries", () => {
+        const unicode = "😀漢字".repeat(12);
+        const payload = `${SENTINEL}${unicode}`;
+        const header = `6:T${Buffer.byteLength(payload).toString(16)},`;
+        const flightChunks = [`${header}${SENTINEL}`, unicode, `0:{"tail":true}\n`];
+        const html = Buffer.from(
+            flightChunks
+                .map(
+                    (chunk) =>
+                        `<script>self.__next_f.push(${JSON.stringify([1, chunk])})</script>`,
+                )
+                .join(""),
+        );
+
+        const relocated = transformHtmlBuffer(html, SENTINEL, SHORT).toString("utf8");
+        const pushes = Array.from(
+            relocated.matchAll(/self\.__next_f\.push\((\[[\s\S]*?\])\)<\/script>/g),
+            (match) => JSON.parse(match[1])[1] as string,
+        );
+        const expected = transformRscBuffer(
+            Buffer.from(flightChunks.join("")),
+            SENTINEL,
+            SHORT,
+        );
+
+        expect(pushes).toHaveLength(flightChunks.length);
+        expect(pushes.every((chunk) => !chunk.includes("�"))).toBe(true);
+        expect(Buffer.from(pushes.join("")).equals(expected)).toBe(true);
     });
 
     it("ignores Flight marker text rendered outside inline scripts", () => {

@@ -222,6 +222,18 @@ describe("createProxyHandlers", () => {
         expect(url).toBe("http://backend:8000/apichat");
     });
 
+    it("continues to honor a pathPrefix configured with a trailing slash", async () => {
+        const { GET } = createProxyHandlers({
+            target: "http://backend:8000",
+            pathPrefix: "/api/",
+        });
+
+        await GET(new Request("http://localhost:3000/api/users"));
+
+        const [url] = fetchSpy.mock.calls[0];
+        expect(url).toBe("http://backend:8000/users");
+    });
+
     it("forwards POST body", async () => {
         const { POST } = createProxyHandlers({ target: "http://backend:8000" });
 

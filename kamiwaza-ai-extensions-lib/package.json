@@ -53,8 +53,11 @@
         "test:watch": "vitest",
         "typecheck": "tsc --noEmit"
     },
+    "engines": {
+        "node": ">=18.17"
+    },
     "peerDependencies": {
-        "next": "15.5.19",
+        "next": ">=15.5.19 <16",
         "react": ">=18.0.0"
     },
     "peerDependenciesMeta": {

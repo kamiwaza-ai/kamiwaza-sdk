@@ -16,6 +16,7 @@ function isEmptyRuntimePath(value) {
         return true;
     }
     assertRuntimePathString(value);
+    assertRuntimePathLength(value);
     return trimAsciiSpaces(value).replace(/\/+$/, "") === "";
 }
 

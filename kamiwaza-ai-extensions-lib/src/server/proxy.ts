@@ -230,7 +230,7 @@ function makeHandler(
 
         // Strip the configured prefix so the backend sees clean paths.
         if (config.pathPrefix) {
-            path = stripOnce(path, config.pathPrefix);
+            path = stripOnce(path, config.pathPrefix.replace(/\/+$/, ""));
         }
 
         let target: string;

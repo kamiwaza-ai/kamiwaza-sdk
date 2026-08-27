@@ -713,6 +713,29 @@ class TestApplyBuildOverlay:
         assert "FROM deps AS build-port" in result
         assert "FROM deps AS build-path" in result
 
+    def test_classic_scaffold_installs_sdk_after_copying_build_context(self):
+        """A pre-0.5 single-stage app must not let COPY overwrite the SDK."""
+        dockerfile = (
+            "FROM node:20-alpine AS base\n"
+            "WORKDIR /app\n"
+            "COPY package.json package-lock.json* ./\n"
+            "RUN npm install\n"
+            "COPY . .\n"
+            'ENTRYPOINT ["node", "/app/start.mjs"]\n'
+        )
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# SDK override\nRUN echo install-local-sdk\n",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            insert_before_build=True,
+            language="typescript",
+        )
+
+        result = apply_build_overlay(dockerfile, overlay)
+
+        assert result.index("COPY . .") < result.index("RUN echo install-local-sdk")
+        assert result.count("RUN echo install-local-sdk") == 1
+
     def test_appends_when_no_build_line(self):
         dockerfile = 'FROM node:20\nCOPY . .\nENTRYPOINT ["node", "start.mjs"]\n'
         overlay = BuildOverride(

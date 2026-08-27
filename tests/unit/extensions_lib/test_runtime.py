@@ -94,3 +94,9 @@ def test_runtime_routing_is_frozen():
     routing = RuntimeRouting.from_env({})
     with pytest.raises(Exception):
         routing.app_path = "/x"  # type: ignore[misc]
+
+
+@pytest.mark.unit
+def test_over_length_all_slash_path_does_not_degrade_to_port_mode():
+    with pytest.raises(ValueError, match="length"):
+        RuntimeRouting.from_env({"KAMIWAZA_APP_PATH": "/" * 513})

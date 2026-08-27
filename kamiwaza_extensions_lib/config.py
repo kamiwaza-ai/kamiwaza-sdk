@@ -8,24 +8,9 @@ import ssl
 from dataclasses import dataclass
 
 from .errors import UnexpectedContextError
-from .runtime import _normalized_http_origin, normalize_app_path
+from .runtime import RuntimeRouting
 
 logger = logging.getLogger(__name__)
-
-
-def _path_mode_public_url(
-    path_app_url: str, legacy_app_url: str, origin: str, app_path: str
-) -> str:
-    if path_app_url:
-        return path_app_url
-    public_origin = legacy_app_url or origin
-    if not public_origin or not app_path:
-        return ""
-    try:
-        public_origin = _normalized_http_origin(public_origin)
-    except ValueError:
-        return ""
-    return f"{public_origin}{app_path}"
 
 
 def _read_verify_ssl() -> bool:
@@ -69,46 +54,29 @@ class AuthConfig:
     @classmethod
     def from_env(cls) -> AuthConfig:
         """Read configuration from environment variables."""
-        app_path = os.environ.get("KAMIWAZA_APP_PATH", "")
-        routing_mode = os.environ.get("KAMIWAZA_ROUTING_MODE", "")
-        legacy_app_url = os.environ.get("KAMIWAZA_APP_URL", "").rstrip("/")
-        path_app_url = os.environ.get("KAMIWAZA_APP_PATH_URL", "").rstrip("/")
-        origin = os.environ.get("KAMIWAZA_ORIGIN", "").rstrip("/")
         # AuthConfig remains non-throwing and cheap on request paths. The ASGI
-        # launcher validates the full routing contract once at startup; here
-        # we only apply the path-mode public-URL precedence needed by auth
-        # redirects while preserving legacy behavior for port mode.
+        # launcher validates the full routing contract once at startup. Reuse
+        # that resolver so malformed modes, paths, origins, and the reserved
+        # relocation sentinel cannot drift into browser-visible auth URLs.
         try:
-            normalized_app_path = normalize_app_path(app_path)
-        except ValueError:
-            # Preserve AuthConfig's non-throwing request-path contract. The
-            # launcher reports the invalid routing value at startup. Do not
-            # reuse the unvalidated value under a second, looser grammar.
+            routing = RuntimeRouting.from_env()
+            app_url = routing.app_url
+            app_path = routing.app_path
+        except ValueError as exc:
             logger.warning(
-                "Ignoring invalid KAMIWAZA_APP_PATH while building AuthConfig; "
-                "the runtime launcher must reject this deployment configuration"
+                "Ignoring invalid runtime routing while building AuthConfig; "
+                "the runtime launcher must reject this deployment configuration: %s",
+                exc,
             )
-            normalized_app_path = ""
-        path_mode = routing_mode == "path" or (
-            routing_mode == "" and bool(normalized_app_path)
-        )
-        app_url = (
-            _path_mode_public_url(
-                path_app_url,
-                legacy_app_url,
-                origin,
-                normalized_app_path,
-            )
-            if path_mode
-            else legacy_app_url
-        )
+            app_url = ""
+            app_path = ""
         return cls(
             api_url=os.environ.get("KAMIWAZA_API_URL", ""),
             public_api_url=os.environ.get("KAMIWAZA_PUBLIC_API_URL", ""),
             openai_base=os.environ.get("KAMIWAZA_ENDPOINT", "")
             or os.environ.get("KAMIWAZA_MODEL_URL", ""),
             app_url=app_url,
-            app_path=normalized_app_path if path_mode else "",
+            app_path=app_path,
             app_name=os.environ.get("KAMIWAZA_APP_NAME", ""),
             use_auth=os.environ.get("KAMIWAZA_USE_AUTH", "true").lower()
             not in ("false", "0", "no"),

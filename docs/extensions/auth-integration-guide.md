@@ -243,8 +243,8 @@ export { DELETE, GET, PATCH, POST, PUT };
 ```
 
 The proxy strips the runtime deployment prefix and forwards the approved auth
-and routing headers. `Set-Cookie` is denied by default except for the standard
-session-route allowlist.
+and routing headers. `Set-Cookie` is denied by default; routes that intentionally
+proxy a trusted session endpoint must opt in with `setCookiePaths`.
 
 ### Fetch paths and assets
 

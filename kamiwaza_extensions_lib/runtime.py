@@ -13,15 +13,17 @@ from __future__ import annotations
 
 import os
 import re
+from ipaddress import IPv6Address
 from dataclasses import dataclass
 from typing import Literal, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import unquote_to_bytes, urlsplit
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _SENTINEL_FAMILY_RE = re.compile(r"__KZ_RUNTIME_BASE_[0-9A-F]+__")
 _MAX_PATH_LENGTH = 512
 _MAX_SEGMENT_LENGTH = 128
+_ASCII_C0_AND_SPACE = "".join(chr(value) for value in range(0x21))
 
 __all__ = ["RuntimeRouting", "normalize_app_path", "with_app_path"]
 
@@ -118,12 +120,15 @@ def _origin_with_app_path(value: str, app_path: str) -> str:
 
 
 def _normalized_http_origin(value: str) -> str:
-    """Match the origin normalization performed by JavaScript's ``URL``.
+    """Normalize a browser-visible HTTP origin conservatively.
 
-    Browser-visible deployment URLs must never retain userinfo, and default
-    ports/casing must not make the Python and TypeScript runtime views diverge.
+    Match the JavaScript ``URL`` behavior relied on by the TypeScript runtime
+    for outer C0/space trimming, userinfo removal, IDN/percent-host conversion,
+    default ports, and casing. Inputs outside that supported absolute-URL
+    grammar fail closed instead of emitting a malformed auth redirect.
     """
-    parsed = urlsplit(value)
+    candidate = value.strip(_ASCII_C0_AND_SPACE)
+    parsed = urlsplit(candidate)
     scheme = parsed.scheme.lower()
     hostname = parsed.hostname
     if scheme not in ("http", "https") or not hostname:
@@ -132,9 +137,19 @@ def _normalized_http_origin(value: str) -> str:
         port = parsed.port
     except ValueError as exc:
         raise ValueError(f"invalid public app URL for path routing: {value!r}") from exc
-    normalized_host = hostname.lower()
-    if ":" in normalized_host:
-        normalized_host = f"[{normalized_host}]"
+    try:
+        decoded_host = unquote_to_bytes(hostname).decode("utf-8")
+        if any(
+            ord(char) <= 0x20 or ord(char) == 0x7F or char in "/\\?#@"
+            for char in decoded_host
+        ):
+            raise ValueError
+        if ":" in decoded_host:
+            normalized_host = f"[{IPv6Address(decoded_host).compressed}]"
+        else:
+            normalized_host = decoded_host.encode("idna").decode("ascii").lower()
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError(f"invalid public app URL for path routing: {value!r}") from exc
     default_port = 443 if scheme == "https" else 80
     port_suffix = f":{port}" if port is not None and port != default_port else ""
     return f"{scheme}://{normalized_host}{port_suffix}"

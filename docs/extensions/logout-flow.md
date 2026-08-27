@@ -124,8 +124,8 @@ ForwardAuth or make the route public at ingress.
 ## Security properties
 
 - Cookies are sent to the extension backend with `credentials: "include"`.
-- The frontend proxy permits `Set-Cookie` only for the standard session-route
-  allowlist unless explicitly configured otherwise.
+- The frontend proxy denies `Set-Cookie` by default. A trusted session route
+  must opt in explicitly with `setCookiePaths`.
 - `front_channel_logout_url` may be cross-origin because the platform API and
   app can have different origins. The client rejects non-HTTP(S) schemes; its
   origin trust depends on the URL coming from the canonical extension backend,

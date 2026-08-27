@@ -89,6 +89,12 @@ _TS_NPM_INSTALL_PATTERN = re.compile(
     r"^\s*RUN\s+.*\bnpm\s+(install|ci)\b", re.IGNORECASE
 )
 
+_FROM_PATTERN = re.compile(
+    r"^\s*FROM(?:\s+--platform=\S+)?\s+(?P<source>\S+)"
+    r"(?:\s+AS\s+(?P<alias>[A-Za-z0-9_.-]+))?\s*$",
+    re.IGNORECASE,
+)
+
 # Rewrites ``RUN ... npm ci ...`` to ``RUN ... npm install ...`` line-by-line.
 # Required because the TS pre-install strip mutates ``package.json`` while
 # leaving ``package-lock.json`` unchanged. ``npm ci`` enforces strict
@@ -461,17 +467,36 @@ def _runtime_copies_python_environment(runtime_lines: List[str]) -> bool:
 def _shared_typescript_install_index(
     lines: List[str], overlay: BuildOverride
 ) -> Optional[int]:
-    """Return the line after the first npm install instruction.
+    """Return the install boundary for an inherited dependency stage.
 
     Installing the local package in the dependency stage makes it available
     to every later stage based on that stage, including the scaffold's
-    independent port and path builds.
+    independent port and path builds. A classic single-stage Dockerfile must
+    instead fall through to the build-line/end-of-stage anchor: placing the
+    overlay after ``npm install`` but before its later ``COPY . .`` lets a host
+    ``node_modules`` silently overwrite the local SDK.
     """
     if overlay.language != "typescript":
         return None
     for index, line in enumerate(lines):
-        if _TS_NPM_INSTALL_PATTERN.match(line):
-            return _line_after_instruction(lines, index)
+        if not _TS_NPM_INSTALL_PATTERN.match(line):
+            continue
+        stage_alias = _docker_stage_alias(lines, index)
+        if stage_alias is None:
+            continue
+        for later_line in lines[_line_after_instruction(lines, index) :]:
+            match = _FROM_PATTERN.match(later_line)
+            if match and match.group("source").casefold() == stage_alias.casefold():
+                return _line_after_instruction(lines, index)
+    return None
+
+
+def _docker_stage_alias(lines: List[str], before: int) -> Optional[str]:
+    """Return the alias of the Docker stage containing ``before``."""
+    for line in reversed(lines[: before + 1]):
+        match = _FROM_PATTERN.match(line)
+        if match:
+            return match.group("alias")
     return None
 
 
