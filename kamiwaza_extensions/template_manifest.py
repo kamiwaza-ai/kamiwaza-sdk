@@ -118,7 +118,10 @@ _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     _owned("kamiwaza.json", strategy="merge"),
     _owned(".gitignore", strategy="overwrite"),
     _owned("docker-compose.yml"),
-    _owned("docker-compose.override.yml"),
+    # Deliberately not docker-compose.override.yml: that Compose-standard
+    # filename belongs to the developer and is loaded after this CLI-owned
+    # local-dev overlay by DevLocalRunner.
+    _owned("kamiwaza-compose.dev.yml"),
     _owned("README.md"),
     _owned("AGENTS.md"),
     _owned("CLAUDE.md"),

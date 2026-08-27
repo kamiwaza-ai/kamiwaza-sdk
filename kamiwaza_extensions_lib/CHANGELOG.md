@@ -19,6 +19,9 @@ follow semver. The library is published to PyPI as a standalone package
 
 * Generated apps now require the 0.5 minor line so the frontend relocation
   runtime and backend routing behavior are upgraded together.
+* FastAPI now requires 0.115 or newer for the supported `root_path` behavior.
+  Uvicorn remains optional for pure library/SDK clients and is available via
+  the `asgi` extra; generated backends declare `uvicorn[standard]` directly.
 
 ## [0.4.4] — 2026-07-27 (ENG-9199)
 

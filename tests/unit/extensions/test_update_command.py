@@ -202,6 +202,28 @@ def test_non_interactive_succeeds_when_no_conflicts(tmp_path, monkeypatch):
     assert summary.conflicts == 0
 
 
+def test_app_update_adds_cli_dev_overlay_without_claiming_user_override(
+    tmp_path, monkeypatch
+):
+    """A pre-runtime-path app may already use Compose's reserved developer
+    override filename. Updating adds the CLI-owned hot-reload overlay under a
+    distinct name and leaves the developer file byte-for-byte untouched."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    cli_overlay = scaffold / "kamiwaza-compose.dev.yml"
+    cli_overlay.unlink()
+    developer_override = scaffold / "docker-compose.override.yml"
+    developer_content = "services:\n  backend:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n"
+    developer_override.write_text(developer_content)
+    monkeypatch.chdir(scaffold)
+
+    summary = run_update(non_interactive=True)
+
+    assert summary.conflicts == 0
+    assert cli_overlay.is_file()
+    assert "target: dev" in cli_overlay.read_text()
+    assert developer_override.read_text() == developer_content
+
+
 def test_app_update_upgrades_runtime_dependencies_without_losing_author_edits(
     tmp_path, monkeypatch
 ):

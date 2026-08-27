@@ -33,8 +33,9 @@ const FORWARD_REQUEST_HEADERS = new Set<string>([
     // (``x-user-id`` + ``authorization``/``x-auth-token``); ``cookie``
     // is forwarded only because some backend services use the platform
     // session cookie for compatibility with the legacy SDK proxy. The
-    // response side strips ``set-cookie`` except on the explicit session
-    // allowlist, where cookies are rebased to the deployment path.
+    // response side strips ``set-cookie`` unless a proxy instance explicitly
+    // opts a trusted session route in, where cookies are rebased to the
+    // deployment path.
     // If your extension doesn't need cookie passthrough, override
     // ``FORWARD_REQUEST_HEADERS`` in your ProxyConfig — round-6 H4
     // tracks tightening this default in a follow-up once the legacy
@@ -82,12 +83,7 @@ function filterResponseHeaders(headers: Headers): Record<string, string> {
     return out;
 }
 
-/** Session routes whose Set-Cookie responses pass through by default. */
-const DEFAULT_SET_COOKIE_PATHS: readonly string[] = [
-    "/session",
-    "/session/extend",
-    "/auth/logout",
-];
+const DEFAULT_SET_COOKIE_PATHS: readonly string[] = [];
 
 /**
  * Resolve the deployment's runtime app path from the same fail-closed

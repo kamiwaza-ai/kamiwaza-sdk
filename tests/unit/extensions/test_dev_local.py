@@ -695,6 +695,25 @@ class TestRunnerLocalComposeOverride:
         # developer's file would be a nasty surprise.
         assert override_path.is_file(), "user's override file was deleted in cleanup"
 
+    def test_runner_loads_template_dev_overlay_before_developer_override(
+        self, tmp_path, monkeypatch
+    ):
+        info = self._make_info(tmp_path, "docker-compose.yml")
+        template_override = tmp_path / "kamiwaza-compose.dev.yml"
+        template_override.write_text(
+            "services:\n  frontend:\n    build:\n      target: dev\n"
+        )
+        developer_override = tmp_path / "docker-compose.override.yml"
+        developer_override.write_text("services:\n  frontend:\n    environment: []\n")
+
+        runner, captured = self._make_runner(monkeypatch, info)
+        assert runner.run(detach=False, auth=False) == 0
+
+        cmd = captured["cmd"]
+        assert cmd.index(str(info.compose_path)) < cmd.index(str(template_override))
+        assert cmd.index(str(template_override)) < cmd.index(str(developer_override))
+        assert developer_override.is_file()
+
     def test_runner_does_not_add_override_when_absent(self, tmp_path, monkeypatch):
         info = self._make_info(tmp_path, "docker-compose.yml")
         # No override file written.

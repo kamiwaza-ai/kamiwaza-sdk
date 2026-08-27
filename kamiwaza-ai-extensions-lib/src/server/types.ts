@@ -37,8 +37,8 @@ export interface ProxyConfig {
     /**
      * Upstream paths (after prefix stripping, exact match) for which
      * `Set-Cookie` response headers pass through to the client. Everywhere
-     * else `Set-Cookie` is dropped. Defaults to the standard session routes:
-     * `/session`, `/session/extend`, `/auth/logout`.
+     * else `Set-Cookie` is dropped. Defaults to an empty list; cookie
+     * passthrough must be explicitly enabled on trusted session routes.
      */
     setCookiePaths?: readonly string[];
 }

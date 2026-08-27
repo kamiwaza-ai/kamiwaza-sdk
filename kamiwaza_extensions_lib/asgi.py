@@ -45,7 +45,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[kz-asgi] FATAL: {exc}", file=sys.stderr)
         return 1
 
-    import uvicorn  # Lazy: the generated backend declares uvicorn[standard].
+    try:
+        import uvicorn  # Lazy: generated backends declare uvicorn[standard].
+    except ModuleNotFoundError as exc:
+        if exc.name != "uvicorn":
+            raise
+        print(
+            "[kz-asgi] FATAL: uvicorn is not installed; install "
+            "kamiwaza-extensions-lib[asgi] or add uvicorn to the app requirements",
+            file=sys.stderr,
+        )
+        return 1
 
     uvicorn.run(
         args.app,

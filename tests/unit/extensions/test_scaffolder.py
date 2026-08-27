@@ -279,9 +279,10 @@ class TestScaffolder:
         assert "withKamiwazaAppGarden" in next_config
         manifest = json.loads((d / "kamiwaza.json").read_text())
         assert manifest["strip_path_prefix"] is False
-        local_override = yaml.safe_load((d / "docker-compose.override.yml").read_text())
+        local_override = yaml.safe_load((d / "kamiwaza-compose.dev.yml").read_text())
         assert local_override["services"]["frontend"]["build"]["target"] == "dev"
         assert local_override["services"]["backend"]["command"][-1] == "--reload"
+        assert not (d / "docker-compose.override.yml").exists()
 
     def test_git_init_called(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

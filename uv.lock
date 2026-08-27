@@ -980,6 +980,10 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+asgi = [
     { name = "uvicorn" },
 ]
 
@@ -988,8 +992,9 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.23" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "uvicorn", specifier = ">=0.30.0" },
+    { name = "uvicorn", marker = "extra == 'asgi'", specifier = ">=0.30.0" },
 ]
+provides-extras = ["asgi"]
 
 [[package]]
 name = "kamiwaza-sdk"

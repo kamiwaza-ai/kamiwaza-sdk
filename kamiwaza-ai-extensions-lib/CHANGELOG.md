@@ -22,7 +22,11 @@ Versions follow semver. Published to npm as a standalone package
 ### Changed
 
 * Next.js production scaffolds must use exactly `15.5.19`, the version covered
-  by the relocation manifest and canary.
+  by the relocation manifest and canary. The package peer range now requires
+  Next 15 and no longer advertises Next 14 support.
+* Proxy responses drop `Set-Cookie` by default. Trusted session and logout
+  routes must opt in with `setCookiePaths`; scaffolded routes do so explicitly
+  and rebase accepted cookies to the deployment path.
 
 ## [0.4.3] — 2026-07-27 (ENG-9199)
 

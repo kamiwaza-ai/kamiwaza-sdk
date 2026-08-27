@@ -7,7 +7,6 @@ import ssl
 from dataclasses import dataclass
 
 from .errors import UnexpectedContextError
-from .runtime import RuntimeRouting
 
 
 def _read_verify_ssl() -> bool:
@@ -51,14 +50,23 @@ class AuthConfig:
     @classmethod
     def from_env(cls) -> AuthConfig:
         """Read configuration from environment variables."""
-        routing = RuntimeRouting.from_env()
+        app_path = os.environ.get("KAMIWAZA_APP_PATH", "")
+        routing_mode = os.environ.get("KAMIWAZA_ROUTING_MODE", "")
+        legacy_app_url = os.environ.get("KAMIWAZA_APP_URL", "").rstrip("/")
+        path_app_url = os.environ.get("KAMIWAZA_APP_PATH_URL", "").rstrip("/")
+        # AuthConfig remains non-throwing and cheap on request paths. The ASGI
+        # launcher validates the full routing contract once at startup; here
+        # we only apply the path-mode public-URL precedence needed by auth
+        # redirects while preserving legacy behavior for port mode.
+        path_mode = routing_mode == "path" or (routing_mode == "" and bool(app_path))
+        app_url = (path_app_url or legacy_app_url) if path_mode else legacy_app_url
         return cls(
             api_url=os.environ.get("KAMIWAZA_API_URL", ""),
             public_api_url=os.environ.get("KAMIWAZA_PUBLIC_API_URL", ""),
             openai_base=os.environ.get("KAMIWAZA_ENDPOINT", "")
             or os.environ.get("KAMIWAZA_MODEL_URL", ""),
-            app_url=routing.app_url,
-            app_path=routing.app_path,
+            app_url=app_url,
+            app_path=app_path,
             app_name=os.environ.get("KAMIWAZA_APP_NAME", ""),
             use_auth=os.environ.get("KAMIWAZA_USE_AUTH", "true").lower()
             not in ("false", "0", "no"),

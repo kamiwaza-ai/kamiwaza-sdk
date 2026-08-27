@@ -74,14 +74,19 @@ def test_sdk_dependency_requires_current_runtime_release():
     )
 
 
-def test_asgi_launcher_declares_uvicorn_dependency():
+def test_asgi_launcher_declares_uvicorn_optional_dependency():
     with LIB_PYPROJECT_PATH.open("rb") as f:
         pyproject = tomllib.load(f)
 
+    assert not any(
+        dependency.startswith("uvicorn")
+        for dependency in pyproject["project"]["dependencies"]
+    ), "pure SDK clients must not install an ASGI server transitively"
+
     assert any(
         dependency.startswith("uvicorn>=0.30")
-        for dependency in pyproject["project"]["dependencies"]
-    ), "python -m kamiwaza_extensions_lib.asgi requires a declared uvicorn runtime"
+        for dependency in pyproject["project"]["optional-dependencies"]["asgi"]
+    ), "the optional ASGI launcher extra must declare a compatible uvicorn runtime"
 
     assert any(
         dependency.startswith("fastapi>=0.115")

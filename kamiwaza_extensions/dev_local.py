@@ -33,6 +33,7 @@ from kamiwaza_extensions_lib.local_dev import (
 )
 
 console = Console(stderr=True)
+TEMPLATE_DEV_COMPOSE_FILENAME = "kamiwaza-compose.dev.yml"
 
 
 class DevLocalRunner:
@@ -183,6 +184,7 @@ class DevLocalRunner:
         sdk_build_dockerfiles: List[str] = []
         extra_hosts_file: Optional[str] = None
         auth_env_file: Optional[str] = None
+        template_dev_override_file: Optional[str] = None
         local_override_file: Optional[str] = None
         # Initialised here (not in 10a) so the ``finally`` cleanup always
         # has them in scope — even if an exception bubbles out of the
@@ -213,7 +215,15 @@ class DevLocalRunner:
             else:
                 compose_file_arg = str(info.compose_path)
 
-            # 6a. Load the developer's local-only compose override if present.
+            # 6a. Load the template-owned local-dev behavior from a filename
+            # outside Compose's reserved override convention. This keeps hot
+            # reload/Next's dev target updatable without claiming the
+            # developer-owned docker-compose.override.yml path.
+            template_dev_candidate = info.path / TEMPLATE_DEV_COMPOSE_FILENAME
+            if template_dev_candidate.is_file():
+                template_dev_override_file = str(template_dev_candidate)
+
+            # 6b. Load the developer's local-only compose override if present.
             # kz-ext builds an explicit ``-f`` list, which disables Compose's
             # automatic ``<base-stem>.override.<ext>`` loading. Re-add it so
             # the documented local-only override path works (e.g. mounting the
@@ -382,6 +392,10 @@ class DevLocalRunner:
             # parent directory or with override files (review re-review
             # PR #84 M1).
             compose_prefix = compose_cmd + ["-f", compose_file_arg]
+            # CLI-owned dev behavior loads before the developer's override so
+            # local customizations remain authoritative on conflicts.
+            if template_dev_override_file:
+                compose_prefix += ["-f", template_dev_override_file]
             # User's local-only override loads after the base file but before
             # kz-ext's generated overlays (ENG-6281).
             if local_override_file:
@@ -400,6 +414,7 @@ class DevLocalRunner:
                 compose_prefix += ["-f", auth_env_file]
             if (
                 patched_compose_file
+                or template_dev_override_file
                 or local_override_file
                 or sdk_override_file
                 or sdk_build_patch_file

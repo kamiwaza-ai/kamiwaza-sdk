@@ -34,7 +34,7 @@ SYNC_FILES = [
     Path("backend/app/main.py"),
     Path("backend/requirements.txt"),
     Path("docker-compose.yml"),
-    Path("docker-compose.override.yml"),
+    Path("kamiwaza-compose.dev.yml"),
     Path("frontend/Dockerfile"),
     Path("frontend/next.config.js"),
     Path("frontend/package.json"),

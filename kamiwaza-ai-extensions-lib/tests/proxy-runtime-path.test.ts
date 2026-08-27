@@ -100,7 +100,10 @@ describe("createProxyHandlers Set-Cookie policy", () => {
 
     it("passes multiple Set-Cookie values through for allowlisted session routes", async () => {
         fetchSpy.mockResolvedValue(upstream("{}", TWO_COOKIES));
-        const { POST } = createProxyHandlers({ target: TARGET });
+        const { POST } = createProxyHandlers({
+            target: TARGET,
+            setCookiePaths: ["/session"],
+        });
         const response = await POST(new Request(`http://localhost${APP}/session`, { method: "POST" }));
         expect(response.headers.getSetCookie()).toEqual([
             `session=abc; HttpOnly; Path=${APP}`,
@@ -112,7 +115,10 @@ describe("createProxyHandlers Set-Cookie policy", () => {
         fetchSpy.mockResolvedValue(
             upstream("{}", { "set-cookie": "session=abc; HttpOnly; SameSite=Lax" }),
         );
-        const { POST } = createProxyHandlers({ target: TARGET });
+        const { POST } = createProxyHandlers({
+            target: TARGET,
+            setCookiePaths: ["/session"],
+        });
         const response = await POST(
             new Request(`http://localhost${APP}/session`, { method: "POST" }),
         );
@@ -128,7 +134,10 @@ describe("createProxyHandlers Set-Cookie policy", () => {
                     "session=abc; Path=/legacy; Domain=example.test; HttpOnly; Path=/",
             }),
         );
-        const { POST } = createProxyHandlers({ target: TARGET });
+        const { POST } = createProxyHandlers({
+            target: TARGET,
+            setCookiePaths: ["/session"],
+        });
         const response = await POST(
             new Request(`http://localhost${APP}/session`, { method: "POST" }),
         );
@@ -143,7 +152,10 @@ describe("createProxyHandlers Set-Cookie policy", () => {
                 "set-cookie": "session=abc; Domain =evil.example; Path\t=/wide; HttpOnly",
             }),
         );
-        const { POST } = createProxyHandlers({ target: TARGET });
+        const { POST } = createProxyHandlers({
+            target: TARGET,
+            setCookiePaths: ["/session"],
+        });
         const response = await POST(
             new Request(`http://localhost${APP}/session`, { method: "POST" }),
         );
@@ -156,7 +168,10 @@ describe("createProxyHandlers Set-Cookie policy", () => {
         fetchSpy.mockResolvedValue(
             upstream("{}", { "set-cookie": "session=abc; Path=/; HttpOnly" }),
         );
-        const { POST } = createProxyHandlers({ target: `${TARGET}/v1` });
+        const { POST } = createProxyHandlers({
+            target: `${TARGET}/v1`,
+            setCookiePaths: ["/session"],
+        });
         const response = await POST(
             new Request(`http://localhost${APP}/session`, { method: "POST" }),
         );
@@ -172,16 +187,19 @@ describe("createProxyHandlers Set-Cookie policy", () => {
                 "set-cookie": "__Host-session=abc; Path=/; Secure; HttpOnly",
             }),
         );
-        const { POST } = createProxyHandlers({ target: TARGET });
+        const { POST } = createProxyHandlers({
+            target: TARGET,
+            setCookiePaths: ["/session"],
+        });
         await expect(
             POST(new Request(`http://localhost${APP}/session`, { method: "POST" })),
         ).rejects.toThrow(/__Host-.*Path=\//i);
     });
 
-    it("keeps dropping Set-Cookie on non-allowlisted routes", async () => {
+    it("drops Set-Cookie by default even on a standard session path", async () => {
         fetchSpy.mockResolvedValue(upstream("{}", TWO_COOKIES));
         const { GET } = createProxyHandlers({ target: TARGET });
-        const response = await GET(new Request(`http://localhost${APP}/api/things`));
+        const response = await GET(new Request(`http://localhost${APP}/session`));
         expect(response.headers.getSetCookie()).toHaveLength(0);
     });
 

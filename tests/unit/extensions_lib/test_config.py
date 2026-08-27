@@ -4,6 +4,7 @@ import ssl
 from unittest.mock import patch
 
 import pytest
+
 from kamiwaza_extensions_lib.config import AuthConfig
 from kamiwaza_extensions_lib.errors import UnexpectedContextError
 
@@ -85,6 +86,17 @@ class TestAuthConfig:
 
         assert config.app_url == "https://path.example/runtime/apps/my-app"
         assert config.app_path == "/runtime/apps/my-app"
+
+    def test_invalid_routing_env_does_not_raise_on_request_config(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
+        monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/../etc")
+        monkeypatch.setenv("KAMIWAZA_APP_URL", "https://legacy.example/my-app")
+        monkeypatch.setenv("KAMIWAZA_APP_PATH_URL", "https://path.example/bad")
+
+        config = AuthConfig.from_env()
+
+        assert config.app_url == "https://path.example/bad"
+        assert config.app_path == "/runtime/../etc"
 
     def test_use_auth_false(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import sys
 import types
 from contextlib import contextmanager
@@ -76,6 +77,24 @@ def test_invalid_routing_env_fails_before_uvicorn(monkeypatch):
         code = main(["app.main:app"])
     assert code != 0
     run.assert_not_called()
+
+
+@pytest.mark.unit
+def test_missing_uvicorn_reports_optional_extra(monkeypatch, capsys):
+    monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "port")
+    real_import = builtins.__import__
+
+    def import_without_uvicorn(name, *args, **kwargs):
+        if name == "uvicorn":
+            raise ModuleNotFoundError("No module named 'uvicorn'", name="uvicorn")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_uvicorn)
+
+    code = main(["app.main:app"])
+
+    assert code == 1
+    assert "kamiwaza-extensions-lib[asgi]" in capsys.readouterr().err
 
 
 @pytest.mark.unit
