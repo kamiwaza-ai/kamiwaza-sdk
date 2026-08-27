@@ -330,12 +330,16 @@ class PayloadBuilder:
         verify_ssl: bool,
     ) -> None:
         if app_path:
-            env.extend(
-                [
-                    {"name": "KAMIWAZA_APP_PATH", "value": app_path},
-                    {"name": "KAMIWAZA_ROUTING_MODE", "value": "path"},
-                ]
-            )
+            env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
+        # Explicit env shadows ConfigMap envFrom in both modes. Without an
+        # explicit port value, a stale KAMIWAZA_APP_PATH can trigger legacy
+        # path-mode inference and make an otherwise valid deployment 404.
+        env.append(
+            {
+                "name": "KAMIWAZA_ROUTING_MODE",
+                "value": "path" if app_path else "port",
+            }
+        )
         if verify_ssl:
             return
         # Explicit env wins over ConfigMap envFrom. Emit both Python and Node

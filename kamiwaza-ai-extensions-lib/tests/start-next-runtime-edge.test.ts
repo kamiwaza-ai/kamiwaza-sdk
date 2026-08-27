@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildRelocationManifest } from "../scripts/index-next-runtime.mjs";
 import {
     computeSignalExitCode,
+    currentStartupLockMetadata,
     prepareRuntime,
     parseCommandArgs,
     resolveRuntimeRoots,
@@ -347,11 +348,27 @@ describe("prepareRuntime edge fixes", () => {
     it("rejects a genuinely concurrent start owned by a live process (S8)", async () => {
         const manifest = await manifestFor();
         mkdirSync(`${targetRoot}.lock`, { recursive: true });
-        writeFileSync(path.join(`${targetRoot}.lock`, "pid"), String(process.pid));
+        writeFileSync(
+            path.join(`${targetRoot}.lock`, "pid"),
+            currentStartupLockMetadata(),
+        );
 
         await expect(
             prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL }),
         ).rejects.toThrow(/lock|another/i);
+    });
+
+    it("steals a persisted lock from a previous process lifetime with the same pid", async () => {
+        const manifest = await manifestFor();
+        mkdirSync(`${targetRoot}.lock`, { recursive: true });
+        writeFileSync(
+            path.join(`${targetRoot}.lock`, "pid"),
+            JSON.stringify({ pid: process.pid, token: "previous-container" }),
+        );
+
+        await prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL });
+        expect(existsSync(`${targetRoot}.lock`)).toBe(false);
+        expect(readFileSync(path.join(targetRoot, "server.js"), "utf8")).toContain(REAL);
     });
 
     it.each(["", "0", "-1", "not-a-pid"])(

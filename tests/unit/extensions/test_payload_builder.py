@@ -107,6 +107,12 @@ class TestBuild:
             )
             assert env.get("KAMIWAZA_ROUTING_MODE") == "path", (service.name, env)
 
+    def test_port_routing_explicitly_shadows_stale_configmap_path(self, builder):
+        env = []
+        builder._append_platform_env(env, app_path="", verify_ssl=True)
+
+        assert env == [{"name": "KAMIWAZA_ROUTING_MODE", "value": "port"}]
+
     def test_kamiwaza_integration(
         self, builder, metadata, transformed_compose, connection
     ):

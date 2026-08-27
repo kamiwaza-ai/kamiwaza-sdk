@@ -24,6 +24,7 @@ dependencies = [
     "httpx>=0.23",
     "fastapi>=0.100.0",
     "pydantic>=2.0",
+    "uvicorn>=0.23.0",
 ]
 
 [project.urls]

@@ -1,6 +1,6 @@
 /** Validate, relocate, verify, and publish a Next standalone runtime under a startup lock. */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
     cp,
     mkdir,
@@ -27,6 +27,7 @@ const ALLOWED_KINDS = new Set(["js", "json", "html", "rsc", "css", "txt"]);
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SENTINEL_RE = /^\/__KZ_RUNTIME_BASE_[0-9A-F]+__$/;
 const WHOLESALE_LINKS = new Set(["node_modules", "public"]);
+const PROCESS_LOCK_TOKEN = randomUUID();
 
 function assertManifestSchema(manifest) {
     if (manifest?.schemaVersion !== 1) {
@@ -330,7 +331,7 @@ async function createStartupLock(lockDir, pidFile) {
         throw error;
     }
     try {
-        await writeFile(pidFile, String(process.pid));
+        await writeFile(pidFile, currentStartupLockMetadata());
         return true;
     } catch (error) {
         await rm(lockDir, { recursive: true, force: true }).catch(() => {});
@@ -338,23 +339,51 @@ async function createStartupLock(lockDir, pidFile) {
     }
 }
 
+export function currentStartupLockMetadata() {
+    return JSON.stringify({ pid: process.pid, token: PROCESS_LOCK_TOKEN });
+}
+
 async function readLockOwner(pidFile) {
-    const raw = await readFile(pidFile, "utf8").catch(() => "");
-    const ownerPid = Number.parseInt(raw, 10);
-    return Number.isInteger(ownerPid) && ownerPid > 0 ? ownerPid : null;
+    const raw = (await readFile(pidFile, "utf8").catch(() => "")).trim();
+    if (/^[1-9][0-9]*$/.test(raw)) {
+        return { pid: Number(raw), token: null, legacy: true };
+    }
+    try {
+        const owner = JSON.parse(raw);
+        if (
+            Number.isInteger(owner?.pid) &&
+            owner.pid > 0 &&
+            typeof owner.token === "string" &&
+            owner.token !== ""
+        ) {
+            return { pid: owner.pid, token: owner.token, legacy: false };
+        }
+    } catch {
+        // The caller preserves the fail-closed behavior for malformed locks.
+    }
+    return null;
 }
 
 async function assertLockIsStale(lockDir, pidFile) {
-    const ownerPid = await readLockOwner(pidFile);
-    if (ownerPid === null) {
+    const owner = await readLockOwner(pidFile);
+    if (owner === null) {
         throw new Error(
             `runtime lock ${lockDir} has no valid owner metadata; ` +
                 "refusing to touch the live tree",
         );
     }
-    if (await isProcessAlive(ownerPid)) {
+    // Container entrypoints are commonly PID 1. A persisted /tmp can retain
+    // an old PID-1 lock across an OOM restart, so PID liveness alone cannot
+    // distinguish the previous process lifetime from this one.
+    const reusedPid =
+        owner.pid === process.pid &&
+        (owner.legacy || owner.token !== PROCESS_LOCK_TOKEN);
+    if (reusedPid) {
+        return;
+    }
+    if (await isProcessAlive(owner.pid)) {
         throw new Error(
-            `another start (pid ${ownerPid}) holds the runtime lock ${lockDir}; ` +
+            `another start (pid ${owner.pid}) holds the runtime lock ${lockDir}; ` +
                 "refusing to touch the live tree",
         );
     }

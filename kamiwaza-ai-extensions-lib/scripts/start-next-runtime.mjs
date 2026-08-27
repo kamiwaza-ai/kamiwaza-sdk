@@ -13,11 +13,15 @@ import {
     resolveRoutingMode,
     validateRuntimePath,
 } from "./runtime-path-contract.mjs";
-import { prepareRuntime, validateManifest } from "./runtime-preparation.mjs";
+import {
+    currentStartupLockMetadata,
+    prepareRuntime,
+    validateManifest,
+} from "./runtime-preparation.mjs";
 import { transformHtmlBuffer, transformRscBuffer } from "./flight-relocation.mjs";
 
 export { resolveRoutingMode, validateRuntimePath };
-export { prepareRuntime, validateManifest };
+export { currentStartupLockMetadata, prepareRuntime, validateManifest };
 export { transformHtmlBuffer, transformRscBuffer };
 
 /** Conventional 128+N exit code for a signal name; 1 when unknown. */

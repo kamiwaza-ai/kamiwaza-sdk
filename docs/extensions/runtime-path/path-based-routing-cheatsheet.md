@@ -131,7 +131,7 @@ The lifecycle is fail-closed at every stage:
 | **Boot verify** | Manifest schema, per-file SHA-256 + occurrence counts, artifact Next version re-checked against the manifest | Any hash/count/version mismatch — the artifact no longer matches its index |
 | **Patch** | Sparse mirror into `/tmp`: indexed files copied + byte-replaced (Flight-frame-aware for `.rsc` and inline Flight streams in prerendered HTML; byte-length headers recomputed), everything else symlinked, `server.js` always copied | Patched JSON doesn't parse; sentinel inside an unsupported Flight row type |
 | **Scan** | Full walk of the staged tree | Any residual sentinel byte; patched-file/occurrence totals don't match the manifest |
-| **Atomic publish** | Staging dir renamed over the target only after all checks pass; per-target lock prevents concurrent starts | Lock held by a live process (stale locks from dead pids are stolen) |
+| **Verified publish** | Staging dir renamed into place only after all checks pass; per-target lock prevents concurrent starts | Lock held by the same live process identity (dead owners and reused-PID locks are stolen) |
 
 If any check fails, the container **refuses to start** — you never get a half-relocated app.
 
@@ -370,7 +370,7 @@ See the [Auth Integration Guide](../auth-integration-guide.md) for the full logi
 The production runner is compatible with `--read-only` and runs as a non-root user (uid 1001):
 
 - **`/tmp` is the only writable location.** Path mode builds the relocated tree at `/tmp/kz-next-runtime`; the writable `.next/cache` lives inside that overlay. Port mode runs the image artifact in place (no copy) and needs no writable app tree.
-- **Startup lock**: a per-target lock directory (`/tmp/kz-next-runtime.lock`, holding the owner pid) makes a second concurrent preparation fail deterministically instead of corrupting the live tree. Locks from dead processes are stolen automatically, and the lock is released after verified publish so a container restart can rebuild the runtime.
+- **Startup lock**: a per-target lock directory (`/tmp/kz-next-runtime.lock`, holding the owner pid and a per-process token) makes a second concurrent preparation fail deterministically instead of corrupting the live tree. Locks from dead processes or an earlier container lifetime that reused the same pid are stolen automatically, and the lock is released after verified publish so a container restart can rebuild the runtime.
 - **Verified publish**: relocation stages into `/tmp/kz-next-runtime.staging-<pid>`, verifies the staged tree, removes the prior target, and renames the staging directory into place while holding the startup lock. Replacement is serialized, but it is not an atomic directory exchange.
 - ISR disk flush is disabled by the wrapper (`experimental.isrFlushToDisk: false`) so nothing tries to write into the read-only image tree.
 
@@ -453,7 +453,7 @@ The entrypoint emits single-line JSON events tagged `kz_next_runtime`:
 | `relocation source hash mismatch` / `occurrence count mismatch` | Artifact no longer matches its relocation index | Image was tampered with or assembled from mixed builds — rebuild the image; never hand-edit `/app/runtime` |
 | `relocation totals mismatch: patched X/Y files` | Manifest lists files the mirror couldn't patch | Artifact/manifest drift — rebuild the image |
 | `residual sentinel found in …` | A sentinel byte survived patching | File appeared after indexing, or an unindexed encoding — rebuild; report if reproducible |
-| `another start (pid N) holds the runtime lock` | Concurrent boot against the same target | Second container/process racing the first; stale locks from dead pids are stolen automatically |
+| `another start (pid N) holds the runtime lock` | Concurrent boot against the same target | Second container/process racing the first; stale locks from dead owners or reused pids are stolen automatically |
 | `patched JSON does not parse` | Replacement corrupted a JSON file | Fail-closed guard — rebuild; report if reproducible |
 | `invalid runtime path segment` / `forbidden characters` / `control characters` | `KAMIWAZA_APP_PATH` failed validation | Fix the env value (watch for trailing newlines and URL-encoded chars) |
 | `KAMIWAZA_ROUTING_MODE=path requires a nonempty KAMIWAZA_APP_PATH` | Explicit path mode without a path | Fix the deployment env |

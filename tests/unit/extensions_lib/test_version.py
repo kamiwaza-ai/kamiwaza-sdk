@@ -74,6 +74,16 @@ def test_sdk_dependency_requires_current_runtime_release():
     )
 
 
+def test_asgi_launcher_declares_uvicorn_dependency():
+    with LIB_PYPROJECT_PATH.open("rb") as f:
+        pyproject = tomllib.load(f)
+
+    assert any(
+        dependency.startswith("uvicorn>=")
+        for dependency in pyproject["project"]["dependencies"]
+    ), "python -m kamiwaza_extensions_lib.asgi requires a declared uvicorn runtime"
+
+
 def test_release_publishes_required_npm_runtime_before_sdk():
     script = RELEASE_SCRIPT_PATH.read_text()
 
