@@ -51,7 +51,6 @@ import { createProxyHandlers } from
 
 const { POST } = createProxyHandlers({
   target: process.env.BACKEND_URL || "http://backend:8000",
-  setCookiePaths: ["/auth/logout"],
 });
 
 export { POST };
@@ -124,8 +123,9 @@ ForwardAuth or make the route public at ingress.
 ## Security properties
 
 - Cookies are sent to the extension backend with `credentials: "include"`.
-- The frontend proxy denies `Set-Cookie` by default. A trusted session route
-  must opt in explicitly with `setCookiePaths`.
+- The frontend proxy denies `Set-Cookie` by default, including on the canonical
+  session and logout routes. Custom cookie-minting integrations must opt in
+  explicitly with `setCookiePaths` and trust their upstream's attributes.
 - `front_channel_logout_url` may be cross-origin because the platform API and
   app can have different origins. The client rejects non-HTTP(S) schemes; its
   origin trust depends on the URL coming from the canonical extension backend,

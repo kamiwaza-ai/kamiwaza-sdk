@@ -14,10 +14,14 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { setTimeout as delay } from "node:timers/promises";
 
-import { countBufferOccurrences } from "./index-next-runtime.mjs";
 import {
-    replaceBuffer,
+    countRelocationOccurrences,
+    relocationNeedleBuffers,
+} from "./index-next-runtime.mjs";
+import {
+    replaceRelocationForms,
     transformHtmlBuffer,
     transformRscBuffer,
 } from "./flight-relocation.mjs";
@@ -161,7 +165,7 @@ export function validateManifest(manifest) {
 }
 
 async function verifyManifestSources(sourceRoot, manifest) {
-    const sentinelBuffer = Buffer.from(manifest.sentinel, "utf8");
+    const relocationNeedles = relocationNeedleBuffers(manifest.sentinel);
     for (const entry of manifest.files) {
         const buffer = await readFile(path.join(sourceRoot, entry.path));
         const sha256 = createHash("sha256").update(buffer).digest("hex");
@@ -171,7 +175,7 @@ async function verifyManifestSources(sourceRoot, manifest) {
                     "the artifact does not match its relocation index (sha256)",
             );
         }
-        const occurrences = countBufferOccurrences(buffer, sentinelBuffer);
+        const occurrences = countRelocationOccurrences(buffer, relocationNeedles);
         if (occurrences !== entry.occurrences) {
             throw new Error(
                 `relocation occurrence count mismatch for ${entry.path}: ` +
@@ -240,9 +244,9 @@ async function mirrorTree(context, relative = "") {
     }
 }
 
-async function assertFileHasNoSentinel(entryPath, rel, sentinelBuffer) {
+async function assertFileHasNoSentinel(entryPath, rel, sentinelFamilyBuffer) {
     const buffer = await readFile(entryPath);
-    if (buffer.includes(sentinelBuffer)) {
+    if (buffer.includes(sentinelFamilyBuffer)) {
         throw new Error(`residual sentinel found in ${rel}; relocation is incomplete`);
     }
 }
@@ -257,7 +261,7 @@ async function scanRuntimeSymlink(context, item) {
         }
         throw new Error(`unexpected directory symlink in runtime: ${item.rel}`);
     }
-    await assertFileHasNoSentinel(item.entryPath, item.rel, context.sentinelBuffer);
+    await assertFileHasNoSentinel(item.entryPath, item.rel, context.sentinelFamilyBuffer);
 }
 
 async function scanRuntimeEntry(context, relative, entry) {
@@ -272,7 +276,7 @@ async function scanRuntimeEntry(context, relative, entry) {
         return;
     }
     if (entry.isFile()) {
-        await assertFileHasNoSentinel(entryPath, rel, context.sentinelBuffer);
+        await assertFileHasNoSentinel(entryPath, rel, context.sentinelFamilyBuffer);
     }
 }
 
@@ -285,7 +289,10 @@ async function scanRuntimeTree(context, relative = "") {
 }
 
 async function scanForResidualSentinel(root, sentinel) {
-    await scanRuntimeTree({ root, sentinelBuffer: Buffer.from(sentinel, "utf8") });
+    await scanRuntimeTree({
+        root,
+        sentinelFamilyBuffer: Buffer.from(sentinel.slice(1), "utf8"),
+    });
 }
 
 function assertAbsoluteRoot(root) {
@@ -369,8 +376,24 @@ async function readLockOwner(pidFile) {
     return null;
 }
 
+async function readLockOwnerWithGrace(pidFile) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+        const owner = await readLockOwner(pidFile);
+        if (owner !== null) {
+            return owner;
+        }
+        if (attempt < 4) {
+            // mkdir(lockDir) necessarily precedes writing owner metadata. Give
+            // a concurrently-starting process a bounded window to finish that
+            // atomic-lock initialization before classifying it as malformed.
+            await delay(10);
+        }
+    }
+    return null;
+}
+
 async function assertLockIsStale(lockDir, pidFile) {
-    const owner = await readLockOwner(pidFile);
+    const owner = await readLockOwnerWithGrace(pidFile);
     if (owner === null) {
         throw new Error(
             `runtime lock ${lockDir} has no valid owner metadata; ` +
@@ -462,14 +485,21 @@ function validatePatchedJson(buffer, rel) {
 
 function transformIndexedBuffer(context, rel, buffer) {
     const kind = context.kinds.get(rel);
-    context.occurrences += countBufferOccurrences(buffer, context.sentinelBuffer);
+    context.occurrences += countRelocationOccurrences(
+        buffer,
+        context.relocationNeedles,
+    );
     if (kind === "rsc") {
         return transformRscBuffer(buffer, context.manifest.sentinel, context.replacement);
     }
     if (kind === "html") {
         return transformHtmlBuffer(buffer, context.manifest.sentinel, context.replacement);
     }
-    return replaceBuffer(buffer, context.sentinelBuffer, context.replacementBuffer).buffer;
+    return replaceRelocationForms(
+        buffer,
+        context.manifest.sentinel,
+        context.replacement,
+    ).buffer;
 }
 
 async function patchIndexedFile(context, rel, sourcePath, targetPath) {
@@ -504,8 +534,7 @@ function createRelocationContext(source, staging, manifest, replacement) {
         targetRoot: staging,
         manifest,
         replacement,
-        sentinelBuffer: Buffer.from(manifest.sentinel, "utf8"),
-        replacementBuffer: Buffer.from(replacement, "utf8"),
+        relocationNeedles: relocationNeedleBuffers(manifest.sentinel),
         indexed: new Set(manifest.files.map((entry) => entry.path)),
         kinds: new Map(manifest.files.map((entry) => [entry.path, entry.kind])),
         expectedOccurrences: manifest.files.reduce(

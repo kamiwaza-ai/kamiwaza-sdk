@@ -41,6 +41,37 @@ function originWithAppPath(value: string, appPath: string): string {
     return `${parsed.origin}${appPath}`;
 }
 
+function normalizeAppPathUrl(value: string, appPath: string): string {
+    if (value.includes("\\")) {
+        throw new Error(
+            `invalid KAMIWAZA_APP_PATH_URL: ${JSON.stringify(value)}`,
+        );
+    }
+    let parsed: URL;
+    try {
+        parsed = new URL(value);
+    } catch {
+        throw new Error(
+            `invalid KAMIWAZA_APP_PATH_URL: ${JSON.stringify(value)}`,
+        );
+    }
+    const parsedPath = trimTrailingSlash(parsed.pathname);
+    if (
+        (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+        parsed.username !== "" ||
+        parsed.password !== "" ||
+        parsed.search !== "" ||
+        parsed.hash !== "" ||
+        parsedPath !== appPath
+    ) {
+        throw new Error(
+            `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +
+                `KAMIWAZA_APP_PATH: ${JSON.stringify(value)}`,
+        );
+    }
+    return `${parsed.origin}${appPath}`;
+}
+
 function resolveAppUrls(
     env: NodeJS.ProcessEnv,
     appPath: string,
@@ -51,7 +82,12 @@ function resolveAppUrls(
             appUrl: trimTrailingSlash(env.KAMIWAZA_APP_URL ?? ""),
         };
     }
-    const appPathUrl = trimTrailingSlash(env.KAMIWAZA_APP_PATH_URL ?? "");
+    const configuredAppPathUrl = trimTrailingSlash(
+        env.KAMIWAZA_APP_PATH_URL ?? "",
+    );
+    const appPathUrl = configuredAppPathUrl
+        ? normalizeAppPathUrl(configuredAppPathUrl, appPath)
+        : "";
     const configuredAppUrl = trimTrailingSlash(env.KAMIWAZA_APP_URL ?? "");
     const origin = trimTrailingSlash(env.KAMIWAZA_ORIGIN ?? "");
     const publicOrigin = configuredAppUrl || origin;

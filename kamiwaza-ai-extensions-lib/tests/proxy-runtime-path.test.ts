@@ -111,6 +111,21 @@ describe("createProxyHandlers Set-Cookie policy", () => {
         ]);
     });
 
+    it("treats a trailing slash as the same exact cookie route", async () => {
+        fetchSpy.mockResolvedValue(upstream("{}", TWO_COOKIES));
+        const { POST } = createProxyHandlers({
+            target: TARGET,
+            setCookiePaths: ["/session"],
+        });
+        const response = await POST(
+            new Request(`http://localhost${APP}/session/`, { method: "POST" }),
+        );
+        expect(response.headers.getSetCookie()).toEqual([
+            `session=abc; HttpOnly; Path=${APP}`,
+            `refresh=def; HttpOnly; Path=${APP}`,
+        ]);
+    });
+
     it("adds a deployment-scoped Path when the backend omits one", async () => {
         fetchSpy.mockResolvedValue(
             upstream("{}", { "set-cookie": "session=abc; HttpOnly; SameSite=Lax" }),
@@ -264,15 +279,17 @@ describe("createProxyHandlers redirects and target paths", () => {
         );
     });
 
-    it("leaves external absolute redirects untouched", async () => {
-        fetchSpy.mockResolvedValue(
-            upstream("", { location: "https://identity.example/login" }),
-        );
+    it.each([
+        "https://identity.example/login",
+        "//identity.example/login",
+        "not a valid redirect",
+    ])("fails closed on an untrusted upstream redirect: %s", async (location) => {
+        fetchSpy.mockResolvedValue(upstream("", { location }));
         const { GET } = createProxyHandlers({ target: TARGET });
         const response = await GET(new Request(`http://localhost${APP}/session`));
-        expect(response.headers.get("location")).toBe(
-            "https://identity.example/login",
-        );
+        expect(response.status).toBe(502);
+        expect(response.headers.get("location")).toBeNull();
+        expect(response.headers.get("cache-control")).toBe("no-store");
     });
 
     it.each([

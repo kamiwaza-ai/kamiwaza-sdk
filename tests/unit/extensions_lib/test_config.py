@@ -53,9 +53,7 @@ class TestAuthConfig:
         AUTH_ERROR_ROUTING_VECTORS,
         ids=[vector["name"] for vector in AUTH_ERROR_ROUTING_VECTORS],
     )
-    def test_invalid_canonical_routing_vectors_fail_closed_without_raising(
-        self, monkeypatch, caplog, vector
-    ):
+    def test_invalid_canonical_routing_vectors_raise(self, monkeypatch, vector):
         for name in (
             "KAMIWAZA_ROUTING_MODE",
             "KAMIWAZA_APP_PATH",
@@ -67,11 +65,8 @@ class TestAuthConfig:
         for name, value in vector["env"].items():
             monkeypatch.setenv(name, value)
 
-        config = AuthConfig.from_env()
-
-        assert config.app_url == ""
-        assert config.app_path == ""
-        assert "invalid runtime routing" in caplog.text
+        with pytest.raises(ValueError):
+            AuthConfig.from_env()
 
     def test_from_env_all_set(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
@@ -172,19 +167,14 @@ class TestAuthConfig:
 
         assert config.app_url == "https://public.example:8443"
 
-    def test_invalid_routing_env_does_not_raise_on_request_config(
-        self, monkeypatch, caplog
-    ):
+    def test_invalid_routing_env_raises_on_request_config(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
         monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/../etc")
         monkeypatch.setenv("KAMIWAZA_APP_URL", "https://legacy.example/my-app")
         monkeypatch.setenv("KAMIWAZA_APP_PATH_URL", "https://path.example/bad")
 
-        config = AuthConfig.from_env()
-
-        assert config.app_url == ""
-        assert config.app_path == ""
-        assert "invalid runtime routing" in caplog.text
+        with pytest.raises(ValueError, match="invalid app path"):
+            AuthConfig.from_env()
 
     def test_app_path_is_exposed_in_canonical_form(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")

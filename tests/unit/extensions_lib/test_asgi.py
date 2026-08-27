@@ -103,3 +103,11 @@ def test_requires_app_argument():
         code = main([])
     assert code != 0
     run.assert_not_called()
+
+
+@pytest.mark.unit
+def test_help_exits_successfully():
+    with patched_uvicorn() as run:
+        code = main(["--help"])
+    assert code == 0
+    run.assert_not_called()

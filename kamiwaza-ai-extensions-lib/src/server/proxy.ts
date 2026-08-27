@@ -101,6 +101,12 @@ function stripOnce(path: string, prefix: string): string {
     return path;
 }
 
+/** Normalize a route for exact matching while tolerating a trailing slash. */
+function normalizeExactPath(path: string): string {
+    const normalized = path.replace(/\/+$/, "");
+    return normalized || "/";
+}
+
 /**
  * Validate and resolve the proxy target URL.
  *
@@ -176,10 +182,14 @@ function scopeSetCookie(cookie: string, appPath: string): string {
     return [pair.trim(), ...safeAttributes, `Path=${cookiePath}`].join("; ");
 }
 
-function rebaseLocation(headers: Headers, appPath: string, target: string): void {
+function rebaseLocation(
+    headers: Headers,
+    appPath: string,
+    target: string,
+): boolean {
     const location = headers.get("location");
     if (location == null) {
-        return;
+        return true;
     }
     const configuredTarget = new URL(target);
     const targetPath = configuredTarget.pathname.replace(/\/+$/, "");
@@ -191,18 +201,19 @@ function rebaseLocation(headers: Headers, appPath: string, target: string): void
         );
         const local = `${redirectPath}${redirected.search}${redirected.hash}`;
         headers.set("location", withAppPath(local, appPath));
-        return;
+        return true;
     }
     if (!URL.canParse(location)) {
-        return;
+        return false;
     }
     const redirected = new URL(location);
     if (redirected.origin !== configuredTarget.origin) {
-        return;
+        return false;
     }
     const redirectPath = stripOnce(redirected.pathname, targetPath).replace(/^\/+/, "/");
     const local = `${redirectPath}${redirected.search}${redirected.hash}`;
     headers.set("location", withAppPath(local, appPath));
+    return true;
 }
 
 function makeHandler(
@@ -258,13 +269,23 @@ function makeHandler(
 
         // Stream the response back, filtering sensitive headers.
         const responseHeaders = new Headers(filterResponseHeaders(upstream.headers));
-        rebaseLocation(responseHeaders, runtimeAppPath, config.target);
+        if (!rebaseLocation(responseHeaders, runtimeAppPath, config.target)) {
+            return new Response("Bad Gateway: untrusted upstream redirect", {
+                status: 502,
+                headers: { "cache-control": "no-store" },
+            });
+        }
 
         // Set-Cookie passes through only for the explicit session-route
         // allowlist (matched on the backend-facing path), and only from the
         // configured trusted backend.
         const cookiePaths = config.setCookiePaths ?? DEFAULT_SET_COOKIE_PATHS;
-        if (cookiePaths.includes(path)) {
+        const normalizedPath = normalizeExactPath(path);
+        if (
+            cookiePaths.some(
+                (cookiePath) => normalizeExactPath(cookiePath) === normalizedPath,
+            )
+        ) {
             try {
                 for (const cookie of upstream.headers.getSetCookie()) {
                     responseHeaders.append(

@@ -37,7 +37,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
-        return int(exc.code or 2)
+        return int(exc.code) if exc.code is not None else 2
 
     try:
         routing = RuntimeRouting.from_env()

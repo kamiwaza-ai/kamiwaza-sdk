@@ -548,6 +548,12 @@ class TestRunnerEnvPassthroughOverlay:
         monkeypatch.setenv("KZ_EXT_DEV_LOCAL_AUTH", "1")
         monkeypatch.setenv("KAMIWAZA_BEARER_TOKEN", "stale-token-from-shell")
         monkeypatch.setenv("KAMIWAZA_DEV_WORKROOM_ID", "stale-workroom")
+        monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
+        monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/apps/deployed")
+        monkeypatch.setenv(
+            "KAMIWAZA_APP_PATH_URL",
+            "https://cluster.test/runtime/apps/deployed",
+        )
 
         compose_data = {"services": {"frontend": {"build": "./frontend"}}}
         compose_path = tmp_path / "docker-compose.yml"
@@ -601,6 +607,9 @@ class TestRunnerEnvPassthroughOverlay:
         assert "KZ_EXT_DEV_LOCAL_AUTH" not in captured_env
         assert "KAMIWAZA_BEARER_TOKEN" not in captured_env
         assert "KAMIWAZA_DEV_WORKROOM_ID" not in captured_env
+        assert captured_env["KAMIWAZA_ROUTING_MODE"] == "port"
+        assert captured_env["KAMIWAZA_APP_PATH"] == ""
+        assert captured_env["KAMIWAZA_APP_PATH_URL"] == ""
 
 
 @pytest.mark.unit

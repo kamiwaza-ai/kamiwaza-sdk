@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import ssl
 from dataclasses import dataclass
 
 from .errors import UnexpectedContextError
 from .runtime import RuntimeRouting
-
-logger = logging.getLogger(__name__)
 
 
 def _read_verify_ssl() -> bool:
@@ -53,30 +50,19 @@ class AuthConfig:
 
     @classmethod
     def from_env(cls) -> AuthConfig:
-        """Read configuration from environment variables."""
-        # AuthConfig remains non-throwing and cheap on request paths. The ASGI
-        # launcher validates the full routing contract once at startup. Reuse
-        # that resolver so malformed modes, paths, origins, and the reserved
-        # relocation sentinel cannot drift into browser-visible auth URLs.
-        try:
-            routing = RuntimeRouting.from_env()
-            app_url = routing.app_url
-            app_path = routing.app_path
-        except ValueError as exc:
-            logger.warning(
-                "Ignoring invalid runtime routing while building AuthConfig; "
-                "the runtime launcher must reject this deployment configuration: %s",
-                exc,
-            )
-            app_url = ""
-            app_path = ""
+        """Read configuration and fail closed on invalid runtime routing."""
+        # Every consumer gets the same validation, including bare uvicorn and
+        # author-defined entrypoints that bypass the shared ASGI launcher. A
+        # malformed path/public URL must never degrade to request.base_url for
+        # browser-visible login/logout redirects.
+        routing = RuntimeRouting.from_env()
         return cls(
             api_url=os.environ.get("KAMIWAZA_API_URL", ""),
             public_api_url=os.environ.get("KAMIWAZA_PUBLIC_API_URL", ""),
             openai_base=os.environ.get("KAMIWAZA_ENDPOINT", "")
             or os.environ.get("KAMIWAZA_MODEL_URL", ""),
-            app_url=app_url,
-            app_path=app_path,
+            app_url=routing.app_url,
+            app_path=routing.app_path,
             app_name=os.environ.get("KAMIWAZA_APP_NAME", ""),
             use_auth=os.environ.get("KAMIWAZA_USE_AUTH", "true").lower()
             not in ("false", "0", "no"),

@@ -79,6 +79,24 @@ export function countBufferOccurrences(buffer, needleBuffer) {
     return count;
 }
 
+/** Byte spellings emitted by Next for a base path in paths and URL parameters. */
+export function relocationNeedleBuffers(sentinel) {
+    const encoded = encodeURIComponent(sentinel);
+    return [
+        Buffer.from(sentinel, "utf8"),
+        Buffer.from(encoded, "utf8"),
+        Buffer.from(encoded.replaceAll("%2F", "%2f"), "utf8"),
+    ];
+}
+
+/** Count every supported, non-overlapping spelling of the relocation sentinel. */
+export function countRelocationOccurrences(buffer, needleBuffers) {
+    return needleBuffers.reduce(
+        (total, needle) => total + countBufferOccurrences(buffer, needle),
+        0,
+    );
+}
+
 async function checkSymlink(root, rel) {
     const absolute = path.join(root, rel);
     let resolved;
@@ -191,13 +209,13 @@ function isNodeModulesPath(rel) {
 async function assertSymlinkIsSentinelFree(context, rel) {
     const resolved = await checkSymlink(context.root, rel);
     const buffer = await readFile(resolved);
-    if (buffer.includes(context.sentinelBuffer)) {
+    if (buffer.includes(context.sentinelFamilyBuffer)) {
         throw new Error(`sentinel found behind symlink ${rel}; symlinked content is never relocated`);
     }
 }
 
-function assertDependencyIsSentinelFree(rel, buffer, sentinelBuffer) {
-    if (buffer.includes(sentinelBuffer)) {
+function assertDependencyIsSentinelFree(rel, buffer, sentinelFamilyBuffer) {
+    if (buffer.includes(sentinelFamilyBuffer)) {
         throw new Error(
             `sentinel found in node_modules (${rel}); dependencies must not embed the base path`,
         );
@@ -226,7 +244,7 @@ async function resolveTextKind(root, rel) {
     );
 }
 
-async function buildManifestEntry(context, rel, buffer) {
+async function buildManifestEntry(context, rel, buffer, occurrences) {
     if (rel.startsWith("public/")) {
         throw new Error(
             `sentinel found under public/ (${rel}); public assets are served verbatim — ` +
@@ -238,7 +256,7 @@ async function buildManifestEntry(context, rel, buffer) {
         path: rel,
         size: buffer.length,
         sha256: createHash("sha256").update(buffer).digest("hex"),
-        occurrences: countBufferOccurrences(buffer, context.sentinelBuffer),
+        occurrences,
         kind,
     };
 }
@@ -252,14 +270,28 @@ async function inspectArtifactFile(context, file) {
         return null;
     }
     const buffer = await readFile(path.join(context.root, file.rel));
+    const relocatableOccurrences = countRelocationOccurrences(
+        buffer,
+        context.relocationNeedles,
+    );
+    const familyOccurrences = countBufferOccurrences(
+        buffer,
+        context.sentinelFamilyBuffer,
+    );
+    if (familyOccurrences !== relocatableOccurrences) {
+        throw new Error(
+            `non-canonical relocation sentinel found in ${file.rel}; ` +
+                "only absolute-path and percent-encoded forms can be relocated",
+        );
+    }
     if (isNodeModulesPath(file.rel)) {
-        assertDependencyIsSentinelFree(file.rel, buffer, context.sentinelBuffer);
+        assertDependencyIsSentinelFree(file.rel, buffer, context.sentinelFamilyBuffer);
         return null;
     }
-    if (!buffer.includes(context.sentinelBuffer)) {
+    if (relocatableOccurrences === 0) {
         return null;
     }
-    return buildManifestEntry(context, file.rel, buffer);
+    return buildManifestEntry(context, file.rel, buffer, relocatableOccurrences);
 }
 
 function assertMandatoryRoles(files) {
@@ -281,7 +313,12 @@ function assertMandatoryRoles(files) {
 export async function buildRelocationManifest({ root, sentinel, nextVersion }) {
     assertValidSentinel(sentinel);
     await assertNoBuildCache(root);
-    const context = { root, sentinel, sentinelBuffer: Buffer.from(sentinel, "utf8") };
+    const context = {
+        root,
+        sentinel,
+        sentinelFamilyBuffer: Buffer.from(sentinel.slice(1), "utf8"),
+        relocationNeedles: relocationNeedleBuffers(sentinel),
+    };
     const files = [];
     for (const file of await walk(root)) {
         const entry = await inspectArtifactFile(context, file);

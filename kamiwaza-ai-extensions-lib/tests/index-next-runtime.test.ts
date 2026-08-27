@@ -90,6 +90,32 @@ describe("buildRelocationManifest", () => {
         ).rejects.toThrow(/binary|unrecognized/i);
     });
 
+    it("indexes percent-encoded relocation sentinels emitted in URL parameters", async () => {
+        writeStandardFixture();
+        write(
+            ".next/server/encoded.js",
+            `const upper = "${encodeURIComponent(SENTINEL)}"; ` +
+                `const lower = "${encodeURIComponent(SENTINEL).replaceAll("%2F", "%2f")}";`,
+        );
+        const manifest = await buildRelocationManifest({
+            root,
+            sentinel: SENTINEL,
+            nextVersion: "15.5.19",
+        });
+        expect(
+            manifest.files.find((file) => file.path === ".next/server/encoded.js")
+                ?.occurrences,
+        ).toBe(2);
+    });
+
+    it("fails on an unsupported slash-less relocation sentinel family", async () => {
+        writeStandardFixture();
+        write(".next/server/noncanonical.js", `const bare = "${SENTINEL.slice(1)}";`);
+        await expect(
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+        ).rejects.toThrow(/non-canonical relocation sentinel/i);
+    });
+
     it("fails when the sentinel appears in node_modules", async () => {
         writeStandardFixture();
         write("node_modules/evil/index.js", `const p = "${SENTINEL}";`);

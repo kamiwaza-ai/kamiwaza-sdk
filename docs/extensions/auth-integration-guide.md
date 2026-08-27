@@ -218,16 +218,14 @@ import { createProxyHandlers } from
 
 const { GET } = createProxyHandlers({
   target: process.env.BACKEND_URL || "http://backend:8000",
-  setCookiePaths: ["/session"],
 });
 
 export { GET };
 ```
 
-Use the same target for `app/auth/login-url/route.ts` (export `GET`). For
-`app/auth/logout/route.ts`, export `POST` and set
-`setCookiePaths: ["/auth/logout"]` so the trusted logout response can clear
-its cookie. Keep `Set-Cookie` disabled on all other proxy routes.
+Use the same target for `app/auth/login-url/route.ts` (export `GET`) and
+`app/auth/logout/route.ts` (export `POST`). The canonical auth routes do not
+pass backend `Set-Cookie` headers through the frontend origin.
 
 For `app/api/[...path]/route.ts`:
 
@@ -243,12 +241,13 @@ export { DELETE, GET, PATCH, POST, PUT };
 ```
 
 The proxy strips the runtime deployment prefix and forwards the approved auth
-and routing headers. `Set-Cookie` is denied by default; routes that intentionally
-proxy a trusted session endpoint must opt in with `setCookiePaths`. That opt-in
-trusts the upstream endpoint to choose safe cookie names and attributes: the
-proxy removes `Domain` and scopes `Path` to the deployment, but it does not add
-`HttpOnly`, `Secure`, or `SameSite`, nor does it enforce a cookie-name allowlist.
-Only enable it for the canonical backend session/logout handlers.
+and routing headers. `Set-Cookie` is denied by default. A custom integration
+that intentionally proxies a trusted cookie-minting endpoint may opt in with
+`setCookiePaths`; doing so trusts the upstream to choose safe cookie names and
+attributes. The proxy removes `Domain` and scopes `Path` to the deployment, but
+it does not add `HttpOnly`, `Secure`, or `SameSite`, nor enforce a name allowlist.
+Upstream redirects must be root-relative or use the configured backend origin;
+protocol-relative, malformed, and cross-origin `Location` values fail with 502.
 
 ### Fetch paths and assets
 

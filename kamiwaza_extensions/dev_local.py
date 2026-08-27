@@ -182,6 +182,18 @@ class DevLocalRunner:
             bridge = prepare_bridge_context(connection_manager=self._conn_mgr)
 
         env = os.environ.copy()
+        # The CLI-owned dev target runs ``next dev`` at the origin root. Never
+        # inherit deployment path identity from the operator's shell: doing so
+        # makes server-side helpers emit prefixed URLs that the dev server does
+        # not serve. Explicit empty values override Compose's ``${VAR:-}``
+        # passthrough while preserving unrelated local connection settings.
+        env.update(
+            {
+                "KAMIWAZA_ROUTING_MODE": "port",
+                "KAMIWAZA_APP_PATH": "",
+                "KAMIWAZA_APP_PATH_URL": "",
+            }
+        )
         if not auth:
             for var in BRIDGE_ENV_VARS:
                 env.pop(var, None)

@@ -62,6 +62,49 @@ function assertRuntimeSegment(segment) {
     }
 }
 
+function validatePublicHttpUrl(value, field) {
+    if (typeof value !== "string" || value === "" || value.includes("\\")) {
+        throw new Error(`invalid ${field}: ${JSON.stringify(value)}`);
+    }
+    let parsed;
+    try {
+        parsed = new URL(value);
+    } catch {
+        throw new Error(`invalid ${field}: ${JSON.stringify(value)}`);
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(`invalid ${field}: ${JSON.stringify(value)}`);
+    }
+    return parsed;
+}
+
+function validatePathModePublicUrls(env, appPath) {
+    const appPathUrl = (env.KAMIWAZA_APP_PATH_URL ?? "").replace(/\/+$/, "");
+    if (appPathUrl !== "") {
+        const parsed = validatePublicHttpUrl(appPathUrl, "KAMIWAZA_APP_PATH_URL");
+        if (
+            parsed.username !== "" ||
+            parsed.password !== "" ||
+            parsed.search !== "" ||
+            parsed.hash !== "" ||
+            parsed.pathname.replace(/\/+$/, "") !== appPath
+        ) {
+            throw new Error(
+                `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +
+                    `KAMIWAZA_APP_PATH: ${JSON.stringify(appPathUrl)}`,
+            );
+        }
+        return;
+    }
+    const publicOrigin = (env.KAMIWAZA_APP_URL || env.KAMIWAZA_ORIGIN || "").replace(
+        /\/+$/,
+        "",
+    );
+    if (publicOrigin !== "") {
+        validatePublicHttpUrl(publicOrigin, "public app URL for path routing");
+    }
+}
+
 /** Validate and normalize one nonempty runtime deployment path. */
 export function validateRuntimePath(value) {
     assertRuntimePathString(value);
@@ -92,7 +135,9 @@ export function resolveRoutingMode(env) {
         return { routingMode: "port", appPath: "" };
     }
     if (mode === "path") {
-        return { routingMode: "path", appPath: validateRuntimePath(env.KAMIWAZA_APP_PATH) };
+        const appPath = validateRuntimePath(env.KAMIWAZA_APP_PATH);
+        validatePathModePublicUrls(env, appPath);
+        return { routingMode: "path", appPath };
     }
     if (mode != null && mode !== "") {
         throw new Error(`unknown KAMIWAZA_ROUTING_MODE: ${JSON.stringify(mode)}`);
@@ -101,5 +146,7 @@ export function resolveRoutingMode(env) {
     if (isEmptyRuntimePath(rawPath)) {
         return { routingMode: "port", appPath: "" };
     }
-    return { routingMode: "path", appPath: validateRuntimePath(rawPath) };
+    const appPath = validateRuntimePath(rawPath);
+    validatePathModePublicUrls(env, appPath);
+    return { routingMode: "path", appPath };
 }

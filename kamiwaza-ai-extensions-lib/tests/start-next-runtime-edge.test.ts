@@ -192,6 +192,21 @@ describe("transformRscBuffer (B1)", () => {
             `:HL["${REAL}/_next/static/css/x.css","style"]\n0:{"p":"${REAL}/y"}\n`,
         );
     });
+
+    it("rewrites percent-encoded sentinels and their T-frame byte lengths", () => {
+        const encodedSentinel = encodeURIComponent(SENTINEL);
+        const encodedReplacement = encodeURIComponent(REAL);
+        const payload = `url=${encodedSentinel}%2F_next%2Fimage`;
+        const input = Buffer.from(
+            `4:T${Buffer.byteLength(payload).toString(16)},${payload}`,
+        );
+        const output = transformRscBuffer(input, SENTINEL, REAL).toString("utf8");
+        const relocated = `url=${encodedReplacement}%2F_next%2Fimage`;
+
+        expect(output).toBe(
+            `4:T${Buffer.byteLength(relocated).toString(16)},${relocated}`,
+        );
+    });
 });
 
 describe("transformHtmlBuffer", () => {
@@ -316,6 +331,29 @@ describe("transformHtmlBuffer", () => {
 });
 
 describe("prepareRuntime edge fixes", () => {
+    it("relocates percent-encoded sentinel forms end-to-end", async () => {
+        const upper = encodeURIComponent(SENTINEL);
+        const lower = upper.replaceAll("%2F", "%2f");
+        write(
+            ".next/server/app/image.html",
+            `<img src="${SENTINEL}/_next/image?url=${upper}%2Fasset">` +
+                `<a href="/image?url=${lower}%2Fasset">image</a>`,
+        );
+        const manifest = await manifestFor();
+        await prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL });
+
+        const output = readFileSync(
+            path.join(targetRoot, ".next/server/app/image.html"),
+            "utf8",
+        );
+        expect(output).toContain(`${REAL}/_next/image`);
+        expect(output).toContain(`${encodeURIComponent(REAL)}%2Fasset`);
+        expect(output).toContain(
+            `${encodeURIComponent(REAL).replaceAll("%2F", "%2f")}%2Fasset`,
+        );
+        expect(output).not.toContain(SENTINEL.slice(1));
+    });
+
     it("keeps relative requires inside the patched tree through symlinked modules", async () => {
         write(
             "server.js",
@@ -459,6 +497,25 @@ describe("prepareRuntime edge fixes", () => {
         await expect(
             prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL }),
         ).rejects.toThrow(/lock|another/i);
+    });
+
+    it("waits briefly for a concurrent lock owner to finish initializing", async () => {
+        const manifest = await manifestFor();
+        mkdirSync(`${targetRoot}.lock`, { recursive: true });
+        const ownerWrite = new Promise<void>((resolve) => {
+            setTimeout(() => {
+                writeFileSync(
+                    path.join(`${targetRoot}.lock`, "pid"),
+                    currentStartupLockMetadata(),
+                );
+                resolve();
+            }, 5);
+        });
+
+        await expect(
+            prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL }),
+        ).rejects.toThrow(/another start|holds the runtime lock/i);
+        await ownerWrite;
     });
 
     it("steals a persisted lock from a previous process lifetime with the same pid", async () => {

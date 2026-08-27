@@ -21,6 +21,39 @@ export function replaceBuffer(buffer, needle, replacement) {
     return { buffer: Buffer.concat(chunks), occurrences };
 }
 
+function relocationPairs(sentinel, replacement) {
+    const encodedSentinel = encodeURIComponent(sentinel);
+    const encodedReplacement = encodeURIComponent(replacement);
+    return [
+        [Buffer.from(sentinel, "utf8"), Buffer.from(replacement, "utf8")],
+        [Buffer.from(encodedSentinel, "utf8"), Buffer.from(encodedReplacement, "utf8")],
+        [
+            Buffer.from(encodedSentinel.replaceAll("%2F", "%2f"), "utf8"),
+            Buffer.from(encodedReplacement.replaceAll("%2F", "%2f"), "utf8"),
+        ],
+    ];
+}
+
+function includesRelocationPair(buffer, pairs) {
+    return pairs.some(([needle]) => buffer.includes(needle));
+}
+
+function replaceRelocationPairs(buffer, pairs) {
+    let output = buffer;
+    let occurrences = 0;
+    for (const [needle, replacement] of pairs) {
+        const result = replaceBuffer(output, needle, replacement);
+        output = result.buffer;
+        occurrences += result.occurrences;
+    }
+    return { buffer: output, occurrences };
+}
+
+/** Relocate literal and percent-encoded base-path spellings. */
+export function replaceRelocationForms(buffer, sentinel, replacement) {
+    return replaceRelocationPairs(buffer, relocationPairs(sentinel, replacement));
+}
+
 function isAsciiHex(byte) {
     if (byte >= 0x30 && byte <= 0x39) {
         return true;
@@ -85,13 +118,13 @@ function parseFlightRow(buffer, start) {
     return { kind: "line", start, end };
 }
 
-function transformFlightRow(buffer, row, sentinelBuffer, replacementBuffer) {
+function transformFlightRow(buffer, row, pairs) {
     const original = buffer.subarray(row.start, row.end);
-    if (!original.includes(sentinelBuffer)) {
+    if (!includesRelocationPair(original, pairs)) {
         return original;
     }
     if (row.kind === "line") {
-        return replaceBuffer(original, sentinelBuffer, replacementBuffer).buffer;
+        return replaceRelocationPairs(original, pairs).buffer;
     }
     if (row.tag !== "T") {
         throw new Error(
@@ -100,7 +133,7 @@ function transformFlightRow(buffer, row, sentinelBuffer, replacementBuffer) {
         );
     }
     const payload = buffer.subarray(row.payloadStart, row.payloadEnd);
-    const replaced = replaceBuffer(payload, sentinelBuffer, replacementBuffer).buffer;
+    const replaced = replaceRelocationPairs(payload, pairs).buffer;
     return Buffer.concat([
         buffer.subarray(row.start, row.tagOffset),
         Buffer.from(`T${replaced.length.toString(16)},`, "latin1"),
@@ -110,11 +143,10 @@ function transformFlightRow(buffer, row, sentinelBuffer, replacementBuffer) {
 
 /** Relocate a complete React Flight byte stream with frame-length awareness. */
 export function transformRscBuffer(buffer, sentinel, replacement) {
-    const sentinelBuffer = Buffer.from(sentinel, "utf8");
-    if (!buffer.includes(sentinelBuffer)) {
+    const pairs = relocationPairs(sentinel, replacement);
+    if (!includesRelocationPair(buffer, pairs)) {
         return buffer;
     }
-    const replacementBuffer = Buffer.from(replacement, "utf8");
     const output = [];
     let position = 0;
     while (position < buffer.length) {
@@ -124,11 +156,11 @@ export function transformRscBuffer(buffer, sentinel, replacement) {
                 "unparseable Flight row containing the sentinel; refusing to relocate Flight data",
             );
         }
-        output.push(transformFlightRow(buffer, row, sentinelBuffer, replacementBuffer));
+        output.push(transformFlightRow(buffer, row, pairs));
         position = row.end;
     }
     const result = Buffer.concat(output);
-    if (result.includes(sentinelBuffer)) {
+    if (includesRelocationPair(result, pairs)) {
         throw new Error("residual sentinel after Flight relocation; refusing to start");
     }
     return result;
@@ -203,16 +235,25 @@ function findInlineScript(text, searchFrom) {
     };
 }
 
-function assertSkippedFlightScriptSafe(text, bodyStart, bodyEnd, sentinel) {
+function relocationTextForms(sentinel) {
+    const encoded = encodeURIComponent(sentinel);
+    return [sentinel, encoded, encoded.replaceAll("%2F", "%2f")];
+}
+
+function includesRelocationText(text, forms) {
+    return forms.some((form) => text.includes(form));
+}
+
+function assertSkippedFlightScriptSafe(text, bodyStart, bodyEnd, forms) {
     const body = text.slice(bodyStart, bodyEnd);
-    if (body.includes("__next_f") && body.includes(sentinel)) {
+    if (body.includes("__next_f") && includesRelocationText(body, forms)) {
         throw new Error(
             "unrecognized inline Flight push contains the relocation sentinel; refusing to patch HTML",
         );
     }
 }
 
-function parseFlightPushScript(text, bodyStart, bodyEnd, sentinel) {
+function parseFlightPushScript(text, bodyStart, bodyEnd, forms) {
     const marker = text.indexOf(FLIGHT_PUSH_MARKER, bodyStart);
     const markerIsScriptStart =
         marker !== -1 && marker < bodyEnd && text.slice(bodyStart, marker).trim() === "";
@@ -220,7 +261,7 @@ function parseFlightPushScript(text, bodyStart, bodyEnd, sentinel) {
     // Do not interpret rendered documentation, JSON-LD, or arbitrary author
     // scripts that merely contain the marker text as Flight data.
     if (!markerIsScriptStart) {
-        assertSkippedFlightScriptSafe(text, bodyStart, bodyEnd, sentinel);
+        assertSkippedFlightScriptSafe(text, bodyStart, bodyEnd, forms);
         return null;
     }
     const jsonStart = marker + FLIGHT_PUSH_MARKER.length;
@@ -235,7 +276,7 @@ function parseFlightPushScript(text, bodyStart, bodyEnd, sentinel) {
     // A second data push in the same script is not part of the stream we
     // reassemble below. Refuse any trailing sentinel rather than letting the
     // final whole-document replacement corrupt its Flight frame length.
-    assertSkippedFlightScriptSafe(text, jsonEnd, bodyEnd, sentinel);
+    assertSkippedFlightScriptSafe(text, jsonEnd, bodyEnd, forms);
     if (!isFlightDataPush(value)) {
         return null;
     }
@@ -244,13 +285,14 @@ function parseFlightPushScript(text, bodyStart, bodyEnd, sentinel) {
 
 function collectFlightPushes(text, sentinel) {
     const pushes = [];
+    const forms = relocationTextForms(sentinel);
     let searchFrom = 0;
     for (let script = findInlineScript(text, searchFrom); script !== null; ) {
         const push = parseFlightPushScript(
             text,
             script.bodyStart,
             script.bodyEnd,
-            sentinel,
+            forms,
         );
         if (push !== null) {
             pushes.push(push);
@@ -312,15 +354,12 @@ export function transformHtmlBuffer(buffer, sentinel, replacement) {
     const pushes = collectFlightPushes(text, sentinel);
     const flight = Buffer.from(pushes.map((push) => push.value[1]).join(""), "utf8");
     let transformedHtml = text;
-    if (flight.includes(Buffer.from(sentinel, "utf8"))) {
+    const pairs = relocationPairs(sentinel, replacement);
+    if (includesRelocationPair(flight, pairs)) {
         const transformedFlight = transformRscBuffer(flight, sentinel, replacement);
         const byteLengths = pushes.map((push) => Buffer.byteLength(push.value[1], "utf8"));
         const chunks = splitFlightBuffer(transformedFlight, byteLengths);
         transformedHtml = replaceFlightPushes(text, pushes, chunks);
     }
-    return replaceBuffer(
-        Buffer.from(transformedHtml, "utf8"),
-        Buffer.from(sentinel, "utf8"),
-        Buffer.from(replacement, "utf8"),
-    ).buffer;
+    return replaceRelocationPairs(Buffer.from(transformedHtml, "utf8"), pairs).buffer;
 }

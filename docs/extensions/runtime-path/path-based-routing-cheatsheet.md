@@ -130,7 +130,7 @@ The path-variant build uses the reserved base path sentinel:
 /__KZ_RUNTIME_BASE_7F3A91C2__
 ```
 
-(exported as `KAMIWAZA_BASE_PATH_SENTINEL` from `@kamiwaza-ai/extensions-lib/next-config`). Every file that embeds it — `server.js`, `.next` manifests (including serialized middleware matchers), prerendered HTML, RSC/Flight payloads, client chunks, CSS, redirect `.meta` files — gets rewritten at boot to the real prefix.
+(exported as `KAMIWAZA_BASE_PATH_SENTINEL` from `@kamiwaza-ai/extensions-lib/next-config`). Every file that embeds its literal or percent-encoded URL-parameter form — `server.js`, `.next` manifests (including serialized middleware matchers), prerendered HTML, RSC/Flight payloads, client chunks, CSS, redirect `.meta` files — gets rewritten at boot to the real prefix.
 
 The lifecycle is fail-closed at every stage:
 
@@ -370,7 +370,7 @@ When the app (or the shared auth libraries) needs its own public URL — login `
 ### Cookies
 
 - When backend code sets a cookie, it should explicitly use `RuntimeRouting.cookie_path` (`Path=<appPath>` in path mode, `/` in port mode) to avoid accidental collisions; the helper is not applied automatically. Same-origin apps can still set broader or sibling paths, so cookie `Path` must not be treated as a per-deployment security boundary.
-- The shared Next proxy **drops `Set-Cookie` by default**. Its default allowlist is empty; trusted routes must opt in explicitly with `setCookiePaths`. The scaffold enables `/session` and `/auth/logout`. Every passed cookie is rebased to `Path=<appPath>` in path mode (or `/` in port mode), and root-relative `Location` responses are rebased under the same prefix. An allowlisted `__Host-` cookie cannot be scoped below `/`, so in path mode the proxy deliberately returns 502 instead of weakening its host-wide semantics; this fail-closed behavior is pinned by the proxy runtime-path tests.
+- The shared Next proxy **drops `Set-Cookie` by default**, including on the scaffold's session/logout routes. Custom trusted routes may opt in explicitly with `setCookiePaths`. Every passed cookie is rebased to `Path=<appPath>` in path mode (or `/` in port mode). An allowlisted `__Host-` cookie cannot be scoped below `/`, so in path mode the proxy deliberately returns 502 instead of weakening its host-wide semantics; this fail-closed behavior is pinned by the proxy runtime-path tests.
 - `SessionProvider` from `@kamiwaza-ai/extensions-lib/client` derives its base
   path from `getAppPath()` automatically; the explicit `basePath` prop remains
   as a deprecated escape hatch. The frozen `@kamiwaza/auth@0.2.0` package

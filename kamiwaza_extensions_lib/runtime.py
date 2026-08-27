@@ -166,6 +166,25 @@ def _normalized_http_origin(value: str) -> str:
     return f"{scheme}://{normalized_host}{port_suffix}"
 
 
+def _normalized_app_path_url(value: str, app_path: str) -> str:
+    """Validate and canonicalize the platform's full public path URL."""
+    candidate = value.strip(_ASCII_C0_AND_SPACE)
+    origin = _normalized_http_origin(candidate)
+    parsed = urlsplit(candidate)
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or _trim_trailing_slash(parsed.path) != app_path
+    ):
+        raise ValueError(
+            "KAMIWAZA_APP_PATH_URL must be the public origin plus "
+            f"KAMIWAZA_APP_PATH: {value!r}"
+        )
+    return f"{origin}{app_path}"
+
+
 def _assert_supported_mode(mode: str) -> None:
     if mode in ("", "path", "port"):
         return
@@ -197,7 +216,12 @@ def _resolve_mode_and_path(
 def _resolve_app_urls(env: Mapping[str, str], app_path: str) -> tuple[str, str]:
     if not app_path:
         return "", _trim_trailing_slash(env.get("KAMIWAZA_APP_URL", ""))
-    app_path_url = _trim_trailing_slash(env.get("KAMIWAZA_APP_PATH_URL", ""))
+    configured_app_path_url = _trim_trailing_slash(env.get("KAMIWAZA_APP_PATH_URL", ""))
+    app_path_url = (
+        _normalized_app_path_url(configured_app_path_url, app_path)
+        if configured_app_path_url
+        else ""
+    )
     configured_app_url = _trim_trailing_slash(env.get("KAMIWAZA_APP_URL", ""))
     origin = _trim_trailing_slash(env.get("KAMIWAZA_ORIGIN", ""))
     public_origin = configured_app_url or origin
