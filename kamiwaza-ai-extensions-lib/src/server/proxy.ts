@@ -156,22 +156,41 @@ function resolveTarget(target: string, path: string, search: string): string {
 
 function scopeSetCookie(cookie: string, appPath: string): string {
     const cookiePath = appPath || "/";
-    const pathAttribute = /;\s*Path=[^;]*/i;
-    if (pathAttribute.test(cookie)) {
-        return cookie.replace(pathAttribute, `; Path=${cookiePath}`);
-    }
-    return `${cookie}; Path=${cookiePath}`;
+    // A backend must not widen cookie scope on the shared App Garden host.
+    // Strip every caller-supplied Path (the last duplicate wins in browsers)
+    // and Domain before appending the one authoritative deployment Path.
+    const unscoped = cookie.replace(/;\s*(?:Path|Domain)=[^;]*/gi, "");
+    return `${unscoped}; Path=${cookiePath}`;
 }
 
-function rebaseLocation(headers: Headers, appPath: string): void {
+function rebaseLocation(headers: Headers, appPath: string, target: string): void {
     const location = headers.get("location");
     if (location == null) {
         return;
     }
-    headers.set("location", withAppPath(location, appPath));
+    if (location.startsWith("/") && !location.startsWith("//")) {
+        headers.set("location", withAppPath(location, appPath));
+        return;
+    }
+    if (!URL.canParse(location)) {
+        return;
+    }
+    const redirected = new URL(location);
+    const configuredTarget = new URL(target);
+    if (redirected.origin !== configuredTarget.origin) {
+        return;
+    }
+    const targetPath = configuredTarget.pathname.replace(/\/+$/, "");
+    const redirectPath = stripOnce(redirected.pathname, targetPath);
+    const local = `${redirectPath}${redirected.search}${redirected.hash}`;
+    headers.set("location", withAppPath(local, appPath));
 }
 
-function makeHandler(method: string, config: ProxyConfig): RouteHandler {
+function makeHandler(
+    method: string,
+    config: ProxyConfig,
+    runtimeAppPath: string,
+): RouteHandler {
     // Pre-parse the target to fail fast on bad config
     new URL(config.target);
 
@@ -186,7 +205,6 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
         // Strip the deployment's runtime app path (default on). Next's own
         // basePath routing usually strips it first, making this a no-op; the
         // raw-URL path covers everything else.
-        const runtimeAppPath = resolveRuntimeAppPath();
         if (config.stripRuntimeAppPath !== false) {
             path = stripOnce(path, runtimeAppPath);
         }
@@ -221,14 +239,13 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
 
         // Stream the response back, filtering sensitive headers.
         const responseHeaders = new Headers(filterResponseHeaders(upstream.headers));
-        rebaseLocation(responseHeaders, runtimeAppPath);
+        rebaseLocation(responseHeaders, runtimeAppPath, config.target);
 
         // Set-Cookie passes through only for the explicit session-route
         // allowlist (matched on the backend-facing path), and only from the
         // configured trusted backend.
         const cookiePaths = config.setCookiePaths ?? DEFAULT_SET_COOKIE_PATHS;
-        const upstreamPath = new URL(target).pathname;
-        if (cookiePaths.includes(upstreamPath)) {
+        if (cookiePaths.includes(path)) {
             for (const cookie of upstream.headers.getSetCookie()) {
                 responseHeaders.append(
                     "set-cookie",
@@ -261,12 +278,13 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
  * ```
  */
 export function createProxyHandlers(config: ProxyConfig) {
+    const runtimeAppPath = resolveRuntimeAppPath();
     return {
-        GET: makeHandler("GET", config),
-        POST: makeHandler("POST", config),
-        PUT: makeHandler("PUT", config),
-        DELETE: makeHandler("DELETE", config),
-        PATCH: makeHandler("PATCH", config),
+        GET: makeHandler("GET", config, runtimeAppPath),
+        POST: makeHandler("POST", config, runtimeAppPath),
+        PUT: makeHandler("PUT", config, runtimeAppPath),
+        DELETE: makeHandler("DELETE", config, runtimeAppPath),
+        PATCH: makeHandler("PATCH", config, runtimeAppPath),
     };
 }
 

@@ -45,6 +45,7 @@ const TEXT_KINDS = new Map([
     [".css", "css"],
     [".txt", "txt"],
 ]);
+const SENTINEL_RE = /^\/__KZ_RUNTIME_BASE_[0-9A-F]+__$/;
 
 // Content types whose .body payload is safe to treat as relocatable text.
 const TEXTUAL_BODY_CONTENT_TYPE_RE =
@@ -139,6 +140,9 @@ function assertValidSentinel(sentinel) {
     }
     if (!sentinel.startsWith("/")) {
         throw new Error(`sentinel must be an absolute path, got ${JSON.stringify(sentinel)}`);
+    }
+    if (!SENTINEL_RE.test(sentinel)) {
+        throw new Error(`sentinel must use the reserved runtime family, got ${JSON.stringify(sentinel)}`);
     }
 }
 

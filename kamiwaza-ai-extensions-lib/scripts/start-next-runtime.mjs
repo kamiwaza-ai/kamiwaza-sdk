@@ -61,13 +61,22 @@ export function startStandalone(runtimeRoot, env = process.env) {
     return child;
 }
 
-function resolveRuntimeRoots(env) {
-    const imageRoot = env.KZ_RUNTIME_IMAGE_ROOT || "/app/runtime";
-    const targetRoot = env.KZ_RUNTIME_TARGET || "/tmp/kz-next-runtime";
-    if (!path.isAbsolute(imageRoot) || !path.isAbsolute(targetRoot)) {
+export function resolveRuntimeRoots(env) {
+    const rawImageRoot = env.KZ_RUNTIME_IMAGE_ROOT || "/app/runtime";
+    const rawTargetRoot = env.KZ_RUNTIME_TARGET || "/tmp/kz-next-runtime";
+    if (!path.isAbsolute(rawImageRoot)) {
         throw new Error("KZ_RUNTIME_IMAGE_ROOT and KZ_RUNTIME_TARGET must be absolute");
     }
-    if (!targetRoot.startsWith("/tmp/") && env.KZ_RUNTIME_ALLOW_CUSTOM_TARGET !== "1") {
+    if (!path.isAbsolute(rawTargetRoot)) {
+        throw new Error("KZ_RUNTIME_IMAGE_ROOT and KZ_RUNTIME_TARGET must be absolute");
+    }
+    const imageRoot = path.resolve(rawImageRoot);
+    const targetRoot = path.resolve(rawTargetRoot);
+    const tempPrefix = `${path.resolve("/tmp")}${path.sep}`;
+    if (env.KZ_RUNTIME_ALLOW_CUSTOM_TARGET === "1") {
+        return { imageRoot, targetRoot };
+    }
+    if (!targetRoot.startsWith(tempPrefix)) {
         throw new Error(
             `KZ_RUNTIME_TARGET must live under /tmp (got ${targetRoot}); ` +
                 "set KZ_RUNTIME_ALLOW_CUSTOM_TARGET=1 only for tests",

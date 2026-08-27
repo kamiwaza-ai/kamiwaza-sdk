@@ -11,7 +11,9 @@ current scaffold context, and applies a per-file strategy:
   to the *previous* template render (i.e. the author hasn't edited it). If
   it's been edited, skip; the unified diff is shown in interactive mode and
   the user can choose ``apply`` (with ``.orig`` backup) or ``keep``.
-* ``merge`` — reserved for future smart-merge; v1 == ``preserve_if_modified``.
+* ``merge`` — structured merge for JSON and requirements files. Author fields
+  and dependencies are preserved except for explicitly template-controlled
+  runtime dependencies.
 
 Modes:
 
@@ -30,6 +32,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
@@ -203,9 +206,7 @@ def _load_and_validate_metadata(cwd: Path) -> tuple[Path, dict, str]:
     """
     metadata_path = cwd / "kamiwaza.json"
     if not metadata_path.exists():
-        console.print(
-            "[red]Error:[/red] kamiwaza.json not found in current directory."
-        )
+        console.print("[red]Error:[/red] kamiwaza.json not found in current directory.")
         raise typer.Exit(code=int(ExitCode.VALIDATION))
     try:
         metadata = json.loads(metadata_path.read_text())
@@ -252,9 +253,7 @@ def _bootstrap(
             f"{target_version!r} + template_shape={shape!r} + "
             f"{len(metadata['template_file_hashes'])} file hash(es) into kamiwaza.json."
         )
-        summary.files.append(
-            FileResult("kamiwaza.json", "would-bootstrap", "dry-run")
-        )
+        summary.files.append(FileResult("kamiwaza.json", "would-bootstrap", "dry-run"))
         return summary
     metadata_path.write_text(json.dumps(metadata, indent=4) + "\n", encoding="utf-8")
     console.print(
@@ -455,9 +454,7 @@ def _stamp_version(
         existing_hashes = dict(on_disk.get("template_file_hashes") or {})
         existing_hashes.update(new_hashes)
         on_disk["template_file_hashes"] = existing_hashes
-    metadata_path.write_text(
-        json.dumps(on_disk, indent=4) + "\n", encoding="utf-8"
-    )
+    metadata_path.write_text(json.dumps(on_disk, indent=4) + "\n", encoding="utf-8")
 
 
 def _template_root(shape: str) -> Path:
@@ -515,14 +512,16 @@ def _reconcile_file(
         return FileResult(rel, "no-change")
     if existing_content is None:
         return _create_missing(rel, target_path, new_content, dry_run=dry_run)
-    if owned.strategy == "merge" and rel.endswith(".json"):
-        return _reconcile_json_merge(
+    if owned.strategy == "merge":
+        merged = _reconcile_structured_merge(
             rel=rel,
             target_path=target_path,
             existing_content=existing_content,
             new_content=new_content,
             dry_run=dry_run,
         )
+        if merged is not None:
+            return merged
     if owned.strategy == "overwrite":
         return _apply_overwrite(
             rel, target_path, existing_content, new_content, dry_run=dry_run
@@ -568,9 +567,11 @@ def _reconcile_binary(
     if existing == new_bytes:
         return FileResult(rel, "no-change")
     if dry_run:
-        reason = "binary (.orig backup)" if (
-            strategy == "overwrite" and existing
-        ) else "binary"
+        reason = (
+            "binary (.orig backup)"
+            if (strategy == "overwrite" and existing)
+            else "binary"
+        )
         return FileResult(rel, "would-update", reason)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if strategy == "overwrite" and existing:
@@ -634,7 +635,7 @@ def _apply_preserve_if_modified(
     force: bool,
     non_interactive: bool,
 ) -> FileResult:
-    """``preserve_if_modified`` (and v1 ``merge`` for non-JSON files).
+    """``preserve_if_modified`` (and merge files without a structured handler).
 
     PR-86 C4 / option (b): if the on-disk content matches the recorded
     hash from ``kamiwaza.json.template_file_hashes`` (i.e. unchanged
@@ -667,7 +668,9 @@ def _apply_preserve_if_modified(
         _backup(target_path, existing_content)
         target_path.write_text(new_content, encoding="utf-8")
         return FileResult(
-            rel, "applied", "force (.orig backup)",
+            rel,
+            "applied",
+            "force (.orig backup)",
             new_hash=hash_text(new_content),
         )
     if non_interactive:
@@ -690,34 +693,24 @@ def _reconcile_json_merge(
     new_content: str,
     dry_run: bool,
 ) -> FileResult:
-    """Field-level merge for JSON files (kamiwaza.json today).
+    """Field-level merge for JSON files.
 
     Author-set fields win; template-controlled fields (template_version,
     template_shape) get stamped to the manifest's current values. New
     fields the template added since the scaffold was rendered are
     inherited from the rendered template.
     """
-    try:
-        existing = json.loads(existing_content)
-        rendered = json.loads(new_content)
-    except json.JSONDecodeError:
-        # Malformed JSON on disk — fall back to preserve_if_modified.
-        return FileResult(rel, "skipped", "malformed-json")
-
-    if not (isinstance(existing, dict) and isinstance(rendered, dict)):
-        return FileResult(rel, "skipped", "non-object-json")
+    existing, error = _parse_json_object(existing_content)
+    if error is not None:
+        return FileResult(rel, "skipped", error)
+    rendered, error = _parse_json_object(new_content)
+    if error is not None:
+        return FileResult(rel, "skipped", error)
 
     merged = {**rendered, **existing}
-    # Manifest-controlled fields are always reset to the current values.
-    if "template_version" in existing or "template_version" in rendered:
-        merged["template_version"] = current_template_version()
-    if "template_shape" in existing or "template_shape" in rendered:
-        # Use the existing value if present (the file's been classified
-        # before); otherwise infer from the rendered template's "type" field
-        # which is shape-equivalent.
-        merged["template_shape"] = existing.get(
-            "template_shape", rendered.get("type", existing.get("type"))
-        )
+    if rel == "frontend/package.json":
+        merged = _merge_frontend_package(rendered, existing, merged)
+    merged = _stamp_manifest_json_fields(merged, existing, rendered)
 
     new_text = json.dumps(merged, indent=4) + "\n"
     if new_text == existing_content:
@@ -726,6 +719,127 @@ def _reconcile_json_merge(
         return FileResult(rel, "would-update", "json-merge")
     target_path.write_text(new_text, encoding="utf-8")
     return FileResult(rel, "updated", "json-merge")
+
+
+def _parse_json_object(content: str) -> tuple[dict, str | None]:
+    try:
+        value = json.loads(content)
+    except json.JSONDecodeError:
+        return {}, "malformed-json"
+    if not isinstance(value, dict):
+        return {}, "non-object-json"
+    return value, None
+
+
+def _stamp_manifest_json_fields(merged: dict, existing: dict, rendered: dict) -> dict:
+    stamped = dict(merged)
+    # Manifest-controlled fields are always reset to the current values.
+    if "template_version" in existing or "template_version" in rendered:
+        stamped["template_version"] = current_template_version()
+    if "template_shape" in existing or "template_shape" in rendered:
+        # Use the existing value if present (the file's been classified
+        # before); otherwise infer from the rendered template's "type" field
+        # which is shape-equivalent.
+        stamped["template_shape"] = existing.get(
+            "template_shape", rendered.get("type", existing.get("type"))
+        )
+    return stamped
+
+
+_FRONTEND_RUNTIME_DEPENDENCIES = (
+    "@kamiwaza-ai/extensions-lib",
+    "next",
+)
+_PYTHON_RUNTIME_REQUIREMENT_RE = re.compile(
+    r"^\s*kamiwaza[-_]extensions[-_]lib(?:\[[^]]+\])?(?:\s|[<>=!~@;]|$)",
+    re.IGNORECASE,
+)
+
+
+def _merge_frontend_package(rendered: dict, existing: dict, merged: dict) -> dict:
+    """Preserve author package edits while upgrading the coupled runtime pair."""
+    rendered_dependencies = rendered.get("dependencies")
+    existing_dependencies = existing.get("dependencies")
+    if not isinstance(rendered_dependencies, dict):
+        return merged
+    if not isinstance(existing_dependencies, dict):
+        existing_dependencies = {}
+    dependencies = {**rendered_dependencies, **existing_dependencies}
+    for name in _FRONTEND_RUNTIME_DEPENDENCIES:
+        if name in rendered_dependencies:
+            dependencies[name] = rendered_dependencies[name]
+    return {**merged, "dependencies": dependencies}
+
+
+def _find_runtime_requirement(content: str) -> str | None:
+    for line in content.splitlines():
+        if _PYTHON_RUNTIME_REQUIREMENT_RE.match(line):
+            return line
+    return None
+
+
+def _merge_requirements(existing_content: str, new_content: str) -> str | None:
+    desired = _find_runtime_requirement(new_content)
+    if desired is None:
+        return None
+    merged: list[str] = []
+    inserted = False
+    for line in existing_content.splitlines():
+        if _PYTHON_RUNTIME_REQUIREMENT_RE.match(line):
+            if not inserted:
+                merged.append(desired)
+                inserted = True
+            continue
+        merged.append(line)
+    if not inserted:
+        merged.append(desired)
+    return "\n".join(merged) + "\n"
+
+
+def _reconcile_requirements_merge(
+    *,
+    rel: str,
+    target_path: Path,
+    existing_content: str,
+    new_content: str,
+    dry_run: bool,
+) -> FileResult:
+    merged = _merge_requirements(existing_content, new_content)
+    if merged is None:
+        return FileResult(rel, "skipped", "runtime-requirement-missing")
+    if merged == existing_content:
+        return FileResult(rel, "no-change")
+    if dry_run:
+        return FileResult(rel, "would-update", "requirements-merge")
+    target_path.write_text(merged, encoding="utf-8")
+    return FileResult(rel, "updated", "requirements-merge")
+
+
+def _reconcile_structured_merge(
+    *,
+    rel: str,
+    target_path: Path,
+    existing_content: str,
+    new_content: str,
+    dry_run: bool,
+) -> FileResult | None:
+    if rel.endswith(".json"):
+        return _reconcile_json_merge(
+            rel=rel,
+            target_path=target_path,
+            existing_content=existing_content,
+            new_content=new_content,
+            dry_run=dry_run,
+        )
+    if rel == "backend/requirements.txt":
+        return _reconcile_requirements_merge(
+            rel=rel,
+            target_path=target_path,
+            existing_content=existing_content,
+            new_content=new_content,
+            dry_run=dry_run,
+        )
+    return None
 
 
 def _prompt_conflict(
@@ -747,9 +861,11 @@ def _prompt_conflict(
     # PR-86 M7: print the diff with markup disabled so a file containing
     # literal `[red]`-shaped substrings doesn't get rendered as Rich markup.
     console.print(diff or "(no textual diff)", markup=False)
-    choice = typer.prompt(
-        "[a]pply / [k]eep / [s]kip", default="k", show_default=True
-    ).strip().lower()
+    choice = (
+        typer.prompt("[a]pply / [k]eep / [s]kip", default="k", show_default=True)
+        .strip()
+        .lower()
+    )
     if choice in ("a", "apply"):
         _backup(target_path, existing_content)
         target_path.write_text(new_content, encoding="utf-8")
@@ -762,7 +878,9 @@ def _prompt_conflict(
         # ``_create_missing``) all set ``new_hash`` — interactive apply was
         # the lone gap.
         return FileResult(
-            rel, "applied", "interactive (.orig backup)",
+            rel,
+            "applied",
+            "interactive (.orig backup)",
             new_hash=hash_text(new_content),
         )
     if choice in ("s", "skip"):

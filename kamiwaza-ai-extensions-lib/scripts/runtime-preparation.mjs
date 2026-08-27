@@ -25,6 +25,7 @@ import { validateRuntimePath } from "./runtime-path-contract.mjs";
 
 const ALLOWED_KINDS = new Set(["js", "json", "html", "rsc", "css", "txt"]);
 const SHA256_RE = /^[0-9a-f]{64}$/;
+const SENTINEL_RE = /^\/__KZ_RUNTIME_BASE_[0-9A-F]+__$/;
 const WHOLESALE_LINKS = new Set(["node_modules", "public"]);
 
 function assertManifestSchema(manifest) {
@@ -41,6 +42,9 @@ function assertManifestSentinel(sentinel) {
         throw new Error("relocation manifest sentinel is missing or malformed");
     }
     if (sentinel.length < 8) {
+        throw new Error("relocation manifest sentinel is missing or malformed");
+    }
+    if (!SENTINEL_RE.test(sentinel)) {
         throw new Error("relocation manifest sentinel is missing or malformed");
     }
 }
@@ -319,12 +323,17 @@ async function isProcessAlive(pid) {
 async function createStartupLock(lockDir, pidFile) {
     try {
         await mkdir(lockDir);
-        await writeFile(pidFile, String(process.pid));
-        return true;
     } catch (error) {
         if (error.code === "EEXIST") {
             return false;
         }
+        throw error;
+    }
+    try {
+        await writeFile(pidFile, String(process.pid));
+        return true;
+    } catch (error) {
+        await rm(lockDir, { recursive: true, force: true }).catch(() => {});
         throw error;
     }
 }
@@ -332,12 +341,18 @@ async function createStartupLock(lockDir, pidFile) {
 async function readLockOwner(pidFile) {
     const raw = await readFile(pidFile, "utf8").catch(() => "");
     const ownerPid = Number.parseInt(raw, 10);
-    return Number.isInteger(ownerPid) ? ownerPid : null;
+    return Number.isInteger(ownerPid) && ownerPid > 0 ? ownerPid : null;
 }
 
 async function assertLockIsStale(lockDir, pidFile) {
     const ownerPid = await readLockOwner(pidFile);
-    if (ownerPid !== null && (await isProcessAlive(ownerPid))) {
+    if (ownerPid === null) {
+        throw new Error(
+            `runtime lock ${lockDir} has no valid owner metadata; ` +
+                "refusing to touch the live tree",
+        );
+    }
+    if (await isProcessAlive(ownerPid)) {
         throw new Error(
             `another start (pid ${ownerPid}) holds the runtime lock ${lockDir}; ` +
                 "refusing to touch the live tree",

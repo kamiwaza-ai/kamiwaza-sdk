@@ -103,8 +103,8 @@ describe("createProxyHandlers Set-Cookie policy", () => {
         const { POST } = createProxyHandlers({ target: TARGET });
         const response = await POST(new Request(`http://localhost${APP}/session`, { method: "POST" }));
         expect(response.headers.getSetCookie()).toEqual([
-            `session=abc; Path=${APP}; HttpOnly`,
-            `refresh=def; Path=${APP}; HttpOnly`,
+            `session=abc; HttpOnly; Path=${APP}`,
+            `refresh=def; HttpOnly; Path=${APP}`,
         ]);
     });
 
@@ -121,6 +121,36 @@ describe("createProxyHandlers Set-Cookie policy", () => {
         );
     });
 
+    it("removes duplicate Path and Domain attributes before scoping", async () => {
+        fetchSpy.mockResolvedValue(
+            upstream("{}", {
+                "set-cookie":
+                    "session=abc; Path=/legacy; Domain=example.test; HttpOnly; Path=/",
+            }),
+        );
+        const { POST } = createProxyHandlers({ target: TARGET });
+        const response = await POST(
+            new Request(`http://localhost${APP}/session`, { method: "POST" }),
+        );
+        expect(response.headers.get("set-cookie")).toBe(
+            `session=abc; HttpOnly; Path=${APP}`,
+        );
+    });
+
+    it("matches the cookie allowlist before adding a target path prefix", async () => {
+        fetchSpy.mockResolvedValue(
+            upstream("{}", { "set-cookie": "session=abc; Path=/; HttpOnly" }),
+        );
+        const { POST } = createProxyHandlers({ target: `${TARGET}/v1` });
+        const response = await POST(
+            new Request(`http://localhost${APP}/session`, { method: "POST" }),
+        );
+        expect(requestedUrl()).toBe(`${TARGET}/v1/session`);
+        expect(response.headers.get("set-cookie")).toBe(
+            `session=abc; HttpOnly; Path=${APP}`,
+        );
+    });
+
     it("keeps dropping Set-Cookie on non-allowlisted routes", async () => {
         fetchSpy.mockResolvedValue(upstream("{}", TWO_COOKIES));
         const { GET } = createProxyHandlers({ target: TARGET });
@@ -129,7 +159,7 @@ describe("createProxyHandlers Set-Cookie policy", () => {
     });
 
     it("honors a custom allowlist", async () => {
-        fetchSpy.mockResolvedValue(upstream("{}", TWO_COOKIES));
+        fetchSpy.mockImplementation(() => Promise.resolve(upstream("{}", TWO_COOKIES)));
         const { POST } = createProxyHandlers({
             target: TARGET,
             setCookiePaths: ["/custom/login"],
@@ -156,5 +186,27 @@ describe("createProxyHandlers redirects and target paths", () => {
         const { GET } = createProxyHandlers({ target: `${TARGET}/v1` });
         await GET(new Request(`http://localhost${APP}/api/things?x=1`));
         expect(requestedUrl()).toBe(`${TARGET}/v1/api/things?x=1`);
+    });
+
+    it("rebases absolute redirects back to the trusted target origin", async () => {
+        fetchSpy.mockResolvedValue(
+            upstream("", { location: `${TARGET}/v1/login?next=%2Fdashboard` }),
+        );
+        const { GET } = createProxyHandlers({ target: `${TARGET}/v1` });
+        const response = await GET(new Request(`http://localhost${APP}/session`));
+        expect(response.headers.get("location")).toBe(
+            `${APP}/login?next=%2Fdashboard`,
+        );
+    });
+
+    it("leaves external absolute redirects untouched", async () => {
+        fetchSpy.mockResolvedValue(
+            upstream("", { location: "https://identity.example/login" }),
+        );
+        const { GET } = createProxyHandlers({ target: TARGET });
+        const response = await GET(new Request(`http://localhost${APP}/session`));
+        expect(response.headers.get("location")).toBe(
+            "https://identity.example/login",
+        );
     });
 });

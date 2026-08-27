@@ -271,9 +271,8 @@ class TestScaffolder:
         next_config = (d / "frontend" / "next.config.js").read_text()
         assert "withKamiwazaAppGarden" in next_config
         local_override = yaml.safe_load((d / "docker-compose.override.yml").read_text())
-        assert local_override == {
-            "services": {"frontend": {"build": {"target": "dev"}}}
-        }
+        assert local_override["services"]["frontend"]["build"]["target"] == "dev"
+        assert local_override["services"]["backend"]["command"][-1] == "--reload"
 
     def test_git_init_called(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

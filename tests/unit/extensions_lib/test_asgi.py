@@ -41,6 +41,7 @@ def test_path_mode_sets_external_root_path_for_stripped_ingress(monkeypatch):
         host="0.0.0.0",
         port=8000,
         root_path="/runtime/apps/550e8400",
+        reload=False,
     )
 
 
@@ -55,6 +56,16 @@ def test_port_mode_has_empty_root_path(monkeypatch):
     assert kwargs["root_path"] == ""
     assert kwargs["host"] == "0.0.0.0"
     assert kwargs["port"] == 8000
+    assert kwargs["reload"] is False
+
+
+@pytest.mark.unit
+def test_reload_flag_is_forwarded_to_uvicorn(monkeypatch):
+    monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "port")
+    with patched_uvicorn() as run:
+        code = main(["app.main:app", "--reload"])
+    assert code == 0
+    assert run.call_args.kwargs["reload"] is True
 
 
 @pytest.mark.unit

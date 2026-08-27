@@ -28,7 +28,7 @@ kz-ext update [--dry-run] [--force] [--non-interactive] [--bootstrap]
    - Compare rendered contents against on-disk contents.
    - If identical, skip.
    - If file is `kamiwaza.json` (strategy `merge`), do a field-level JSON merge — author values win for collisions; `template_version` is reset to the manifest value; `template_shape` keeps the existing value (or falls back to the rendered `type` field for older scaffolds that never had it stamped).
-   - Otherwise apply the per-file strategy (`overwrite`, `preserve_if_modified`).
+   - Otherwise apply the per-file strategy (`overwrite`, `preserve_if_modified`, `merge`).
 5. Update `kamiwaza.json.template_version` to the manifest's version.
 6. Print summary: `{updated, conflicts, skipped, unchanged, migrations}`.
 
@@ -38,7 +38,7 @@ kz-ext update [--dry-run] [--force] [--non-interactive] [--bootstrap]
 | --- | --- |
 | `overwrite` | Always replace; write `.orig` backup if the on-disk copy diverges from the prior template render. |
 | `preserve_if_modified` | Replace only if the on-disk copy is unchanged from the recorded scaffold-time content (detected via SHA-256 hashes in `kamiwaza.json.template_file_hashes`). If the file matches the recorded hash, it's auto-overwritten with the new render and the recorded hash is refreshed. If the on-disk hash diverges, the author has edited it — prompt (interactive), apply with backup (`--force`), or fail (`--non-interactive`). Old scaffolds without recorded hashes always take the conflict path until they `--bootstrap` (which records hashes from current on-disk state). |
-| `merge` | JSON field-level merge for `kamiwaza.json`. Author values win for collisions. CLI-controlled fields are stamped each update: `template_version` is reset to the manifest's current value; `template_shape` keeps the existing value (or, for an older scaffold that never had it stamped, falls back to the rendered template's `type` field, which is shape-equivalent). **Field deletion semantics (additive-only):** if the author *deletes* a field that the rendered template still includes, the merge re-adds it from the rendered side (so template-required fields stay present). Conversely, if a *future* template release REMOVES a field that the v0.1 template had, `update` will NOT remove it from the user's file — `merged = {**rendered, **existing}` keeps the user's existing value. This is forgiving by design (`extra="allow"` on the pydantic schema), but is worth knowing: schema "deprecation" via field removal is not propagated by `update`. Use a future explicit-deletion mechanism (or a `TemplateMigration` that rewrites the file) if you need to retire a field. Non-JSON `merge` files fall back to `preserve_if_modified` semantics until a strategy-specific path is added. |
+| `merge` | Structured merge for JSON plus selected dependency manifests. Author values win for ordinary collisions. CLI-controlled fields in `kamiwaza.json` are stamped each update; `frontend/package.json` preserves author scripts and dependencies while advancing the template-controlled Next/runtime pair; `backend/requirements.txt` preserves author requirements while advancing the Python runtime library. **Field deletion semantics (additive-only):** if the author deletes a field that the rendered template still includes, the merge re-adds it. If a future template removes a field, update keeps the user's existing value. Use a future explicit-deletion mechanism when a field or file must be retired. Merge files without a structured handler fall back to `preserve_if_modified`. |
 
 ## Errors
 

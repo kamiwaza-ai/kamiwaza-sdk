@@ -32,6 +32,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("app", help="ASGI application import string (module:attr)")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--reload", action="store_true")
 
     try:
         args = parser.parse_args(argv)
@@ -51,6 +52,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         host=args.host,
         port=args.port,
         root_path=routing.root_path,
+        reload=args.reload,
     )
     return 0
 

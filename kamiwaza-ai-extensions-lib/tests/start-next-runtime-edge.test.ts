@@ -16,6 +16,7 @@ import { buildRelocationManifest } from "../scripts/index-next-runtime.mjs";
 import {
     computeSignalExitCode,
     prepareRuntime,
+    resolveRuntimeRoots,
     transformHtmlBuffer,
     transformRscBuffer,
     validateRuntimePath,
@@ -24,6 +25,38 @@ import {
 const SENTINEL = "/__KZ_RUNTIME_BASE_7F3A91C2__";
 const REAL = "/runtime/apps/550e8400-e29b-41d4-a716-446655440000";
 const SHORT = "/r1";
+
+describe("resolveRuntimeRoots", () => {
+    it("canonicalizes roots before enforcing /tmp containment", () => {
+        expect(
+            resolveRuntimeRoots({
+                KZ_RUNTIME_IMAGE_ROOT: "/app/runtime/../runtime",
+                KZ_RUNTIME_TARGET: "/tmp/work/../kz-next-runtime",
+            }),
+        ).toEqual({
+            imageRoot: "/app/runtime",
+            targetRoot: "/tmp/kz-next-runtime",
+        });
+    });
+
+    it.each(["/tmp/../../etc/kz-next-runtime", "/tmp", "/var/lib/kz-next-runtime"])(
+        "rejects a target that resolves outside a /tmp child: %s",
+        (targetRoot) => {
+            expect(() =>
+                resolveRuntimeRoots({ KZ_RUNTIME_TARGET: targetRoot }),
+            ).toThrow(/under \/tmp|must live/i);
+        },
+    );
+
+    it("allows an explicit custom target only for tests and development", () => {
+        expect(
+            resolveRuntimeRoots({
+                KZ_RUNTIME_TARGET: "/var/lib/kz-next-runtime",
+                KZ_RUNTIME_ALLOW_CUSTOM_TARGET: "1",
+            }).targetRoot,
+        ).toBe("/var/lib/kz-next-runtime");
+    });
+});
 
 let sourceRoot: string;
 let targetRoot: string;
@@ -212,6 +245,7 @@ describe("prepareRuntime edge fixes", () => {
     it.each([
         ["wrong schema", (m: any) => (m.schemaVersion = 2)],
         ["empty sentinel", (m: any) => (m.sentinel = "")],
+        ["ordinary path as sentinel", (m: any) => (m.sentinel = "/api/v1/session")],
         ["empty files", (m: any) => (m.files = [])],
         ["duplicate paths", (m: any) => m.files.push({ ...m.files[0] })],
         [
@@ -271,6 +305,19 @@ describe("prepareRuntime edge fixes", () => {
             prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL }),
         ).rejects.toThrow(/lock|another/i);
     });
+
+    it.each(["", "0", "-1", "not-a-pid"])(
+        "fails closed when lock owner metadata is invalid: %s",
+        async (owner) => {
+            const manifest = await manifestFor();
+            mkdirSync(`${targetRoot}.lock`, { recursive: true });
+            writeFileSync(path.join(`${targetRoot}.lock`, "pid"), owner);
+
+            await expect(
+                prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL }),
+            ).rejects.toThrow(/owner metadata|lock/i);
+        },
+    );
 
     it("steals a stale lock from a dead process (S8)", async () => {
         const manifest = await manifestFor();
