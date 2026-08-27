@@ -156,6 +156,13 @@ function resolveTarget(target: string, path: string, search: string): string {
 
 function scopeSetCookie(cookie: string, appPath: string): string {
     const cookiePath = appPath || "/";
+    const equals = cookie.indexOf("=");
+    const cookieName = (equals === -1 ? cookie : cookie.slice(0, equals)).trim();
+    if (cookiePath !== "/" && cookieName.startsWith("__Host-")) {
+        throw new Error(
+            `cannot scope ${cookieName} to ${cookiePath}: __Host- cookies require Path=/`,
+        );
+    }
     // A backend must not widen cookie scope on the shared App Garden host.
     // Strip every caller-supplied Path (the last duplicate wins in browsers)
     // and Domain before appending the one authoritative deployment Path.
@@ -168,19 +175,22 @@ function rebaseLocation(headers: Headers, appPath: string, target: string): void
     if (location == null) {
         return;
     }
+    const configuredTarget = new URL(target);
+    const targetPath = configuredTarget.pathname.replace(/\/+$/, "");
     if (location.startsWith("/") && !location.startsWith("//")) {
-        headers.set("location", withAppPath(location, appPath));
+        const redirected = new URL(location, configuredTarget);
+        const redirectPath = stripOnce(redirected.pathname, targetPath);
+        const local = `${redirectPath}${redirected.search}${redirected.hash}`;
+        headers.set("location", withAppPath(local, appPath));
         return;
     }
     if (!URL.canParse(location)) {
         return;
     }
     const redirected = new URL(location);
-    const configuredTarget = new URL(target);
     if (redirected.origin !== configuredTarget.origin) {
         return;
     }
-    const targetPath = configuredTarget.pathname.replace(/\/+$/, "");
     const redirectPath = stripOnce(redirected.pathname, targetPath);
     const local = `${redirectPath}${redirected.search}${redirected.hash}`;
     headers.set("location", withAppPath(local, appPath));

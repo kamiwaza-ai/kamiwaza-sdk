@@ -59,7 +59,12 @@ RUN node /app/runtime-tools/index-next-runtime.mjs \
     --root /app/runtime/path \
     --sentinel /__KZ_RUNTIME_BASE_7F3A91C2__ \
     --next-version "$(node -p "require('/app/runtime/path/node_modules/next/package.json').version")" \
-    --output /app/runtime/kz-next-relocations.json
+    --output /app/runtime/kz-next-relocations.json \
+    && KAMIWAZA_ROUTING_MODE=path \
+       KAMIWAZA_APP_PATH=/runtime/apps/build-validation \
+       KZ_RUNTIME_IMAGE_ROOT=/app/runtime \
+       KZ_RUNTIME_TARGET=/tmp/kz-next-build-validation \
+       node /app/runtime-tools/start-next-runtime.mjs --validate-only
 
 # ---------------------------------------------------------------------------
 # Final runner: artifacts + stdlib runtime tools. No source, no npm, no dev

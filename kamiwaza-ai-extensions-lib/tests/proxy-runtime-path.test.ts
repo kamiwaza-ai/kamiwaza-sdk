@@ -151,6 +151,18 @@ describe("createProxyHandlers Set-Cookie policy", () => {
         );
     });
 
+    it("fails loudly instead of emitting an invalid path-scoped __Host- cookie", async () => {
+        fetchSpy.mockResolvedValue(
+            upstream("{}", {
+                "set-cookie": "__Host-session=abc; Path=/; Secure; HttpOnly",
+            }),
+        );
+        const { POST } = createProxyHandlers({ target: TARGET });
+        await expect(
+            POST(new Request(`http://localhost${APP}/session`, { method: "POST" })),
+        ).rejects.toThrow(/__Host-.*Path=\//i);
+    });
+
     it("keeps dropping Set-Cookie on non-allowlisted routes", async () => {
         fetchSpy.mockResolvedValue(upstream("{}", TWO_COOKIES));
         const { GET } = createProxyHandlers({ target: TARGET });
@@ -186,6 +198,17 @@ describe("createProxyHandlers redirects and target paths", () => {
         const { GET } = createProxyHandlers({ target: `${TARGET}/v1` });
         await GET(new Request(`http://localhost${APP}/api/things?x=1`));
         expect(requestedUrl()).toBe(`${TARGET}/v1/api/things?x=1`);
+    });
+
+    it("strips a configured backend prefix from root-relative redirects", async () => {
+        fetchSpy.mockResolvedValue(
+            upstream("", { location: "/v1/login?next=%2Fdashboard" }),
+        );
+        const { GET } = createProxyHandlers({ target: `${TARGET}/v1` });
+        const response = await GET(new Request(`http://localhost${APP}/session`));
+        expect(response.headers.get("location")).toBe(
+            `${APP}/login?next=%2Fdashboard`,
+        );
     });
 
     it("rebases absolute redirects back to the trusted target origin", async () => {

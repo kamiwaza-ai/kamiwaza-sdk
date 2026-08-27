@@ -26,8 +26,17 @@ export function computeSignalExitCode(signal) {
     return Number.isInteger(number) ? 128 + number : 1;
 }
 
-export function startStandalone(runtimeRoot, env = process.env) {
-    const child = spawn(process.execPath, [path.join(runtimeRoot, "server.js")], {
+export function standaloneNodeArgs(runtimeRoot, preserveSymlinks = false) {
+    const args = [];
+    if (preserveSymlinks) {
+        args.push("--preserve-symlinks", "--preserve-symlinks-main");
+    }
+    args.push(path.join(runtimeRoot, "server.js"));
+    return args;
+}
+
+export function startStandalone(runtimeRoot, env = process.env, preserveSymlinks = false) {
+    const child = spawn(process.execPath, standaloneNodeArgs(runtimeRoot, preserveSymlinks), {
         cwd: runtimeRoot,
         env: {
             ...env,
@@ -114,17 +123,36 @@ async function startPathRuntime(imageRoot, targetRoot, routing) {
             occurrences: stats.occurrences,
         }),
     );
-    startStandalone(targetRoot);
+    if (!routing.validateOnly) {
+        // The relocated tree intentionally symlinks sentinel-free files back
+        // to the image artifact. Preserve their target-tree identities so a
+        // relative require cannot realpath back into unpatched image modules.
+        startStandalone(targetRoot, process.env, true);
+    }
+}
+
+export function parseCommandArgs(argv) {
+    if (argv.length === 0) {
+        return { validateOnly: false };
+    }
+    if (argv.length === 1 && argv[0] === "--validate-only") {
+        return { validateOnly: true };
+    }
+    throw new Error(`unsupported runtime arguments: ${argv.join(" ")}`);
 }
 
 async function main() {
+    const command = parseCommandArgs(process.argv.slice(2));
     const { imageRoot, targetRoot } = resolveRuntimeRoots(process.env);
     const routing = resolveRoutingMode(process.env);
     if (routing.routingMode === "port") {
+        if (command.validateOnly) {
+            throw new Error("--validate-only requires path routing mode");
+        }
         startPortRuntime(imageRoot);
         return;
     }
-    await startPathRuntime(imageRoot, targetRoot, routing);
+    await startPathRuntime(imageRoot, targetRoot, { ...routing, ...command });
 }
 
 const invokedHref = (() => {

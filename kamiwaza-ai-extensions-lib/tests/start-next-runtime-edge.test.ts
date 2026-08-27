@@ -1,4 +1,5 @@
 /** Edge-scan fixes (codex-edge-1.md): B1, B2, S3, S4, S6, S7, S8, N3. */
+import { spawnSync } from "node:child_process";
 import {
     existsSync,
     mkdirSync,
@@ -16,7 +17,9 @@ import { buildRelocationManifest } from "../scripts/index-next-runtime.mjs";
 import {
     computeSignalExitCode,
     prepareRuntime,
+    parseCommandArgs,
     resolveRuntimeRoots,
+    standaloneNodeArgs,
     transformHtmlBuffer,
     transformRscBuffer,
     validateRuntimePath,
@@ -55,6 +58,25 @@ describe("resolveRuntimeRoots", () => {
                 KZ_RUNTIME_ALLOW_CUSTOM_TARGET: "1",
             }).targetRoot,
         ).toBe("/var/lib/kz-next-runtime");
+    });
+});
+
+describe("standalone runtime launch contract", () => {
+    it("preserves symlink identity for the relocated path runtime", () => {
+        expect(standaloneNodeArgs("/tmp/kz-next-runtime", true)).toEqual([
+            "--preserve-symlinks",
+            "--preserve-symlinks-main",
+            "/tmp/kz-next-runtime/server.js",
+        ]);
+        expect(standaloneNodeArgs("/app/runtime/port")).toEqual([
+            "/app/runtime/port/server.js",
+        ]);
+    });
+
+    it("accepts only the image-build validation switch", () => {
+        expect(parseCommandArgs([])).toEqual({ validateOnly: false });
+        expect(parseCommandArgs(["--validate-only"])).toEqual({ validateOnly: true });
+        expect(() => parseCommandArgs(["--unknown"])).toThrow(/unsupported/i);
     });
 });
 
@@ -190,6 +212,32 @@ describe("transformHtmlBuffer", () => {
 });
 
 describe("prepareRuntime edge fixes", () => {
+    it("keeps relative requires inside the patched tree through symlinked modules", async () => {
+        write(
+            "server.js",
+            `console.log(require("./bridge.js"));\nconst basePath = "${SENTINEL}";\n`,
+        );
+        write("bridge.js", `module.exports = require("./leaf.js");\n`);
+        write("leaf.js", `module.exports = "${SENTINEL}";\n`);
+        const manifest = await manifestFor();
+        await prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL });
+
+        const defaultResolution = spawnSync(
+            process.execPath,
+            standaloneNodeArgs(targetRoot),
+            { cwd: targetRoot, encoding: "utf8" },
+        );
+        expect(defaultResolution.stdout.trim()).toBe(SENTINEL);
+
+        const preservedResolution = spawnSync(
+            process.execPath,
+            standaloneNodeArgs(targetRoot, true),
+            { cwd: targetRoot, encoding: "utf8" },
+        );
+        expect(preservedResolution.status).toBe(0);
+        expect(preservedResolution.stdout.trim()).toBe(REAL);
+    });
+
     it("relocates .rsc files with framing awareness end-to-end (B1)", async () => {
         const payload = `hello ${SENTINEL} world`;
         write(
