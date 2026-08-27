@@ -121,7 +121,7 @@ class SubjectGrantsAPI:
         for the default ``False`` value so existing non-dataset requests keep
         their original wire shape.
         """
-        body = {
+        body: dict[str, Any] = {
             "object_namespace": object_namespace,
             "object_id": object_id,
             "relation": relation,
