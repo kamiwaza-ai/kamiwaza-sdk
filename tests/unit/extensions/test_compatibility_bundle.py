@@ -133,10 +133,10 @@ class TestPythonRuntimeLibCheck:
         return DoctorChecker(config_dir=tmp_path / ".kamiwaza")
 
     def test_in_range_version_passes(self, checker, tmp_path):
-        # Runtime-lib 0.4.4 adds the guarded platform transport; its exact
-        # minor window is the canonical fully-supported pin.
+        # Runtime-lib 0.4.5 adds the patched Starlette floor; its exact minor
+        # window is the canonical fully-supported pin.
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib>=0.4.4,<0.5\nfastapi>=0.100\n")
+        req.write_text("kamiwaza-extensions-lib>=0.4.5,<0.5\nfastapi>=0.100\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
@@ -195,12 +195,12 @@ class TestPythonRuntimeLibCheck:
         assert "not found" in result.message
 
     def test_pep508_extras_are_handled(self, checker, tmp_path):
-        """`kamiwaza-extensions-lib[fastapi]>=0.4.4,<0.5` parses
+        """`kamiwaza-extensions-lib[fastapi]>=0.4.5,<0.5` parses
         cleanly via packaging.requirements.Requirement.
-        (The floor is 0.4.4 so the guarded platform transport is present.)
+        (The floor is 0.4.5 so the patched Starlette constraint is present.)
         """
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.4.4,<0.5\n")
+        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.4.5,<0.5\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
@@ -215,7 +215,7 @@ class TestPythonRuntimeLibCheck:
     def test_upper_bound_only_below_supported_warns(self, checker, tmp_path):
         """Round-3 H1 — an upper-bound-only pin like `<0.4` slips past
         the lower-bound probe (no >=/> in the spec) but every allowed
-        version is below the supported floor of `>=0.4.4`. Must warn.
+        version is below the supported floor of `>=0.4.5`. Must warn.
         """
         req = tmp_path / "requirements.txt"
         req.write_text("kamiwaza-extensions-lib<0.4\n")
@@ -236,13 +236,13 @@ class TestPythonRuntimeLibCheck:
         supported's ceiling) admit versions outside the supported window.
         Pip can legally resolve a future 0.5+ release for these declared
         ranges; the doctor must surface the drift.
-        The 0.4.4 floor also excludes earlier 0.4.x releases.
+        The 0.4.5 floor also excludes earlier 0.4.x releases.
         """
         req = tmp_path / "requirements.txt"
         req.write_text(spec + "\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn", (
-            f"declared {spec!r} extends beyond supported `>=0.4.4,<0.5` but "
+            f"declared {spec!r} extends beyond supported `>=0.4.5,<0.5` but "
             f"the doctor reported {result.status} (false-negative — could "
             f"resolve a 0.5+ version that's outside the CLI's compat window)"
         )
@@ -262,7 +262,7 @@ class TestPythonRuntimeLibCheck:
     def test_tilde_eq_upper_bound_derived(self, checker, tmp_path, spec, expected):
         """Round-5 H2 — ``~=X.Y.Z`` is a *compatible-release* operator with
         an implied upper bound at ``<X.(Y+1)``. ``~=0.4.0`` (= ``>=0.4.0,<0.5``
-        but now admits releases below the 0.4.4 floor and warns;
+        but now admits releases below the 0.4.5 floor and warns;
         ``~=0.4.5`` remains fully contained. ``~=0.3.0`` is below the floor,
         and ``~=X.Y`` form still expands to
         ``<(X+1)`` so ``~=0.4`` admits 0.5+ and must continue to warn.

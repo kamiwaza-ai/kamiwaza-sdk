@@ -21,7 +21,7 @@ SDK_PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 RELEASE_SCRIPT_PATH = REPO_ROOT / "release.sh"
 
 
-def test_version_is_0_4_4():
+def test_version_is_0_4_5():
     # M3 / PR #87 round-9 promoted the round-8 ``_url`` helpers to a
     # public ``url`` module (and re-exported ``backend_runtime_base`` /
     # ``public_base_url`` from the package root). Scaffolded extensions
@@ -34,10 +34,10 @@ def test_version_is_0_4_4():
     # dev``. 0.4.3 (ENG-8766) restricted model-endpoint re-hosting so
     # in-cluster chat keeps the platform gateway URL. 0.4.4 (ENG-9199)
     # adds canonical, no-redirect platform requests and forwards the
-    # complete signed ForwardAuth envelope; the compatibility floor moves
-    # with it so new scaffolds can rely on that helper.
-    assert kamiwaza_extensions_lib.__version__ == "0.4.4", (
-        "Runtime lib is 0.4.4 (ENG-9199 safe platform request helper). "
+    # complete signed ForwardAuth envelope. 0.4.5 (ENG-11047) adds the
+    # patched Starlette floor; the compatibility floor moves with it.
+    assert kamiwaza_extensions_lib.__version__ == "0.4.5", (
+        "Runtime lib is 0.4.5 (ENG-11047 Starlette remediation). "
         "Update both __version__ and CHANGELOG.md if the version is "
         "intentionally changing."
     )
@@ -76,12 +76,19 @@ def test_sdk_dependency_requires_current_runtime_release():
     with SDK_PYPROJECT_PATH.open("rb") as f:
         pyproject = tomllib.load(f)
 
-    assert "kamiwaza-extensions-lib>=0.4.4,<0.5" in pyproject["project"][
+    assert "kamiwaza-extensions-lib>=0.4.5,<0.5" in pyproject["project"][
         "dependencies"
     ], (
-        "kamiwaza-sdk must require runtime-lib 0.4.4 so a fresh install "
-        "cannot resolve a version without ENG-9199's guarded platform transport"
+        "kamiwaza-sdk must require runtime-lib 0.4.5 so a fresh install "
+        "cannot resolve a version without ENG-11047's patched Starlette floor"
     )
+
+
+def test_runtime_lib_dependency_enforces_starlette_floor():
+    with LIB_PYPROJECT_PATH.open("rb") as f:
+        pyproject = tomllib.load(f)
+
+    assert "starlette>=1.3.1,<2" in pyproject["project"]["dependencies"]
 
 
 def test_release_publishes_required_npm_runtime_before_sdk():

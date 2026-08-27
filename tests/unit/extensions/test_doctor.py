@@ -721,9 +721,9 @@ class TestDoctorExtensionChecks:
     def test_python_runtime_lib_found(self, tmp_path):
         req_file = tmp_path / "requirements.txt"
         # Use a range that fits the current compat bundle window
-        # (`>=0.4.4,<0.5` for Python at time of writing) so generated apps
-        # can rely on the guarded platform request helper.
-        req_file.write_text("kamiwaza-extensions-lib>=0.4.4,<0.5\nfastapi\n")
+        # (`>=0.4.5,<0.5` for Python at time of writing) so generated apps
+        # can rely on the guarded platform request helper and Starlette floor.
+        req_file.write_text("kamiwaza-extensions-lib>=0.4.5,<0.5\nfastapi\n")
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_python_runtime_lib(req_file)
         assert result.status == "pass"
