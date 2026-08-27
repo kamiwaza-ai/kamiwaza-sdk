@@ -88,7 +88,7 @@ Next.js bakes `basePath`/`assetPrefix` at build time, but the deployment prefix 
 │                   • copy + byte-patch indexed files                   │
 │                     sentinel ──► validated KAMIWAZA_APP_PATH          │
 │                 verify: JSON parses, totals match, zero residual      │
-│                 sentinel ──► atomic publish ──► node server.js        │
+│                 sentinel ──► verified publish ──► node server.js      │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -370,8 +370,8 @@ See the [Auth Integration Guide](../auth-integration-guide.md) for the full logi
 The production runner is compatible with `--read-only` and runs as a non-root user (uid 1001):
 
 - **`/tmp` is the only writable location.** Path mode builds the relocated tree at `/tmp/kz-next-runtime`; the writable `.next/cache` lives inside that overlay. Port mode runs the image artifact in place (no copy) and needs no writable app tree.
-- **Startup lock**: a per-target lock directory (`/tmp/kz-next-runtime.lock`, holding the owner pid) makes a second concurrent preparation fail deterministically instead of corrupting the live tree. Locks from dead processes are stolen automatically, and the lock is released after atomic publish so a container restart can rebuild the runtime.
-- **Atomic publish**: relocation stages into `/tmp/kz-next-runtime.staging-<pid>` and `rename()`s over the target only after all verification passes.
+- **Startup lock**: a per-target lock directory (`/tmp/kz-next-runtime.lock`, holding the owner pid) makes a second concurrent preparation fail deterministically instead of corrupting the live tree. Locks from dead processes are stolen automatically, and the lock is released after verified publish so a container restart can rebuild the runtime.
+- **Verified publish**: relocation stages into `/tmp/kz-next-runtime.staging-<pid>`, verifies the staged tree, removes the prior target, and renames the staging directory into place while holding the startup lock. Replacement is serialized, but it is not an atomic directory exchange.
 - ISR disk flush is disabled by the wrapper (`experimental.isrFlushToDisk: false`) so nothing tries to write into the read-only image tree.
 
 Deploying with `--read-only --tmpfs /tmp` is supported by the production

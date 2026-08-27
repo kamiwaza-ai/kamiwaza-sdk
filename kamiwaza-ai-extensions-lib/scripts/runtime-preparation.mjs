@@ -1,4 +1,4 @@
-/** Validate, relocate, verify, and atomically publish a Next standalone runtime. */
+/** Validate, relocate, verify, and publish a Next standalone runtime under a startup lock. */
 
 import { createHash } from "node:crypto";
 import {
@@ -456,7 +456,7 @@ async function buildRelocatedRuntime({ source, target, staging, manifest, replac
     return context;
 }
 
-/** Build and atomically publish a verified relocated runtime. */
+/** Build and publish a verified relocated runtime while holding the per-target startup lock. */
 export async function prepareRuntime({ sourceRoot, targetRoot, manifest, replacement }) {
     const startedAt = Date.now();
     validateManifest(manifest);

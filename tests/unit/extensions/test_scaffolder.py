@@ -270,6 +270,8 @@ class TestScaffolder:
         )
         next_config = (d / "frontend" / "next.config.js").read_text()
         assert "withKamiwazaAppGarden" in next_config
+        manifest = json.loads((d / "kamiwaza.json").read_text())
+        assert manifest["strip_path_prefix"] is False
         local_override = yaml.safe_load((d / "docker-compose.override.yml").read_text())
         assert local_override["services"]["frontend"]["build"]["target"] == "dev"
         assert local_override["services"]["backend"]["command"][-1] == "--reload"

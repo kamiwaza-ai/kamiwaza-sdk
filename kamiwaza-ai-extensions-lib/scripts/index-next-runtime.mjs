@@ -115,15 +115,23 @@ async function walk(root, relative = "") {
     return files;
 }
 
-async function classifyBody(root, rel, sentinel) {
+async function classifyBody(root, rel) {
     const metaPath = path.join(root, rel.replace(/\.body$/, ".meta"));
     let contentType = "";
+    let contentLength;
     try {
         const meta = JSON.parse(await readFile(metaPath, "utf8"));
-        contentType =
-            meta?.headers?.["content-type"] ?? meta?.headers?.["Content-Type"] ?? "";
+        const headers = Object.entries(meta?.headers ?? {});
+        contentType = headers.find(([name]) => name.toLowerCase() === "content-type")?.[1] ?? "";
+        contentLength = headers.find(([name]) => name.toLowerCase() === "content-length")?.[1];
     } catch {
         contentType = "";
+    }
+    if (contentLength !== undefined) {
+        throw new Error(
+            `sentinel found in .body ${rel} with content-length metadata; ` +
+                "relocation would invalidate the cached response length",
+        );
     }
     if (TEXTUAL_BODY_CONTENT_TYPE_RE.test(contentType)) {
         return "txt";
@@ -192,13 +200,13 @@ function assertSourceMapAbsent(rel) {
     }
 }
 
-async function resolveTextKind(root, rel, sentinel) {
+async function resolveTextKind(root, rel) {
     const extensionKind = TEXT_KINDS.get(path.extname(rel).toLowerCase());
     if (extensionKind !== undefined) {
         return extensionKind;
     }
     if (rel.endsWith(".body")) {
-        return classifyBody(root, rel, sentinel);
+        return classifyBody(root, rel);
     }
     throw new Error(
         `sentinel found in binary or unrecognized file ${rel}; refusing to index it for relocation`,
@@ -212,7 +220,7 @@ async function buildManifestEntry(context, rel, buffer) {
                 "use appAsset()/runtime config instead of baking the base path into public files",
         );
     }
-    const kind = await resolveTextKind(context.root, rel, context.sentinel);
+    const kind = await resolveTextKind(context.root, rel);
     return {
         path: rel,
         size: buffer.length,
@@ -223,6 +231,9 @@ async function buildManifestEntry(context, rel, buffer) {
 }
 
 async function inspectArtifactFile(context, file) {
+    if (!isNodeModulesPath(file.rel)) {
+        assertSourceMapAbsent(file.rel);
+    }
     if (file.symlink) {
         await assertSymlinkIsSentinelFree(context, file.rel);
         return null;
@@ -232,7 +243,6 @@ async function inspectArtifactFile(context, file) {
         assertDependencyIsSentinelFree(file.rel, buffer, context.sentinelBuffer);
         return null;
     }
-    assertSourceMapAbsent(file.rel);
     if (!buffer.includes(context.sentinelBuffer)) {
         return null;
     }

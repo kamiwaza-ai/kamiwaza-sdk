@@ -149,6 +149,18 @@ describe("buildRelocationManifest", () => {
         expect(manifest.files.length).toBeGreaterThan(0);
     });
 
+    it("rejects source maps linked into the runtime artifact", async () => {
+        writeStandardFixture();
+        write(".hidden-clean-map", `{"version":3}`);
+        symlinkSync(
+            path.join(root, ".hidden-clean-map"),
+            path.join(root, ".next/static/chunks/linked.js.map"),
+        );
+        await expect(
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+        ).rejects.toThrow(/source map/i);
+    });
+
     it("rejects sentinel occurrences under public/ (B2)", async () => {
         writeStandardFixture();
         write("public/config.txt", `base=${SENTINEL}`);
@@ -220,6 +232,24 @@ describe("buildRelocationManifest", () => {
         await expect(
             buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
         ).rejects.toThrow(/body|binary/i);
+    });
+
+    it("rejects a relocatable .body with stale content-length metadata", async () => {
+        writeStandardFixture();
+        write(".next/server/app/feed.body", `{"base":"${SENTINEL}"}`);
+        write(
+            ".next/server/app/feed.meta",
+            JSON.stringify({
+                status: 200,
+                headers: {
+                    "Content-Type": "application/json",
+                    "Content-Length": "48",
+                },
+            }),
+        );
+        await expect(
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+        ).rejects.toThrow(/content-length/i);
     });
 
     it("fails when mandatory roles carry no sentinel occurrences", async () => {
