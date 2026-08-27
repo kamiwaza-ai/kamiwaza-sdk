@@ -272,15 +272,15 @@ def _hash_on_disk_files(target_dir: Path, shape: str) -> dict[str, str]:
 
     Used by ``_bootstrap`` to record the user's current baseline. Skips
     files that don't exist on disk (the manifest is shape-wide; some
-    optional files may be absent from a particular project).
+    optional files may be absent from a particular project). Structured merge
+    files are intentionally excluded: an adopted project's dependency
+    manifests are author content, not evidence that the current template owns
+    the whole file. Their first update must take the merge path.
     """
     manifest = MANIFESTS[shape]  # type: ignore[index]
     hashes: dict[str, str] = {}
     for owned in manifest.files:
-        if (
-            owned.strategy != "preserve_if_modified"
-            and owned.relative_path not in CLEAN_TRACKED_MERGE_FILES
-        ):
+        if owned.strategy != "preserve_if_modified":
             continue
         path = target_dir / owned.relative_path
         if not path.exists():
@@ -617,11 +617,19 @@ def _create_missing(
     strategies are tolerated since the consume-side only reads
     preserve-strategy files via ``_apply_preserve_if_modified``).
     """
+    adds_env_exclusion = rel == "frontend/.dockerignore" and ".env*" in {
+        line.strip()
+        for line in new_content.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    warning = "new .env* exclusion; review build-time env inputs"
+    reason = f"creating ({warning})" if adds_env_exclusion else "creating"
     if dry_run:
-        return FileResult(rel, "would-update", "creating")
+        return FileResult(rel, "would-update", reason)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(new_content, encoding="utf-8")
-    return FileResult(rel, "updated", "created", new_hash=hash_text(new_content))
+    reason = f"created ({warning})" if adds_env_exclusion else "created"
+    return FileResult(rel, "updated", reason, new_hash=hash_text(new_content))
 
 
 def _apply_overwrite(
@@ -769,6 +777,9 @@ def _stamp_manifest_json_fields(merged: dict, existing: dict, rendered: dict) ->
     return stamped
 
 
+# Template-controlled packages that must advance with the Docker/runtime
+# contract. Register every future co-published frontend runtime package here;
+# otherwise structured updates will preserve a legacy author pin.
 _FRONTEND_RUNTIME_DEPENDENCIES = (
     "@kamiwaza-ai/extensions-lib",
     "next",
@@ -1038,7 +1049,8 @@ def _print_summary(summary: UpdateSummary, *, dry_run: bool) -> None:
             "[yellow]Warning:[/yellow] frontend/.dockerignore now excludes "
             "[bold].env*[/bold]. Review any NEXT_PUBLIC_* or other build-time "
             "values previously supplied through env files before rebuilding; "
-            "the prior file is preserved as .dockerignore.orig when applied."
+            "an existing file is preserved as .dockerignore.orig when the rule "
+            "is merged."
         )
     if summary.migrations:
         console.print("[bold]Migrations:[/bold]")

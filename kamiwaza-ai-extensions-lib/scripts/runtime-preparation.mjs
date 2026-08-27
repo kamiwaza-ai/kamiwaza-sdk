@@ -209,7 +209,7 @@ async function mirrorEntry(context, relative, entry) {
         return;
     }
     if (entry.isSymbolicLink()) {
-        await cp(sourcePath, targetPath, { dereference: true });
+        await cp(sourcePath, targetPath, { dereference: true, recursive: true });
         return;
     }
     if (entry.isDirectory()) {

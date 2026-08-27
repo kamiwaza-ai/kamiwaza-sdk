@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import os
 import re
-from ipaddress import IPv6Address
 from dataclasses import dataclass
+from ipaddress import IPv6Address
 from typing import Literal, Mapping
 from urllib.parse import unquote_to_bytes, urlsplit
+
+import idna
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -128,6 +130,11 @@ def _normalized_http_origin(value: str) -> str:
     grammar fail closed instead of emitting a malformed auth redirect.
     """
     candidate = value.strip(_ASCII_C0_AND_SPACE)
+    # WHATWG treats backslashes as path separators for special schemes,
+    # while ``urlsplit`` can interpret one before ``@`` as userinfo and select
+    # a different host. Reject the ambiguous spelling in both runtimes.
+    if "\\" in candidate:
+        raise ValueError(f"invalid public app URL for path routing: {value!r}")
     parsed = urlsplit(candidate)
     scheme = parsed.scheme.lower()
     hostname = parsed.hostname
@@ -147,8 +154,12 @@ def _normalized_http_origin(value: str) -> str:
         if ":" in decoded_host:
             normalized_host = f"[{IPv6Address(decoded_host).compressed}]"
         else:
-            normalized_host = decoded_host.encode("idna").decode("ascii").lower()
-    except (UnicodeError, ValueError) as exc:
+            normalized_host = idna.encode(
+                decoded_host,
+                uts46=True,
+                transitional=False,
+            ).decode("ascii")
+    except (UnicodeError, ValueError, idna.IDNAError) as exc:
         raise ValueError(f"invalid public app URL for path routing: {value!r}") from exc
     default_port = 443 if scheme == "https" else 80
     port_suffix = f":{port}" if port is not None and port != default_port else ""

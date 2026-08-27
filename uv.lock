@@ -979,6 +979,7 @@ source = { editable = "kamiwaza_extensions_lib" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "idna" },
     { name = "pydantic" },
 ]
 
@@ -991,6 +992,7 @@ asgi = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.23" },
+    { name = "idna", specifier = ">=3.10,<4" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "uvicorn", marker = "extra == 'asgi'", specifier = ">=0.30.0" },
 ]

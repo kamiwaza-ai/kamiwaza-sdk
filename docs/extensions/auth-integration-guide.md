@@ -244,7 +244,11 @@ export { DELETE, GET, PATCH, POST, PUT };
 
 The proxy strips the runtime deployment prefix and forwards the approved auth
 and routing headers. `Set-Cookie` is denied by default; routes that intentionally
-proxy a trusted session endpoint must opt in with `setCookiePaths`.
+proxy a trusted session endpoint must opt in with `setCookiePaths`. That opt-in
+trusts the upstream endpoint to choose safe cookie names and attributes: the
+proxy removes `Domain` and scopes `Path` to the deployment, but it does not add
+`HttpOnly`, `Secure`, or `SameSite`, nor does it enforce a cookie-name allowlist.
+Only enable it for the canonical backend session/logout handlers.
 
 ### Fetch paths and assets
 

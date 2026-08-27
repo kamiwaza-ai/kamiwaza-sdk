@@ -5,6 +5,7 @@ import {
     mkdtempSync,
     readFileSync,
     rmSync,
+    symlinkSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -242,5 +243,23 @@ describe("prepareNativeRuntime", () => {
         expect(readFileSync(path.join(cache, "runtime-write"), "utf8")).toBe("ok");
         expect(stats.prepareMs).toBeGreaterThanOrEqual(0);
         expect(stats.rssMib).toBeGreaterThan(0);
+    });
+
+    it("dereferences nested directory symlinks in the native artifact", async () => {
+        write(".next/shared-assets/value.txt", "linked directory content");
+        symlinkSync(
+            "shared-assets",
+            path.join(sourceRoot, ".next/symlinked-assets"),
+            "dir",
+        );
+
+        await prepareNativeRuntime({ sourceRoot, targetRoot });
+
+        const copied = path.join(targetRoot, ".next/symlinked-assets");
+        expect(lstatSync(copied).isDirectory()).toBe(true);
+        expect(lstatSync(copied).isSymbolicLink()).toBe(false);
+        expect(readFileSync(path.join(copied, "value.txt"), "utf8")).toBe(
+            "linked directory content",
+        );
     });
 });

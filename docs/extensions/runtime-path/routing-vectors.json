@@ -300,6 +300,22 @@
       }
     },
     {
+      "name": "path_mode_app_url_uses_whatwg_nontransitional_idna",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://faß.de/legacy/path"
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400",
+        "app_path_url": "",
+        "app_url": "https://xn--fa-hia.de/runtime/apps/550e8400",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
       "name": "path_mode_app_url_decodes_percent_encoded_host",
       "env": {
         "KAMIWAZA_ROUTING_MODE": "path",
@@ -337,6 +353,45 @@
         "KAMIWAZA_ROUTING_MODE": "path",
         "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
         "KAMIWAZA_APP_URL": "ftp://host.example"
+      },
+      "expect_error": true,
+      "expect_boot": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400"
+      }
+    },
+    {
+      "name": "path_mode_app_url_rejects_disallowed_idna_joiner",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://‌example.com"
+      },
+      "expect_error": true,
+      "expect_boot": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400"
+      }
+    },
+    {
+      "name": "path_mode_app_url_rejects_backslash_userinfo_ambiguity",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://example.com\\@evil.com"
+      },
+      "expect_error": true,
+      "expect_boot": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400"
+      }
+    },
+    {
+      "name": "path_mode_app_url_rejects_malformed_percent_host",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://%zz.example"
       },
       "expect_error": true,
       "expect_boot": {

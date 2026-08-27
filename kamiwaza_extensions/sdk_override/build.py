@@ -481,14 +481,32 @@ def _shared_typescript_install_index(
     for index, line in enumerate(lines):
         if not _TS_NPM_INSTALL_PATTERN.match(line):
             continue
-        stage_alias = _docker_stage_alias(lines, index)
-        if stage_alias is None:
-            continue
-        for later_line in lines[_line_after_instruction(lines, index) :]:
-            match = _FROM_PATTERN.match(later_line)
-            if match and match.group("source").casefold() == stage_alias.casefold():
-                return _line_after_instruction(lines, index)
+        boundary = _inherited_stage_install_boundary(lines, index)
+        if boundary is not None:
+            return boundary
     return None
+
+
+def _inherited_stage_install_boundary(
+    lines: List[str], install_index: int
+) -> Optional[int]:
+    """Return the install boundary when a later stage inherits this stage."""
+    stage_alias = _docker_stage_alias(lines, install_index)
+    if stage_alias is None:
+        return None
+    boundary = _line_after_instruction(lines, install_index)
+    inherited_sources = map(_docker_from_source, lines[boundary:])
+    if stage_alias.casefold() in inherited_sources:
+        return boundary
+    return None
+
+
+def _docker_from_source(line: str) -> Optional[str]:
+    """Return a normalized Docker ``FROM`` source, if ``line`` is one."""
+    match = _FROM_PATTERN.match(line)
+    if match is None:
+        return None
+    return match.group("source").casefold()
 
 
 def _docker_stage_alias(lines: List[str], before: int) -> Optional[str]:

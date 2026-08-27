@@ -40,7 +40,9 @@ export interface ProxyConfig {
      * else `Set-Cookie` is dropped. Defaults to an empty list; cookie
      * passthrough must be explicitly enabled on trusted session routes. In
      * path mode, an allowlisted `__Host-` cookie fails the proxy response with
-     * 502 because that cookie cannot be safely scoped below `/`.
+     * 502 because that cookie cannot be safely scoped below `/`. Opt-in trusts
+     * the upstream's cookie names and security attributes: the proxy strips
+     * Domain and rebases Path, but does not add HttpOnly, Secure, or SameSite.
      */
     setCookiePaths?: readonly string[];
 }

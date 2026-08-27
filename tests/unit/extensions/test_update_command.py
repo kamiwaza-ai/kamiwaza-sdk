@@ -264,6 +264,27 @@ def test_app_update_merges_dockerignore_without_losing_author_exclusions(
     assert dockerignore.read_text().splitlines().count(".git") == 1
 
 
+def test_app_update_warns_when_creating_missing_dockerignore(
+    tmp_path, monkeypatch, capsys
+):
+    """Legacy apps lack the newly owned file, but adding .env* is observable."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    dockerignore = scaffold / "frontend" / ".dockerignore"
+    dockerignore.unlink()
+    monkeypatch.chdir(scaffold)
+
+    summary = run_update(non_interactive=True)
+
+    result = next(
+        fr for fr in summary.files if fr.relative_path == "frontend/.dockerignore"
+    )
+    assert result.action == "updated"
+    assert "new .env* exclusion" in result.reason
+    assert ".env*" in dockerignore.read_text().splitlines()
+    assert not dockerignore.with_name(".dockerignore.orig").exists()
+    assert "frontend/.dockerignore now excludes" in capsys.readouterr().err
+
+
 def test_app_update_upgrades_runtime_dependencies_without_losing_author_edits(
     tmp_path, monkeypatch
 ):
@@ -684,6 +705,59 @@ def test_bootstrap_records_hashes_from_on_disk_content(tmp_path, monkeypatch):
         "bootstrap must hash on-disk content (the user's actual baseline), "
         "not a freshly-rendered template"
     )
+
+
+def test_bootstrap_then_update_merges_author_dependency_manifests(
+    tmp_path, monkeypatch
+):
+    """Adoption must not mark author dependencies as template-pristine."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    metadata_path = scaffold / "kamiwaza.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata.pop("template_version", None)
+    metadata.pop("template_shape", None)
+    metadata.pop("template_file_hashes", None)
+    metadata_path.write_text(json.dumps(metadata, indent=4) + "\n")
+
+    package_path = scaffold / "frontend" / "package.json"
+    package = json.loads(package_path.read_text())
+    expected_runtime = package["dependencies"]["@kamiwaza-ai/extensions-lib"]
+    package["dependencies"]["@kamiwaza-ai/extensions-lib"] = ">=0.4,<0.5"
+    package["dependencies"]["author-package"] = "^2.3.4"
+    package["scripts"]["author-task"] = "node author-task.mjs"
+    package_path.write_text(json.dumps(package, indent=4) + "\n")
+
+    requirements_path = scaffold / "backend" / "requirements.txt"
+    expected_requirement = next(
+        line
+        for line in requirements_path.read_text().splitlines()
+        if line.startswith("kamiwaza-extensions-lib")
+    )
+    requirements_path.write_text(
+        "author-package==2.3.4\n" "kamiwaza-extensions-lib>=0.4,<0.5\n"
+    )
+
+    monkeypatch.chdir(scaffold)
+    run_update(bootstrap=True)
+
+    bootstrapped = json.loads(metadata_path.read_text())
+    hashes = bootstrapped["template_file_hashes"]
+    assert "frontend/package.json" not in hashes
+    assert "backend/requirements.txt" not in hashes
+
+    summary = run_update(non_interactive=True)
+
+    updated_package = json.loads(package_path.read_text())
+    assert (
+        updated_package["dependencies"]["@kamiwaza-ai/extensions-lib"]
+        == expected_runtime
+    )
+    assert updated_package["dependencies"]["author-package"] == "^2.3.4"
+    assert updated_package["scripts"]["author-task"] == "node author-task.mjs"
+    updated_requirements = requirements_path.read_text().splitlines()
+    assert expected_requirement in updated_requirements
+    assert "author-package==2.3.4" in updated_requirements
+    assert summary.conflicts == 0
 
 
 def test_update_renders_with_project_version_and_description(tmp_path, monkeypatch):

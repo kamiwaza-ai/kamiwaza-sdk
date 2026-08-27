@@ -18,6 +18,13 @@ function trimTrailingSlash(value: string): string {
 }
 
 function originWithAppPath(value: string, appPath: string): string {
+    // Keep the Python and WHATWG parsers from selecting different hosts for
+    // ambiguous inputs such as `https://example.com\@evil.com`.
+    if (value.includes("\\")) {
+        throw new Error(
+            `invalid public app URL for path routing: ${JSON.stringify(value)}`,
+        );
+    }
     let parsed: URL;
     try {
         parsed = new URL(value);

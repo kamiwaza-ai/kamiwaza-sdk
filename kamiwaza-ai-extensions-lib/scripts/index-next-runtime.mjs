@@ -95,7 +95,10 @@ async function checkSymlink(root, rel) {
     }
     const target = await stat(resolved);
     if (target.isDirectory()) {
-        throw new Error(`directory symlinks are not supported in the artifact: ${rel}`);
+        throw new Error(
+            `directory symlinks are not supported in the artifact: ${rel}; ` +
+                "use the scaffold's plain npm install layout instead of pnpm/workspace links",
+        );
     }
     return resolved;
 }
