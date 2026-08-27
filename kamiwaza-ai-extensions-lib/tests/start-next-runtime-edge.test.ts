@@ -20,6 +20,7 @@ import {
     prepareRuntime,
     parseCommandArgs,
     resolveRuntimeRoots,
+    standaloneEnv,
     standaloneNodeArgs,
     transformHtmlBuffer,
     transformRscBuffer,
@@ -78,6 +79,19 @@ describe("standalone runtime launch contract", () => {
         expect(parseCommandArgs([])).toEqual({ validateOnly: false });
         expect(parseCommandArgs(["--validate-only"])).toEqual({ validateOnly: true });
         expect(() => parseCommandArgs(["--unknown"])).toThrow(/unsupported/i);
+    });
+
+    it("ignores Kubernetes HOSTNAME unless a dedicated bind host is set", () => {
+        expect(standaloneEnv({ HOSTNAME: "frontend-pod-abc", PORT: "3001" })).toMatchObject({
+            HOSTNAME: "0.0.0.0",
+            PORT: "3001",
+        });
+        expect(
+            standaloneEnv({
+                HOSTNAME: "frontend-pod-abc",
+                KZ_RUNTIME_BIND_HOST: "127.0.0.1",
+            }).HOSTNAME,
+        ).toBe("127.0.0.1");
     });
 });
 
@@ -390,6 +404,32 @@ describe("prepareRuntime edge fixes", () => {
         writeFileSync(path.join(`${targetRoot}.lock`, "pid"), "4194000");
         await prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL });
         expect(readFileSync(path.join(targetRoot, "server.js"), "utf8")).toContain(REAL);
+    });
+
+    it("allows only one concurrent reclaimer to replace a stale lock", async () => {
+        const manifest = await manifestFor();
+        mkdirSync(`${targetRoot}.lock`, { recursive: true });
+        writeFileSync(path.join(`${targetRoot}.lock`, "pid"), "4194000");
+
+        const results = await Promise.allSettled([
+            prepareRuntime({
+                sourceRoot,
+                targetRoot,
+                manifest,
+                replacement: REAL,
+            }),
+            prepareRuntime({
+                sourceRoot,
+                targetRoot,
+                manifest,
+                replacement: REAL,
+            }),
+        ]);
+
+        expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+        expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+        expect(readFileSync(path.join(targetRoot, "server.js"), "utf8")).toContain(REAL);
+        expect(existsSync(`${targetRoot}.lock`)).toBe(false);
     });
 
     it("fails when the artifact's traced Next version disagrees with the manifest (B5)", async () => {

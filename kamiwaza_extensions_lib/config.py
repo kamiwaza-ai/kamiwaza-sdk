@@ -7,6 +7,7 @@ import ssl
 from dataclasses import dataclass
 
 from .errors import UnexpectedContextError
+from .runtime import RuntimeRouting
 
 
 def _read_verify_ssl() -> bool:
@@ -50,13 +51,14 @@ class AuthConfig:
     @classmethod
     def from_env(cls) -> AuthConfig:
         """Read configuration from environment variables."""
+        routing = RuntimeRouting.from_env()
         return cls(
             api_url=os.environ.get("KAMIWAZA_API_URL", ""),
             public_api_url=os.environ.get("KAMIWAZA_PUBLIC_API_URL", ""),
             openai_base=os.environ.get("KAMIWAZA_ENDPOINT", "")
             or os.environ.get("KAMIWAZA_MODEL_URL", ""),
-            app_url=os.environ.get("KAMIWAZA_APP_URL", ""),
-            app_path=os.environ.get("KAMIWAZA_APP_PATH", ""),
+            app_url=routing.app_url,
+            app_path=routing.app_path,
             app_name=os.environ.get("KAMIWAZA_APP_NAME", ""),
             use_auth=os.environ.get("KAMIWAZA_USE_AUTH", "true").lower()
             not in ("false", "0", "no"),

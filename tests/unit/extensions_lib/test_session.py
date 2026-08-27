@@ -27,6 +27,12 @@ def _make_app(monkeypatch, use_auth: str = "true", **env_overrides) -> TestClien
         "public_api_url", "https://cluster.test/api"))
     monkeypatch.setenv("KAMIWAZA_APP_URL", env_overrides.get(
         "app_url", "https://cluster.test/runtime/apps/my-app"))
+    if "app_path_url" in env_overrides:
+        monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
+        monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/apps/my-app")
+        monkeypatch.setenv("KAMIWAZA_APP_PATH_URL", env_overrides["app_path_url"])
+    else:
+        monkeypatch.delenv("KAMIWAZA_APP_PATH_URL", raising=False)
 
     app = FastAPI()
     app.include_router(create_session_router())
@@ -213,6 +219,18 @@ class TestLoginUrlEndpoint:
         assert "#section" not in data["login_url"]
         assert "return_to=https%3A" in data["login_url"]
 
+    def test_path_url_precedes_legacy_app_url_for_return_to(self, monkeypatch):
+        client = _make_app(
+            monkeypatch,
+            app_url="https://legacy.example/my-app",
+            app_path_url="https://cluster.test/runtime/apps/my-app",
+        )
+        response = client.get("/auth/login-url")
+
+        assert response.json()["login_url"].endswith(
+            "return_to=https%3A%2F%2Fcluster.test%2Fruntime%2Fapps%2Fmy-app"
+        )
+
     def test_local_dev_returns_null(self, monkeypatch):
         client = _make_app(monkeypatch, use_auth="false")
         resp = client.get("/auth/login-url")
@@ -324,6 +342,27 @@ class TestLogoutEndpoint:
             "https://cluster.test/api/auth/logout/front-channel"
         )
         assert data["post_logout_redirect_uri"] is None
+
+    def test_path_url_precedes_legacy_app_url_for_logout_redirect(self, monkeypatch):
+        import httpx
+
+        calls = {}
+        monkeypatch.setattr(
+            httpx, "AsyncClient", _fake_core_client(calls, _CORE_LOGOUT_BODY)
+        )
+        client = _make_app(
+            monkeypatch,
+            use_auth="true",
+            app_url="https://legacy.example/my-app",
+            app_path_url="https://cluster.test/runtime/apps/my-app",
+        )
+
+        response = client.post("/auth/logout")
+
+        assert response.status_code == 200
+        assert response.json()["redirect_url"] == (
+            "https://cluster.test/runtime/apps/my-app/logged-out"
+        )
 
     def test_forwards_post_logout_redirect_uri_to_core(self, monkeypatch):
         """ENG-6911 — the browser's requested post-logout landing URL must

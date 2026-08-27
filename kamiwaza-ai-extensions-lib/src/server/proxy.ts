@@ -156,18 +156,28 @@ function resolveTarget(target: string, path: string, search: string): string {
 
 function scopeSetCookie(cookie: string, appPath: string): string {
     const cookiePath = appPath || "/";
-    const equals = cookie.indexOf("=");
-    const cookieName = (equals === -1 ? cookie : cookie.slice(0, equals)).trim();
+    const [pair, ...rawAttributes] = cookie.split(";");
+    const equals = pair.indexOf("=");
+    const cookieName = (equals === -1 ? pair : pair.slice(0, equals)).trim();
     if (cookiePath !== "/" && cookieName.startsWith("__Host-")) {
         throw new Error(
             `cannot scope ${cookieName} to ${cookiePath}: __Host- cookies require Path=/`,
         );
     }
-    // A backend must not widen cookie scope on the shared App Garden host.
-    // Strip every caller-supplied Path (the last duplicate wins in browsers)
-    // and Domain before appending the one authoritative deployment Path.
-    const unscoped = cookie.replace(/;\s*(?:Path|Domain)=[^;]*/gi, "");
-    return `${unscoped}; Path=${cookiePath}`;
+    // Attribute names are whitespace-trimmed by browsers. Parse them before
+    // filtering so forms such as `Domain =example.com` cannot bypass scope
+    // hardening, then append one authoritative deployment Path.
+    const safeAttributes = rawAttributes
+        .map((attribute) => attribute.trim())
+        .filter((attribute) => {
+            const separator = attribute.indexOf("=");
+            const name = (separator === -1 ? attribute : attribute.slice(0, separator))
+                .trim()
+                .toLowerCase();
+            return name !== "path" && name !== "domain";
+        })
+        .filter(Boolean);
+    return [pair.trim(), ...safeAttributes, `Path=${cookiePath}`].join("; ");
 }
 
 function rebaseLocation(headers: Headers, appPath: string, target: string): void {

@@ -133,6 +133,7 @@ _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     _owned("backend/requirements.txt", strategy="merge"),
     _owned("backend/app/main.py"),
     # Frontend infrastructure — pure scaffold, overwriting is fine.
+    _owned("frontend/.dockerignore", strategy="overwrite"),
     _owned("frontend/Dockerfile", strategy="overwrite"),
     _owned("frontend/next.config.js", strategy="overwrite"),
     # Smart-merge author scripts/dependencies, but keep the template-owned

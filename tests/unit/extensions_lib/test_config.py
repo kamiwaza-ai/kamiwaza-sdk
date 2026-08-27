@@ -53,7 +53,9 @@ class TestAuthConfig:
         monkeypatch.delenv("KAMIWAZA_ENDPOINT", raising=False)
         monkeypatch.delenv("KAMIWAZA_MODEL_URL", raising=False)
         monkeypatch.delenv("KAMIWAZA_APP_URL", raising=False)
+        monkeypatch.delenv("KAMIWAZA_APP_PATH_URL", raising=False)
         monkeypatch.delenv("KAMIWAZA_APP_PATH", raising=False)
+        monkeypatch.delenv("KAMIWAZA_ROUTING_MODE", raising=False)
         monkeypatch.delenv("KAMIWAZA_APP_NAME", raising=False)
         monkeypatch.delenv("KAMIWAZA_USE_AUTH", raising=False)
         monkeypatch.delenv("KAMIWAZA_ORIGIN", raising=False)
@@ -69,6 +71,20 @@ class TestAuthConfig:
         assert config.api_key == ""
         assert config.verify_ssl is True
         assert config.ca_bundle == ""
+
+    def test_path_url_precedes_legacy_app_url(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
+        monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/apps/my-app")
+        monkeypatch.setenv(
+            "KAMIWAZA_APP_PATH_URL",
+            "https://path.example/runtime/apps/my-app/",
+        )
+        monkeypatch.setenv("KAMIWAZA_APP_URL", "https://legacy.example/my-app")
+
+        config = AuthConfig.from_env()
+
+        assert config.app_url == "https://path.example/runtime/apps/my-app"
+        assert config.app_path == "/runtime/apps/my-app"
 
     def test_use_auth_false(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")

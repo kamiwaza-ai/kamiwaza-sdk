@@ -137,6 +137,21 @@ describe("createProxyHandlers Set-Cookie policy", () => {
         );
     });
 
+    it("strips whitespace-padded cookie scope attributes", async () => {
+        fetchSpy.mockResolvedValue(
+            upstream("{}", {
+                "set-cookie": "session=abc; Domain =evil.example; Path\t=/wide; HttpOnly",
+            }),
+        );
+        const { POST } = createProxyHandlers({ target: TARGET });
+        const response = await POST(
+            new Request(`http://localhost${APP}/session`, { method: "POST" }),
+        );
+        expect(response.headers.get("set-cookie")).toBe(
+            `session=abc; HttpOnly; Path=${APP}`,
+        );
+    });
+
     it("matches the cookie allowlist before adding a target path prefix", async () => {
         fetchSpy.mockResolvedValue(
             upstream("{}", { "set-cookie": "session=abc; Path=/; HttpOnly" }),

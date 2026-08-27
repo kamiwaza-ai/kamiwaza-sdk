@@ -259,6 +259,12 @@ class TestScaffolder:
 
         assert not (d / "frontend" / "start.mjs").exists()
         dockerfile = (d / "frontend" / "Dockerfile").read_text()
+        dockerignore = (d / "frontend" / ".dockerignore").read_text().splitlines()
+        assert "node_modules" in dockerignore
+        assert ".next" in dockerignore
+        backend_requirements = (d / "backend" / "requirements.txt").read_text()
+        assert "fastapi>=0.115.0" in backend_requirements
+        assert "uvicorn[standard]>=0.30.0" in backend_requirements
         assert "KZ_NEXT_BUILD_VARIANT=port" in dockerfile
         assert "KZ_NEXT_BUILD_VARIANT=path" in dockerfile
         assert "index-next-runtime.mjs" in dockerfile

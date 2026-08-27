@@ -379,7 +379,7 @@ async function assertLockIsStale(lockDir, pidFile) {
         owner.pid === process.pid &&
         (owner.legacy || owner.token !== PROCESS_LOCK_TOKEN);
     if (reusedPid) {
-        return;
+        return owner;
     }
     if (await isProcessAlive(owner.pid)) {
         throw new Error(
@@ -387,17 +387,62 @@ async function assertLockIsStale(lockDir, pidFile) {
                 "refusing to touch the live tree",
         );
     }
+    return owner;
+}
+
+function sameLockOwner(actual, expected) {
+    return (
+        actual !== null &&
+        actual.pid === expected.pid &&
+        actual.token === expected.token &&
+        actual.legacy === expected.legacy
+    );
+}
+
+async function reclaimStaleLock(lockDir, expectedOwner) {
+    const quarantine = `${lockDir}.stale-${process.pid}-${randomUUID()}`;
+    try {
+        // Renaming is the atomic claim: concurrent reclaimers cannot both
+        // remove the same stale directory and then enter the live tree.
+        await rename(lockDir, quarantine);
+    } catch (error) {
+        if (error.code === "ENOENT") {
+            return false;
+        }
+        throw error;
+    }
+
+    const movedOwner = await readLockOwner(path.join(quarantine, "pid"));
+    if (!sameLockOwner(movedOwner, expectedOwner)) {
+        // The directory was replaced after inspection. Put that live lock
+        // back when possible and fail closed; never delete the new owner.
+        try {
+            await rename(quarantine, lockDir);
+        } catch (error) {
+            throw new Error(
+                `runtime lock ${lockDir} changed owner during stale reclaim; ` +
+                    `preserved the moved lock at ${quarantine}: ${error.message}`,
+            );
+        }
+        throw new Error(
+            `runtime lock ${lockDir} changed owner during stale reclaim; ` +
+                "refusing to touch the live tree",
+        );
+    }
+
+    await rm(quarantine, { recursive: true, force: true });
+    return true;
 }
 
 async function acquireStartupLock(target) {
     const lockDir = `${target}.lock`;
     const pidFile = path.join(lockDir, "pid");
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
         if (await createStartupLock(lockDir, pidFile)) {
             return lockDir;
         }
-        await assertLockIsStale(lockDir, pidFile);
-        await rm(lockDir, { recursive: true, force: true });
+        const staleOwner = await assertLockIsStale(lockDir, pidFile);
+        await reclaimStaleLock(lockDir, staleOwner);
     }
     throw new Error(`could not acquire runtime lock ${lockDir}`);
 }

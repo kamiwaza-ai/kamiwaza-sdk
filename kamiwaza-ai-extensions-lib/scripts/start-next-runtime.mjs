@@ -39,14 +39,20 @@ export function standaloneNodeArgs(runtimeRoot, preserveSymlinks = false) {
     return args;
 }
 
+export function standaloneEnv(env) {
+    return {
+        ...env,
+        // Kubernetes injects HOSTNAME=<pod-name>; inheriting it makes Next
+        // bind only the pod interface while the health check probes loopback.
+        HOSTNAME: env.KZ_RUNTIME_BIND_HOST || "0.0.0.0",
+        PORT: env.PORT || "3000",
+    };
+}
+
 export function startStandalone(runtimeRoot, env = process.env, preserveSymlinks = false) {
     const child = spawn(process.execPath, standaloneNodeArgs(runtimeRoot, preserveSymlinks), {
         cwd: runtimeRoot,
-        env: {
-            ...env,
-            HOSTNAME: env.HOSTNAME || "0.0.0.0",
-            PORT: env.PORT || "3000",
-        },
+        env: standaloneEnv(env),
         stdio: "inherit",
     });
     for (const signal of ["SIGINT", "SIGTERM"]) {

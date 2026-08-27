@@ -79,9 +79,14 @@ def test_asgi_launcher_declares_uvicorn_dependency():
         pyproject = tomllib.load(f)
 
     assert any(
-        dependency.startswith("uvicorn>=")
+        dependency.startswith("uvicorn>=0.30")
         for dependency in pyproject["project"]["dependencies"]
     ), "python -m kamiwaza_extensions_lib.asgi requires a declared uvicorn runtime"
+
+    assert any(
+        dependency.startswith("fastapi>=0.115")
+        for dependency in pyproject["project"]["dependencies"]
+    ), "ASGI root_path routing requires the compatible FastAPI/Starlette floor"
 
 
 def test_release_publishes_required_npm_runtime_before_sdk():
