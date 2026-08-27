@@ -274,4 +274,21 @@ describe("createProxyHandlers redirects and target paths", () => {
             "https://identity.example/login",
         );
     });
+
+    it.each([
+        ["path", `${APP}/evil.example`],
+        ["port", "/evil.example"],
+    ])(
+        "keeps normalized upstream redirects same-origin in %s mode",
+        async (mode, expected) => {
+            process.env.KAMIWAZA_ROUTING_MODE = mode;
+            fetchSpy.mockResolvedValue(upstream("", { location: "/..//evil.example" }));
+
+            const { GET } = createProxyHandlers({ target: TARGET });
+            const response = await GET(new Request(`http://localhost${APP}/session`));
+
+            expect(response.headers.get("location")).toBe(expected);
+            expect(response.headers.get("location")).not.toMatch(/^\/\//);
+        },
+    );
 });

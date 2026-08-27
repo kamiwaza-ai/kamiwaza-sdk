@@ -185,7 +185,10 @@ function rebaseLocation(headers: Headers, appPath: string, target: string): void
     const targetPath = configuredTarget.pathname.replace(/\/+$/, "");
     if (location.startsWith("/") && !location.startsWith("//")) {
         const redirected = new URL(location, configuredTarget);
-        const redirectPath = stripOnce(redirected.pathname, targetPath);
+        const redirectPath = stripOnce(redirected.pathname, targetPath).replace(
+            /^\/+/,
+            "/",
+        );
         const local = `${redirectPath}${redirected.search}${redirected.hash}`;
         headers.set("location", withAppPath(local, appPath));
         return;
@@ -197,7 +200,7 @@ function rebaseLocation(headers: Headers, appPath: string, target: string): void
     if (redirected.origin !== configuredTarget.origin) {
         return;
     }
-    const redirectPath = stripOnce(redirected.pathname, targetPath);
+    const redirectPath = stripOnce(redirected.pathname, targetPath).replace(/^\/+/, "/");
     const local = `${redirectPath}${redirected.search}${redirected.hash}`;
     headers.set("location", withAppPath(local, appPath));
 }

@@ -247,6 +247,34 @@ describe("buildRelocationManifest", () => {
         expect(entry?.occurrences).toBe(1);
     });
 
+    it("classifies a text/x-component .body as React Flight data", async () => {
+        writeStandardFixture();
+        const flightLength = Buffer.byteLength(SENTINEL).toString(16);
+        write(
+            ".next/server/app/cached-flight.body",
+            `1:T${flightLength},${SENTINEL}`,
+        );
+        write(
+            ".next/server/app/cached-flight.meta",
+            JSON.stringify({
+                status: 200,
+                headers: { "content-type": "text/x-component; charset=utf-8" },
+            }),
+        );
+
+        const manifest = await buildRelocationManifest({
+            root,
+            sentinel: SENTINEL,
+            nextVersion: "15.5.19",
+        });
+
+        const entry = manifest.files.find(
+            (file) => file.path === ".next/server/app/cached-flight.body",
+        );
+        expect(entry?.kind).toBe("rsc");
+        expect(entry?.occurrences).toBe(1);
+    });
+
     it("rejects a sentinel inside a binary .body (S3)", async () => {
         writeStandardFixture();
         write(

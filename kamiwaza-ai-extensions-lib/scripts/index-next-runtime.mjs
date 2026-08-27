@@ -51,6 +51,7 @@ const SENTINEL_RE = /^\/__KZ_RUNTIME_BASE_[0-9A-F]+__$/;
 const TEXTUAL_BODY_CONTENT_TYPE_RE =
     /^(text\/|application\/(json|javascript|xml|x-ndjson|xhtml\+xml)|image\/svg\+xml)/i;
 const HTML_BODY_CONTENT_TYPE_RE = /^(text\/html|application\/xhtml\+xml)(?:\s*;|$)/i;
+const RSC_BODY_CONTENT_TYPE_RE = /^text\/x-component(?:\s*;|$)/i;
 
 // Roles that must contain the sentinel in a healthy path-variant build. If
 // none of a role's candidate files carries an occurrence, the artifact is
@@ -138,6 +139,9 @@ async function classifyBody(root, rel) {
         // Cached HTML may embed React Flight rows whose T-frame lengths must
         // be rewritten when the deployment prefix changes byte length.
         return "html";
+    }
+    if (RSC_BODY_CONTENT_TYPE_RE.test(contentType)) {
+        return "rsc";
     }
     if (TEXTUAL_BODY_CONTENT_TYPE_RE.test(contentType)) {
         return "txt";

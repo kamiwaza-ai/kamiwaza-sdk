@@ -725,6 +725,35 @@ class TestRunnerLocalComposeOverride:
         assert cmd.count("-f") == 1, f"expected only the base `-f`. cmd={cmd!r}"
         assert str(info.compose_path) in cmd
 
+    def test_template_dev_overlay_adapts_renamed_and_removed_services(self, tmp_path):
+        from pathlib import Path
+
+        import yaml as _yaml
+
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        info = self._make_info(tmp_path, "docker-compose.yml")
+        info.compose_data["services"] = {
+            "web": {"build": "./frontend", "ports": ["3000"]},
+        }
+        (tmp_path / "kamiwaza-compose.dev.yml").write_text(
+            "services:\n"
+            "  frontend:\n"
+            "    build:\n"
+            "      target: dev\n"
+            "  backend:\n"
+            "    command: [python, -m, app]\n"
+        )
+        temporary_files = []
+
+        override = DevLocalRunner._prepare_template_dev_override(info, temporary_files)
+
+        assert override is not None
+        adapted = _yaml.safe_load(Path(override).read_text())
+        assert adapted == {"services": {"web": {"build": {"target": "dev"}}}}
+        assert temporary_files == [override]
+        Path(override).unlink()
+
     def test_runner_loads_override_for_compose_yml_base(self, tmp_path, monkeypatch):
         """PR #131 review High #1 — the override name must mirror the
         detected base stem. A ``compose.yml`` base pairs with

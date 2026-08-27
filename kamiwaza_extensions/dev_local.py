@@ -71,7 +71,9 @@ class DevLocalRunner:
             remaps, compose_file_arg, base_was_patched = self._prepare_base_compose(
                 info, temporary_files
             )
-            template_dev_override_file = self._find_template_dev_override(info.path)
+            template_dev_override_file = self._prepare_template_dev_override(
+                info, temporary_files
+            )
             local_override_file = self._find_local_override(info.compose_path)
             sdk_override_file, sdk_build_patch_file = self._prepare_sdk_overlays(
                 info, override_spec, temporary_files
@@ -268,9 +270,76 @@ class DevLocalRunner:
         return remaps, fd.name, True
 
     @staticmethod
-    def _find_template_dev_override(extension_path: Path) -> Optional[str]:
-        candidate = extension_path / TEMPLATE_DEV_COMPOSE_FILENAME
-        return str(candidate) if candidate.is_file() else None
+    def _prepare_template_dev_override(
+        info: ExtensionInfo, temporary_files: List[str]
+    ) -> Optional[str]:
+        """Adapt the template dev overlay to the extension's current services.
+
+        Existing extensions may rename ``frontend``/``backend`` or remove one
+        entirely. Compose would otherwise create phantom services from the
+        later overlay, so match renamed services by their retained build
+        context and omit roles that no longer exist.
+        """
+        candidate = info.path / TEMPLATE_DEV_COMPOSE_FILENAME
+        if not candidate.is_file():
+            return None
+        overlay = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
+        if not isinstance(overlay, dict):
+            raise ValueError(f"{TEMPLATE_DEV_COMPOSE_FILENAME} must be a mapping")
+        template_services = overlay.get("services") or {}
+        actual_services = (info.compose_data or {}).get("services") or {}
+        if not isinstance(template_services, dict):
+            raise ValueError(
+                f"{TEMPLATE_DEV_COMPOSE_FILENAME} services must be a mapping"
+            )
+        adapted_services: Dict[str, Any] = {}
+
+        for template_name, service_overlay in template_services.items():
+            actual_name = DevLocalRunner._match_template_service(
+                template_name, actual_services
+            )
+            if actual_name is None:
+                console.print(
+                    f"[yellow]Skipping {template_name!r} from "
+                    f"{TEMPLATE_DEV_COMPOSE_FILENAME}: no matching service[/yellow]"
+                )
+                continue
+            adapted_services[actual_name] = service_overlay
+
+        if not adapted_services:
+            return None
+        if adapted_services == template_services:
+            return str(candidate)
+
+        fd = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yml", prefix="kz-template-dev-", delete=False
+        )
+        yaml.safe_dump({**overlay, "services": adapted_services}, fd)
+        fd.close()
+        temporary_files.append(fd.name)
+        return fd.name
+
+    @staticmethod
+    def _match_template_service(
+        template_name: str, actual_services: Dict[str, Any]
+    ) -> Optional[str]:
+        if template_name in actual_services:
+            return template_name
+        matches = []
+        for service_name, service in actual_services.items():
+            build = service.get("build") if isinstance(service, dict) else None
+            if isinstance(build, str):
+                context = build
+            elif isinstance(build, dict):
+                context = build.get("context")
+            else:
+                context = None
+            if (
+                isinstance(context, str)
+                and Path(context.rstrip("/")).name == template_name
+            ):
+                matches.append(service_name)
+        return matches[0] if len(matches) == 1 else None
 
     @staticmethod
     def _find_local_override(compose_path: Path) -> Optional[str]:
