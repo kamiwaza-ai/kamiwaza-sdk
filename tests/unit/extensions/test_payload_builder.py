@@ -113,6 +113,44 @@ class TestBuild:
 
         assert env == [{"name": "KAMIWAZA_ROUTING_MODE", "value": "port"}]
 
+    def test_platform_env_replaces_author_duplicates(self, builder):
+        env = [
+            {"name": "KAMIWAZA_APP_PATH", "value": "/author/path"},
+            {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
+            {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"},
+            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"},
+            {"name": "AUTHOR_VALUE", "value": "kept"},
+        ]
+
+        builder._append_platform_env(
+            env,
+            app_path="/runtime/apps/deployed",
+            verify_ssl=False,
+        )
+
+        by_name = {entry["name"]: entry["value"] for entry in env}
+        assert len(env) == len(by_name)
+        assert by_name == {
+            "AUTHOR_VALUE": "kept",
+            "KAMIWAZA_APP_PATH": "/runtime/apps/deployed",
+            "KAMIWAZA_ROUTING_MODE": "path",
+            "KAMIWAZA_VERIFY_SSL": "false",
+            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED": "0",
+        }
+
+    def test_port_mode_removes_author_app_path(self, builder):
+        env = [
+            {"name": "KAMIWAZA_APP_PATH", "value": "/author/path"},
+            {"name": "AUTHOR_VALUE", "value": "kept"},
+        ]
+
+        builder._append_platform_env(env, app_path="", verify_ssl=True)
+
+        assert env == [
+            {"name": "AUTHOR_VALUE", "value": "kept"},
+            {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
+        ]
+
     def test_kamiwaza_integration(
         self, builder, metadata, transformed_compose, connection
     ):
@@ -1165,6 +1203,9 @@ class TestHealthChecks:
         assert "KAMIWAZA_APP_PATH" in command[2]
         assert "NEXT_PUBLIC_APP_BASE_PATH" not in command[2]
         assert "'/health'" in command[2]
+        assert "res.statusCode===404" in command[2]
+        assert "const fallback=base||'/'" in command[2]
+        assert "return probe(retry,'')" in command[2]
 
     def test_generic_frontend_without_node_hints_uses_root_http_probe(
         self, builder, metadata, connection

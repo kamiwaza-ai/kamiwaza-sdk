@@ -46,7 +46,13 @@ describe("runtime routing parity vectors", () => {
                 expect(() =>
                     getKamiwazaRuntimeServer(vector.env as NodeJS.ProcessEnv),
                 ).toThrow();
-                expect(() => resolveBootRouting(vector.env)).toThrow();
+                if (vector.expect_boot) {
+                    const boot = resolveBootRouting(vector.env);
+                    expect(boot.routingMode).toBe(vector.expect_boot.routing_mode);
+                    expect(boot.appPath).toBe(vector.expect_boot.app_path);
+                } else {
+                    expect(() => resolveBootRouting(vector.env)).toThrow();
+                }
                 return;
             }
             const runtime = getKamiwazaRuntimeServer(vector.env as NodeJS.ProcessEnv);

@@ -75,6 +75,12 @@ describe("getAppPath", () => {
         });
         expect(() => getAppPath()).toThrow(/mode/i);
     });
+
+    it("rejects a relocation sentinel supplied by the runtime bootstrap", () => {
+        const sentinel = "/__KZ_RUNTIME_BASE_7F3A91C2__";
+        setBootstrap("path", sentinel);
+        expect(() => getAppPath()).toThrow(/sentinel/i);
+    });
 });
 
 describe("appAsset", () => {

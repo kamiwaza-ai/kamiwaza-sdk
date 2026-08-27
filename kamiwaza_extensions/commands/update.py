@@ -43,6 +43,7 @@ from rich.table import Table
 
 from kamiwaza_extensions.exit_codes import ExitCode
 from kamiwaza_extensions.scaffolder import (
+    CLEAN_TRACKED_MERGE_FILES,
     build_render_context,
     hash_text,
     substitute,
@@ -276,8 +277,9 @@ def _hash_on_disk_files(target_dir: Path, shape: str) -> dict[str, str]:
     manifest = MANIFESTS[shape]  # type: ignore[index]
     hashes: dict[str, str] = {}
     for owned in manifest.files:
-        if owned.strategy != "preserve_if_modified" and owned.relative_path != (
-            "backend/requirements.txt"
+        if (
+            owned.strategy != "preserve_if_modified"
+            and owned.relative_path not in CLEAN_TRACKED_MERGE_FILES
         ):
             continue
         path = target_dir / owned.relative_path
@@ -516,13 +518,13 @@ def _reconcile_file(
         return _create_missing(rel, target_path, new_content, dry_run=dry_run)
     recorded_hash = recorded_hashes.get(rel)
     if (
-        rel == "backend/requirements.txt"
+        rel in CLEAN_TRACKED_MERGE_FILES
         and recorded_hash is not None
         and hash_text(existing_content) == recorded_hash
     ):
-        # A pristine requirements file receives the complete new template,
-        # including FastAPI/Uvicorn floors. Only author-edited files need the
-        # narrow merge that preserves their dependency choices.
+        # A pristine dependency file receives the complete new template. Only
+        # author-edited files need the narrow merge that preserves their
+        # dependency choices.
         return _apply_preserve_if_modified(
             rel,
             target_path,
@@ -860,8 +862,9 @@ def _merge_dockerignore(existing_content: str, new_content: str) -> str:
     ]
     if not additions:
         return existing_content
-    separator = "" if existing_content.endswith("\n") else "\n"
-    return existing_content + separator + "\n".join(additions) + "\n"
+    newline = "\r\n" if "\r\n" in existing_content else "\n"
+    separator = "" if existing_content.endswith(("\n", "\r")) else newline
+    return existing_content + separator + newline.join(additions) + newline
 
 
 def _reconcile_dockerignore_merge(

@@ -68,9 +68,9 @@ export function isTrustedFrontChannelUrl(url: string): boolean {
  * Provides session state to the component tree.
  *
  * Fetches the session from the backend on mount and periodically
- * refreshes it.  The base path is read from
- * `NEXT_PUBLIC_APP_BASE_PATH` (or the `basePath` prop) so that
- * session endpoint calls work in all deployment modes.
+ * refreshes it. The base path comes from the runtime bootstrap or baked
+ * runtime contract; the explicit prop and legacy env remain temporary
+ * compatibility fallbacks.
  *
  * On repeated fetch failures the refresh interval backs off
  * exponentially (capped at 5 minutes) and resets on success.

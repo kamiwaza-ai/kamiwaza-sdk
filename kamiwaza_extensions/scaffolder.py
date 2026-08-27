@@ -133,14 +133,22 @@ def hash_text(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+CLEAN_TRACKED_MERGE_FILES = frozenset(
+    {
+        "backend/requirements.txt",
+        "frontend/package.json",
+    }
+)
+
+
 def compute_rendered_hashes(shape: str, context: Dict[str, str]) -> Dict[str, str]:
     """Hash every clean-tracked text file in the shape's manifest.
 
     Keys are manifest ``relative_path`` strings; values are
     ``sha256:<hex>``. Binary template files are skipped (no
     preserve-if-modified semantics — they have no diff/merge concept).
-    The backend requirements merge is also tracked so a pristine file can
-    receive the complete next template before edited files fall back to the
+    Dependency merge files are also tracked so a pristine file can receive the
+    complete next template before edited files fall back to the
     dependency-preserving merge.
 
     Used by ``Scaffolder.create()`` to seed
@@ -154,8 +162,9 @@ def compute_rendered_hashes(shape: str, context: Dict[str, str]) -> Dict[str, st
     )
     hashes: Dict[str, str] = {}
     for owned in manifest.files:
-        if owned.strategy != "preserve_if_modified" and owned.relative_path != (
-            "backend/requirements.txt"
+        if (
+            owned.strategy != "preserve_if_modified"
+            and owned.relative_path not in CLEAN_TRACKED_MERGE_FILES
         ):
             continue
         path = template_root / owned.relative_path

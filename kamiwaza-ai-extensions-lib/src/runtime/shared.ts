@@ -92,6 +92,13 @@ export function normalizeAppPath(value: string | null | undefined): string {
     return withoutTrailing;
 }
 
+/** Reject the reserved compile-time path before it leaks into public URLs. */
+export function assertNoRelocationSentinel(appPath: string): void {
+    if (SENTINEL_FAMILY_RE.test(appPath)) {
+        throw new Error("runtime app path must not contain the relocation sentinel");
+    }
+}
+
 /**
  * Prefix a root-relative same-app path with the app path. Idempotent and
  * segment-boundary aware; absolute URLs, protocol-relative URLs, and
@@ -139,9 +146,7 @@ function resolvePathRouting(rawPath: string | undefined): KamiwazaClientRouting 
     if (appPath === "") {
         throw new Error("path routing mode requires a nonempty KAMIWAZA_APP_PATH");
     }
-    if (SENTINEL_FAMILY_RE.test(appPath)) {
-        throw new Error("KAMIWAZA_APP_PATH must not contain the relocation sentinel");
-    }
+    assertNoRelocationSentinel(appPath);
     return { routingMode: "path", appPath };
 }
 

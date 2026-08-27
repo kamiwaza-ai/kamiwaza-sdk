@@ -329,26 +329,34 @@ class PayloadBuilder:
         app_path: str,
         verify_ssl: bool,
     ) -> None:
+        platform_values = {
+            "KAMIWAZA_ROUTING_MODE": "path" if app_path else "port",
+        }
         if app_path:
-            env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
+            platform_values["KAMIWAZA_APP_PATH"] = app_path
         # Explicit env shadows ConfigMap envFrom in both modes. Without an
         # explicit port value, a stale KAMIWAZA_APP_PATH can trigger legacy
         # path-mode inference and make an otherwise valid deployment 404.
-        env.append(
-            {
-                "name": "KAMIWAZA_ROUTING_MODE",
-                "value": "path" if app_path else "port",
-            }
-        )
-        if verify_ssl:
-            return
-        # Explicit env wins over ConfigMap envFrom. Emit both Python and Node
-        # conventions so every extension runtime receives one TLS policy.
+        if not verify_ssl:
+            # Explicit env wins over ConfigMap envFrom. Emit both Python and
+            # Node conventions so every extension runtime receives one TLS
+            # policy.
+            platform_values.update(
+                {
+                    "KAMIWAZA_VERIFY_SSL": "false",
+                    "KAMIWAZA_TLS_REJECT_UNAUTHORIZED": "0",
+                }
+            )
+        platform_owned_names = set(platform_values)
+        # Port mode must also remove an author-supplied path. The explicit mode
+        # makes it inert at runtime, but emitting both values is contradictory
+        # and leaves duplicate platform configuration in the generated CR.
+        platform_owned_names.add("KAMIWAZA_APP_PATH")
+        env[:] = [
+            entry for entry in env if entry.get("name") not in platform_owned_names
+        ]
         env.extend(
-            [
-                {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"},
-                {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"},
-            ]
+            {"name": name, "value": value} for name, value in platform_values.items()
         )
 
     @staticmethod
@@ -528,10 +536,13 @@ class PayloadBuilder:
                 "const mode=v(process.env.KAMIWAZA_ROUTING_MODE);"
                 "const appPath=v(process.env.KAMIWAZA_APP_PATH).replace(/\\/+$/,'');"
                 "const base=mode==='port'?'':appPath;"
-                "const path=(base||'')+'/health';"
-                f"require('http').get({{host:'127.0.0.1',port:{port},path}},"
-                "(res)=>process.exit(res.statusCode===200?0:1))"
+                "const http=require('http');"
+                "const fallback=base||'/';"
+                f"const probe=(path,retry)=>http.get({{host:'127.0.0.1',port:{port},path}},"
+                "res=>{res.resume();if(res.statusCode===200)return process.exit(0);"
+                "if(res.statusCode===404&&retry)return probe(retry,'');process.exit(1)})"
                 ".on('error',()=>process.exit(1));"
+                "probe((base||'')+'/health',fallback);"
             )
             return {
                 "exec": {

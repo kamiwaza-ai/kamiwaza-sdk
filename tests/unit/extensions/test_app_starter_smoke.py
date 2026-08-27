@@ -35,6 +35,7 @@ SYNC_FILES = [
     Path("backend/requirements.txt"),
     Path("docker-compose.yml"),
     Path("kamiwaza-compose.dev.yml"),
+    Path("frontend/.dockerignore"),
     Path("frontend/Dockerfile"),
     Path("frontend/next.config.js"),
     Path("frontend/package.json"),

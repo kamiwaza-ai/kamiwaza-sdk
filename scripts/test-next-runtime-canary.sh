@@ -470,6 +470,7 @@ expect_status 200 "$BASE/excluded"
 
 HOME_HTML="$(canary_curl -fsS "$BASE")" || fail "GET $BASE failed"
 grep -qF "$APP_PATH/_next/" <<<"$HOME_HTML" || fail "asset URLs not prefixed in home HTML"
+! grep -qF "$APP_PATH$APP_PATH" <<<"$HOME_HTML" || fail "asset URLs are double-prefixed"
 grep -qF "__KAMIWAZA_RUNTIME__" <<<"$HOME_HTML" || fail "runtime bootstrap missing from HTML"
 grep -qF "\"appPath\":\"$APP_PATH\"" <<<"$HOME_HTML" || fail "bootstrap appPath not relocated"
 grep -qF "KZ_FLIGHT_TAIL_9A6E2D43" <<<"$HOME_HTML" \

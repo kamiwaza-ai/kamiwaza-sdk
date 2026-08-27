@@ -266,6 +266,45 @@
       }
     },
     {
+      "name": "path_mode_ftp_app_url_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "ftp://host.example"
+      },
+      "expect_error": true,
+      "expect_boot": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400"
+      }
+    },
+    {
+      "name": "path_mode_app_url_without_scheme_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "host.example"
+      },
+      "expect_error": true,
+      "expect_boot": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400"
+      }
+    },
+    {
+      "name": "path_mode_app_url_without_host_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://"
+      },
+      "expect_error": true,
+      "expect_boot": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400"
+      }
+    },
+    {
       "name": "port_mode_ignores_stale_path",
       "env": {
         "KAMIWAZA_ROUTING_MODE": "port",

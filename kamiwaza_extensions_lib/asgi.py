@@ -2,11 +2,11 @@
 
 Resolves the deployment's routing mode exactly like the frontend boot
 entrypoint, then starts Uvicorn with ``root_path`` set to the runtime app
-path. The upstream proxy must strip that public prefix before forwarding.
-Uvicorn adds ``root_path`` to the ASGI scope, so apps keep declaring
-unprefixed routes (``/api``, ``/health``) while URL generation and OpenAPI
-servers see the external mount. Forwarding an already-prefixed transport path
-while also setting ``root_path`` duplicates the prefix.
+path. The scaffolded frontend proxy strips that public prefix before
+forwarding; direct ASGI ingress may forward either a stripped path or an
+already-prefixed path that Starlette can reconcile with ``root_path``. Apps
+still declare unprefixed routes (``/api``, ``/health``) while URL generation
+and OpenAPI servers see the external mount.
 
 Usage (scaffold backend Dockerfile)::
 

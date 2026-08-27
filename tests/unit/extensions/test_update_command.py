@@ -343,6 +343,37 @@ def test_app_update_sweeps_pristine_requirements_to_complete_template(
     assert "fastapi>=9.9.9" in requirements_path.read_text()
 
 
+def test_app_update_sweeps_pristine_package_to_complete_template(tmp_path, monkeypatch):
+    """A clean package manifest receives non-runtime dependency bumps."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    package_path = scaffold / "frontend" / "package.json"
+    metadata = json.loads((scaffold / "kamiwaza.json").read_text())
+    assert "frontend/package.json" in metadata["template_file_hashes"]
+    monkeypatch.chdir(scaffold)
+
+    from kamiwaza_extensions.commands import update as upd
+
+    real_render = upd._render
+
+    def render_with_new_tailwind_floor(template_path, context):
+        text = real_render(template_path, context)
+        if str(template_path).endswith("frontend/package.json"):
+            return text.replace('"tailwindcss": "^3.4.19"', '"tailwindcss": "^9.9.9"')
+        return text
+
+    monkeypatch.setattr(upd, "_render", render_with_new_tailwind_floor)
+
+    summary = upd.run_update(non_interactive=True)
+
+    result = next(
+        fr for fr in summary.files if fr.relative_path == "frontend/package.json"
+    )
+    assert result.action == "updated"
+    assert "clean" in result.reason
+    package = json.loads(package_path.read_text())
+    assert package["dependencies"]["tailwindcss"] == "^9.9.9"
+
+
 def test_requirements_merge_preserves_crlf_for_author_edited_file():
     from kamiwaza_extensions.commands.update import _merge_requirements
 
@@ -363,6 +394,20 @@ def test_requirements_merge_preserves_crlf_for_author_edited_file():
     assert "\n" not in merged.replace("\r\n", "")
     assert "author-package==2.3.4\r\n" in merged
     assert "kamiwaza-extensions-lib>=0.5.0,<0.6\r\n" in merged
+
+
+def test_dockerignore_merge_preserves_crlf():
+    from kamiwaza_extensions.commands.update import _merge_dockerignore
+
+    existing = "# author rules\r\ncredentials/**\r\n"
+    rendered = "node_modules\n.next\n.env*\n.git\n"
+
+    merged = _merge_dockerignore(existing, rendered)
+
+    assert "\n" not in merged.replace("\r\n", "")
+    assert "credentials/**\r\n" in merged
+    assert "node_modules\r\n" in merged
+    assert ".git\r\n" in merged
 
 
 # ---------------------------------------------------------------------------

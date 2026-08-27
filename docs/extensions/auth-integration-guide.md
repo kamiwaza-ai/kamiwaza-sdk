@@ -218,13 +218,16 @@ import { createProxyHandlers } from
 
 const { GET } = createProxyHandlers({
   target: process.env.BACKEND_URL || "http://backend:8000",
+  setCookiePaths: ["/session"],
 });
 
 export { GET };
 ```
 
-Use the same target for `app/auth/login-url/route.ts` (export `GET`) and
-`app/auth/logout/route.ts` (export `POST`).
+Use the same target for `app/auth/login-url/route.ts` (export `GET`). For
+`app/auth/logout/route.ts`, export `POST` and set
+`setCookiePaths: ["/auth/logout"]` so the trusted logout response can clear
+its cookie. Keep `Set-Cookie` disabled on all other proxy routes.
 
 For `app/api/[...path]/route.ts`:
 

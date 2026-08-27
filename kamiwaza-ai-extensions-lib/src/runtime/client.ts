@@ -10,6 +10,7 @@
  */
 
 import {
+    assertNoRelocationSentinel,
     type KamiwazaClientRouting,
     type KamiwazaRuntimeConfig,
     normalizeAppPath,
@@ -35,6 +36,7 @@ export function getAppPath(): string {
             );
         }
         const appPath = normalizeAppPath(bootstrap.appPath);
+        assertNoRelocationSentinel(appPath);
         if (
             (bootstrap.routingMode === "port" && appPath !== "") ||
             (bootstrap.routingMode === "path" && appPath === "")
@@ -47,8 +49,10 @@ export function getAppPath(): string {
         return appPath;
     }
     // Inlined at build time by withKamiwazaAppGarden(); sentinel in the path
-    // artifact (relocated at boot), empty in the port artifact and next dev.
-    return process.env.KZ_INTERNAL_BAKED_APP_PATH ?? "";
+    // artifact (relocated and residual-scanned before boot), empty in the port
+    // artifact and next dev. It must remain readable during `next build`, when
+    // server components intentionally render relocatable sentinel URLs.
+    return normalizeAppPath(process.env.KZ_INTERNAL_BAKED_APP_PATH);
 }
 
 /** Prefix a `public/`-root asset path for the current deployment. */

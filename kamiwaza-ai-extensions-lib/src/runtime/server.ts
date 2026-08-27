@@ -17,6 +17,16 @@ function trimTrailingSlash(value: string): string {
     return value.replace(/\/+$/, "");
 }
 
+function originWithAppPath(value: string, appPath: string): string {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(
+            `invalid public app URL for path routing: ${JSON.stringify(value)}`,
+        );
+    }
+    return `${parsed.origin}${appPath}`;
+}
+
 function resolveAppUrls(
     env: NodeJS.ProcessEnv,
     appPath: string,
@@ -35,7 +45,7 @@ function resolveAppUrls(
         appPathUrl,
         appUrl:
             appPathUrl ||
-            (publicOrigin ? `${new URL(publicOrigin).origin}${appPath}` : ""),
+            (publicOrigin ? originWithAppPath(publicOrigin, appPath) : ""),
     };
 }
 
