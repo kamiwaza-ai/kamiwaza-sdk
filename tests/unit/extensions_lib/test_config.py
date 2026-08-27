@@ -87,6 +87,16 @@ class TestAuthConfig:
         assert config.app_url == "https://path.example/runtime/apps/my-app"
         assert config.app_path == "/runtime/apps/my-app"
 
+    def test_path_mode_adds_app_path_to_legacy_app_url_origin(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
+        monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/apps/my-app")
+        monkeypatch.delenv("KAMIWAZA_APP_PATH_URL", raising=False)
+        monkeypatch.setenv("KAMIWAZA_APP_URL", "https://legacy.example:8443/")
+
+        config = AuthConfig.from_env()
+
+        assert config.app_url == "https://legacy.example:8443/runtime/apps/my-app"
+
     def test_invalid_routing_env_does_not_raise_on_request_config(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
         monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/../etc")

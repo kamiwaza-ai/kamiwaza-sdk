@@ -1,7 +1,7 @@
 /** Canonical stdlib-only runtime path and routing-mode contract. */
 
 const SENTINEL_FAMILY_RE = /__KZ_RUNTIME_BASE_[0-9A-F]+__/;
-const SEGMENT_RE = /^[A-Za-z0-9._~-]+$/;
+const SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
 const INVALID_SEGMENTS = new Set(["", ".", "." + "."]);
 const MAX_PATH_LENGTH = 512;

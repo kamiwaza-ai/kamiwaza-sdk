@@ -15,8 +15,9 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Literal, Mapping
+from urllib.parse import urlsplit
 
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
+_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _SENTINEL_FAMILY_RE = re.compile(r"__KZ_RUNTIME_BASE_[0-9A-F]+__")
 _MAX_PATH_LENGTH = 512
@@ -112,6 +113,13 @@ def _trim_trailing_slash(value: str) -> str:
     return value.rstrip("/")
 
 
+def _origin_with_app_path(value: str, app_path: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"invalid public app URL for path routing: {value!r}")
+    return f"{parsed.scheme}://{parsed.netloc}{app_path}"
+
+
 def _assert_supported_mode(mode: str) -> None:
     if mode in ("", "path", "port"):
         return
@@ -146,9 +154,10 @@ def _resolve_app_urls(env: Mapping[str, str], app_path: str) -> tuple[str, str]:
     app_path_url = _trim_trailing_slash(env.get("KAMIWAZA_APP_PATH_URL", ""))
     configured_app_url = _trim_trailing_slash(env.get("KAMIWAZA_APP_URL", ""))
     origin = _trim_trailing_slash(env.get("KAMIWAZA_ORIGIN", ""))
-    app_url = app_path_url or configured_app_url
-    if not app_url and origin:
-        app_url = f"{origin}{app_path}"
+    public_origin = configured_app_url or origin
+    app_url = app_path_url
+    if not app_url and public_origin:
+        app_url = _origin_with_app_path(public_origin, app_path)
     return app_path_url, app_url
 
 

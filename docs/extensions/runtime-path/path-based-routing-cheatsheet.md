@@ -135,7 +135,7 @@ The lifecycle is fail-closed at every stage:
 
 If any check fails, the container **refuses to start** — you never get a half-relocated app.
 
-The runtime path itself is validated with a conservative grammar before anything runs: absolute, no trailing slash, segments matching `[A-Za-z0-9._~-]+`, no `%`, `?`, `#`, `\`, `//`, dot segments, or control characters. Platform-generated `/runtime/apps/<uuid>` prefixes always pass; anything else is treated as misconfiguration.
+The runtime path itself is validated with a conservative grammar before anything runs: absolute, no trailing slash, segments matching `[A-Za-z0-9_-]+`, no `%`, `?`, `#`, `\`, `//`, dot segments, regex metacharacters, or control characters. Platform-generated `/runtime/apps/<uuid>` prefixes always pass; anything else is treated as misconfiguration.
 
 ---
 
@@ -347,7 +347,7 @@ When the app (or the shared auth libraries) needs its own public URL — login `
 
 | Mode | Precedence |
 |------|-----------|
-| **path** | `KAMIWAZA_APP_PATH_URL` → `KAMIWAZA_APP_URL` → `KAMIWAZA_ORIGIN + appPath` |
+| **path** | `KAMIWAZA_APP_PATH_URL` → `origin(KAMIWAZA_APP_URL) + appPath` → `KAMIWAZA_ORIGIN + appPath` |
 | **port** | `KAMIWAZA_APP_URL` |
 
 **Env is authoritative.** The TS `getKamiwazaRuntimeServer` helper can log a warning when its caller supplies a trusted `x-forwarded-prefix` that disagrees with env; Python `RuntimeRouting` resolves from env only. Neither implementation lets a request header override deployment identity. In the browser, when a full URL is needed, compute `window.location.origin + getAppPath()`.
@@ -536,6 +536,6 @@ There is no local "rebuild with a path" step anymore. If you need to eyeball pat
    the deployment prefix before forwarding while `root_path` retains the
    external mount context. A directly exposed FastAPI app instead sets
    `strip_path_prefix=true` so ingress performs that strip.
-4. **Trust env, not headers**, for deployment identity (`KAMIWAZA_APP_PATH_URL` > `KAMIWAZA_APP_URL` in path mode).
+4. **Trust env, not headers**, for deployment identity (`KAMIWAZA_APP_PATH_URL` wins; otherwise path mode derives the public URL from the configured origin plus `appPath`).
 5. **Failures are loud**: a bad artifact or bad prefix stops the container at boot with a `kz_next_runtime` error event — check that JSON line first.
 6. **Next is pinned exactly**; version bumps go through `scripts/test-next-runtime-canary.sh`.

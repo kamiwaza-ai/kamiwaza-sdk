@@ -262,11 +262,23 @@ function makeHandler(
         // configured trusted backend.
         const cookiePaths = config.setCookiePaths ?? DEFAULT_SET_COOKIE_PATHS;
         if (cookiePaths.includes(path)) {
-            for (const cookie of upstream.headers.getSetCookie()) {
-                responseHeaders.append(
-                    "set-cookie",
-                    scopeSetCookie(cookie, runtimeAppPath),
+            try {
+                for (const cookie of upstream.headers.getSetCookie()) {
+                    responseHeaders.append(
+                        "set-cookie",
+                        scopeSetCookie(cookie, runtimeAppPath),
+                    );
+                }
+            } catch (error) {
+                console.error(
+                    "[kamiwaza-runtime] rejected an upstream cookie that cannot " +
+                        "be scoped to this deployment",
+                    error,
                 );
+                return new Response("Bad Gateway: incompatible upstream cookie", {
+                    status: 502,
+                    headers: { "cache-control": "no-store" },
+                });
             }
         }
 

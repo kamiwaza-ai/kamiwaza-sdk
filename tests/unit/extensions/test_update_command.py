@@ -307,6 +307,60 @@ def test_app_update_upgrades_runtime_dependencies_without_losing_author_edits(
     assert summary.conflicts == 0
 
 
+def test_app_update_sweeps_pristine_requirements_to_complete_template(
+    tmp_path, monkeypatch
+):
+    """A clean merge file still receives non-runtime dependency bumps."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    requirements_path = scaffold / "backend" / "requirements.txt"
+    metadata = json.loads((scaffold / "kamiwaza.json").read_text())
+    assert "backend/requirements.txt" in metadata["template_file_hashes"]
+    monkeypatch.chdir(scaffold)
+
+    from kamiwaza_extensions.commands import update as upd
+
+    real_render = upd._render
+
+    def render_with_new_fastapi_floor(template_path, context):
+        text = real_render(template_path, context)
+        if str(template_path).endswith("backend/requirements.txt"):
+            return text.replace("fastapi>=0.115.0", "fastapi>=9.9.9")
+        return text
+
+    monkeypatch.setattr(upd, "_render", render_with_new_fastapi_floor)
+
+    summary = upd.run_update(non_interactive=True)
+
+    result = next(
+        fr for fr in summary.files if fr.relative_path == "backend/requirements.txt"
+    )
+    assert result.action == "updated"
+    assert "clean" in result.reason
+    assert "fastapi>=9.9.9" in requirements_path.read_text()
+
+
+def test_requirements_merge_preserves_crlf_for_author_edited_file():
+    from kamiwaza_extensions.commands.update import _merge_requirements
+
+    existing = (
+        "fastapi>=0.100.0\r\n"
+        "author-package==2.3.4\r\n"
+        "kamiwaza-extensions-lib>=0.4.4,<0.5\r\n"
+    )
+    rendered = (
+        "fastapi>=0.115.0\n"
+        "uvicorn[standard]>=0.30.0\n"
+        "kamiwaza-extensions-lib>=0.5.0,<0.6\n"
+    )
+
+    merged = _merge_requirements(existing, rendered)
+
+    assert merged is not None
+    assert "\n" not in merged.replace("\r\n", "")
+    assert "author-package==2.3.4\r\n" in merged
+    assert "kamiwaza-extensions-lib>=0.5.0,<0.6\r\n" in merged
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap path (TS-M2-7) and missing-version error (TS-M2-8).
 # ---------------------------------------------------------------------------

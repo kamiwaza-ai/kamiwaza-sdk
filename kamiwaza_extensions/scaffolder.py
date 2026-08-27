@@ -134,12 +134,14 @@ def hash_text(content: str) -> str:
 
 
 def compute_rendered_hashes(shape: str, context: Dict[str, str]) -> Dict[str, str]:
-    """Hash every ``preserve_if_modified`` file in the shape's manifest,
-    rendered with the given context.
+    """Hash every clean-tracked text file in the shape's manifest.
 
     Keys are manifest ``relative_path`` strings; values are
     ``sha256:<hex>``. Binary template files are skipped (no
     preserve-if-modified semantics — they have no diff/merge concept).
+    The backend requirements merge is also tracked so a pristine file can
+    receive the complete next template before edited files fall back to the
+    dependency-preserving merge.
 
     Used by ``Scaffolder.create()`` to seed
     ``kamiwaza.json.template_file_hashes`` so that the *next* ``kz-ext
@@ -152,7 +154,9 @@ def compute_rendered_hashes(shape: str, context: Dict[str, str]) -> Dict[str, st
     )
     hashes: Dict[str, str] = {}
     for owned in manifest.files:
-        if owned.strategy != "preserve_if_modified":
+        if owned.strategy != "preserve_if_modified" and owned.relative_path != (
+            "backend/requirements.txt"
+        ):
             continue
         path = template_root / owned.relative_path
         if not path.exists():

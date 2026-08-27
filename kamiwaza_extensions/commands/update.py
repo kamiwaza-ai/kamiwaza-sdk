@@ -276,7 +276,9 @@ def _hash_on_disk_files(target_dir: Path, shape: str) -> dict[str, str]:
     manifest = MANIFESTS[shape]  # type: ignore[index]
     hashes: dict[str, str] = {}
     for owned in manifest.files:
-        if owned.strategy != "preserve_if_modified":
+        if owned.strategy != "preserve_if_modified" and owned.relative_path != (
+            "backend/requirements.txt"
+        ):
             continue
         path = target_dir / owned.relative_path
         if not path.exists():
@@ -512,6 +514,25 @@ def _reconcile_file(
         return FileResult(rel, "no-change")
     if existing_content is None:
         return _create_missing(rel, target_path, new_content, dry_run=dry_run)
+    recorded_hash = recorded_hashes.get(rel)
+    if (
+        rel == "backend/requirements.txt"
+        and recorded_hash is not None
+        and hash_text(existing_content) == recorded_hash
+    ):
+        # A pristine requirements file receives the complete new template,
+        # including FastAPI/Uvicorn floors. Only author-edited files need the
+        # narrow merge that preserves their dependency choices.
+        return _apply_preserve_if_modified(
+            rel,
+            target_path,
+            existing_content,
+            new_content,
+            recorded_hash=recorded_hash,
+            dry_run=dry_run,
+            force=force,
+            non_interactive=non_interactive,
+        )
     if owned.strategy == "merge":
         merged = _reconcile_structured_merge(
             rel=rel,
@@ -782,6 +803,8 @@ def _merge_requirements(existing_content: str, new_content: str) -> str | None:
     desired = _find_runtime_requirement(new_content)
     if desired is None:
         return None
+    newline = "\r\n" if "\r\n" in existing_content else "\n"
+    had_final_newline = existing_content.endswith(("\n", "\r"))
     merged: list[str] = []
     inserted = False
     for line in existing_content.splitlines():
@@ -793,7 +816,7 @@ def _merge_requirements(existing_content: str, new_content: str) -> str | None:
         merged.append(line)
     if not inserted:
         merged.append(desired)
-    return "\n".join(merged) + "\n"
+    return newline.join(merged) + (newline if had_final_newline else "")
 
 
 def _reconcile_requirements_merge(
@@ -803,10 +826,10 @@ def _reconcile_requirements_merge(
     existing_content: str,
     new_content: str,
     dry_run: bool,
-) -> FileResult:
+) -> FileResult | None:
     merged = _merge_requirements(existing_content, new_content)
     if merged is None:
-        return FileResult(rel, "skipped", "runtime-requirement-missing")
+        return None
     if merged == existing_content:
         return FileResult(rel, "no-change")
     if dry_run:

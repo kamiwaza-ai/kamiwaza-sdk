@@ -3,8 +3,9 @@
  *
  * Environment is authoritative for deployment identity: `x-forwarded-prefix`
  * may be compared for diagnostics but never selects the path. Precedence in
- * path mode: KAMIWAZA_APP_PATH_URL, then KAMIWAZA_APP_URL, then
- * KAMIWAZA_ORIGIN + appPath. Port mode uses KAMIWAZA_APP_URL.
+ * Path mode uses KAMIWAZA_APP_PATH_URL when explicit; otherwise it derives
+ * origin(KAMIWAZA_APP_URL || KAMIWAZA_ORIGIN) + appPath so an old port-style
+ * URL cannot silently drop the deployment prefix. Port mode uses APP_URL.
  */
 
 import {
@@ -29,9 +30,12 @@ function resolveAppUrls(
     const appPathUrl = trimTrailingSlash(env.KAMIWAZA_APP_PATH_URL ?? "");
     const configuredAppUrl = trimTrailingSlash(env.KAMIWAZA_APP_URL ?? "");
     const origin = trimTrailingSlash(env.KAMIWAZA_ORIGIN ?? "");
+    const publicOrigin = configuredAppUrl || origin;
     return {
         appPathUrl,
-        appUrl: appPathUrl || configuredAppUrl || (origin ? `${origin}${appPath}` : ""),
+        appUrl:
+            appPathUrl ||
+            (publicOrigin ? `${new URL(publicOrigin).origin}${appPath}` : ""),
     };
 }
 

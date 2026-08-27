@@ -26,7 +26,15 @@ Versions follow semver. Published to npm as a standalone package
   Next 15 and no longer advertises Next 14 support.
 * Proxy responses drop `Set-Cookie` by default. Trusted session and logout
   routes must opt in with `setCookiePaths`; scaffolded routes do so explicitly
-  and rebase accepted cookies to the deployment path.
+  and rebase accepted cookies to the deployment path. An incompatible
+  path-mode `__Host-` cookie now produces a diagnostic 502 instead of an
+  unhandled route exception.
+* Proxy targets now preserve a configured backend path prefix instead of
+  silently discarding it; consumers that previously compensated in route paths
+  should remove that workaround when upgrading.
+* Path-mode public URLs are always scoped to the deployment prefix when the
+  explicit `KAMIWAZA_APP_PATH_URL` is absent, and runtime path segments are
+  limited to the regex-safe platform alphabet `[A-Za-z0-9_-]+`.
 
 ## [0.4.3] — 2026-07-27 (ENG-9199)
 

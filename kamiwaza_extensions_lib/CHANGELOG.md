@@ -22,6 +22,9 @@ follow semver. The library is published to PyPI as a standalone package
 * FastAPI now requires 0.115 or newer for the supported `root_path` behavior.
   Uvicorn remains optional for pure library/SDK clients and is available via
   the `asgi` extra; generated backends declare `uvicorn[standard]` directly.
+* Path-mode public URLs are derived from the configured origin plus the
+  deployment prefix when `KAMIWAZA_APP_PATH_URL` is absent. Runtime path
+  segments now use the regex-safe platform alphabet `[A-Za-z0-9_-]+`.
 
 ## [0.4.4] — 2026-07-27 (ENG-9199)
 

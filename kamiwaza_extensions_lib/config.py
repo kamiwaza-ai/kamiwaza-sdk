@@ -5,8 +5,24 @@ from __future__ import annotations
 import os
 import ssl
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from .errors import UnexpectedContextError
+
+
+def _path_mode_public_url(
+    path_app_url: str, legacy_app_url: str, origin: str, app_path: str
+) -> str:
+    if path_app_url:
+        return path_app_url
+    public_origin = legacy_app_url or origin
+    normalized_path = "/" + app_path.strip(" ").strip("/")
+    if not public_origin or normalized_path == "/":
+        return ""
+    parsed = urlsplit(public_origin)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}{normalized_path}"
 
 
 def _read_verify_ssl() -> bool:
@@ -54,12 +70,17 @@ class AuthConfig:
         routing_mode = os.environ.get("KAMIWAZA_ROUTING_MODE", "")
         legacy_app_url = os.environ.get("KAMIWAZA_APP_URL", "").rstrip("/")
         path_app_url = os.environ.get("KAMIWAZA_APP_PATH_URL", "").rstrip("/")
+        origin = os.environ.get("KAMIWAZA_ORIGIN", "").rstrip("/")
         # AuthConfig remains non-throwing and cheap on request paths. The ASGI
         # launcher validates the full routing contract once at startup; here
         # we only apply the path-mode public-URL precedence needed by auth
         # redirects while preserving legacy behavior for port mode.
         path_mode = routing_mode == "path" or (routing_mode == "" and bool(app_path))
-        app_url = (path_app_url or legacy_app_url) if path_mode else legacy_app_url
+        app_url = (
+            _path_mode_public_url(path_app_url, legacy_app_url, origin, app_path)
+            if path_mode
+            else legacy_app_url
+        )
         return cls(
             api_url=os.environ.get("KAMIWAZA_API_URL", ""),
             public_api_url=os.environ.get("KAMIWAZA_PUBLIC_API_URL", ""),

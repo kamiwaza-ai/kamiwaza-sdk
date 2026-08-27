@@ -27,9 +27,11 @@ describe("getKamiwazaRuntimeServer", () => {
         });
     });
 
-    it("falls back to APP_URL then ORIGIN+appPath when APP_PATH_URL is unset", () => {
+    it("derives origin+appPath when APP_PATH_URL is unset", () => {
         const noPathUrl = { ...PATH_ENV, KAMIWAZA_APP_PATH_URL: "" };
-        expect(getKamiwazaRuntimeServer(noPathUrl).appUrl).toBe("https://host.example:8443");
+        expect(getKamiwazaRuntimeServer(noPathUrl).appUrl).toBe(
+            "https://host.example:8443/runtime/apps/550e8400",
+        );
 
         const originOnly = {
             ...PATH_ENV,

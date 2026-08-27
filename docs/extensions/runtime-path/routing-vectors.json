@@ -52,6 +52,16 @@
       "expect": "/runtime/apps/x"
     },
     {
+      "name": "regex_metacharacter_dot_fails",
+      "value": "/runtime/apps/a.b",
+      "expect_error": true
+    },
+    {
+      "name": "non_platform_tilde_fails",
+      "value": "/runtime/apps/a~b",
+      "expect_error": true
+    },
+    {
       "name": "sentinel",
       "value": "/__KZ_RUNTIME_BASE_7F3A91C2__",
       "expect": "/__KZ_RUNTIME_BASE_7F3A91C2__"
@@ -234,7 +244,7 @@
         "routing_mode": "path",
         "app_path": "/runtime/apps/550e8400",
         "app_path_url": "",
-        "app_url": "https://host.example:8443",
+        "app_url": "https://host.example:8443/runtime/apps/550e8400",
         "deployment_id": "",
         "app_port": ""
       }

@@ -25,7 +25,7 @@ export interface KamiwazaRuntimeConfig extends KamiwazaClientRouting {
 // Conservative segment alphabet. Deployment paths are platform-generated
 // (`/runtime/apps/<uuid>`), so anything outside this set is treated as a
 // misconfiguration rather than something to escape: fail closed.
-const SEGMENT_RE = /^[A-Za-z0-9._~-]+$/;
+const SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
 const SENTINEL_FAMILY_RE = /__KZ_RUNTIME_BASE_[0-9A-F]+__/;
 const INVALID_SEGMENTS = new Set(["", ".", "." + "."]);

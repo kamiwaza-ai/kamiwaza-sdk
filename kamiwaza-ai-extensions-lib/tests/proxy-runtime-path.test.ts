@@ -181,7 +181,8 @@ describe("createProxyHandlers Set-Cookie policy", () => {
         );
     });
 
-    it("fails loudly instead of emitting an invalid path-scoped __Host- cookie", async () => {
+    it("returns a diagnostic 502 instead of emitting an invalid __Host- cookie", async () => {
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
         fetchSpy.mockResolvedValue(
             upstream("{}", {
                 "set-cookie": "__Host-session=abc; Path=/; Secure; HttpOnly",
@@ -191,9 +192,17 @@ describe("createProxyHandlers Set-Cookie policy", () => {
             target: TARGET,
             setCookiePaths: ["/session"],
         });
-        await expect(
-            POST(new Request(`http://localhost${APP}/session`, { method: "POST" })),
-        ).rejects.toThrow(/__Host-.*Path=\//i);
+        const response = await POST(
+            new Request(`http://localhost${APP}/session`, { method: "POST" }),
+        );
+
+        expect(response.status).toBe(502);
+        expect(await response.text()).toMatch(/incompatible upstream cookie/i);
+        expect(response.headers.getSetCookie()).toHaveLength(0);
+        expect(errorSpy).toHaveBeenCalledWith(
+            expect.stringMatching(/rejected an upstream cookie/i),
+            expect.any(Error),
+        );
     });
 
     it("drops Set-Cookie by default even on a standard session path", async () => {
