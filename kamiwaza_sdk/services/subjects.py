@@ -112,13 +112,22 @@ class SubjectGrantsAPI:
         object_namespace: str,
         object_id: str,
         relation: str,
+        attested: bool = False,
     ) -> Grant:
-        """Bind a ReBAC tuple ``(subject, object, relation)``."""
+        """Bind a ReBAC tuple ``(subject, object, relation)``.
+
+        Dataset grants require an explicit need-to-know confirmation on the
+        server.  Pass ``attested=True`` for that case; the flag is omitted
+        for the default ``False`` value so existing non-dataset requests keep
+        their original wire shape.
+        """
         body = {
             "object_namespace": object_namespace,
             "object_id": object_id,
             "relation": relation,
         }
+        if attested:
+            body["attested"] = True
         response = self._client._request(
             "POST",
             f"/authz/subjects/{_encode_username(self._username)}/grants",

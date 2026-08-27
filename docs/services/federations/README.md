@@ -65,7 +65,10 @@ objects; invalid IDs raise `ValueError` before any request is made.
 
 ```python
 receiver = client.federations.by_id(receiver_federation_id)
-receiver.users.add(external_id="carol@src-uuid")
+# `users.add` is for peer_kc/shared_idp allowlists.  A receiver_realm
+# federation mints the identity through the guest endpoint instead:
+guest = receiver.guests.enroll(external_id="carol@src-uuid")
+# Persist guest.offline_token out of band; it is returned once.
 ```
 
 For a mesh probe, prefer the name-keyed proxy below. If the caller already has
@@ -103,7 +106,9 @@ Disconnect (unpair) the federation (`POST /cluster/federations/{id}/disconnect`)
 Allowlist a brokered remote user on this (receiver) cluster
 (`POST /cluster/federations/{id}/users`). `external_id` identifies the remote
 subject; `initial_tuples` seeds the ReBAC grants the user should have on this
-cluster.
+cluster. This operation is valid for `peer_kc` and `shared_idp`; Core rejects it
+on the receiver-owned side of a `receiver_realm` federation because that mode
+uses receiver-minted guest identities.
 
 ### Guest helpers
 

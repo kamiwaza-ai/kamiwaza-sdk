@@ -253,6 +253,7 @@ kz.subjects.grants("cdr-baker").create(
     object_namespace="dataset",
     object_id=conjunctions.urn,
     relation="viewer",
+    attested=True,  # explicit need-to-know confirmation for dataset access
 )
 ```
 

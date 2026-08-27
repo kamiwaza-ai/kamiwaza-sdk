@@ -231,6 +231,36 @@ def test_grants_create_posts_to_subject_scoped_endpoint(mock_client) -> None:
     }
 
 
+def test_grants_create_forwards_dataset_attestation(mock_client) -> None:
+    """Dataset grants carry the explicit need-to-know attestation."""
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
+
+    mock_client.expect(
+        "POST",
+        "/authz/subjects/alice/grants",
+        {
+            "object_namespace": "dataset",
+            "object_id": "dataset-1",
+            "relation": "viewer",
+        },
+    )
+
+    SubjectsAPI(client=mock_client).grants("alice").create(
+        object_namespace="dataset",
+        object_id="dataset-1",
+        relation="viewer",
+        attested=True,
+    )
+
+    body = mock_client.calls[0][2]["json"]
+    assert body == {
+        "object_namespace": "dataset",
+        "object_id": "dataset-1",
+        "relation": "viewer",
+        "attested": True,
+    }
+
+
 def test_grants_list_returns_typed_grants(mock_client) -> None:
     """kz.subjects.grants('alice').list() returns list[Grant]."""
     from kamiwaza_sdk.schemas.federation import Grant
