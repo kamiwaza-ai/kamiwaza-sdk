@@ -232,8 +232,11 @@ function parseFlightPushScript(text, bodyStart, bodyEnd, sentinel) {
         throw new Error("inline Flight push crosses its script boundary");
     }
     const value = JSON.parse(text.slice(jsonStart, jsonEnd));
+    // A second data push in the same script is not part of the stream we
+    // reassemble below. Refuse any trailing sentinel rather than letting the
+    // final whole-document replacement corrupt its Flight frame length.
+    assertSkippedFlightScriptSafe(text, jsonEnd, bodyEnd, sentinel);
     if (!isFlightDataPush(value)) {
-        assertSkippedFlightScriptSafe(text, bodyStart, bodyEnd, sentinel);
         return null;
     }
     return { jsonStart, jsonEnd, value };

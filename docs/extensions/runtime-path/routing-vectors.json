@@ -250,6 +250,24 @@
       }
     },
     {
+      "name": "path_mode_app_url_normalizes_origin",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://user:pass@EXAMPLE.com:443/legacy/path"
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400",
+        "app_path_url": "",
+        "app_url": "https://example.com/runtime/apps/550e8400",
+        "deployment_id": "",
+        "app_port": "",
+        "root_path": "/runtime/apps/550e8400",
+        "cookie_path": "/runtime/apps/550e8400"
+      }
+    },
+    {
       "name": "path_mode_origin_fallback",
       "env": {
         "KAMIWAZA_ROUTING_MODE": "path",

@@ -144,7 +144,9 @@ class TestAuthConfig:
 
         assert config.app_url == "https://public.example:8443"
 
-    def test_invalid_routing_env_does_not_raise_on_request_config(self, monkeypatch):
+    def test_invalid_routing_env_does_not_raise_on_request_config(
+        self, monkeypatch, caplog
+    ):
         monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
         monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/../etc")
         monkeypatch.setenv("KAMIWAZA_APP_URL", "https://legacy.example/my-app")
@@ -154,6 +156,7 @@ class TestAuthConfig:
 
         assert config.app_url == "https://path.example/bad"
         assert config.app_path == ""
+        assert "invalid KAMIWAZA_APP_PATH" in caplog.text
 
     def test_app_path_is_exposed_in_canonical_form(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")

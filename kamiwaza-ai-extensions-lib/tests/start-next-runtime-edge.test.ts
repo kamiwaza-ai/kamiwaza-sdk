@@ -262,6 +262,22 @@ describe("transformHtmlBuffer", () => {
             /unrecognized inline Flight push/i,
         );
     });
+
+    it("fails closed on a second sentinel-bearing push in one script", () => {
+        const first = JSON.stringify([1, `0:{"path":"${SENTINEL}"}\n`]);
+        const payload = `body ${SENTINEL} tail`;
+        const second = JSON.stringify([
+            1,
+            `1:T${Buffer.byteLength(payload).toString(16)},${payload}`,
+        ]);
+        const html = Buffer.from(
+            `<script>self.__next_f.push(${first});self.__next_f.push(${second})</script>`,
+        );
+
+        expect(() => transformHtmlBuffer(html, SENTINEL, REAL)).toThrow(
+            /unrecognized inline Flight push/i,
+        );
+    });
 });
 
 describe("prepareRuntime edge fixes", () => {

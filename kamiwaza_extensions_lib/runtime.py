@@ -114,10 +114,30 @@ def _trim_trailing_slash(value: str) -> str:
 
 
 def _origin_with_app_path(value: str, app_path: str) -> str:
+    return f"{_normalized_http_origin(value)}{app_path}"
+
+
+def _normalized_http_origin(value: str) -> str:
+    """Match the origin normalization performed by JavaScript's ``URL``.
+
+    Browser-visible deployment URLs must never retain userinfo, and default
+    ports/casing must not make the Python and TypeScript runtime views diverge.
+    """
     parsed = urlsplit(value)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    scheme = parsed.scheme.lower()
+    hostname = parsed.hostname
+    if scheme not in ("http", "https") or not hostname:
         raise ValueError(f"invalid public app URL for path routing: {value!r}")
-    return f"{parsed.scheme}://{parsed.netloc}{app_path}"
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"invalid public app URL for path routing: {value!r}") from exc
+    normalized_host = hostname.lower()
+    if ":" in normalized_host:
+        normalized_host = f"[{normalized_host}]"
+    default_port = 443 if scheme == "https" else 80
+    port_suffix = f":{port}" if port is not None and port != default_port else ""
+    return f"{scheme}://{normalized_host}{port_suffix}"
 
 
 def _assert_supported_mode(mode: str) -> None:

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import ssl
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
 from .errors import UnexpectedContextError
-from .runtime import normalize_app_path
+from .runtime import _normalized_http_origin, normalize_app_path
+
+logger = logging.getLogger(__name__)
 
 
 def _path_mode_public_url(
@@ -19,10 +21,11 @@ def _path_mode_public_url(
     public_origin = legacy_app_url or origin
     if not public_origin or not app_path:
         return ""
-    parsed = urlsplit(public_origin)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    try:
+        public_origin = _normalized_http_origin(public_origin)
+    except ValueError:
         return ""
-    return f"{parsed.scheme}://{parsed.netloc}{app_path}"
+    return f"{public_origin}{app_path}"
 
 
 def _read_verify_ssl() -> bool:
@@ -81,6 +84,10 @@ class AuthConfig:
             # Preserve AuthConfig's non-throwing request-path contract. The
             # launcher reports the invalid routing value at startup. Do not
             # reuse the unvalidated value under a second, looser grammar.
+            logger.warning(
+                "Ignoring invalid KAMIWAZA_APP_PATH while building AuthConfig; "
+                "the runtime launcher must reject this deployment configuration"
+            )
             normalized_app_path = ""
         path_mode = routing_mode == "path" or (
             routing_mode == "" and bool(normalized_app_path)
