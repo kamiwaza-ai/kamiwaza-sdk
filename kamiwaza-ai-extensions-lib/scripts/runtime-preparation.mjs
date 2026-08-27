@@ -27,49 +27,106 @@ const ALLOWED_KINDS = new Set(["js", "json", "html", "rsc", "css", "txt"]);
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const WHOLESALE_LINKS = new Set(["node_modules", "public"]);
 
-function validateManifestHeader(manifest) {
+function assertManifestSchema(manifest) {
     if (manifest?.schemaVersion !== 1) {
         throw new Error(`unsupported relocation manifest schema: ${manifest?.schemaVersion}`);
     }
-    if (typeof manifest.sentinel !== "string") {
+}
+
+function assertManifestSentinel(sentinel) {
+    if (typeof sentinel !== "string") {
         throw new Error("relocation manifest sentinel is missing or malformed");
     }
-    if (!manifest.sentinel.startsWith("/") || manifest.sentinel.length < 8) {
+    if (!sentinel.startsWith("/")) {
         throw new Error("relocation manifest sentinel is missing or malformed");
     }
-    if (typeof manifest.nextVersion !== "string" || manifest.nextVersion === "") {
+    if (sentinel.length < 8) {
+        throw new Error("relocation manifest sentinel is missing or malformed");
+    }
+}
+
+function assertManifestNextVersion(nextVersion) {
+    if (typeof nextVersion !== "string") {
         throw new Error("relocation manifest nextVersion is missing");
     }
-    if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
+    if (nextVersion === "") {
+        throw new Error("relocation manifest nextVersion is missing");
+    }
+}
+
+function assertManifestFiles(files) {
+    if (!Array.isArray(files)) {
+        throw new Error("relocation manifest has no files; the path artifact looks broken");
+    }
+    if (files.length === 0) {
         throw new Error("relocation manifest has no files; the path artifact looks broken");
     }
 }
 
-function validateManifestPath(entry) {
-    if (typeof entry?.path !== "string" || entry.path === "") {
+function validateManifestHeader(manifest) {
+    assertManifestSchema(manifest);
+    assertManifestSentinel(manifest.sentinel);
+    assertManifestNextVersion(manifest.nextVersion);
+    assertManifestFiles(manifest.files);
+}
+
+function requireManifestEntryPath(entry) {
+    if (typeof entry?.path !== "string") {
         throw new Error("relocation manifest entry has no path");
     }
-    const normalized = path.posix.normalize(entry.path);
-    if (
-        normalized !== entry.path ||
-        normalized.startsWith("/") ||
-        normalized.startsWith("..")
-    ) {
-        throw new Error(`relocation manifest path escapes the artifact: ${entry.path}`);
+    if (entry.path === "") {
+        throw new Error("relocation manifest entry has no path");
     }
-    if (
-        normalized.startsWith("public/") ||
-        normalized.startsWith("node_modules/") ||
-        normalized.includes("/node_modules/")
-    ) {
-        throw new Error(`relocation manifest lists an unpatchable tree: ${entry.path}`);
+    return entry.path;
+}
+
+function assertContainedManifestPath(original, normalized) {
+    if (normalized !== original) {
+        throw new Error(`relocation manifest path escapes the artifact: ${original}`);
     }
+    if (normalized.startsWith("/")) {
+        throw new Error(`relocation manifest path escapes the artifact: ${original}`);
+    }
+    if (normalized.startsWith("..")) {
+        throw new Error(`relocation manifest path escapes the artifact: ${original}`);
+    }
+}
+
+function assertPatchableManifestPath(original, normalized) {
+    if (normalized.startsWith("public/")) {
+        throw new Error(`relocation manifest lists an unpatchable tree: ${original}`);
+    }
+    if (normalized.startsWith("node_modules/")) {
+        throw new Error(`relocation manifest lists an unpatchable tree: ${original}`);
+    }
+    if (normalized.includes("/node_modules/")) {
+        throw new Error(`relocation manifest lists an unpatchable tree: ${original}`);
+    }
+}
+
+function validateManifestPath(entry) {
+    const original = requireManifestEntryPath(entry);
+    const normalized = path.posix.normalize(original);
+    assertContainedManifestPath(original, normalized);
+    assertPatchableManifestPath(original, normalized);
     return normalized;
 }
 
 function validatePositiveInteger(value, label, entryPath) {
-    if (!Number.isSafeInteger(value) || value <= 0) {
+    if (!Number.isSafeInteger(value)) {
         throw new Error(`invalid ${label} for ${entryPath}`);
+    }
+    if (value <= 0) {
+        throw new Error(`invalid ${label} for ${entryPath}`);
+    }
+}
+
+function validateSha256(value, entryPath) {
+    if (typeof value !== "string") {
+        throw new Error(`invalid sha256 for ${entryPath}`);
+    }
+    if (!SHA256_RE.test(value)) {
+        throw new Error(`invalid sha256 for ${entryPath}`);
     }
 }
 
@@ -84,9 +141,7 @@ function validateManifestEntry(entry, seen) {
     }
     validatePositiveInteger(entry.size, "size", entry.path);
     validatePositiveInteger(entry.occurrences, "occurrence count", entry.path);
-    if (typeof entry.sha256 !== "string" || !SHA256_RE.test(entry.sha256)) {
-        throw new Error(`invalid sha256 for ${entry.path}`);
-    }
+    validateSha256(entry.sha256, entry.path);
 }
 
 /** Validate the relocation manifest before trusting any of it. */
@@ -223,17 +278,28 @@ async function scanForResidualSentinel(root, sentinel) {
     await scanRuntimeTree({ root, sentinelBuffer: Buffer.from(sentinel, "utf8") });
 }
 
-function assertDisjointRoots(sourceRoot, targetRoot) {
-    if (!path.isAbsolute(sourceRoot) || !path.isAbsolute(targetRoot)) {
+function assertAbsoluteRoot(root) {
+    if (!path.isAbsolute(root)) {
         throw new Error("relocation roots must be absolute paths");
     }
+}
+
+function rootsOverlap(source, target) {
+    if (source === target) {
+        return true;
+    }
+    if (target.startsWith(`${source}${path.sep}`)) {
+        return true;
+    }
+    return source.startsWith(`${target}${path.sep}`);
+}
+
+function assertDisjointRoots(sourceRoot, targetRoot) {
+    assertAbsoluteRoot(sourceRoot);
+    assertAbsoluteRoot(targetRoot);
     const source = path.resolve(sourceRoot);
     const target = path.resolve(targetRoot);
-    if (
-        source === target ||
-        target.startsWith(`${source}${path.sep}`) ||
-        source.startsWith(`${target}${path.sep}`)
-    ) {
+    if (rootsOverlap(source, target)) {
         throw new Error(
             `relocation roots must be disjoint (source ${source}, target ${target})`,
         );

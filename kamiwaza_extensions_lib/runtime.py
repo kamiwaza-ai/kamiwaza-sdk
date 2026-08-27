@@ -35,6 +35,28 @@ def _is_invalid_segment(segment: str) -> bool:
     return _SEGMENT_RE.fullmatch(segment) is None
 
 
+def _trim_and_validate_raw_path(value: str) -> str:
+    if _CONTROL_RE.search(value):
+        raise ValueError(f"invalid app path (control characters): {value!r}")
+    # Only U+0020 is ignorable. Other Unicode whitespace is outside the
+    # conservative ASCII grammar and must fail identically in Python and JS.
+    trimmed = value.strip(" ")
+    if len(trimmed) > _MAX_PATH_LENGTH:
+        raise ValueError(
+            f"invalid app path (exceeds maximum length {_MAX_PATH_LENGTH})"
+        )
+    return trimmed
+
+
+def _normalize_nonempty_path(value: str, trimmed: str) -> str:
+    with_leading = trimmed if trimmed.startswith("/") else f"/{trimmed}"
+    without_trailing = with_leading.rstrip("/")
+    segments = without_trailing.split("/")[1:]
+    if any(_is_invalid_segment(segment) for segment in segments):
+        raise ValueError(f"invalid app path: {value!r}")
+    return without_trailing
+
+
 def normalize_app_path(value: str | None) -> str:
     """Normalize an app path: one leading slash, no trailing slashes,
     conservative segment grammar, bounded length. Empty-ish input
@@ -44,25 +66,24 @@ def normalize_app_path(value: str | None) -> str:
     """
     if value is None:
         return ""
-    if _CONTROL_RE.search(value):
-        raise ValueError(f"invalid app path (control characters): {value!r}")
-    # Only U+0020 is ignorable. Other Unicode whitespace is outside the
-    # conservative ASCII grammar and must fail identically in Python and JS.
-    trimmed = value.strip(" ")
+    trimmed = _trim_and_validate_raw_path(value)
     if trimmed in ("", "/"):
         return ""
-    if len(trimmed) > _MAX_PATH_LENGTH:
-        raise ValueError(
-            f"invalid app path (exceeds maximum length {_MAX_PATH_LENGTH})"
-        )
+    return _normalize_nonempty_path(value, trimmed)
 
-    with_leading = trimmed if trimmed.startswith("/") else f"/{trimmed}"
-    without_trailing = with_leading.rstrip("/")
 
-    if any(_is_invalid_segment(segment) for segment in without_trailing.split("/")[1:]):
-        raise ValueError(f"invalid app path: {value!r}")
+def _is_root_relative(path: str) -> bool:
+    if not path.startswith("/"):
+        return False
+    return not path.startswith("//")
 
-    return without_trailing
+
+def _has_app_prefix(path: str, prefix: str) -> bool:
+    if path == prefix:
+        return True
+    if not path.startswith(prefix):
+        return False
+    return path[len(prefix)] in "/?#"
 
 
 def with_app_path(path: str, app_path: str | None = None) -> str:
@@ -72,15 +93,15 @@ def with_app_path(path: str, app_path: str | None = None) -> str:
     URLs, and non-root-relative paths are returned untouched.
     """
     prefix = normalize_app_path(app_path)
-    if prefix == "" or path == "":
+    if prefix == "":
         return path
-    if not path.startswith("/") or path.startswith("//"):
+    if path == "":
+        return path
+    if not _is_root_relative(path):
         return path
     # Boundary-aware already-prefixed check: '/', '?', '#', or end-of-string
     # after the exact prefix all count.
-    if path == prefix:
-        return path
-    if path.startswith(prefix) and path[len(prefix)] in "/?#":
+    if _has_app_prefix(path, prefix):
         return path
     if path == "/":
         return prefix
@@ -91,18 +112,27 @@ def _trim_trailing_slash(value: str) -> str:
     return value.rstrip("/")
 
 
+def _assert_supported_mode(mode: str) -> None:
+    if mode in ("", "path", "port"):
+        return
+    raise ValueError(f"unknown KAMIWAZA_ROUTING_MODE: {mode!r}")
+
+
+def _assert_not_relocation_sentinel(app_path: str) -> None:
+    if _SENTINEL_FAMILY_RE.search(app_path):
+        raise ValueError("KAMIWAZA_APP_PATH must not contain the relocation sentinel")
+
+
 def _resolve_mode_and_path(
     env: Mapping[str, str],
 ) -> tuple[Literal["path", "port"], str]:
     mode = env.get("KAMIWAZA_ROUTING_MODE", "")
+    _assert_supported_mode(mode)
     if mode == "port":
         return "port", ""
-    if mode not in ("", "path"):
-        raise ValueError(f"unknown KAMIWAZA_ROUTING_MODE: {mode!r}")
 
     app_path = normalize_app_path(env.get("KAMIWAZA_APP_PATH", ""))
-    if _SENTINEL_FAMILY_RE.search(app_path):
-        raise ValueError("KAMIWAZA_APP_PATH must not contain the relocation sentinel")
+    _assert_not_relocation_sentinel(app_path)
     if app_path:
         return "path", app_path
     if mode == "path":
