@@ -15,13 +15,19 @@ import {
 } from "./runtime-path-contract.mjs";
 import {
     currentStartupLockMetadata,
+    prepareNativeRuntime,
     prepareRuntime,
     validateManifest,
 } from "./runtime-preparation.mjs";
 import { transformHtmlBuffer, transformRscBuffer } from "./flight-relocation.mjs";
 
 export { resolveRoutingMode, validateRuntimePath };
-export { currentStartupLockMetadata, prepareRuntime, validateManifest };
+export {
+    currentStartupLockMetadata,
+    prepareNativeRuntime,
+    prepareRuntime,
+    validateManifest,
+};
 export { transformHtmlBuffer, transformRscBuffer };
 
 /** Conventional 128+N exit code for a signal name; 1 when unknown. */
@@ -104,11 +110,21 @@ export function resolveRuntimeRoots(env) {
     return { imageRoot, targetRoot };
 }
 
-function startPortRuntime(imageRoot) {
+async function startPortRuntime(imageRoot, targetRoot) {
+    const stats = await prepareNativeRuntime({
+        sourceRoot: path.join(imageRoot, "port"),
+        targetRoot,
+    });
     console.log(
-        JSON.stringify({ event: "kz_next_runtime", mode: "port", action: "start-native" }),
+        JSON.stringify({
+            event: "kz_next_runtime",
+            mode: "port",
+            action: "start-native",
+            prepare_ms: stats.prepareMs,
+            prepare_rss_mib: stats.rssMib,
+        }),
     );
-    startStandalone(path.join(imageRoot, "port"));
+    startStandalone(targetRoot, process.env, true);
 }
 
 async function startPathRuntime(imageRoot, targetRoot, routing) {
@@ -159,7 +175,7 @@ async function main() {
         if (command.validateOnly) {
             throw new Error("--validate-only requires path routing mode");
         }
-        startPortRuntime(imageRoot);
+        await startPortRuntime(imageRoot, targetRoot);
         return;
     }
     await startPathRuntime(imageRoot, targetRoot, { ...routing, ...command });

@@ -38,7 +38,9 @@ export interface ProxyConfig {
      * Upstream paths (after prefix stripping, exact match) for which
      * `Set-Cookie` response headers pass through to the client. Everywhere
      * else `Set-Cookie` is dropped. Defaults to an empty list; cookie
-     * passthrough must be explicitly enabled on trusted session routes.
+     * passthrough must be explicitly enabled on trusted session routes. In
+     * path mode, an allowlisted `__Host-` cookie fails the proxy response with
+     * 502 because that cookie cannot be safely scoped below `/`.
      */
     setCookiePaths?: readonly string[];
 }

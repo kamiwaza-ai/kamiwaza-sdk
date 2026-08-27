@@ -648,6 +648,9 @@ expect_no_sentinel "$PBASE/"
 PORT_HTML="$(canary_curl -fsS "$PBASE/")" || fail "GET $PBASE/ failed"
 grep -qF '"/_next/' <<<"$PORT_HTML" || fail "port-mode asset URLs are not root-relative"
 grep -qF '"routingMode":"port"' <<<"$PORT_HTML" || fail "port-mode bootstrap missing"
-[[ ! -e "$PORT_TARGET" ]] || fail "port mode copied an artifact to $PORT_TARGET"
+[[ -d "$PORT_TARGET/.next/cache" ]] || fail "port mode has no writable Next cache"
+[[ ! -L "$PORT_TARGET/.next/cache" ]] || fail "port-mode Next cache is a symlink"
+touch "$PORT_TARGET/.next/cache/canary-write" \
+    || fail "port-mode Next cache is not writable"
 
 log "ALL CANARY CHECKS PASSED (next@$INSTALLED_NEXT, extensions-lib@$INSTALLED_EXTLIB, health ${BOOT_ELAPSED_MS}ms, prepare ${PREPARE_MS}ms, rss ${RSS_MIB}MiB)"

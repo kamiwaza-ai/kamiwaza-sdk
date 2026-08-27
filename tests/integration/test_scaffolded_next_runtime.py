@@ -294,6 +294,12 @@ def _assert_port_runtime(image: str, container: str) -> None:
     assert runtime["routingMode"] == "port"
     assert runtime["appPath"] == ""
 
+    image_status, image_body = _get(
+        f"http://127.0.0.1:{port}/_next/image?url=%2Fkmza-icon.png&w=32&q=75"
+    )
+    assert image_status == 200
+    assert len(image_body) > 100
+
     event, logs = _runtime_event(container, "port")
     assert event["action"] == "start-native"
     assert "next build" not in logs.lower()

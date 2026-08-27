@@ -81,7 +81,7 @@ Next.js bakes `basePath`/`assetPrefix` at build time, but the deployment prefix 
                     container start (every spawn — milliseconds)
 ┌───────────────────────────────────────────────────────────────────────┐
 │ start-next-runtime.mjs (ENTRYPOINT)                                   │
-│   port mode ──► node /app/runtime/port/server.js  (as-is, no copy)    │
+│   port mode ──► link-backed /tmp tree + writable .next/cache          │
 │   path mode ──► verify manifest (hashes, counts, Next version)        │
 │                 mirror to /tmp/kz-next-runtime:                       │
 │                   • symlink unchanged files (+ node_modules, public)  │
@@ -355,7 +355,7 @@ When the app (or the shared auth libraries) needs its own public URL — login `
 ### Cookies
 
 - Extension-set cookies use `Path=<appPath>` in path mode and `Path=/` in port mode (`RuntimeRouting.cookie_path`) to avoid accidental collisions. Same-origin apps can still set broader or sibling paths, so cookie `Path` must not be treated as a per-deployment security boundary.
-- The shared Next proxy **drops `Set-Cookie` by default** and passes it through only for the configured session-route allowlist. Every passed cookie is rebased to `Path=<appPath>` in path mode (or `/` in port mode), and root-relative `Location` responses are rebased under the same prefix. The default list is `/session`, the reserved compatibility path `/session/extend`, and `/auth/logout`; the canonical Python session router does not create `/session/extend`.
+- The shared Next proxy **drops `Set-Cookie` by default**. Its default allowlist is empty; trusted routes must opt in explicitly with `setCookiePaths`. The scaffold enables `/session` and `/auth/logout`. Every passed cookie is rebased to `Path=<appPath>` in path mode (or `/` in port mode), and root-relative `Location` responses are rebased under the same prefix. An allowlisted `__Host-` cookie cannot be scoped below `/`, so in path mode the proxy deliberately returns 502 instead of weakening its host-wide semantics; this fail-closed behavior is pinned by the proxy runtime-path tests.
 - `SessionProvider` from `@kamiwaza-ai/extensions-lib/client` derives its base
   path from `getAppPath()` automatically; the explicit `basePath` prop remains
   as a deprecated escape hatch. The frozen `@kamiwaza/auth@0.2.0` package
@@ -369,7 +369,7 @@ See the [Auth Integration Guide](../auth-integration-guide.md) for the full logi
 
 The production runner is compatible with `--read-only` and runs as a non-root user (uid 1001):
 
-- **`/tmp` is the only writable location.** Path mode builds the relocated tree at `/tmp/kz-next-runtime`; the writable `.next/cache` lives inside that overlay. Port mode runs the image artifact in place (no copy) and needs no writable app tree.
+- **`/tmp` is the only writable location.** Both modes publish a link-backed runtime tree at `/tmp/kz-next-runtime` with a real writable `.next/cache`. Path mode additionally copies and patches the sentinel-bearing files before publish; port mode links the native artifact without relocation.
 - **Startup lock**: a per-target lock directory (`/tmp/kz-next-runtime.lock`, holding the owner pid and a per-process token) makes a second concurrent preparation fail deterministically instead of corrupting the live tree. Locks from dead processes or an earlier container lifetime that reused the same pid are stolen automatically, and the lock is released after verified publish so a container restart can rebuild the runtime.
 - **Verified publish**: relocation stages into `/tmp/kz-next-runtime.staging-<pid>`, verifies the staged tree, removes the prior target, and renames the staging directory into place while holding the startup lock. Replacement is serialized, but it is not an atomic directory exchange.
 - ISR disk flush is disabled by the wrapper (`experimental.isrFlushToDisk: false`) so nothing tries to write into the read-only image tree.

@@ -18,7 +18,14 @@ function trimTrailingSlash(value: string): string {
 }
 
 function originWithAppPath(value: string, appPath: string): string {
-    const parsed = new URL(value);
+    let parsed: URL;
+    try {
+        parsed = new URL(value);
+    } catch {
+        throw new Error(
+            `invalid public app URL for path routing: ${JSON.stringify(value)}`,
+        );
+    }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
         throw new Error(
             `invalid public app URL for path routing: ${JSON.stringify(value)}`,

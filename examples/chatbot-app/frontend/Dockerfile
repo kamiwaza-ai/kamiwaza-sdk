@@ -3,9 +3,10 @@
 # The image ships TWO prebuilt standalone artifacts — a native no-basePath
 # build (port routing) and a sentinel-basePath build (path routing) — plus a
 # relocation manifest. At container start the boot entrypoint either runs the
-# port artifact as-is or relocates the sentinel artifact to the deployment's
-# KAMIWAZA_APP_PATH in /tmp (seconds, tens of MB). There is NO `next build`,
-# npm, or source tree at runtime: the spawn-time rebuild is gone.
+# port artifact into a link-backed writable tree or relocates the sentinel
+# artifact to the deployment's KAMIWAZA_APP_PATH in /tmp (seconds, tens of MB).
+# There is NO `next build`, npm, or source tree at runtime: the spawn-time
+# rebuild is gone.
 
 FROM node:20-alpine AS base
 RUN addgroup -S -g 1001 appuser && adduser -S -u 1001 -G appuser appuser

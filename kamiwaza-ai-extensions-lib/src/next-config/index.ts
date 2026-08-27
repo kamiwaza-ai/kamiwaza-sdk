@@ -78,6 +78,11 @@ export function withKamiwazaAppGarden(config: NextConfig = {}): NextConfig {
             "withKamiwazaAppGarden owns assetPrefix; remove it from the app's next config",
         );
     }
+    if (config.output !== undefined && config.output !== "standalone") {
+        throw new Error(
+            'withKamiwazaAppGarden requires output: "standalone" for its production runtime',
+        );
+    }
     if (config.env?.KZ_INTERNAL_BAKED_APP_PATH !== undefined) {
         throw new Error("KZ_INTERNAL_BAKED_APP_PATH is reserved and cannot be set by apps");
     }

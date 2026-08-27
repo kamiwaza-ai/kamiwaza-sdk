@@ -27,6 +27,7 @@ const ALLOWED_KINDS = new Set(["js", "json", "html", "rsc", "css", "txt"]);
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SENTINEL_RE = /^\/__KZ_RUNTIME_BASE_[0-9A-F]+__$/;
 const WHOLESALE_LINKS = new Set(["node_modules", "public"]);
+const WRITABLE_CACHE_PATH = ".next/cache";
 const PROCESS_LOCK_TOKEN = randomUUID();
 
 function assertManifestSchema(manifest) {
@@ -199,6 +200,10 @@ async function mirrorEntry(context, relative, entry) {
     const rel = relative === "" ? entry.name : `${relative}/${entry.name}`;
     const sourcePath = path.join(context.sourceRoot, rel);
     const targetPath = path.join(context.targetRoot, rel);
+    if (rel === WRITABLE_CACHE_PATH) {
+        await mkdir(targetPath, { recursive: true });
+        return;
+    }
     if (isWholesaleRootEntry(relative, entry.name)) {
         await symlink(sourcePath, targetPath);
         return;
@@ -528,6 +533,42 @@ async function buildRelocatedRuntime({ source, target, staging, manifest, replac
     await rm(target, { recursive: true, force: true });
     await rename(staging, target);
     return context;
+}
+
+async function buildNativeRuntime({ source, target, staging }) {
+    await rm(staging, { recursive: true, force: true });
+    await mkdir(staging, { recursive: true });
+    await mirrorTree({
+        sourceRoot: source,
+        targetRoot: staging,
+        indexed: new Set(),
+        patch: () => {
+            throw new Error("native runtime unexpectedly requested relocation");
+        },
+    });
+    await mkdir(path.join(staging, WRITABLE_CACHE_PATH), { recursive: true });
+    await rm(target, { recursive: true, force: true });
+    await rename(staging, target);
+}
+
+/** Stage the native artifact as a link-backed tree with a writable Next cache. */
+export async function prepareNativeRuntime({ sourceRoot, targetRoot }) {
+    const startedAt = Date.now();
+    const { source, target } = assertDisjointRoots(sourceRoot, targetRoot);
+    const lockDir = await acquireStartupLock(target);
+    const staging = `${target}.staging-${process.pid}`;
+    try {
+        await buildNativeRuntime({ source, target, staging });
+        return {
+            prepareMs: Date.now() - startedAt,
+            rssMib: Math.round(process.memoryUsage().rss / (1024 * 1024)),
+        };
+    } catch (error) {
+        await rm(staging, { recursive: true, force: true }).catch(() => {});
+        throw error;
+    } finally {
+        await rm(lockDir, { recursive: true, force: true }).catch(() => {});
+    }
 }
 
 /** Build and publish a verified relocated runtime while holding the per-target startup lock. */

@@ -85,6 +85,16 @@ describe("getKamiwazaRuntimeServer", () => {
         ).toThrow(/invalid/i);
     });
 
+    it("reports malformed public origins with the routing-contract diagnostic", () => {
+        expect(() =>
+            getKamiwazaRuntimeServer({
+                KAMIWAZA_ROUTING_MODE: "path",
+                KAMIWAZA_APP_PATH: "/runtime/apps/x",
+                KAMIWAZA_APP_URL: "host.example",
+            } as NodeJS.ProcessEnv),
+        ).toThrow(/invalid public app URL for path routing/i);
+    });
+
     it("ignores a mismatched forwarded prefix (env is authoritative)", () => {
         const runtime = getKamiwazaRuntimeServer(PATH_ENV, "/runtime/apps/other");
         expect(runtime.appPath).toBe("/runtime/apps/550e8400");

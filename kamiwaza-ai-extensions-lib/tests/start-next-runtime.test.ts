@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { buildRelocationManifest } from "../scripts/index-next-runtime.mjs";
 import {
+    prepareNativeRuntime,
     prepareRuntime,
     resolveRoutingMode,
     validateRuntimePath,
@@ -218,5 +219,28 @@ describe("prepareRuntime", () => {
         await expect(
             prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: SENTINEL }),
         ).rejects.toThrow();
+    });
+});
+
+describe("prepareNativeRuntime", () => {
+    it("stages a link-backed runtime with a writable empty Next cache", async () => {
+        write(".next/cache/images/stale", "read-only build cache");
+        const stats = await prepareNativeRuntime({ sourceRoot, targetRoot });
+
+        expect(lstatSync(path.join(targetRoot, "server.js")).isSymbolicLink()).toBe(false);
+        expect(lstatSync(path.join(targetRoot, "node_modules")).isSymbolicLink()).toBe(true);
+        expect(lstatSync(path.join(targetRoot, "public")).isSymbolicLink()).toBe(true);
+        expect(
+            lstatSync(path.join(targetRoot, ".next/static/chunks/plain-xyz.js")).isSymbolicLink(),
+        ).toBe(true);
+
+        const cache = path.join(targetRoot, ".next/cache");
+        expect(lstatSync(cache).isDirectory()).toBe(true);
+        expect(lstatSync(cache).isSymbolicLink()).toBe(false);
+        expect(existsSync(path.join(cache, "images/stale"))).toBe(false);
+        writeFileSync(path.join(cache, "runtime-write"), "ok");
+        expect(readFileSync(path.join(cache, "runtime-write"), "utf8")).toBe("ok");
+        expect(stats.prepareMs).toBeGreaterThanOrEqual(0);
+        expect(stats.rssMib).toBeGreaterThan(0);
     });
 });

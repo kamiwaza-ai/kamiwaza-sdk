@@ -69,6 +69,7 @@ describe("withKamiwazaAppGarden", () => {
         process.env.KZ_NEXT_BUILD_VARIANT = "path";
         expect(() => withKamiwazaAppGarden({ basePath: "/custom" })).toThrow(/basePath/);
         expect(() => withKamiwazaAppGarden({ assetPrefix: "/custom" })).toThrow(/assetPrefix/);
+        expect(() => withKamiwazaAppGarden({ output: "export" })).toThrow(/standalone/);
         expect(() =>
             withKamiwazaAppGarden({ env: { KZ_INTERNAL_BAKED_APP_PATH: "/x" } }),
         ).toThrow(/KZ_INTERNAL_BAKED_APP_PATH/);
