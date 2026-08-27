@@ -229,8 +229,8 @@ function makeHandler(
         }
 
         // Strip the configured prefix so the backend sees clean paths.
-        if (config.pathPrefix && path.startsWith(config.pathPrefix)) {
-            path = path.slice(config.pathPrefix.length) || "/";
+        if (config.pathPrefix) {
+            path = stripOnce(path, config.pathPrefix);
         }
 
         let target: string;

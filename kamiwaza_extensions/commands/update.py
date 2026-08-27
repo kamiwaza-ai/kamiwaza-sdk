@@ -844,15 +844,16 @@ def _merge_dockerignore(existing_content: str, new_content: str) -> str:
     """Add template ignore rules without discarding author exclusions.
 
     Docker ignore order is significant, so retain the existing file byte-for-byte
-    and append only missing template rules. Appending makes the template's
-    build-output exclusions authoritative while preserving author rules such as
-    ``.env`` and ``credentials/**`` that keep secrets out of the build context.
+    and append only missing template rules. Re-append explicit author negations
+    afterward so a rule such as ``!.env.production`` keeps its original intent
+    under Docker's last-match-wins semantics.
     """
-    existing_rules = {
+    author_rules = [
         line.strip()
         for line in existing_content.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
-    }
+    ]
+    existing_rules = set(author_rules)
     additions = [
         line.strip()
         for line in new_content.splitlines()
@@ -862,9 +863,26 @@ def _merge_dockerignore(existing_content: str, new_content: str) -> str:
     ]
     if not additions:
         return existing_content
+    repeated_negations = [rule for rule in author_rules if rule.startswith("!")]
     newline = "\r\n" if "\r\n" in existing_content else "\n"
     separator = "" if existing_content.endswith(("\n", "\r")) else newline
-    return existing_content + separator + newline.join(additions) + newline
+    suffix = additions + repeated_negations
+    return existing_content + separator + newline.join(suffix) + newline
+
+
+def _dockerignore_adds_env_exclusion(existing_content: str, new_content: str) -> bool:
+    """Whether this merge newly makes the template's broad ``.env*`` rule active."""
+    existing_rules = {
+        line.strip()
+        for line in existing_content.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    new_rules = {
+        line.strip()
+        for line in new_content.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    return ".env*" in new_rules and ".env*" not in existing_rules
 
 
 def _reconcile_dockerignore_merge(
@@ -878,10 +896,24 @@ def _reconcile_dockerignore_merge(
     merged = _merge_dockerignore(existing_content, new_content)
     if merged == existing_content:
         return FileResult(rel, "no-change")
+    adds_env_exclusion = _dockerignore_adds_env_exclusion(existing_content, new_content)
+    warning = "new .env* exclusion; review build-time env inputs"
     if dry_run:
-        return FileResult(rel, "would-update", "dockerignore-merge")
+        reason = (
+            f"dockerignore-merge ({warning}; would back up)"
+            if adds_env_exclusion
+            else "dockerignore-merge"
+        )
+        return FileResult(rel, "would-update", reason)
+    if adds_env_exclusion:
+        _backup(target_path, existing_content)
     target_path.write_text(merged, encoding="utf-8")
-    return FileResult(rel, "updated", "dockerignore-merge")
+    reason = (
+        f"dockerignore-merge ({warning}; .orig backup)"
+        if adds_env_exclusion
+        else "dockerignore-merge"
+    )
+    return FileResult(rel, "updated", reason)
 
 
 def _reconcile_structured_merge(
@@ -1001,6 +1033,13 @@ def _print_summary(summary: UpdateSummary, *, dry_run: bool) -> None:
     for fr in summary.files:
         table.add_row(fr.relative_path, fr.action, fr.reason or "—")
     console.print(table)
+    if any("new .env* exclusion" in fr.reason for fr in summary.files):
+        console.print(
+            "[yellow]Warning:[/yellow] frontend/.dockerignore now excludes "
+            "[bold].env*[/bold]. Review any NEXT_PUBLIC_* or other build-time "
+            "values previously supplied through env files before rebuilding; "
+            "the prior file is preserved as .dockerignore.orig when applied."
+        )
     if summary.migrations:
         console.print("[bold]Migrations:[/bold]")
         for m in summary.migrations:

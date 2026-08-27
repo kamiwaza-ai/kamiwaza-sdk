@@ -51,3 +51,12 @@ def test_dockerignore_merge_preserves_crlf():
     assert "credentials/**\r\n" in merged
     assert "node_modules\r\n" in merged
     assert ".git\r\n" in merged
+
+
+def test_dockerignore_merge_preserves_author_negation_precedence():
+    existing = "# build-time public config\n!.env.production\n"
+    rendered = "node_modules\n.next\n.env*\n.git\n"
+
+    merged = _merge_dockerignore(existing, rendered)
+
+    assert merged.splitlines()[-1] == "!.env.production"

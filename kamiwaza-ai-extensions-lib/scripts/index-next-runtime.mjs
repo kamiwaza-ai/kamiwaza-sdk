@@ -241,7 +241,7 @@ async function buildManifestEntry(context, rel, buffer) {
 }
 
 async function inspectArtifactFile(context, file) {
-    if (!isNodeModulesPath(file.rel)) {
+    if (!isNodeModulesPath(file.rel) && !file.rel.startsWith("public/")) {
         assertSourceMapAbsent(file.rel);
     }
     if (file.symlink) {

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getAppPath } from "../runtime/client";
+import { getAppPath, hasAppPathContract } from "../runtime/client";
 import { SessionCtx } from "./SessionContext";
 import type { Session, SessionProviderProps } from "./types";
 
@@ -96,10 +96,11 @@ export function SessionProvider({
                 // runtime bootstrap / baked compile constant → legacy
                 // NEXT_PUBLIC_APP_BASE_PATH (one-release compatibility).
                 basePath ??
-                    (getAppPath() ||
-                        (typeof window !== "undefined"
-                            ? process.env.NEXT_PUBLIC_APP_BASE_PATH
-                            : undefined))
+                    (hasAppPathContract()
+                        ? getAppPath()
+                        : typeof window !== "undefined"
+                          ? process.env.NEXT_PUBLIC_APP_BASE_PATH
+                          : undefined)
             ),
         [basePath]
     );

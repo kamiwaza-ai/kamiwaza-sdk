@@ -208,6 +208,20 @@ describe("createProxyHandlers", () => {
         expect(url).toBe("http://backend:8000/users");
     });
 
+    it("does not strip pathPrefix from a different path segment", async () => {
+        const { GET } = createProxyHandlers({
+            target: "http://backend:8000",
+            pathPrefix: "/api",
+        });
+
+        const request = new Request("http://localhost:3000/apichat");
+
+        await GET(request);
+
+        const [url] = fetchSpy.mock.calls[0];
+        expect(url).toBe("http://backend:8000/apichat");
+    });
+
     it("forwards POST body", async () => {
         const { POST } = createProxyHandlers({ target: "http://backend:8000" });
 

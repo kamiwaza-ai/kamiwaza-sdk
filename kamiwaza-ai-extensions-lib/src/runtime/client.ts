@@ -55,6 +55,19 @@ export function getAppPath(): string {
     return normalizeAppPath(process.env.KZ_INTERNAL_BAKED_APP_PATH);
 }
 
+/** Whether a runtime bootstrap or baked build contract is present.
+ *
+ * Port-mode contracts intentionally resolve to an empty app path. Consumers
+ * that retain a legacy fallback must distinguish that valid empty value from
+ * an app that has not adopted the runtime contract yet.
+ */
+export function hasAppPathContract(): boolean {
+    return (
+        globalThis.__KAMIWAZA_RUNTIME__ != null ||
+        typeof process.env.KZ_INTERNAL_BAKED_APP_PATH === "string"
+    );
+}
+
 /** Prefix a `public/`-root asset path for the current deployment. */
 export function appAsset(path: string): string {
     return withAppPath(path, getAppPath());

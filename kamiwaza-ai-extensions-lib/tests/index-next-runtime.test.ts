@@ -149,6 +149,19 @@ describe("buildRelocationManifest", () => {
         expect(manifest.files.length).toBeGreaterThan(0);
     });
 
+    it("allows source maps under public because public assets are never relocated", async () => {
+        writeStandardFixture();
+        write("public/vendor/library.js.map", `{"version":3,"mappings":"AAAA"}`);
+        const manifest = await buildRelocationManifest({
+            root,
+            sentinel: SENTINEL,
+            nextVersion: "15.5.19",
+        });
+        expect(manifest.files.some((file) => file.path.startsWith("public/"))).toBe(
+            false,
+        );
+    });
+
     it("rejects source maps linked into the runtime artifact", async () => {
         writeStandardFixture();
         write(".hidden-clean-map", `{"version":3}`);

@@ -225,12 +225,12 @@ def test_app_update_adds_cli_dev_overlay_without_claiming_user_override(
 
 
 def test_app_update_merges_dockerignore_without_losing_author_exclusions(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
     """A newly template-owned Docker ignore file must not expose secrets."""
     scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
     dockerignore = scaffold / "frontend" / ".dockerignore"
-    author_content = "# author security rules\n.env\ncredentials/**\n"
+    author_content = "# author security rules\n.env\ncredentials/**\n!.env.production\n"
     dockerignore.write_text(author_content)
     monkeypatch.chdir(scaffold)
 
@@ -240,6 +240,7 @@ def test_app_update_merges_dockerignore_without_losing_author_exclusions(
         fr for fr in summary.files if fr.relative_path == "frontend/.dockerignore"
     )
     assert result.action == "updated"
+    assert "new .env* exclusion" in result.reason
     merged = dockerignore.read_text()
     assert merged.startswith(author_content)
     assert ".env" in merged.splitlines()
@@ -248,6 +249,9 @@ def test_app_update_merges_dockerignore_without_losing_author_exclusions(
     assert ".next" in merged.splitlines()
     assert ".env*" in merged.splitlines()
     assert ".git" in merged.splitlines()
+    assert merged.splitlines()[-1] == "!.env.production"
+    assert dockerignore.with_name(".dockerignore.orig").read_text() == author_content
+    assert "frontend/.dockerignore now excludes" in capsys.readouterr().err
 
     second = run_update(non_interactive=True)
     second_result = next(

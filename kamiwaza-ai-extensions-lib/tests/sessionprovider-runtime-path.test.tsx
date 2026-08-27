@@ -16,6 +16,8 @@ beforeEach(() => {
 
 afterEach(() => {
     delete (globalThis as Record<string, unknown>).__KAMIWAZA_RUNTIME__;
+    delete process.env.KZ_INTERNAL_BAKED_APP_PATH;
+    delete process.env.NEXT_PUBLIC_APP_BASE_PATH;
     vi.restoreAllMocks();
 });
 
@@ -46,6 +48,44 @@ describe("SessionProvider runtime base path default", () => {
         );
         await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
         expect(String(fetchSpy.mock.calls[0][0])).toBe("/explicit/session");
+    });
+
+    it("does not let a legacy path override an explicit port-mode contract", async () => {
+        (globalThis as Record<string, unknown>).__KAMIWAZA_RUNTIME__ = Object.freeze({
+            routingMode: "port",
+            appPath: "",
+        });
+        process.env.NEXT_PUBLIC_APP_BASE_PATH = "/legacy";
+        render(
+            <SessionProvider>
+                <div />
+            </SessionProvider>,
+        );
+        await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+        expect(String(fetchSpy.mock.calls[0][0])).toBe("/session");
+    });
+
+    it("does not let a legacy path override a baked port-mode contract", async () => {
+        process.env.KZ_INTERNAL_BAKED_APP_PATH = "";
+        process.env.NEXT_PUBLIC_APP_BASE_PATH = "/legacy";
+        render(
+            <SessionProvider>
+                <div />
+            </SessionProvider>,
+        );
+        await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+        expect(String(fetchSpy.mock.calls[0][0])).toBe("/session");
+    });
+
+    it("retains the legacy fallback when no runtime contract is present", async () => {
+        process.env.NEXT_PUBLIC_APP_BASE_PATH = "/legacy";
+        render(
+            <SessionProvider>
+                <div />
+            </SessionProvider>,
+        );
+        await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+        expect(String(fetchSpy.mock.calls[0][0])).toBe("/legacy/session");
     });
 
     it("falls back to the root when nothing is configured", async () => {
