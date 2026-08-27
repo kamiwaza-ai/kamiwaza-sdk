@@ -11,7 +11,7 @@ HTTP client and 20+ service modules.
 ## Install
 
 ```bash
-pip install 'kamiwaza-extensions-lib>=0.4.4,<0.5'
+pip install 'kamiwaza-extensions-lib>=0.4.5,<0.5'
 ```
 
 ## Usage

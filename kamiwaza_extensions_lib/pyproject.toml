@@ -1,6 +1,6 @@
 [project]
 name = "kamiwaza-extensions-lib"
-version = "0.4.4"
+version = "0.4.5"
 description = "Runtime library for Kamiwaza extensions: auth middleware, identity extraction, model client, session management"
 readme = "README.md"
 license = "Apache-2.0"
@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "httpx>=0.23",
     "fastapi>=0.100.0",
+    "starlette>=1.3.1,<2",
     "pydantic>=2.0",
 ]
 

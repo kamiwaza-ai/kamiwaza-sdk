@@ -146,7 +146,7 @@ fi
 
 # --- Publish, one prompt per package ---
 #
-# Order matters: kamiwaza-sdk pins `kamiwaza-extensions-lib>=0.4.4,<0.5` as a
+# Order matters: kamiwaza-sdk pins `kamiwaza-extensions-lib>=0.4.5,<0.5` as a
 # runtime dep. Publishing the SDK first leaves users unable to
 # `pip install kamiwaza-sdk==X` if the lib upload step is skipped or fails.
 # The generated SDK scaffold also requires the TypeScript runtime floor.
@@ -171,7 +171,7 @@ fi
 # *already* on PyPI.
 if [[ $LIB_PUBLISHED -eq 0 ]]; then
     echo
-    echo "Note: kamiwaza-sdk requires kamiwaza-extensions-lib (>=0.4.4,<0.5) at runtime."
+    echo "Note: kamiwaza-sdk requires kamiwaza-extensions-lib (>=0.4.5,<0.5) at runtime."
     echo "  Since the lib upload was skipped, only proceed if that version is"
     echo "  already on PyPI from a prior release."
     read -r -p "Is the required lib version already on PyPI? (y/n) " REPLY || REPLY=n
