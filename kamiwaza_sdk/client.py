@@ -41,6 +41,13 @@ _AUTH_ERROR_DETAIL_MAX_LEN = 500
 _AUTH_ERROR_DETAIL_TRUNCATED_SUFFIX = "... [truncated]"
 _VERIFY_SSL_FALSE_VALUES = {"false", "0", "no"}
 
+# Gray Matter briefly returns this exact Envoy response while dynamic runtime
+# routes converge (ENG-8430). Retry read-only calls only: a write that receives
+# it has an ambiguous effect and must remain the caller's decision to replay.
+_GREYMATTER_ROUTE_RETRY_SCHEDULE_SECONDS = (1.0, 2.0, 4.0, 8.0, 16.0)
+_GREYMATTER_NO_HEALTHY_UPSTREAM = "no healthy upstream"
+_READ_ONLY_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
 
 # ----------------------------------------------------------------------------
 # psk_propagation_timeout retry middleware (T7.4 / ENG-5038)
@@ -93,6 +100,16 @@ def _is_psk_propagation_timeout(response: Any) -> bool:
     if not isinstance(detail, dict):
         return False
     return detail.get("reason") == _PSK_PROPAGATION_TIMEOUT_REASON
+
+
+def _is_greymatter_route_transient(response: Any, method: str) -> bool:
+    """Match the exact read-only Envoy response seen during route convergence."""
+    if method.upper() not in _READ_ONLY_HTTP_METHODS:
+        return False
+    if response.status_code != 503:
+        return False
+    response_text = getattr(response, "text", "")
+    return response_text.strip().lower() == _GREYMATTER_NO_HEALTHY_UPSTREAM
 
 
 _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS = 60.0
@@ -387,6 +404,8 @@ class _RetryState:
         # Server-directed: follows whatever delay the server asks for.
         self.deadline_503 = now + _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS
         self.attempts_503 = 0
+        # Client-directed: exact Gray Matter/Envoy route-convergence response.
+        self.greymatter_route_idx = 0
 
 
 class KamiwazaClient:
@@ -831,15 +850,39 @@ class KamiwazaClient:
         state.psk_idx += 1
         return True
 
+    def _wait_for_greymatter_route_retry(
+        self, response, kwargs: dict, state: "_RetryState"
+    ) -> bool:
+        """Wait for a read-only request fenced by Gray Matter route churn."""
+        if not _is_greymatter_route_transient(response, state.method):
+            return False
+        if not _request_body_is_replayable(kwargs):
+            return False
+        schedule = _GREYMATTER_ROUTE_RETRY_SCHEDULE_SECONDS
+        if state.greymatter_route_idx >= len(schedule):
+            return False
+        delay = schedule[state.greymatter_route_idx]
+        state.greymatter_route_idx += 1
+        self.logger.debug(
+            "Retrying %s %s after Gray Matter route transient (delay=%.1fs)",
+            state.method,
+            state.path,
+            delay,
+        )
+        time.sleep(delay)
+        return True
+
     def _wait_for_retryable_503(
         self, response, kwargs: dict, state: "_RetryState"
     ) -> bool:
-        """Sleep the server's Retry-After hint; False when not retryable.
+        """Sleep for a recognized 503 retry signal; False when not retryable.
 
-        Clamps the hint into a sane band and adds jitter so co-fenced clients
-        do not retry in lockstep. Returning False falls through to the normal
-        error path, so the terminal exception is unchanged.
+        Gray Matter route churn has its own bounded schedule. Server-directed
+        Retry-After hints are clamped and jittered so co-fenced clients do not
+        retry in lockstep. False preserves the normal terminal error path.
         """
+        if self._wait_for_greymatter_route_retry(response, kwargs, state):
+            return True
         retry_after = _retry_after_seconds(response)
         if retry_after is None:
             return False
