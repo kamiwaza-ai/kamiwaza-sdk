@@ -50,6 +50,7 @@ const SENTINEL_RE = /^\/__KZ_RUNTIME_BASE_[0-9A-F]+__$/;
 // Content types whose .body payload is safe to treat as relocatable text.
 const TEXTUAL_BODY_CONTENT_TYPE_RE =
     /^(text\/|application\/(json|javascript|xml|x-ndjson|xhtml\+xml)|image\/svg\+xml)/i;
+const HTML_BODY_CONTENT_TYPE_RE = /^(text\/html|application\/xhtml\+xml)(?:\s*;|$)/i;
 
 // Roles that must contain the sentinel in a healthy path-variant build. If
 // none of a role's candidate files carries an occurrence, the artifact is
@@ -132,6 +133,11 @@ async function classifyBody(root, rel) {
             `sentinel found in .body ${rel} with content-length metadata; ` +
                 "relocation would invalidate the cached response length",
         );
+    }
+    if (HTML_BODY_CONTENT_TYPE_RE.test(contentType)) {
+        // Cached HTML may embed React Flight rows whose T-frame lengths must
+        // be rewritten when the deployment prefix changes byte length.
+        return "html";
     }
     if (TEXTUAL_BODY_CONTENT_TYPE_RE.test(contentType)) {
         return "txt";

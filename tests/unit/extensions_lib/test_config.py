@@ -1,6 +1,8 @@
 """Tests for kamiwaza_extensions_lib.config."""
 
+import json
 import ssl
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -8,9 +10,40 @@ import pytest
 from kamiwaza_extensions_lib.config import AuthConfig
 from kamiwaza_extensions_lib.errors import UnexpectedContextError
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ROUTING_VECTORS = json.loads(
+    (
+        REPO_ROOT / "docs" / "extensions" / "runtime-path" / "routing-vectors.json"
+    ).read_text()
+)["routing"]
+AUTH_ROUTING_VECTORS = [
+    vector for vector in ROUTING_VECTORS if not vector.get("expect_error")
+]
+
 
 @pytest.mark.unit
 class TestAuthConfig:
+    @pytest.mark.parametrize(
+        "vector",
+        AUTH_ROUTING_VECTORS,
+        ids=[vector["name"] for vector in AUTH_ROUTING_VECTORS],
+    )
+    def test_app_url_follows_canonical_routing_vectors(self, monkeypatch, vector):
+        for name in (
+            "KAMIWAZA_ROUTING_MODE",
+            "KAMIWAZA_APP_PATH",
+            "KAMIWAZA_APP_PATH_URL",
+            "KAMIWAZA_APP_URL",
+            "KAMIWAZA_ORIGIN",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in vector["env"].items():
+            monkeypatch.setenv(name, value)
+
+        config = AuthConfig.from_env()
+
+        assert config.app_url == vector["expect"]["app_url"]
+
     def test_from_env_all_set(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
         monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://cluster.test/api")
@@ -96,6 +129,19 @@ class TestAuthConfig:
         config = AuthConfig.from_env()
 
         assert config.app_url == "https://legacy.example:8443/runtime/apps/my-app"
+
+    @pytest.mark.parametrize("app_path", ["/", " /// ", "   "])
+    def test_unset_mode_normalizes_emptyish_path_to_port_mode(
+        self, monkeypatch, app_path
+    ):
+        monkeypatch.delenv("KAMIWAZA_ROUTING_MODE", raising=False)
+        monkeypatch.setenv("KAMIWAZA_APP_PATH", app_path)
+        monkeypatch.delenv("KAMIWAZA_APP_PATH_URL", raising=False)
+        monkeypatch.setenv("KAMIWAZA_APP_URL", "https://public.example:8443/")
+
+        config = AuthConfig.from_env()
+
+        assert config.app_url == "https://public.example:8443"
 
     def test_invalid_routing_env_does_not_raise_on_request_config(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")

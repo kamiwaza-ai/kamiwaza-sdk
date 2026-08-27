@@ -1159,7 +1159,12 @@ class TestHealthChecks:
         frontend = next(s for s in payload.services if s.name == "frontend")
 
         health_check = frontend.model_dump()["healthCheck"]
-        assert health_check["exec"]["command"][0] == "node"
+        command = health_check["exec"]["command"]
+        assert command[0] == "node"
+        assert "KAMIWAZA_ROUTING_MODE" in command[2]
+        assert "KAMIWAZA_APP_PATH" in command[2]
+        assert "NEXT_PUBLIC_APP_BASE_PATH" not in command[2]
+        assert "'/health'" in command[2]
 
     def test_generic_frontend_without_node_hints_uses_root_http_probe(
         self, builder, metadata, connection

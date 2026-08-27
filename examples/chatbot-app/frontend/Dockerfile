@@ -72,8 +72,8 @@ RUN node /app/runtime-tools/index-next-runtime.mjs \
 FROM node:20-alpine AS runner
 RUN addgroup -S -g 1001 appuser && adduser -S -u 1001 -G appuser appuser
 WORKDIR /app
-COPY --from=runtime-assembly --chown=1001:1001 /app/runtime /app/runtime
-COPY --from=runtime-assembly --chown=1001:1001 /app/runtime-tools /app/runtime-tools
+COPY --from=runtime-assembly /app/runtime /app/runtime
+COPY --from=runtime-assembly /app/runtime-tools /app/runtime-tools
 
 USER 1001
 EXPOSE 3000

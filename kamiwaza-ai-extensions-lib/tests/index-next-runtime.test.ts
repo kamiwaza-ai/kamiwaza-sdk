@@ -219,6 +219,34 @@ describe("buildRelocationManifest", () => {
         expect(entry?.occurrences).toBe(1);
     });
 
+    it("classifies an HTML .body for Flight-length-aware relocation", async () => {
+        writeStandardFixture();
+        const flightLength = Buffer.byteLength(SENTINEL).toString(16);
+        write(
+            ".next/server/app/cached-page.body",
+            `<script>self.__next_f.push([1,"1:T${flightLength},${SENTINEL}"])</script>`,
+        );
+        write(
+            ".next/server/app/cached-page.meta",
+            JSON.stringify({
+                status: 200,
+                headers: { "content-type": "text/html; charset=utf-8" },
+            }),
+        );
+
+        const manifest = await buildRelocationManifest({
+            root,
+            sentinel: SENTINEL,
+            nextVersion: "15.5.19",
+        });
+
+        const entry = manifest.files.find(
+            (file) => file.path === ".next/server/app/cached-page.body",
+        );
+        expect(entry?.kind).toBe("html");
+        expect(entry?.occurrences).toBe(1);
+    });
+
     it("rejects a sentinel inside a binary .body (S3)", async () => {
         writeStandardFixture();
         write(

@@ -246,6 +246,8 @@ def test_app_update_merges_dockerignore_without_losing_author_exclusions(
     assert "credentials/**" in merged.splitlines()
     assert "node_modules" in merged.splitlines()
     assert ".next" in merged.splitlines()
+    assert ".env*" in merged.splitlines()
+    assert ".git" in merged.splitlines()
 
     second = run_update(non_interactive=True)
     second_result = next(
@@ -254,6 +256,8 @@ def test_app_update_merges_dockerignore_without_losing_author_exclusions(
     assert second_result.action == "no-change"
     assert dockerignore.read_text().splitlines().count("node_modules") == 1
     assert dockerignore.read_text().splitlines().count(".next") == 1
+    assert dockerignore.read_text().splitlines().count(".env*") == 1
+    assert dockerignore.read_text().splitlines().count(".git") == 1
 
 
 def test_app_update_upgrades_runtime_dependencies_without_losing_author_edits(

@@ -322,7 +322,7 @@ external mount context while the backend declares ordinary routes.
   and the launcher supplies that same prefix as the ASGI `root_path`.
   Browser-side fetch helpers must retain the public prefix when calling into
   App Garden.
-- **Cookies** use `RuntimeRouting.cookie_path` — the app prefix in path mode, `/` in port mode — so two deployments on the same host can't shadow each other's cookies:
+- **Cookies** use `RuntimeRouting.cookie_path` — the app prefix in path mode, `/` in port mode — to avoid accidental name collisions between deployments. Cookie `Path` is not a security boundary between same-origin apps:
 
 ```python
 from kamiwaza_extensions_lib import RuntimeRouting, normalize_app_path, with_app_path
@@ -339,7 +339,7 @@ routing.app_url        # canonical public URL (see precedence below)
 
 ---
 
-## 7. Auth URLs and Cookie Isolation
+## 7. Auth URLs and Cookie Scoping
 
 ### Public URL precedence
 
@@ -354,7 +354,7 @@ When the app (or the shared auth libraries) needs its own public URL — login `
 
 ### Cookies
 
-- Extension-set cookies use `Path=<appPath>` in path mode and `Path=/` in port mode (`RuntimeRouting.cookie_path`), so deployments under different prefixes stay isolated.
+- Extension-set cookies use `Path=<appPath>` in path mode and `Path=/` in port mode (`RuntimeRouting.cookie_path`) to avoid accidental collisions. Same-origin apps can still set broader or sibling paths, so cookie `Path` must not be treated as a per-deployment security boundary.
 - The shared Next proxy **drops `Set-Cookie` by default** and passes it through only for the configured session-route allowlist. Every passed cookie is rebased to `Path=<appPath>` in path mode (or `/` in port mode), and root-relative `Location` responses are rebased under the same prefix. The default list is `/session`, the reserved compatibility path `/session/extend`, and `/auth/logout`; the canonical Python session router does not create `/session/extend`.
 - `SessionProvider` from `@kamiwaza-ai/extensions-lib/client` derives its base
   path from `getAppPath()` automatically; the explicit `basePath` prop remains

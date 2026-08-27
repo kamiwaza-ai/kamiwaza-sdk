@@ -496,7 +496,8 @@ class PayloadBuilder:
         Path-selection rules (ENG-3901 / F-013):
 
         - Frontend (Next.js) services use a node-based exec probe that
-          resolves the basePath env var dynamically.
+          resolves the runtime deployment path dynamically and calls the
+          scaffolded health route.
         - Backend services in app-type extensions probe ``/health`` —
           the scaffolded FastAPI backend ships an explicit /health route.
         - Primary services in **service** and **tool** extensions probe
@@ -520,13 +521,15 @@ class PayloadBuilder:
         port = ports[0].container_port
 
         if _should_use_node_frontend_probe(svc_name, svc):
-            # Frontend: use node to resolve basePath env vars reliably
+            # Frontend: use node to resolve runtime path env vars reliably
             # (shell-based wget probes fail with nested ${} on Alpine)
             probe_script = (
                 "const v=s=>(s&&!s.includes('${'))?s:'';"
-                "const base=(v(process.env.NEXT_PUBLIC_APP_BASE_PATH)"
-                "||v(process.env.KAMIWAZA_APP_PATH)||'').replace(/\\/$/,'')||'/';"
-                f"require('http').get({{host:'127.0.0.1',port:{port},path:base}},"
+                "const mode=v(process.env.KAMIWAZA_ROUTING_MODE);"
+                "const appPath=v(process.env.KAMIWAZA_APP_PATH).replace(/\\/+$/,'');"
+                "const base=mode==='port'?'':appPath;"
+                "const path=(base||'')+'/health';"
+                f"require('http').get({{host:'127.0.0.1',port:{port},path}},"
                 "(res)=>process.exit(res.statusCode===200?0:1))"
                 ".on('error',()=>process.exit(1));"
             )

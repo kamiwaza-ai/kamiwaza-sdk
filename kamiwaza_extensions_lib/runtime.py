@@ -180,8 +180,8 @@ class RuntimeRouting:
     @property
     def cookie_path(self) -> str:
         """Cookie ``Path`` scope: the app prefix in path mode, ``/`` in
-        port mode — prevents one App Garden deployment's cookies from
-        shadowing another's on the same host."""
+        port mode. This avoids accidental cross-deployment name collisions;
+        cookie paths are not a security boundary between same-origin apps."""
         return self.app_path or "/"
 
     @classmethod

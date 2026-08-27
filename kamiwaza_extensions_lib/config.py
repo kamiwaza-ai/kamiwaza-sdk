@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from .errors import UnexpectedContextError
+from .runtime import normalize_app_path
 
 
 def _path_mode_public_url(
@@ -75,9 +76,22 @@ class AuthConfig:
         # launcher validates the full routing contract once at startup; here
         # we only apply the path-mode public-URL precedence needed by auth
         # redirects while preserving legacy behavior for port mode.
-        path_mode = routing_mode == "path" or (routing_mode == "" and bool(app_path))
+        try:
+            normalized_app_path = normalize_app_path(app_path)
+        except ValueError:
+            # Preserve AuthConfig's non-throwing request-path contract. The
+            # launcher reports the invalid routing value at startup.
+            normalized_app_path = app_path
+        path_mode = routing_mode == "path" or (
+            routing_mode == "" and bool(normalized_app_path)
+        )
         app_url = (
-            _path_mode_public_url(path_app_url, legacy_app_url, origin, app_path)
+            _path_mode_public_url(
+                path_app_url,
+                legacy_app_url,
+                origin,
+                normalized_app_path,
+            )
             if path_mode
             else legacy_app_url
         )

@@ -262,6 +262,8 @@ class TestScaffolder:
         dockerignore = (d / "frontend" / ".dockerignore").read_text().splitlines()
         assert "node_modules" in dockerignore
         assert ".next" in dockerignore
+        assert ".env*" in dockerignore
+        assert ".git" in dockerignore
         backend_requirements = (d / "backend" / "requirements.txt").read_text()
         assert "fastapi>=0.115.0" in backend_requirements
         assert "uvicorn[standard]>=0.30.0" in backend_requirements
@@ -271,6 +273,7 @@ class TestScaffolder:
         assert "start-next-runtime.mjs" in dockerfile
         assert "start-next-runtime.mjs --validate-only" in dockerfile
         assert "resolveRoutingMode" in dockerfile
+        assert "--chown=1001:1001 /app/runtime" not in dockerfile
         assert "replace(/\\/+$/" not in dockerfile
         assert (
             "npm run build" not in dockerfile.split("FROM node:20-alpine AS runner")[1]
