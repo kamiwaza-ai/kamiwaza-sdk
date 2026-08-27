@@ -26,7 +26,8 @@ fails CI loudly — by design, the contract has to be explicit.
   template-rendered content (i.e. the author modified it).
 * ``preserve_if_modified`` — replace if and only if the on-disk copy is
   unchanged from the prior template; otherwise skip with a warning.
-* ``merge`` — structured merge for JSON and selected requirements files.
+* ``merge`` — structured merge for JSON, selected requirements files, and
+  template-owned ignore rules.
   Author fields and dependencies win except for explicitly
   template-controlled runtime dependencies; ``template_version`` and
   ``template_shape`` are likewise reset on every successful update. See
@@ -135,8 +136,9 @@ _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     # current launcher contract.
     _owned("backend/requirements.txt", strategy="merge"),
     _owned("backend/app/main.py"),
-    # Frontend infrastructure — pure scaffold, overwriting is fine.
-    _owned("frontend/.dockerignore", strategy="overwrite"),
+    # Preserve author-added exclusions (especially secrets) while ensuring
+    # the template's build-output exclusions remain present.
+    _owned("frontend/.dockerignore", strategy="merge"),
     _owned("frontend/Dockerfile", strategy="overwrite"),
     _owned("frontend/next.config.js", strategy="overwrite"),
     # Smart-merge author scripts/dependencies, but keep the template-owned

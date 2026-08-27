@@ -224,6 +224,38 @@ def test_app_update_adds_cli_dev_overlay_without_claiming_user_override(
     assert developer_override.read_text() == developer_content
 
 
+def test_app_update_merges_dockerignore_without_losing_author_exclusions(
+    tmp_path, monkeypatch
+):
+    """A newly template-owned Docker ignore file must not expose secrets."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    dockerignore = scaffold / "frontend" / ".dockerignore"
+    author_content = "# author security rules\n.env\ncredentials/**\n"
+    dockerignore.write_text(author_content)
+    monkeypatch.chdir(scaffold)
+
+    summary = run_update(non_interactive=True)
+
+    result = next(
+        fr for fr in summary.files if fr.relative_path == "frontend/.dockerignore"
+    )
+    assert result.action == "updated"
+    merged = dockerignore.read_text()
+    assert merged.startswith(author_content)
+    assert ".env" in merged.splitlines()
+    assert "credentials/**" in merged.splitlines()
+    assert "node_modules" in merged.splitlines()
+    assert ".next" in merged.splitlines()
+
+    second = run_update(non_interactive=True)
+    second_result = next(
+        fr for fr in second.files if fr.relative_path == "frontend/.dockerignore"
+    )
+    assert second_result.action == "no-change"
+    assert dockerignore.read_text().splitlines().count("node_modules") == 1
+    assert dockerignore.read_text().splitlines().count(".next") == 1
+
+
 def test_app_update_upgrades_runtime_dependencies_without_losing_author_edits(
     tmp_path, monkeypatch
 ):

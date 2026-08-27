@@ -815,6 +815,49 @@ def _reconcile_requirements_merge(
     return FileResult(rel, "updated", "requirements-merge")
 
 
+def _merge_dockerignore(existing_content: str, new_content: str) -> str:
+    """Add template ignore rules without discarding author exclusions.
+
+    Docker ignore order is significant, so retain the existing file byte-for-byte
+    and append only missing template rules. Appending makes the template's
+    build-output exclusions authoritative while preserving author rules such as
+    ``.env`` and ``credentials/**`` that keep secrets out of the build context.
+    """
+    existing_rules = {
+        line.strip()
+        for line in existing_content.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    additions = [
+        line.strip()
+        for line in new_content.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and line.strip() not in existing_rules
+    ]
+    if not additions:
+        return existing_content
+    separator = "" if existing_content.endswith("\n") else "\n"
+    return existing_content + separator + "\n".join(additions) + "\n"
+
+
+def _reconcile_dockerignore_merge(
+    *,
+    rel: str,
+    target_path: Path,
+    existing_content: str,
+    new_content: str,
+    dry_run: bool,
+) -> FileResult:
+    merged = _merge_dockerignore(existing_content, new_content)
+    if merged == existing_content:
+        return FileResult(rel, "no-change")
+    if dry_run:
+        return FileResult(rel, "would-update", "dockerignore-merge")
+    target_path.write_text(merged, encoding="utf-8")
+    return FileResult(rel, "updated", "dockerignore-merge")
+
+
 def _reconcile_structured_merge(
     *,
     rel: str,
@@ -833,6 +876,14 @@ def _reconcile_structured_merge(
         )
     if rel == "backend/requirements.txt":
         return _reconcile_requirements_merge(
+            rel=rel,
+            target_path=target_path,
+            existing_content=existing_content,
+            new_content=new_content,
+            dry_run=dry_run,
+        )
+    if rel == "frontend/.dockerignore":
+        return _reconcile_dockerignore_merge(
             rel=rel,
             target_path=target_path,
             existing_content=existing_content,
