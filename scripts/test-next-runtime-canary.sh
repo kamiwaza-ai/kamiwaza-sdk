@@ -477,6 +477,24 @@ grep -qF "KZ_FLIGHT_TAIL_9A6E2D43" <<<"$HOME_HTML" \
 expect_no_sentinel "$BASE"
 expect_no_sentinel "$BASE/nested"
 
+# Reassemble the inline `self.__next_f.push([1, ...])` chunks. Next may split
+# a Flight T-frame header and payload across different script tags, so the
+# relocator must repair the concatenated byte stream, not each tag in isolation.
+HTML_FLIGHT="$WORK/html-flight-body"
+node -e '
+const fs = require("node:fs");
+const html = process.argv[1];
+const output = process.argv[2];
+const chunks = [];
+const pattern = /self\.__next_f\.push\((\[[\s\S]*?\])\)<\/script>/g;
+for (const match of html.matchAll(pattern)) {
+    const push = JSON.parse(match[1]);
+    if (push[0] === 1 && typeof push[1] === "string") chunks.push(push[1]);
+}
+if (chunks.length === 0) throw new Error("no inline Flight data pushes found");
+fs.writeFileSync(output, chunks.join(""));
+' "$HOME_HTML" "$HTML_FLIGHT" || fail "could not extract inline HTML Flight stream"
+
 MIDDLEWARE_HEADERS="$WORK/middleware-headers"
 canary_curl -fsS -D "$MIDDLEWARE_HEADERS" -o /dev/null "$BASE/nested" \
     || fail "GET $BASE/nested failed while checking middleware headers"
@@ -529,48 +547,50 @@ fi
 # shellcheck disable=SC2016 # JavaScript template literals are intentionally single-quoted.
 node -e '
 const fs = require("node:fs");
-const body = fs.readFileSync(process.argv[1]);
 const marker = Buffer.from("KZ_FLIGHT_TAIL_9A6E2D43");
-let pos = 0;
-let markerInTextFrame = false;
 const isHex = (byte) =>
     (byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66);
-while (pos < body.length) {
-    let cursor = pos;
-    while (cursor < body.length && isHex(body[cursor])) cursor += 1;
-    if (body[cursor] !== 0x3a) {
-        throw new Error(`invalid Flight row at byte ${pos}`);
-    }
-    cursor += 1;
-    const tag = body[cursor];
-    const isLetter =
-        (tag >= 0x41 && tag <= 0x5a) || (tag >= 0x61 && tag <= 0x7a);
-    let hexEnd = cursor + 1;
-    while (hexEnd < body.length && isHex(body[hexEnd])) hexEnd += 1;
-    if (isLetter && hexEnd > cursor + 1 && body[hexEnd] === 0x2c) {
-        const length = Number.parseInt(body.subarray(cursor + 1, hexEnd).toString("ascii"), 16);
-        const payloadStart = hexEnd + 1;
-        const payloadEnd = payloadStart + length;
-        if (!Number.isSafeInteger(length) || payloadEnd > body.length) {
-            throw new Error(`invalid Flight frame length at byte ${pos}`);
+for (const file of process.argv.slice(1)) {
+    const body = fs.readFileSync(file);
+    let pos = 0;
+    let markerInTextFrame = false;
+    while (pos < body.length) {
+        let cursor = pos;
+        while (cursor < body.length && isHex(body[cursor])) cursor += 1;
+        if (body[cursor] !== 0x3a) {
+            throw new Error(`${file}: invalid Flight row at byte ${pos}`);
         }
-        if (tag === 0x54 && body.subarray(payloadStart, payloadEnd).includes(marker)) {
-            markerInTextFrame = true;
+        cursor += 1;
+        const tag = body[cursor];
+        const isLetter =
+            (tag >= 0x41 && tag <= 0x5a) || (tag >= 0x61 && tag <= 0x7a);
+        let hexEnd = cursor + 1;
+        while (hexEnd < body.length && isHex(body[hexEnd])) hexEnd += 1;
+        if (isLetter && hexEnd > cursor + 1 && body[hexEnd] === 0x2c) {
+            const length = Number.parseInt(body.subarray(cursor + 1, hexEnd).toString("ascii"), 16);
+            const payloadStart = hexEnd + 1;
+            const payloadEnd = payloadStart + length;
+            if (!Number.isSafeInteger(length) || payloadEnd > body.length) {
+                throw new Error(`${file}: invalid Flight frame length at byte ${pos}`);
+            }
+            if (tag === 0x54 && body.subarray(payloadStart, payloadEnd).includes(marker)) {
+                markerInTextFrame = true;
+            }
+            pos = payloadEnd;
+            continue;
         }
-        pos = payloadEnd;
-        continue;
+        const newline = body.indexOf(0x0a, cursor);
+        if (newline === -1) {
+            pos = body.length;
+        } else {
+            pos = newline + 1;
+        }
     }
-    const newline = body.indexOf(0x0a, cursor);
-    if (newline === -1) {
-        pos = body.length;
-    } else {
-        pos = newline + 1;
+    if (!markerInTextFrame) {
+        throw new Error(`${file}: marker was not inside a byte-length-framed Flight T row`);
     }
 }
-if (!markerInTextFrame) {
-    throw new Error("long-text marker was not inside a byte-length-framed Flight T row");
-}
-' "$RSC_BODY" || fail "RSC Flight byte framing is invalid"
+' "$RSC_BODY" "$HTML_FLIGHT" || fail "RSC or inline HTML Flight byte framing is invalid"
 
 # Runtime config route.
 RUNTIME_JSON="$(canary_curl -fsS "$BASE/kamiwaza/runtime.json")" \

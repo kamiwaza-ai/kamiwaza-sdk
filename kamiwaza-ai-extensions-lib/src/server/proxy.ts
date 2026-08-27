@@ -1,5 +1,5 @@
 import { ENVELOPE_AUTH_HEADERS } from "../_shared/envelopeHeaders";
-import { normalizeAppPath } from "../runtime/shared";
+import { resolveRuntimeRouting, withAppPath } from "../runtime/shared";
 import type { ProxyConfig } from "./types";
 
 /** Headers to forward from the incoming request to the backend.
@@ -33,21 +33,14 @@ const FORWARD_REQUEST_HEADERS = new Set<string>([
     // (``x-user-id`` + ``authorization``/``x-auth-token``); ``cookie``
     // is forwarded only because some backend services use the platform
     // session cookie for compatibility with the legacy SDK proxy. The
-    // response side strips ``set-cookie`` (DENY_RESPONSE_HEADERS), so a
-    // backend service cannot mint or rotate cookies through this proxy.
+    // response side strips ``set-cookie`` except on the explicit session
+    // allowlist, where cookies are rebased to the deployment path.
     // If your extension doesn't need cookie passthrough, override
     // ``FORWARD_REQUEST_HEADERS`` in your ProxyConfig — round-6 H4
     // tracks tightening this default in a follow-up once the legacy
     // session-cookie consumers are inventoried.
     "cookie",
     "content-type",
-    // Forwarded routing context — lets the backend construct public URLs
-    // and log the external prefix without trusting it for identity.
-    "x-forwarded-prefix",
-    "x-forwarded-host",
-    "x-forwarded-proto",
-    "x-forwarded-for",
-    "x-forwarded-uri",
 ]);
 
 /** Response headers that must NOT be forwarded to the client. */
@@ -97,19 +90,11 @@ const DEFAULT_SET_COOKIE_PATHS: readonly string[] = [
 ];
 
 /**
- * Resolve the deployment's runtime app path from the environment, leniently:
- * the boot entrypoint has already failed closed on truly invalid values, so
- * the proxy treats anything unusable as "no prefix".
+ * Resolve the deployment's runtime app path from the same fail-closed
+ * environment contract used by the runtime-config route.
  */
 function resolveRuntimeAppPath(): string {
-    if (process.env.KAMIWAZA_ROUTING_MODE === "port") {
-        return "";
-    }
-    try {
-        return normalizeAppPath(process.env.KAMIWAZA_APP_PATH);
-    } catch {
-        return "";
-    }
+    return resolveRuntimeRouting(process.env).appPath;
 }
 
 /** Remove at most one leading, segment-boundary occurrence of prefix. */
@@ -153,8 +138,13 @@ function resolveTarget(target: string, path: string, search: string): string {
     // Normalize: ensure path starts with /
     const safePath = path.startsWith("/") ? path : `/${path}`;
 
-    const targetOrigin = new URL(target).origin;
-    const resolved = new URL(`${targetOrigin}${safePath}${search}`);
+    const configuredTarget = new URL(target);
+    const targetOrigin = configuredTarget.origin;
+    const basePath = configuredTarget.pathname.replace(/\/+$/, "");
+    const resolved = new URL(configuredTarget);
+    resolved.pathname = `${basePath}${safePath}`;
+    resolved.search = search;
+    resolved.hash = "";
 
     // Final origin check — resolved URL must match the configured target
     if (resolved.origin !== targetOrigin) {
@@ -164,9 +154,26 @@ function resolveTarget(target: string, path: string, search: string): string {
     return resolved.toString();
 }
 
+function scopeSetCookie(cookie: string, appPath: string): string {
+    const cookiePath = appPath || "/";
+    const pathAttribute = /;\s*Path=[^;]*/i;
+    if (pathAttribute.test(cookie)) {
+        return cookie.replace(pathAttribute, `; Path=${cookiePath}`);
+    }
+    return `${cookie}; Path=${cookiePath}`;
+}
+
+function rebaseLocation(headers: Headers, appPath: string): void {
+    const location = headers.get("location");
+    if (location == null) {
+        return;
+    }
+    headers.set("location", withAppPath(location, appPath));
+}
+
 function makeHandler(method: string, config: ProxyConfig): RouteHandler {
     // Pre-parse the target to fail fast on bad config
-    const targetOrigin = new URL(config.target).origin;
+    new URL(config.target);
 
     return async (request: NextRequest) => {
         const url = new URL(request.url);
@@ -179,8 +186,9 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
         // Strip the deployment's runtime app path (default on). Next's own
         // basePath routing usually strips it first, making this a no-op; the
         // raw-URL path covers everything else.
+        const runtimeAppPath = resolveRuntimeAppPath();
         if (config.stripRuntimeAppPath !== false) {
-            path = stripOnce(path, resolveRuntimeAppPath());
+            path = stripOnce(path, runtimeAppPath);
         }
 
         // Strip the configured prefix so the backend sees clean paths.
@@ -213,6 +221,7 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
 
         // Stream the response back, filtering sensitive headers.
         const responseHeaders = new Headers(filterResponseHeaders(upstream.headers));
+        rebaseLocation(responseHeaders, runtimeAppPath);
 
         // Set-Cookie passes through only for the explicit session-route
         // allowlist (matched on the backend-facing path), and only from the
@@ -221,7 +230,10 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
         const upstreamPath = new URL(target).pathname;
         if (cookiePaths.includes(upstreamPath)) {
             for (const cookie of upstream.headers.getSetCookie()) {
-                responseHeaders.append("set-cookie", cookie);
+                responseHeaders.append(
+                    "set-cookie",
+                    scopeSetCookie(cookie, runtimeAppPath),
+                );
             }
         }
 

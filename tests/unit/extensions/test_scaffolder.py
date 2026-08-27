@@ -263,6 +263,8 @@ class TestScaffolder:
         assert "KZ_NEXT_BUILD_VARIANT=path" in dockerfile
         assert "index-next-runtime.mjs" in dockerfile
         assert "start-next-runtime.mjs" in dockerfile
+        assert "resolveRoutingMode" in dockerfile
+        assert "replace(/\\/+$/" not in dockerfile
         assert (
             "npm run build" not in dockerfile.split("FROM node:20-alpine AS runner")[1]
         )

@@ -19,6 +19,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -36,6 +37,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TS_RUNTIME = REPO_ROOT / "kamiwaza-ai-extensions-lib"
 SENTINEL = "/__KZ_RUNTIME_BASE_7F3A91C2__"
+
+
+def _skip_or_fail(reason: str) -> NoReturn:
+    if os.environ.get("KZ_REQUIRE_NEXT_RUNTIME_E2E") == "1":
+        pytest.fail(reason)
+    pytest.skip(reason)
 
 
 def _run(
@@ -67,7 +74,7 @@ def _run_cleanup(command: list[str]) -> None:
 def _require_build_tools() -> None:
     missing = [tool for tool in ("docker", "npm") if shutil.which(tool) is None]
     if missing:
-        pytest.skip(f"runtime-path canary requires: {', '.join(missing)}")
+        _skip_or_fail(f"runtime-path canary requires: {', '.join(missing)}")
     docker_info = subprocess.run(
         ["docker", "info"],
         text=True,
@@ -75,7 +82,7 @@ def _require_build_tools() -> None:
         timeout=30,
     )
     if docker_info.returncode != 0:
-        pytest.skip(f"Docker daemon unavailable: {docker_info.stderr.strip()}")
+        _skip_or_fail(f"Docker daemon unavailable: {docker_info.stderr.strip()}")
     buildx = subprocess.run(
         ["docker", "buildx", "version"],
         text=True,
@@ -83,7 +90,7 @@ def _require_build_tools() -> None:
         timeout=30,
     )
     if buildx.returncode != 0:
-        pytest.skip("Docker Buildx is required for the local SDK build context")
+        _skip_or_fail("Docker Buildx is required for the local SDK build context")
 
 
 def _isolate_public_docker_config(
@@ -119,7 +126,7 @@ def _isolate_public_docker_config(
 def _scaffold_with_kz_ext(target: Path) -> None:
     kz_ext = Path(sys.executable).with_name("kz-ext")
     if not kz_ext.is_file():
-        pytest.skip(f"kz-ext console script is absent beside {sys.executable}")
+        _skip_or_fail(f"kz-ext console script is absent beside {sys.executable}")
     _run(
         [str(kz_ext), "create", "--type", "app", "--name", "runtime-canary"],
         cwd=target,

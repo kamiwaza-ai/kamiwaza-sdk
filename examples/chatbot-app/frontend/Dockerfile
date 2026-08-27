@@ -54,8 +54,7 @@ RUN npm run build \
 FROM base AS runtime-assembly
 COPY --from=build-port /out/port /app/runtime/port
 COPY --from=build-path /out/path /app/runtime/path
-COPY --from=deps /app/node_modules/@kamiwaza-ai/extensions-lib/scripts/index-next-runtime.mjs /app/runtime-tools/index-next-runtime.mjs
-COPY --from=deps /app/node_modules/@kamiwaza-ai/extensions-lib/scripts/start-next-runtime.mjs /app/runtime-tools/start-next-runtime.mjs
+COPY --from=deps /app/node_modules/@kamiwaza-ai/extensions-lib/scripts /app/runtime-tools
 RUN node /app/runtime-tools/index-next-runtime.mjs \
     --root /app/runtime/path \
     --sentinel /__KZ_RUNTIME_BASE_7F3A91C2__ \
@@ -63,7 +62,7 @@ RUN node /app/runtime-tools/index-next-runtime.mjs \
     --output /app/runtime/kz-next-relocations.json
 
 # ---------------------------------------------------------------------------
-# Final runner: artifacts + two stdlib scripts. No source, no npm, no dev
+# Final runner: artifacts + stdlib runtime tools. No source, no npm, no dev
 # dependencies. Read-only rootfs compatible; /tmp is the only writable path.
 FROM node:20-alpine AS runner
 RUN addgroup -S -g 1001 appuser && adduser -S -u 1001 -G appuser appuser
@@ -81,6 +80,6 @@ ENV PORT=3000 \
 # Health check resolves the same routing mode as the entrypoint and probes
 # the frontend /health route under the deployment prefix when in path mode.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD node -e "const mode=process.env.KAMIWAZA_ROUTING_MODE;const raw=(process.env.KAMIWAZA_APP_PATH||'').replace(/\/+$/,'');const p=(mode==='port')?'':raw;require('http').get('http://127.0.0.1:'+(process.env.PORT||3000)+p+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+    CMD node --input-type=module -e "import{resolveRoutingMode}from'/app/runtime-tools/start-next-runtime.mjs';import http from'node:http';const p=resolveRoutingMode(process.env).appPath;http.get('http://127.0.0.1:'+(process.env.PORT||3000)+p+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
 ENTRYPOINT ["node", "/app/runtime-tools/start-next-runtime.mjs"]

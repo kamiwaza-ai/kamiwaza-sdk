@@ -133,101 +133,136 @@ async function classifyBody(root, rel, sentinel) {
     );
 }
 
-/**
- * Scan an assembled runtime tree and produce the relocation manifest.
- * Throws on any fail-closed condition.
- */
-export async function buildRelocationManifest({ root, sentinel, nextVersion }) {
-    if (!sentinel || !sentinel.startsWith("/")) {
+function assertValidSentinel(sentinel) {
+    if (!sentinel) {
+        throw new Error("sentinel must be a nonempty absolute path");
+    }
+    if (!sentinel.startsWith("/")) {
         throw new Error(`sentinel must be an absolute path, got ${JSON.stringify(sentinel)}`);
     }
+}
 
+async function assertNoBuildCache(root) {
     try {
         await stat(path.join(root, ".next/cache"));
-        throw new Error(
-            ".next/cache must not ship in the runtime artifact (build caches are not relocatable)",
-        );
     } catch (error) {
-        if (error.code !== "ENOENT") {
-            throw error;
+        if (error.code === "ENOENT") {
+            return;
         }
+        throw error;
     }
+    throw new Error(
+        ".next/cache must not ship in the runtime artifact (build caches are not relocatable)",
+    );
+}
 
-    const sentinelBuffer = Buffer.from(sentinel, "utf8");
-    const files = [];
-
-    for (const { rel, symlink } of await walk(root)) {
-        const inNodeModules = rel.startsWith("node_modules/") || rel.includes("/node_modules/");
-
-        if (symlink) {
-            const resolved = await checkSymlink(root, rel);
-            const buffer = await readFile(resolved);
-            if (buffer.includes(sentinelBuffer)) {
-                throw new Error(
-                    `sentinel found behind symlink ${rel}; symlinked content is never relocated`,
-                );
-            }
-            continue;
-        }
-
-        const buffer = await readFile(path.join(root, rel));
-        const hasSentinel = buffer.includes(sentinelBuffer);
-
-        if (inNodeModules) {
-            if (hasSentinel) {
-                throw new Error(
-                    `sentinel found in node_modules (${rel}); dependencies must not embed the base path`,
-                );
-            }
-            continue;
-        }
-
-        if (rel.endsWith(".map")) {
-            throw new Error(
-                `source map in runtime artifact: ${rel}; production source maps must not ship ` +
-                    "(relocation would desynchronize them)",
-            );
-        }
-
-        if (!hasSentinel) {
-            continue;
-        }
-
-        if (rel.startsWith("public/")) {
-            throw new Error(
-                `sentinel found under public/ (${rel}); public assets are served verbatim — ` +
-                    "use appAsset()/runtime config instead of baking the base path into public files",
-            );
-        }
-
-        let kind = TEXT_KINDS.get(path.extname(rel).toLowerCase());
-        if (kind === undefined && rel.endsWith(".body")) {
-            kind = await classifyBody(root, rel, sentinel);
-        }
-        if (kind === undefined) {
-            throw new Error(
-                `sentinel found in binary or unrecognized file ${rel}; refusing to index it for relocation`,
-            );
-        }
-
-        files.push({
-            path: rel,
-            size: buffer.length,
-            sha256: createHash("sha256").update(buffer).digest("hex"),
-            occurrences: countBufferOccurrences(buffer, sentinelBuffer),
-            kind,
-        });
+function isNodeModulesPath(rel) {
+    if (rel.startsWith("node_modules/")) {
+        return true;
     }
+    return rel.includes("/node_modules/");
+}
 
+async function assertSymlinkIsSentinelFree(context, rel) {
+    const resolved = await checkSymlink(context.root, rel);
+    const buffer = await readFile(resolved);
+    if (buffer.includes(context.sentinelBuffer)) {
+        throw new Error(`sentinel found behind symlink ${rel}; symlinked content is never relocated`);
+    }
+}
+
+function assertDependencyIsSentinelFree(rel, buffer, sentinelBuffer) {
+    if (buffer.includes(sentinelBuffer)) {
+        throw new Error(
+            `sentinel found in node_modules (${rel}); dependencies must not embed the base path`,
+        );
+    }
+}
+
+function assertSourceMapAbsent(rel) {
+    if (rel.endsWith(".map")) {
+        throw new Error(
+            `source map in runtime artifact: ${rel}; production source maps must not ship ` +
+                "(relocation would desynchronize them)",
+        );
+    }
+}
+
+async function resolveTextKind(root, rel, sentinel) {
+    const extensionKind = TEXT_KINDS.get(path.extname(rel).toLowerCase());
+    if (extensionKind !== undefined) {
+        return extensionKind;
+    }
+    if (rel.endsWith(".body")) {
+        return classifyBody(root, rel, sentinel);
+    }
+    throw new Error(
+        `sentinel found in binary or unrecognized file ${rel}; refusing to index it for relocation`,
+    );
+}
+
+async function buildManifestEntry(context, rel, buffer) {
+    if (rel.startsWith("public/")) {
+        throw new Error(
+            `sentinel found under public/ (${rel}); public assets are served verbatim — ` +
+                "use appAsset()/runtime config instead of baking the base path into public files",
+        );
+    }
+    const kind = await resolveTextKind(context.root, rel, context.sentinel);
+    return {
+        path: rel,
+        size: buffer.length,
+        sha256: createHash("sha256").update(buffer).digest("hex"),
+        occurrences: countBufferOccurrences(buffer, context.sentinelBuffer),
+        kind,
+    };
+}
+
+async function inspectArtifactFile(context, file) {
+    if (file.symlink) {
+        await assertSymlinkIsSentinelFree(context, file.rel);
+        return null;
+    }
+    const buffer = await readFile(path.join(context.root, file.rel));
+    if (isNodeModulesPath(file.rel)) {
+        assertDependencyIsSentinelFree(file.rel, buffer, context.sentinelBuffer);
+        return null;
+    }
+    assertSourceMapAbsent(file.rel);
+    if (!buffer.includes(context.sentinelBuffer)) {
+        return null;
+    }
+    return buildManifestEntry(context, file.rel, buffer);
+}
+
+function assertMandatoryRoles(files) {
     for (const role of MANDATORY_ROLES) {
-        if (!files.some((file) => role.test(file.path) && file.occurrences > 0)) {
+        const present = files.some((file) => role.test(file.path));
+        if (!present) {
             throw new Error(
                 `mandatory relocation role has no sentinel occurrences: ${role.name}; ` +
                     "the path-variant build looks broken",
             );
         }
     }
+}
 
+/**
+ * Scan an assembled runtime tree and produce the relocation manifest.
+ * Throws on any fail-closed condition.
+ */
+export async function buildRelocationManifest({ root, sentinel, nextVersion }) {
+    assertValidSentinel(sentinel);
+    await assertNoBuildCache(root);
+    const context = { root, sentinel, sentinelBuffer: Buffer.from(sentinel, "utf8") };
+    const files = [];
+    for (const file of await walk(root)) {
+        const entry = await inspectArtifactFile(context, file);
+        if (entry !== null) {
+            files.push(entry);
+        }
+    }
+    assertMandatoryRoles(files);
     files.sort((a, b) => (a.path < b.path ? -1 : 1));
 
     return {
@@ -252,21 +287,21 @@ function parseArgs(argv) {
 }
 
 async function readArtifactNextVersion(root) {
-    try {
-        const pkg = JSON.parse(
-            await readFile(path.join(root, "node_modules/next/package.json"), "utf8"),
-        );
-        return pkg.version;
-    } catch {
-        return undefined;
-    }
+    const pkg = JSON.parse(
+        await readFile(path.join(root, "node_modules/next/package.json"), "utf8"),
+    );
+    return pkg.version;
+}
+
+function hasRequiredArgs(args) {
+    return ["root", "sentinel", "next-version", "output"].every((name) => Boolean(args[name]));
 }
 
 async function main() {
     const args = parseArgs(process.argv.slice(2));
     const { root, sentinel, output } = args;
     const nextVersion = args["next-version"];
-    if (!root || !sentinel || !nextVersion || !output) {
+    if (!hasRequiredArgs(args)) {
         console.error(
             "usage: index-next-runtime.mjs --root DIR --sentinel PATH --next-version X.Y.Z --output FILE",
         );
@@ -275,7 +310,7 @@ async function main() {
     // The CLI-claimed version must match the artifact's traced Next — the
     // manifest version is part of the compatibility contract (B5).
     const artifactVersion = await readArtifactNextVersion(root);
-    if (artifactVersion !== undefined && artifactVersion !== nextVersion) {
+    if (artifactVersion !== nextVersion) {
         console.error(
             `[kz-next-index] FATAL: --next-version ${nextVersion} does not match the ` +
                 `artifact's traced next@${artifactVersion}`,

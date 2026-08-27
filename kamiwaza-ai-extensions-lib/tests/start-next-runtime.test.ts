@@ -42,6 +42,10 @@ function writeFixture(): void {
     write(".next/static/chunks/plain-xyz.js", "console.log('no sentinel');");
     write(".next/server/app/index.html", `<script src="${SENTINEL}/_next/x.js"></script>`);
     write("package.json", JSON.stringify({ name: "fixture" }));
+    write(
+        "node_modules/next/package.json",
+        JSON.stringify({ name: "next", version: "15.5.19" }),
+    );
     write("node_modules/next/dist/server.js", "module.exports = {};");
     write("public/icon.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 }

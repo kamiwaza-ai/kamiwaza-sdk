@@ -129,7 +129,7 @@ The lifecycle is fail-closed at every stage:
 | **Build** | Two `next build` runs (`port`, `path` variants) assembled as standalone artifacts | Next version isn't exactly `15.5.19`; wrapper-rejected options are set |
 | **Index** (image build) | `index-next-runtime.mjs` records every sentinel-bearing file: path, size, SHA-256, occurrence count, kind (`js`/`json`/`html`/`rsc`/`css`/`txt`) | Sentinel appears in a binary/unrecognized file, in `node_modules`, or under `public/`; a source map ships outside `node_modules`; broken/directory/root-escaping symlinks; `.next/cache` present; a mandatory role (server.js, server config, client chunks) has zero occurrences |
 | **Boot verify** | Manifest schema, per-file SHA-256 + occurrence counts, artifact Next version re-checked against the manifest | Any hash/count/version mismatch — the artifact no longer matches its index |
-| **Patch** | Sparse mirror into `/tmp`: indexed files copied + byte-replaced (Flight-frame-aware for `.rsc`, byte-length headers recomputed), everything else symlinked, `server.js` always copied | Patched JSON doesn't parse; sentinel inside an unsupported Flight row type |
+| **Patch** | Sparse mirror into `/tmp`: indexed files copied + byte-replaced (Flight-frame-aware for `.rsc` and inline Flight streams in prerendered HTML; byte-length headers recomputed), everything else symlinked, `server.js` always copied | Patched JSON doesn't parse; sentinel inside an unsupported Flight row type |
 | **Scan** | Full walk of the staged tree | Any residual sentinel byte; patched-file/occurrence totals don't match the manifest |
 | **Atomic publish** | Staging dir renamed over the target only after all checks pass; per-target lock prevents concurrent starts | Lock held by a live process (stale locks from dead pids are stolen) |
 
@@ -155,7 +155,7 @@ KAMIWAZA_ORIGIN="https://host"                   # optional origin fallback
 
 Rules:
 
-- **Env is authoritative.** `x-forwarded-prefix` is forwarded and may be logged/compared for diagnostics, but it never selects the app path.
+- **Env is authoritative.** Browser-supplied `x-forwarded-*` headers are not forwarded by the shared proxy. Server code may compare a trusted, separately supplied `x-forwarded-prefix` for diagnostics, but it never selects the app path.
 - **Do not set `NEXT_PUBLIC_APP_BASE_PATH`** anywhere — compose, metadata, or code. The wrapper defines a reserved internal compile constant instead; author-facing base-path env is gone.
 - `BACKEND_URL=http://backend:8000` stays internal and unprefixed.
 
@@ -350,12 +350,12 @@ When the app (or the shared auth libraries) needs its own public URL — login `
 | **path** | `KAMIWAZA_APP_PATH_URL` → `KAMIWAZA_APP_URL` → `KAMIWAZA_ORIGIN + appPath` |
 | **port** | `KAMIWAZA_APP_URL` |
 
-**Env is authoritative.** `x-forwarded-prefix` is corroboration only — both the TS (`getKamiwazaRuntimeServer`) and Python (`RuntimeRouting`) implementations log a warning on mismatch but never let the header override env. In the browser, when a full URL is needed, compute `window.location.origin + getAppPath()`.
+**Env is authoritative.** The TS `getKamiwazaRuntimeServer` helper can log a warning when its caller supplies a trusted `x-forwarded-prefix` that disagrees with env; Python `RuntimeRouting` resolves from env only. Neither implementation lets a request header override deployment identity. In the browser, when a full URL is needed, compute `window.location.origin + getAppPath()`.
 
 ### Cookies
 
 - Extension-set cookies use `Path=<appPath>` in path mode and `Path=/` in port mode (`RuntimeRouting.cookie_path`), so deployments under different prefixes stay isolated.
-- The shared Next proxy **drops `Set-Cookie` by default** and passes it through only for the configured session-route allowlist. Its default list is `/session`, the reserved compatibility path `/session/extend`, and `/auth/logout`; the canonical Python session router does not create `/session/extend`.
+- The shared Next proxy **drops `Set-Cookie` by default** and passes it through only for the configured session-route allowlist. Every passed cookie is rebased to `Path=<appPath>` in path mode (or `/` in port mode), and root-relative `Location` responses are rebased under the same prefix. The default list is `/session`, the reserved compatibility path `/session/extend`, and `/auth/logout`; the canonical Python session router does not create `/session/extend`.
 - `SessionProvider` from `@kamiwaza-ai/extensions-lib/client` derives its base
   path from `getAppPath()` automatically; the explicit `basePath` prop remains
   as a deprecated escape hatch. The frozen `@kamiwaza/auth@0.2.0` package
@@ -370,7 +370,7 @@ See the [Auth Integration Guide](../auth-integration-guide.md) for the full logi
 The production runner is compatible with `--read-only` and runs as a non-root user (uid 1001):
 
 - **`/tmp` is the only writable location.** Path mode builds the relocated tree at `/tmp/kz-next-runtime`; the writable `.next/cache` lives inside that overlay. Port mode runs the image artifact in place (no copy) and needs no writable app tree.
-- **Startup lock**: a per-target lock directory (`/tmp/kz-next-runtime.lock`, holding the owner pid) makes a second concurrent start fail deterministically instead of corrupting the live tree. Locks from dead processes are stolen automatically.
+- **Startup lock**: a per-target lock directory (`/tmp/kz-next-runtime.lock`, holding the owner pid) makes a second concurrent preparation fail deterministically instead of corrupting the live tree. Locks from dead processes are stolen automatically, and the lock is released after atomic publish so a container restart can rebuild the runtime.
 - **Atomic publish**: relocation stages into `/tmp/kz-next-runtime.staging-<pid>` and `rename()`s over the target only after all verification passes.
 - ISR disk flush is disabled by the wrapper (`experimental.isrFlushToDisk: false`) so nothing tries to write into the read-only image tree.
 

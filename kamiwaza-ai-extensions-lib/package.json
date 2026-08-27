@@ -43,8 +43,7 @@
     },
     "files": [
         "dist/**/*",
-        "scripts/index-next-runtime.mjs",
-        "scripts/start-next-runtime.mjs",
+        "scripts/*.mjs",
         "LICENSE",
         "README.md"
     ],

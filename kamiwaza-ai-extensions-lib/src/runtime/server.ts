@@ -8,68 +8,62 @@
  */
 
 import {
-    type KamiwazaRoutingMode,
     type KamiwazaRuntimeConfig,
-    normalizeAppPath,
+    resolveRuntimeRouting,
 } from "./shared";
 
 function trimTrailingSlash(value: string): string {
     return value.replace(/\/+$/, "");
 }
 
-function resolveRoutingMode(env: NodeJS.ProcessEnv): KamiwazaRoutingMode {
-    const mode = env.KAMIWAZA_ROUTING_MODE;
-    if (mode === "path" || mode === "port") {
-        return mode;
+function resolveAppUrls(
+    env: NodeJS.ProcessEnv,
+    appPath: string,
+): { appPathUrl: string; appUrl: string } {
+    if (appPath === "") {
+        return {
+            appPathUrl: "",
+            appUrl: trimTrailingSlash(env.KAMIWAZA_APP_URL ?? ""),
+        };
     }
-    return (env.KAMIWAZA_APP_PATH ?? "").trim() !== "" ? "path" : "port";
+    const appPathUrl = trimTrailingSlash(env.KAMIWAZA_APP_PATH_URL ?? "");
+    const configuredAppUrl = trimTrailingSlash(env.KAMIWAZA_APP_URL ?? "");
+    const origin = trimTrailingSlash(env.KAMIWAZA_ORIGIN ?? "");
+    return {
+        appPathUrl,
+        appUrl: appPathUrl || configuredAppUrl || (origin ? `${origin}${appPath}` : ""),
+    };
+}
+
+function warnOnForwardedPrefix(
+    forwardedPrefix: string | null | undefined,
+    appPath: string,
+): void {
+    if (forwardedPrefix == null || appPath === "") {
+        return;
+    }
+    const forwarded = trimTrailingSlash(forwardedPrefix);
+    if (forwarded === "" || forwarded === appPath) {
+        return;
+    }
+    // Diagnostics only — the env-derived identity always wins.
+    console.warn(
+        `[kamiwaza-runtime] x-forwarded-prefix ${JSON.stringify(forwarded)} ` +
+            `does not match KAMIWAZA_APP_PATH ${JSON.stringify(appPath)}`,
+    );
 }
 
 export function getKamiwazaRuntimeServer(
     env: NodeJS.ProcessEnv = process.env,
     forwardedPrefix?: string | null,
 ): Readonly<KamiwazaRuntimeConfig> {
-    const routingMode = resolveRoutingMode(env);
-
-    let appPath = "";
-    let appPathUrl = "";
-    let appUrl = "";
-
-    if (routingMode === "path") {
-        appPath = normalizeAppPath(env.KAMIWAZA_APP_PATH);
-        if (appPath === "") {
-            throw new Error("path routing mode requires a nonempty KAMIWAZA_APP_PATH");
-        }
-
-        const configuredPathUrl = trimTrailingSlash(env.KAMIWAZA_APP_PATH_URL ?? "");
-        const configuredAppUrl = trimTrailingSlash(env.KAMIWAZA_APP_URL ?? "");
-        const origin = trimTrailingSlash(env.KAMIWAZA_ORIGIN ?? "");
-
-        appPathUrl = configuredPathUrl;
-        appUrl =
-            configuredPathUrl ||
-            configuredAppUrl ||
-            (origin ? `${origin}${appPath}` : "");
-    } else {
-        appUrl = trimTrailingSlash(env.KAMIWAZA_APP_URL ?? "");
-    }
-
-    if (forwardedPrefix != null && routingMode === "path") {
-        const forwarded = trimTrailingSlash(forwardedPrefix);
-        if (forwarded !== "" && forwarded !== appPath) {
-            // Diagnostics only — the env-derived identity always wins.
-            console.warn(
-                `[kamiwaza-runtime] x-forwarded-prefix ${JSON.stringify(forwarded)} ` +
-                    `does not match KAMIWAZA_APP_PATH ${JSON.stringify(appPath)}`,
-            );
-        }
-    }
+    const routing = resolveRuntimeRouting(env);
+    const urls = resolveAppUrls(env, routing.appPath);
+    warnOnForwardedPrefix(forwardedPrefix, routing.appPath);
 
     return Object.freeze({
-        routingMode,
-        appPath,
-        appPathUrl,
-        appUrl,
+        ...routing,
+        ...urls,
         deploymentId: env.KAMIWAZA_DEPLOYMENT_ID ?? "",
         appPort: env.KAMIWAZA_APP_PORT ?? "",
     });

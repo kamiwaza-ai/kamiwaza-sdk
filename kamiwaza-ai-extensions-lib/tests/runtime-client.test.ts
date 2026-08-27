@@ -62,6 +62,18 @@ describe("getAppPath", () => {
             appPath: "/runtime/../etc",
         });
         expect(() => getAppPath()).toThrow();
+
+        (globalThis as Record<string, unknown>).__KAMIWAZA_RUNTIME__ = Object.freeze({
+            routingMode: "path",
+            appPath: 42,
+        });
+        expect(() => getAppPath()).toThrow(/appPath|string/i);
+
+        (globalThis as Record<string, unknown>).__KAMIWAZA_RUNTIME__ = Object.freeze({
+            routingMode: "porta",
+            appPath: APP,
+        });
+        expect(() => getAppPath()).toThrow(/mode/i);
     });
 });
 

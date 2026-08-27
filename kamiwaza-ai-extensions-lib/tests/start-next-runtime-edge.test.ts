@@ -1,5 +1,6 @@
 /** Edge-scan fixes (codex-edge-1.md): B1, B2, S3, S4, S6, S7, S8, N3. */
 import {
+    existsSync,
     mkdirSync,
     mkdtempSync,
     readFileSync,
@@ -15,6 +16,7 @@ import { buildRelocationManifest } from "../scripts/index-next-runtime.mjs";
 import {
     computeSignalExitCode,
     prepareRuntime,
+    transformHtmlBuffer,
     transformRscBuffer,
     validateRuntimePath,
 } from "../scripts/start-next-runtime.mjs";
@@ -40,6 +42,10 @@ function writeFixture(): void {
     );
     write(".next/routes-manifest.json", JSON.stringify({ basePath: SENTINEL }));
     write(".next/static/chunks/main-abc.js", `p="${SENTINEL}/_next/";`);
+    write(
+        "node_modules/next/package.json",
+        JSON.stringify({ name: "next", version: "15.5.19" }),
+    );
     write("node_modules/next/dist/server.js", "module.exports = {};");
     write("public/icon.png", Buffer.from([0x89, 0x50]));
 }
@@ -110,6 +116,43 @@ describe("transformRscBuffer (B1)", () => {
         expect(output).toBe(
             `:HL["${REAL}/_next/static/css/x.css","style"]\n0:{"p":"${REAL}/y"}\n`,
         );
+    });
+});
+
+describe("transformHtmlBuffer", () => {
+    it("repairs Flight frames split across inline push chunks", () => {
+        const payload = `${"x".repeat(1100)} ${SENTINEL} KZ_FLIGHT_TAIL`;
+        const header = `6:T${Buffer.byteLength(payload).toString(16)},`;
+        const flightChunks = [
+            `1:{"asset":"${SENTINEL}/x"}\n${header}`,
+            payload,
+            "0:{\"tail\":true}\n",
+        ];
+        const scripts = flightChunks
+            .map(
+                (chunk) =>
+                    `<script>self.__next_f.push(${JSON.stringify([1, chunk])})</script>`,
+            )
+            .join("");
+        const html = Buffer.from(
+            `<link href="${SENTINEL}/_next/app.css">${scripts}`,
+        );
+
+        const relocated = transformHtmlBuffer(html, SENTINEL, REAL).toString("utf8");
+        const pushes = Array.from(
+            relocated.matchAll(/self\.__next_f\.push\((\[[\s\S]*?\])\)<\/script>/g),
+            (match) => JSON.parse(match[1])[1] as string,
+        );
+        const relocatedFlight = Buffer.from(pushes.join(""));
+        const expectedFlight = transformRscBuffer(
+            Buffer.from(flightChunks.join("")),
+            SENTINEL,
+            REAL,
+        );
+
+        expect(relocated).not.toContain(SENTINEL);
+        expect(relocated).toContain(`${REAL}/_next/app.css`);
+        expect(relocatedFlight.equals(expectedFlight)).toBe(true);
     });
 });
 
@@ -209,15 +252,24 @@ describe("prepareRuntime edge fixes", () => {
         ).rejects.toThrow(/disjoint|overlap|same/i);
     });
 
-    it("second concurrent start fails deterministically without touching the live tree (S8)", async () => {
+    it("releases the preparation lock so a container restart can rebuild (S8)", async () => {
         const manifest = await manifestFor();
         await prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL });
         const before = readFileSync(path.join(targetRoot, "server.js"), "utf8");
 
+        await prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL });
+        expect(readFileSync(path.join(targetRoot, "server.js"), "utf8")).toBe(before);
+        expect(existsSync(`${targetRoot}.lock`)).toBe(false);
+    });
+
+    it("rejects a genuinely concurrent start owned by a live process (S8)", async () => {
+        const manifest = await manifestFor();
+        mkdirSync(`${targetRoot}.lock`, { recursive: true });
+        writeFileSync(path.join(`${targetRoot}.lock`, "pid"), String(process.pid));
+
         await expect(
             prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL }),
         ).rejects.toThrow(/lock|another/i);
-        expect(readFileSync(path.join(targetRoot, "server.js"), "utf8")).toBe(before);
     });
 
     it("steals a stale lock from a dead process (S8)", async () => {
@@ -237,6 +289,14 @@ describe("prepareRuntime edge fixes", () => {
         await expect(
             prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL }),
         ).rejects.toThrow(/15\.4\.0|version/i);
+    });
+
+    it("fails when the artifact's traced Next package is missing (B5)", async () => {
+        const manifest = await manifestFor();
+        rmSync(path.join(sourceRoot, "node_modules/next/package.json"));
+        await expect(
+            prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: REAL }),
+        ).rejects.toThrow(/package\.json|ENOENT/i);
     });
 });
 

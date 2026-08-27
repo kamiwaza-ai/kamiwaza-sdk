@@ -27,7 +27,12 @@ export function getAppPath(): string {
         // A present bootstrap must be internally consistent — fail closed on
         // a malformed one rather than silently guessing (N2).
         if (typeof bootstrap.appPath !== "string") {
-            return process.env.KZ_INTERNAL_BAKED_APP_PATH ?? "";
+            throw new Error("invalid runtime bootstrap: appPath must be a string");
+        }
+        if (bootstrap.routingMode !== "path" && bootstrap.routingMode !== "port") {
+            throw new Error(
+                `invalid runtime bootstrap mode: ${JSON.stringify(bootstrap.routingMode)}`,
+            );
         }
         const appPath = normalizeAppPath(bootstrap.appPath);
         if (

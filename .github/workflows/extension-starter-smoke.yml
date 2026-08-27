@@ -63,8 +63,18 @@ jobs:
       - name: Run scaffold regression and smoke tests
         run: uv run pytest tests/unit/extensions/test_scaffolder.py tests/unit/extensions/test_app_starter_smoke.py
 
+      - name: Run TypeScript runtime tests and build
+        working-directory: kamiwaza-ai-extensions-lib
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npm run build
+
       - name: Run pinned Next runtime canary
         run: make test-next-runtime-canary
 
       - name: Run generated runtime-path canary
+        env:
+          KZ_REQUIRE_NEXT_RUNTIME_E2E: "1"
         run: uv run pytest tests/integration/test_scaffolded_next_runtime.py

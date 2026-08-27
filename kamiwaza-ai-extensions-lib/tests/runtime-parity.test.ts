@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { normalizeAppPath, withAppPath } from "../src/runtime/shared";
 import { getKamiwazaRuntimeServer } from "../src/runtime/server";
+import { resolveRoutingMode as resolveBootRouting } from "../scripts/start-next-runtime.mjs";
 
 const VECTORS = JSON.parse(
     readFileSync(
@@ -45,11 +46,15 @@ describe("runtime routing parity vectors", () => {
                 expect(() =>
                     getKamiwazaRuntimeServer(vector.env as NodeJS.ProcessEnv),
                 ).toThrow();
+                expect(() => resolveBootRouting(vector.env)).toThrow();
                 return;
             }
             const runtime = getKamiwazaRuntimeServer(vector.env as NodeJS.ProcessEnv);
+            const boot = resolveBootRouting(vector.env);
             expect(runtime.routingMode).toBe(vector.expect.routing_mode);
             expect(runtime.appPath).toBe(vector.expect.app_path);
+            expect(boot.routingMode).toBe(vector.expect.routing_mode);
+            expect(boot.appPath).toBe(vector.expect.app_path);
             expect(runtime.appPathUrl).toBe(vector.expect.app_path_url);
             expect(runtime.appUrl).toBe(vector.expect.app_url);
             expect(runtime.deploymentId).toBe(vector.expect.deployment_id);
