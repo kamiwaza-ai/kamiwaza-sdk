@@ -120,6 +120,7 @@ _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     _owned("kamiwaza.json", strategy="merge"),
     _owned(".gitignore", strategy="overwrite"),
     _owned("docker-compose.yml"),
+    _owned("docker-compose.override.yml"),
     _owned("README.md"),
     _owned("AGENTS.md"),
     _owned("CLAUDE.md"),

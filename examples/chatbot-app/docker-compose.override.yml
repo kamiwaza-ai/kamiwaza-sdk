@@ -1,0 +1,6 @@
+services:
+  frontend:
+    # Loaded only by `kz-ext dev local`; cluster builds keep the final
+    # production runner stage with its two prebuilt routing artifacts.
+    build:
+      target: dev

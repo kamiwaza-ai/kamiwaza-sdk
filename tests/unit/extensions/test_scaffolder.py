@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from kamiwaza_extensions.scaffolder import Scaffolder, _runtime_lib_pins
 
@@ -267,6 +268,10 @@ class TestScaffolder:
         )
         next_config = (d / "frontend" / "next.config.js").read_text()
         assert "withKamiwazaAppGarden" in next_config
+        local_override = yaml.safe_load((d / "docker-compose.override.yml").read_text())
+        assert local_override == {
+            "services": {"frontend": {"build": {"target": "dev"}}}
+        }
 
     def test_git_init_called(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

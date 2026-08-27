@@ -5,7 +5,6 @@ from __future__ import annotations
 import errno
 import ipaddress
 import os
-import re
 import signal
 import socket
 import subprocess
@@ -185,7 +184,6 @@ class DevLocalRunner:
         extra_hosts_file: Optional[str] = None
         auth_env_file: Optional[str] = None
         local_override_file: Optional[str] = None
-        dev_target_file: Optional[str] = None
         # Initialised here (not in 10a) so the ``finally`` cleanup always
         # has them in scope — even if an exception bubbles out of the
         # try body before the polling thread would have been spawned.
@@ -383,26 +381,7 @@ class DevLocalRunner:
             # query the same project even when the user invokes from a
             # parent directory or with override files (review re-review
             # PR #84 M1).
-            # 7b. Select Dockerfile `dev` stages for local development. The
-            # production default target is the prebuilt `runner`; local runs
-            # need the source-mounted dev server. Loads directly after the
-            # base file so both the user's local override and kz-ext's
-            # functional overlays can still win on conflict.
-            if info.compose_data:
-                dev_target_data = generate_dev_target_override(
-                    info.compose_data, Path(info.path)
-                )
-                if dev_target_data:
-                    fd = tempfile.NamedTemporaryFile(
-                        mode="w", suffix=".yml", prefix="kz-devtarget-", delete=False
-                    )
-                    yaml.dump(dev_target_data, fd, default_flow_style=False)
-                    fd.close()
-                    dev_target_file = fd.name
-
             compose_prefix = compose_cmd + ["-f", compose_file_arg]
-            if dev_target_file:
-                compose_prefix += ["-f", dev_target_file]
             # User's local-only override loads after the base file but before
             # kz-ext's generated overlays (ENG-6281).
             if local_override_file:
@@ -498,7 +477,6 @@ class DevLocalRunner:
                 sdk_build_patch_file,
                 extra_hosts_file,
                 auth_env_file,
-                dev_target_file,
             ]
             cleanup_paths.extend(sdk_build_dockerfiles)
             for tmp in cleanup_paths:
@@ -739,46 +717,6 @@ class DevLocalRunner:
 # ------------------------------------------------------------------
 # Standalone helpers (testable without a runner instance)
 # ------------------------------------------------------------------
-
-
-_DEV_STAGE_RE = re.compile(
-    r"^\s*FROM\s+\S+\s+AS\s+dev\s*$", re.IGNORECASE | re.MULTILINE
-)
-
-
-def generate_dev_target_override(
-    compose_data: Dict[str, Any], extension_dir: Path
-) -> Optional[Dict[str, Any]]:
-    """Compose override selecting the Dockerfile ``dev`` stage for local runs.
-
-    The dual-artifact frontend Dockerfile's default (final) target is the
-    production ``runner`` — prebuilt artifacts only, no source mount, no dev
-    server. ``kz-ext dev local`` needs the ``dev`` stage (deps + source +
-    ``next dev``). Returns an override dict for every service whose build
-    context Dockerfile declares a ``dev`` stage and that doesn't already pin
-    an explicit ``target``; ``None`` when nothing needs overriding.
-    """
-    overrides: Dict[str, Any] = {}
-    for svc_name, svc in (compose_data.get("services") or {}).items():
-        build = svc.get("build")
-        if build is None:
-            continue
-        if isinstance(build, str):
-            context, dockerfile, explicit_target = build, "Dockerfile", None
-        else:
-            context = build.get("context", ".")
-            dockerfile = build.get("dockerfile", "Dockerfile")
-            explicit_target = build.get("target")
-        if explicit_target:
-            continue
-        dockerfile_path = Path(extension_dir) / context / dockerfile
-        try:
-            content = dockerfile_path.read_text()
-        except OSError:
-            continue
-        if _DEV_STAGE_RE.search(content):
-            overrides[svc_name] = {"build": {"target": "dev"}}
-    return {"services": overrides} if overrides else None
 
 
 def build_env_overlay(
