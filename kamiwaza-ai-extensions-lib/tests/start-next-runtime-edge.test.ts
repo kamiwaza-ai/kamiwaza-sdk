@@ -248,6 +248,20 @@ describe("transformHtmlBuffer", () => {
             /Flight push|unterminated/i,
         );
     });
+
+    it("fails closed on an unrecognized Flight push containing the sentinel", () => {
+        const payload = `1:T${Buffer.byteLength(SENTINEL).toString(16)},${SENTINEL}`;
+        const html = Buffer.from(
+            `<script>(self.__next_f=self.__next_f||[]).push(${JSON.stringify([
+                1,
+                payload,
+            ])})</script>`,
+        );
+
+        expect(() => transformHtmlBuffer(html, SENTINEL, REAL)).toThrow(
+            /unrecognized inline Flight push/i,
+        );
+    });
 });
 
 describe("prepareRuntime edge fixes", () => {

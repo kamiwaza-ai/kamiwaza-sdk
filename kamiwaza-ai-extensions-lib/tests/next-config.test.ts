@@ -90,6 +90,9 @@ describe("withKamiwazaAppGarden", () => {
             withKamiwazaAppGarden({ experimental: { manualClientBasePath: true } } as never),
         ).toThrow(/manualClientBasePath/i);
         expect(() =>
+            withKamiwazaAppGarden({ experimental: { isrFlushToDisk: true } } as never),
+        ).toThrow(/isrFlushToDisk/i);
+        expect(() =>
             withKamiwazaAppGarden({
                 serverExternalPackages: ["@kamiwaza-ai/extensions-lib"],
             }),

@@ -101,7 +101,7 @@ class AuthConfig:
             openai_base=os.environ.get("KAMIWAZA_ENDPOINT", "")
             or os.environ.get("KAMIWAZA_MODEL_URL", ""),
             app_url=app_url,
-            app_path=normalized_app_path,
+            app_path=normalized_app_path if path_mode else "",
             app_name=os.environ.get("KAMIWAZA_APP_NAME", ""),
             use_auth=os.environ.get("KAMIWAZA_USE_AUTH", "true").lower()
             not in ("false", "0", "no"),

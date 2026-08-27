@@ -43,6 +43,7 @@ class TestAuthConfig:
         config = AuthConfig.from_env()
 
         assert config.app_url == vector["expect"]["app_url"]
+        assert config.app_path == vector["expect"]["app_path"]
 
     def test_from_env_all_set(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")

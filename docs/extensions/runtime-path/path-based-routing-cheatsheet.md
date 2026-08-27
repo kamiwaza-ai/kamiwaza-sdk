@@ -372,6 +372,11 @@ The production runner is compatible with `--read-only` and runs as a non-root us
 - **`/tmp` is the only writable location.** Both modes publish a link-backed runtime tree at `/tmp/kz-next-runtime` with a real writable `.next/cache`. Path mode additionally copies and patches the sentinel-bearing files before publish; port mode links the native artifact without relocation.
 - **Startup lock**: a per-target lock directory (`/tmp/kz-next-runtime.lock`, holding the owner pid and a per-process token) makes a second concurrent preparation fail deterministically instead of corrupting the live tree. Locks from dead processes or an earlier container lifetime that reused the same pid are stolen automatically, and the lock is released after verified publish so a container restart can rebuild the runtime.
 - **Verified publish**: relocation stages into `/tmp/kz-next-runtime.staging-<pid>`, verifies the staged tree, removes the prior target, and renames the staging directory into place while holding the startup lock. Replacement is serialized, but it is not an atomic directory exchange.
+- **Target ownership**: one running frontend entrypoint must exclusively own a
+  `KZ_RUNTIME_TARGET`. Do not mount one writable `/tmp` or target path into
+  concurrent frontend containers; the preparation lock is released after
+  publish and does not make a live runtime tree safe to replace underneath its
+  server process.
 - ISR disk flush is disabled by the wrapper (`experimental.isrFlushToDisk: false`) so nothing tries to write into the read-only image tree.
 
 Deploying with `--read-only --tmpfs /tmp` is supported by the production

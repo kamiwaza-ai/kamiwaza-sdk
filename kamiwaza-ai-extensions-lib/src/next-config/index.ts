@@ -107,6 +107,11 @@ export function withKamiwazaAppGarden(config: NextConfig = {}): NextConfig {
             "experimental.manualClientBasePath conflicts with the managed base path contract",
         );
     }
+    if (experimental.isrFlushToDisk === true) {
+        throw new Error(
+            "experimental.isrFlushToDisk is incompatible with the ephemeral runtime overlay",
+        );
+    }
 
     if (
         variant !== undefined &&
