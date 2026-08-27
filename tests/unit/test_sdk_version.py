@@ -34,3 +34,9 @@ def test_sdk_lock_version_matches_project_metadata():
     locked_sdk = next(package for package in packages if package["name"] == "kamiwaza-sdk")
 
     assert locked_sdk["version"] == project_version
+
+
+def test_sdk_dependency_enforces_cryptography_floor():
+    dependencies = _load_toml("pyproject.toml")["project"]["dependencies"]
+
+    assert "cryptography>=50.0.1,<51.0.0" in dependencies
