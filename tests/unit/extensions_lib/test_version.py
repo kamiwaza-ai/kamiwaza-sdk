@@ -66,9 +66,9 @@ def test_sdk_dependency_requires_current_runtime_release():
     with SDK_PYPROJECT_PATH.open("rb") as f:
         pyproject = tomllib.load(f)
 
-    assert "kamiwaza-extensions-lib>=0.5,<0.6" in pyproject["project"][
-        "dependencies"
-    ], (
+    assert (
+        "kamiwaza-extensions-lib>=0.5,<0.6" in pyproject["project"]["dependencies"]
+    ), (
         "kamiwaza-sdk must require runtime-lib 0.5 so a fresh install "
         "cannot resolve a version without the path-relocation contract"
     )

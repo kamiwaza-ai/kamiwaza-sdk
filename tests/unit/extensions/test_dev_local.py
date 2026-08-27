@@ -1248,6 +1248,7 @@ class TestPollAndPrintUrls:
         get TWO URLs printed, not one — and the loop must terminate as
         soon as both are resolved, not spin to the 60s deadline."""
         import threading
+
         from kamiwaza_extensions import dev_local
 
         runner = self._runner()
@@ -1289,6 +1290,7 @@ class TestPollAndPrintUrls:
         the moment the single URL is resolved (PR #91 round-3 / Claude
         review)."""
         import threading
+
         from kamiwaza_extensions import dev_local
 
         runner = self._runner()
@@ -1549,22 +1551,28 @@ class TestDevTargetOverride:
             "frontend/Dockerfile",
             "FROM node:20-alpine AS base\nFROM base AS dev\nFROM base AS runner\n",
         )
-        self._write_dockerfile(tmp_path, "backend/Dockerfile", "FROM python:3.10-slim\n")
+        self._write_dockerfile(
+            tmp_path, "backend/Dockerfile", "FROM python:3.10-slim\n"
+        )
         compose = {
             "services": {
-                "frontend": {"build": {"context": "./frontend", "dockerfile": "Dockerfile"}},
-                "backend": {"build": {"context": "./backend", "dockerfile": "Dockerfile"}},
+                "frontend": {
+                    "build": {"context": "./frontend", "dockerfile": "Dockerfile"}
+                },
+                "backend": {
+                    "build": {"context": "./backend", "dockerfile": "Dockerfile"}
+                },
             }
         }
         override = generate_dev_target_override(compose, tmp_path)
-        assert override == {
-            "services": {"frontend": {"build": {"target": "dev"}}}
-        }
+        assert override == {"services": {"frontend": {"build": {"target": "dev"}}}}
 
     def test_returns_none_without_dev_stages(self, tmp_path):
         from kamiwaza_extensions.dev_local import generate_dev_target_override
 
-        self._write_dockerfile(tmp_path, "backend/Dockerfile", "FROM python:3.10-slim\n")
+        self._write_dockerfile(
+            tmp_path, "backend/Dockerfile", "FROM python:3.10-slim\n"
+        )
         compose = {"services": {"backend": {"build": "./backend"}}}
         assert generate_dev_target_override(compose, tmp_path) is None
 
@@ -1584,9 +1592,7 @@ class TestDevTargetOverride:
             }
         }
         override = generate_dev_target_override(compose, tmp_path)
-        assert override == {
-            "services": {"frontend": {"build": {"target": "dev"}}}
-        }
+        assert override == {"services": {"frontend": {"build": {"target": "dev"}}}}
 
     def test_respects_explicit_author_target(self, tmp_path):
         from kamiwaza_extensions.dev_local import generate_dev_target_override

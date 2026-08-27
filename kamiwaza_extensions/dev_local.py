@@ -741,7 +741,9 @@ class DevLocalRunner:
 # ------------------------------------------------------------------
 
 
-_DEV_STAGE_RE = re.compile(r"^\s*FROM\s+\S+\s+AS\s+dev\s*$", re.IGNORECASE | re.MULTILINE)
+_DEV_STAGE_RE = re.compile(
+    r"^\s*FROM\s+\S+\s+AS\s+dev\s*$", re.IGNORECASE | re.MULTILINE
+)
 
 
 def generate_dev_target_override(

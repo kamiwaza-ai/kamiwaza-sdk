@@ -96,7 +96,9 @@ class TestBuild:
         """The runtime-path contract needs KAMIWAZA_APP_PATH and
         KAMIWAZA_ROUTING_MODE on ALL extension-owned services (the backend
         derives root_path/cookie scope from them), not just the primary."""
-        payload = builder.build(metadata, transformed_compose, connection, "my-app-dev-1")
+        payload = builder.build(
+            metadata, transformed_compose, connection, "my-app-dev-1"
+        )
         for service in payload.services:
             env = {e["name"]: e["value"] for e in (service.env or [])}
             assert env.get("KAMIWAZA_APP_PATH") == "/runtime/apps/my-app-dev-1", (
@@ -1257,9 +1259,7 @@ class TestHealthChecks:
         assert health_check["httpGet"] == {
             "path": "/",
             "port": 8000,
-        }, (
-            f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
-        )
+        }, f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
 
     def test_tool_type_primary_probes_sse(self, builder, connection):
         """ENG-3901 / F-013 (final): tool primary probes ``/sse`` — the

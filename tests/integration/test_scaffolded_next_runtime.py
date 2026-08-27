@@ -91,9 +91,7 @@ def _isolate_public_docker_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Bypass Docker Desktop's helper for this public-only image pull."""
-    configured_dir = Path(
-        os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker"))
-    )
+    configured_dir = Path(os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker")))
     try:
         config = json.loads((configured_dir / "config.json").read_text())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -264,9 +262,7 @@ def _assert_path_runtime(image: str, container: str) -> None:
     assert asset_status == 200
     assert len(asset_body) > 100
 
-    _, runtime_body = _get(
-        f"http://127.0.0.1:{port}{app_path}/kamiwaza/runtime.json"
-    )
+    _, runtime_body = _get(f"http://127.0.0.1:{port}{app_path}/kamiwaza/runtime.json")
     runtime = json.loads(runtime_body)
     assert runtime["routingMode"] == "path"
     assert runtime["appPath"] == app_path

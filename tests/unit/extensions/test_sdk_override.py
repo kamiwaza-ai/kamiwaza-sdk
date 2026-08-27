@@ -1355,9 +1355,8 @@ class TestPreInstallStripOverlay:
             "multi-stage Node→nginx frontend was not patched — final-stage "
             "classifier misclassified it as 'static'"
         )
-        assert (
-            "# --- SDK override: strip @kamiwaza-ai/extensions-lib"
-            in (patches["frontend"])
+        assert "# --- SDK override: strip @kamiwaza-ai/extensions-lib" in (
+            patches["frontend"]
         )
         # ``RUN npm ci`` was rewritten to ``RUN npm install`` so the
         # package.json/lockfile divergence the strip creates doesn't abort
@@ -1393,9 +1392,9 @@ class TestPreInstallStripOverlay:
         )
         kept = [line for line in requirements.splitlines() if not pattern.match(line)]
         assert "fastapi>=0.100.0" in kept
-        assert "kamiwaza-extensions-lib-extras>=0.1" in kept, (
-            "prefix-alias must NOT be stripped"
-        )
+        assert (
+            "kamiwaza-extensions-lib-extras>=0.1" in kept
+        ), "prefix-alias must NOT be stripped"
         assert "# kamiwaza-extensions-lib>=0.4 (commented)" in kept
         # Every form of the actual runtime-lib pin is gone.
         assert not any("kamiwaza-extensions-lib>=0.4,<0.5" in k for k in kept)
@@ -1560,9 +1559,9 @@ class TestPreInstallStripExecution:
             "overrides",
             "resolutions",
         ):
-            assert "@kamiwaza-ai/extensions-lib" not in out[k], (
-                f"{k!r} still contains the lib"
-            )
+            assert (
+                "@kamiwaza-ai/extensions-lib" not in out[k]
+            ), f"{k!r} still contains the lib"
         assert "@kamiwaza-ai/extensions-lib" not in out["bundleDependencies"]
         assert "@kamiwaza-ai/extensions-lib" not in out["bundledDependencies"]
         # Unrelated entries survive.

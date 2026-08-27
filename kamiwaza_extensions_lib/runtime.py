@@ -39,7 +39,9 @@ def normalize_app_path(value: str | None) -> str:
     if trimmed in ("", "/"):
         return ""
     if len(trimmed) > _MAX_PATH_LENGTH:
-        raise ValueError(f"invalid app path (exceeds maximum length {_MAX_PATH_LENGTH})")
+        raise ValueError(
+            f"invalid app path (exceeds maximum length {_MAX_PATH_LENGTH})"
+        )
 
     with_leading = trimmed if trimmed.startswith("/") else f"/{trimmed}"
     without_trailing = with_leading.rstrip("/")
@@ -135,8 +137,10 @@ class RuntimeRouting:
             app_path_url = _trim_trailing_slash(env.get("KAMIWAZA_APP_PATH_URL", ""))
             configured_app_url = _trim_trailing_slash(env.get("KAMIWAZA_APP_URL", ""))
             origin = _trim_trailing_slash(env.get("KAMIWAZA_ORIGIN", ""))
-            app_url = app_path_url or configured_app_url or (
-                f"{origin}{app_path}" if origin else ""
+            app_url = (
+                app_path_url
+                or configured_app_url
+                or (f"{origin}{app_path}" if origin else "")
             )
         else:
             app_url = _trim_trailing_slash(env.get("KAMIWAZA_APP_URL", ""))

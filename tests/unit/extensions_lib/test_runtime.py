@@ -20,7 +20,9 @@ from kamiwaza_extensions_lib.runtime import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-VECTORS_PATH = REPO_ROOT / "docs" / "extensions" / "runtime-path" / "routing-vectors.json"
+VECTORS_PATH = (
+    REPO_ROOT / "docs" / "extensions" / "runtime-path" / "routing-vectors.json"
+)
 VECTORS = json.loads(VECTORS_PATH.read_text())
 
 
@@ -38,7 +40,9 @@ def test_normalize_app_path_vectors(vector):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "vector", VECTORS["with_app_path"], ids=[v["name"] for v in VECTORS["with_app_path"]]
+    "vector",
+    VECTORS["with_app_path"],
+    ids=[v["name"] for v in VECTORS["with_app_path"]],
 )
 def test_with_app_path_vectors(vector):
     assert with_app_path(vector["path"], vector["app_path"]) == vector["expect"]

@@ -53,9 +53,9 @@ class TestScaffolder:
         runtime_next = package("kamiwaza-ai-extensions-lib/package.json")[
             "devDependencies"
         ]["next"]
-        canary_next = package(
-            "tests/next-runtime-canary/frontend/package.json"
-        )["dependencies"]["next"]
+        canary_next = package("tests/next-runtime-canary/frontend/package.json")[
+            "dependencies"
+        ]["next"]
         wrapper = (
             repo_root
             / "kamiwaza-ai-extensions-lib"
@@ -98,7 +98,9 @@ class TestScaffolder:
         assert meta["type"] == "app"
         assert meta["version"] == "0.1.0"
 
-    def test_binary_template_assets_are_copied_without_rendering(self, tmp_path, monkeypatch, scaffolder):
+    def test_binary_template_assets_are_copied_without_rendering(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
         d = self._empty_dir(tmp_path)
         monkeypatch.chdir(d)
         with patch("subprocess.run"):
@@ -163,9 +165,7 @@ class TestScaffolder:
         # The pre-existing file in the workspace root is untouched.
         assert (d / "existing-file.txt").read_text() == "hello"
 
-    def test_non_empty_target_subdir_errors(
-        self, tmp_path, monkeypatch, scaffolder
-    ):
+    def test_non_empty_target_subdir_errors(self, tmp_path, monkeypatch, scaffolder):
         # Pre-existing target subdir with content must not be silently
         # overwritten — error early.
         d = self._empty_dir(tmp_path)
@@ -244,7 +244,9 @@ class TestScaffolder:
         assert "AGENTS.md" in readme
         assert "CLAUDE.md" in readme
 
-    def test_app_template_uses_standalone_frontend_runtime(self, tmp_path, monkeypatch, scaffolder):
+    def test_app_template_uses_standalone_frontend_runtime(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
         """The frontend ships the dual-artifact runtime contract: no
         spawn-time `next build` (start.mjs is gone), a Dockerfile that
         builds both variants and indexes the path artifact, and the
@@ -260,7 +262,9 @@ class TestScaffolder:
         assert "KZ_NEXT_BUILD_VARIANT=path" in dockerfile
         assert "index-next-runtime.mjs" in dockerfile
         assert "start-next-runtime.mjs" in dockerfile
-        assert "npm run build" not in dockerfile.split("FROM node:20-alpine AS runner")[1]
+        assert (
+            "npm run build" not in dockerfile.split("FROM node:20-alpine AS runner")[1]
+        )
         next_config = (d / "frontend" / "next.config.js").read_text()
         assert "withKamiwazaAppGarden" in next_config
 

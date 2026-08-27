@@ -98,8 +98,12 @@ class TemplateManifest:
 _M2_VERSION = __version__
 
 
-def _owned(path: str, strategy: FileStrategy = "preserve_if_modified") -> TemplateOwnedFile:
-    return TemplateOwnedFile(relative_path=path, strategy=strategy, since_version=_M2_VERSION)
+def _owned(
+    path: str, strategy: FileStrategy = "preserve_if_modified"
+) -> TemplateOwnedFile:
+    return TemplateOwnedFile(
+        relative_path=path, strategy=strategy, since_version=_M2_VERSION
+    )
 
 
 # ---------------------------------------------------------------------------

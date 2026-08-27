@@ -61,7 +61,9 @@ def build_render_context(
     major = __version__.split(".")[0]
     next_major = str(int(major) + 1)
     py_pin, ts_pin = _runtime_lib_pins()
-    effective_description = description if description else f"A Kamiwaza {type_} extension"
+    effective_description = (
+        description if description else f"A Kamiwaza {type_} extension"
+    )
     return {
         "{{name}}": name,
         "{{version}}": version,
@@ -95,8 +97,9 @@ def _runtime_lib_pins() -> tuple[str, str]:
     fallback_ts = ">=0.5 <0.6"
     try:
         bundle = json.loads(
-            (importlib_resources.files("kamiwaza_extensions") / "compatibility.json")
-            .read_text(encoding="utf-8")
+            (
+                importlib_resources.files("kamiwaza_extensions") / "compatibility.json"
+            ).read_text(encoding="utf-8")
         )
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return (fallback_py, fallback_ts)
@@ -168,7 +171,9 @@ class Scaffolder:
 
     def create(self, *, type_: str, name: str) -> Path:
         if type_ not in VALID_TYPES:
-            raise ValueError(f"Invalid type '{type_}'. Must be one of: {', '.join(VALID_TYPES)}")
+            raise ValueError(
+                f"Invalid type '{type_}'. Must be one of: {', '.join(VALID_TYPES)}"
+            )
 
         name = self._validate_name(name, type_)
         cwd = Path.cwd()
@@ -245,9 +250,7 @@ class Scaffolder:
         data["template_shape"] = shape
         # Build the same context the scaffolder used so the hashes match
         # what's actually on disk byte-for-byte.
-        context = build_render_context(
-            name=data.get("name", "extension"), type_=shape
-        )
+        context = build_render_context(name=data.get("name", "extension"), type_=shape)
         data["template_file_hashes"] = compute_rendered_hashes(shape, context)
         meta_path.write_text(
             json.dumps(data, indent=4) + "\n",
@@ -263,12 +266,18 @@ class Scaffolder:
             )
 
         # Auto-apply convention prefix if missing
-        if type_ == "tool" and not (name.startswith("tool-") or name.startswith("mcp-")):
+        if type_ == "tool" and not (
+            name.startswith("tool-") or name.startswith("mcp-")
+        ):
             name = f"tool-{name}"
-            console.print(f"[dim]Auto-prefixed name to '{name}' per tool naming convention[/dim]")
+            console.print(
+                f"[dim]Auto-prefixed name to '{name}' per tool naming convention[/dim]"
+            )
         elif type_ == "service" and not name.startswith("service-"):
             name = f"service-{name}"
-            console.print(f"[dim]Auto-prefixed name to '{name}' per service naming convention[/dim]")
+            console.print(
+                f"[dim]Auto-prefixed name to '{name}' per service naming convention[/dim]"
+            )
 
         return name
 
@@ -283,7 +292,9 @@ class Scaffolder:
         # importlib_resources returns a Traversable; convert to Path
         return Path(str(pkg))
 
-    def _render_template(self, template_dir: Path, target: Path, context: Dict[str, str]) -> None:
+    def _render_template(
+        self, template_dir: Path, target: Path, context: Dict[str, str]
+    ) -> None:
         if not template_dir.exists():
             raise FileNotFoundError(f"Template directory not found: {template_dir}")
 
