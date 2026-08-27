@@ -108,6 +108,16 @@ export function withKamiwazaAppGarden(config: NextConfig = {}): NextConfig {
         );
     }
 
+    if (
+        variant !== undefined &&
+        config.serverExternalPackages?.includes("@kamiwaza-ai/extensions-lib")
+    ) {
+        throw new Error(
+            "@kamiwaza-ai/extensions-lib cannot be listed in serverExternalPackages " +
+                "for production variants because runtime path constants must be bundled",
+        );
+    }
+
     // The pin only gates production image builds; plain `next dev` may run
     // whatever patch version is installed locally.
     if (variant !== undefined) {

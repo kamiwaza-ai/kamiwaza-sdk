@@ -107,6 +107,34 @@ class TestBuild:
             )
             assert env.get("KAMIWAZA_ROUTING_MODE") == "path", (service.name, env)
 
+    @pytest.mark.parametrize(
+        ("extension_type", "expected_path"),
+        [
+            ("tool", "/runtime/tools/non-app-dev-1"),
+            ("service", "/runtime/services/non-app-dev-1"),
+        ],
+    )
+    def test_non_app_deployments_are_explicitly_path_routed(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
+        extension_type,
+        expected_path,
+    ):
+        metadata = {**metadata, "template_type": extension_type}
+
+        payload = builder.build(
+            metadata, transformed_compose, connection, "non-app-dev-1"
+        )
+
+        assert payload.type == extension_type
+        for service in payload.services:
+            env = {entry["name"]: entry["value"] for entry in (service.env or [])}
+            assert env["KAMIWAZA_ROUTING_MODE"] == "path"
+            assert env["KAMIWAZA_APP_PATH"] == expected_path
+
     def test_port_routing_explicitly_shadows_stale_configmap_path(self, builder):
         env = []
         builder._append_platform_env(env, app_path="", verify_ssl=True)

@@ -189,17 +189,40 @@ function collectFlightPushes(text) {
     const pushes = [];
     let searchFrom = 0;
     while (searchFrom < text.length) {
-        const marker = text.indexOf(FLIGHT_PUSH_MARKER, searchFrom);
-        if (marker === -1) {
+        const scriptOpen = text.indexOf("<script", searchFrom);
+        if (scriptOpen === -1) {
             break;
         }
+        const bodyStart = text.indexOf(">", scriptOpen + "<script".length);
+        if (bodyStart === -1) {
+            throw new Error("unterminated script tag in prerendered HTML");
+        }
+        const scriptClose = text.indexOf("</script", bodyStart + 1);
+        if (scriptClose === -1) {
+            throw new Error("unterminated script tag in prerendered HTML");
+        }
+        const marker = text.indexOf(FLIGHT_PUSH_MARKER, bodyStart + 1);
+        const prefix = marker === -1 ? "" : text.slice(bodyStart + 1, marker);
+        // Next emits each data push as the complete body of an inline script.
+        // Do not interpret rendered documentation, JSON-LD, or arbitrary
+        // author scripts that merely contain the marker text as Flight data.
+        if (marker === -1 || marker >= scriptClose || prefix.trim() !== "") {
+            searchFrom = scriptClose + "</script".length;
+            continue;
+        }
         const jsonStart = marker + FLIGHT_PUSH_MARKER.length;
+        if (text[jsonStart] !== "[") {
+            throw new Error("inline Flight push must contain a JSON array");
+        }
         const jsonEnd = findJsonArrayEnd(text, jsonStart);
+        if (jsonEnd > scriptClose) {
+            throw new Error("inline Flight push crosses its script boundary");
+        }
         const value = JSON.parse(text.slice(jsonStart, jsonEnd));
         if (isFlightDataPush(value)) {
             pushes.push({ jsonStart, jsonEnd, value });
         }
-        searchFrom = jsonEnd;
+        searchFrom = scriptClose + "</script".length;
     }
     return pushes;
 }

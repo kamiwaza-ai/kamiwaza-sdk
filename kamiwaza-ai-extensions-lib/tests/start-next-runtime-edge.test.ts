@@ -224,6 +224,30 @@ describe("transformHtmlBuffer", () => {
         expect(relocated).toContain(`${REAL}/_next/app.css`);
         expect(relocatedFlight.equals(expectedFlight)).toBe(true);
     });
+
+    it("ignores Flight marker text rendered outside inline scripts", () => {
+        const html = Buffer.from(
+            `<pre>self.__next_f.push([not valid JSON)</pre>` +
+                `<link href="${SENTINEL}/_next/app.css">`,
+        );
+
+        const relocated = transformHtmlBuffer(html, SENTINEL, REAL).toString("utf8");
+
+        expect(relocated).toContain("self.__next_f.push([not valid JSON)");
+        expect(relocated).toContain(`${REAL}/_next/app.css`);
+        expect(relocated).not.toContain(SENTINEL);
+    });
+
+    it("still fails closed on a malformed genuine inline Flight push", () => {
+        const html = Buffer.from(
+            `<script>self.__next_f.push([not valid JSON)</script>` +
+                `<link href="${SENTINEL}/_next/app.css">`,
+        );
+
+        expect(() => transformHtmlBuffer(html, SENTINEL, REAL)).toThrow(
+            /Flight push|unterminated/i,
+        );
+    });
 });
 
 describe("prepareRuntime edge fixes", () => {

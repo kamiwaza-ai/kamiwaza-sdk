@@ -152,7 +152,15 @@ class TestAuthConfig:
         config = AuthConfig.from_env()
 
         assert config.app_url == "https://path.example/bad"
-        assert config.app_path == "/runtime/../etc"
+        assert config.app_path == ""
+
+    def test_app_path_is_exposed_in_canonical_form(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
+        monkeypatch.setenv("KAMIWAZA_APP_PATH", "runtime/apps/my-app/")
+
+        config = AuthConfig.from_env()
+
+        assert config.app_path == "/runtime/apps/my-app"
 
     def test_use_auth_false(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")

@@ -17,13 +17,12 @@ def _path_mode_public_url(
     if path_app_url:
         return path_app_url
     public_origin = legacy_app_url or origin
-    normalized_path = "/" + app_path.strip(" ").strip("/")
-    if not public_origin or normalized_path == "/":
+    if not public_origin or not app_path:
         return ""
     parsed = urlsplit(public_origin)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return ""
-    return f"{parsed.scheme}://{parsed.netloc}{normalized_path}"
+    return f"{parsed.scheme}://{parsed.netloc}{app_path}"
 
 
 def _read_verify_ssl() -> bool:
@@ -80,8 +79,9 @@ class AuthConfig:
             normalized_app_path = normalize_app_path(app_path)
         except ValueError:
             # Preserve AuthConfig's non-throwing request-path contract. The
-            # launcher reports the invalid routing value at startup.
-            normalized_app_path = app_path
+            # launcher reports the invalid routing value at startup. Do not
+            # reuse the unvalidated value under a second, looser grammar.
+            normalized_app_path = ""
         path_mode = routing_mode == "path" or (
             routing_mode == "" and bool(normalized_app_path)
         )
@@ -101,7 +101,7 @@ class AuthConfig:
             openai_base=os.environ.get("KAMIWAZA_ENDPOINT", "")
             or os.environ.get("KAMIWAZA_MODEL_URL", ""),
             app_url=app_url,
-            app_path=app_path,
+            app_path=normalized_app_path,
             app_name=os.environ.get("KAMIWAZA_APP_NAME", ""),
             use_auth=os.environ.get("KAMIWAZA_USE_AUTH", "true").lower()
             not in ("false", "0", "no"),

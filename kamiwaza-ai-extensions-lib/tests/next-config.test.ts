@@ -89,6 +89,11 @@ describe("withKamiwazaAppGarden", () => {
         expect(() =>
             withKamiwazaAppGarden({ experimental: { manualClientBasePath: true } } as never),
         ).toThrow(/manualClientBasePath/i);
+        expect(() =>
+            withKamiwazaAppGarden({
+                serverExternalPackages: ["@kamiwaza-ai/extensions-lib"],
+            }),
+        ).toThrow(/serverExternalPackages/i);
     });
 
     it("enforces the exact supported Next version for production variants (B5)", () => {

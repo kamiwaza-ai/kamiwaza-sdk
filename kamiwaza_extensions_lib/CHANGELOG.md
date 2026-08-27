@@ -25,6 +25,11 @@ follow semver. The library is published to PyPI as a standalone package
 * Path-mode public URLs are derived from the configured origin plus the
   deployment prefix when `KAMIWAZA_APP_PATH_URL` is absent. Runtime path
   segments now use the regex-safe platform alphabet `[A-Za-z0-9_-]+`.
+* `kz-ext update` adds `frontend/.dockerignore` rules for `.env*`, build output,
+  and VCS metadata. The template rules are intentionally authoritative over
+  negations so secrets and stale build artifacts cannot enter the image build
+  context; pass required public build values through explicit build arguments
+  or environment instead of copying `.env` files into production images.
 
 ## [0.4.4] — 2026-07-27 (ENG-9199)
 
