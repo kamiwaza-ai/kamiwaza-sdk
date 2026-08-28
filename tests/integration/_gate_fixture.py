@@ -19,19 +19,21 @@ bytes or the install fails its hash check. Rather than rely on a reproducible
 build producing an identical wheel twice, this builds ONCE and ships that exact
 file into the ConfigMap — identical by construction.
 
-Serving the index over ``file://`` from inside the pod keeps the whole thing
-independent of cluster topology: no Service, no node IP, no egress path, and
-nothing for a future NetworkPolicy to break.
+Serving the index over ``file://`` from inside the pod keeps package installs
+independent of cluster topology. The NetworkPolicy probe uses the chart-owned
+Ray head Service, which gives Istio a mesh-routed destination instead of a raw
+PodIP that cannot negotiate STRICT mTLS.
 
 It writes the wheel/index into the gate-packages PVC and the dataset into the
 Ray adapter's always-mounted ``/app/tmp`` allowed root. The temporary root is
 present even on clusters without the optional fixture-model PVC, so the
 federation suite can use a receiver-only package fixture without requiring a
 second chart overlay. Both volumes are already mounted and writable, so the
-fixture deliberately avoids a chart change:
-mounting a ConfigMap would mean setting ``scheduler.extraVolumes``, and helm
-REPLACES list values rather than merging them. No new volume or pod restart is
-needed.
+fixture needs no new volume or pod restart. The opt-in smoke profile exposes
+the existing Ray head Service on the fixture port so the probe remains inside
+the mesh. Mounting a ConfigMap would mean setting ``scheduler.extraVolumes``,
+and helm REPLACES list values rather than merging them, so the fixture keeps
+using the existing mounts.
 
 Usage::
 
@@ -72,10 +74,11 @@ NAMESPACE = "kamiwaza"
 MOUNT = "/opt/kamiwaza/gate-packages-venv/_fixture"
 INDEX_URL = f"file://{MOUNT}/simple"
 # The package lifecycle uses the receiver-local ``file://`` index so the
-# install path is independent of cluster routing.  NetworkPolicy validation
+# install path is independent of cluster routing. NetworkPolicy validation
 # needs an actual HTTP request from a worker, however, so the provisioner also
 # serves that same index from the Ray head on this high, non-privileged port.
 NETWORK_INDEX_PORT = 18080
+NETWORK_INDEX_HOST = f"core-raycluster-head-svc.{NAMESPACE}.svc.cluster.local"
 NETWORK_INDEX_PIDFILE = "/tmp/kamiwaza-gate-index.pid"
 NETWORK_INDEX_LOG = "/tmp/kamiwaza-gate-index.log"
 DATASET_DIR = "/app/tmp"
@@ -364,9 +367,9 @@ def _start_network_index(argv: list[str], pod: str) -> str:
     """Serve the staged PEP-503 index from the head for worker probes.
 
     The lifecycle install intentionally uses a ``file://`` URL.  Serving the
-    identical bytes over a pod-local HTTP listener gives the worker
-    NetworkPolicy probe a real network path without adding a chart service or
-    making the product image depend on an external mirror.
+    identical bytes over an HTTP listener gives the worker NetworkPolicy probe
+    a real network path. The chart exposes this opt-in port on the existing
+    mesh-routed Ray head Service; a raw PodIP would bypass Istio auto-mTLS.
     """
     script = (
         "set -eu; "
@@ -398,33 +401,14 @@ def _start_network_index(argv: list[str], pod: str) -> str:
         raise SystemExit(
             f"could not start the in-pod package index server: {started.stderr.strip()}"
         )
-    ip = run(
-        argv
-        + [
-            "-n",
-            NAMESPACE,
-            "get",
-            "pod",
-            pod,
-            "-o",
-            "jsonpath={.status.podIP}",
-        ]
-    )
-    address = ip.stdout.strip()
-    if ip.returncode != 0 or not address:
-        raise SystemExit(
-            "could not determine the Ray head pod IP for NetworkPolicy "
-            f"validation: {ip.stderr.strip()}"
-        )
-    return f"http://{address}:{NETWORK_INDEX_PORT}/simple/acme-gates/"
+    return f"http://{NETWORK_INDEX_HOST}:{NETWORK_INDEX_PORT}/simple/acme-gates/"
 
 
 def publish(argv: list[str], directory: Path) -> str:
     """Copy the staged wheel/index and dataset into existing Ray-head mounts.
 
-    ``kubectl cp`` rather than a ConfigMap: no new volume means no chart change,
-    no pod restart, and no risk of an extraVolumes overlay replacing the
-    hot-reload source mounts.
+    ``kubectl cp`` rather than a ConfigMap: no new volume or pod restart, and no
+    risk of an extraVolumes overlay replacing the hot-reload source mounts.
     """
     name = _ray_head_pod(argv)
 

@@ -177,8 +177,6 @@ def test_publish_routes_sorted_binary_files_over_ssh(
         setup_calls.append(cmd)
         if "jsonpath={.items[0].metadata.name}" in cmd:
             stdout = "ray-head-0"
-        elif "jsonpath={.status.podIP}" in cmd:
-            stdout = "10.0.0.10"
         else:
             stdout = ""
         return _completed(cmd, stdout=stdout)
@@ -195,12 +193,12 @@ def test_publish_routes_sorted_binary_files_over_ssh(
     monkeypatch.setattr(fixture.subprocess, "run", fake_subprocess_run)
 
     assert fixture.publish(["ssh", "spark-2", "kubectl"], directory) == (
-        "http://10.0.0.10:18080/simple/acme-gates/"
+        "http://core-raycluster-head-svc.kamiwaza.svc.cluster.local:18080/simple/acme-gates/"
     )
 
-    assert len(setup_calls) == 4
+    assert len(setup_calls) == 3
     assert "http.server" in setup_calls[2][-1]
-    assert "jsonpath={.status.podIP}" in setup_calls[3]
+    assert not any("jsonpath={.status.podIP}" in call for call in setup_calls)
     assert [base64.b64decode(payload) for _, payload in writes] == [
         contents[name] for name in sorted(contents)
     ]
