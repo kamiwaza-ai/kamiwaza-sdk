@@ -43,7 +43,6 @@ from kamiwaza_sdk.validation.models import (
 )
 from kamiwaza_sdk.validation.provider import ProviderContractError
 
-
 _ALLOW_ALL_EXECUTION_GATE = (
     "kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate"
 )
@@ -51,7 +50,11 @@ _GATE_INDEX_ENV = "KAMIWAZA_FEDERATION_GATE_INDEX_URL"
 _GATE_HASH_ENV = "KAMIWAZA_FEDERATION_GATE_HASH"
 _GATE_SPEC_ENV = "KAMIWAZA_FEDERATION_GATE_PACKAGE_SPEC"
 _DATASET_PATH_ENV = "KAMIWAZA_FEDERATION_DATASET_PATH"
-_DATASET_DEFAULT_PATH = "/app/models/kamiwaza-validation-mini-clearance.csv"
+# ``/app/tmp`` is mounted in every core and Ray pod and is always included in
+# the retrieval adapter's safe roots.  The optional ``/app/models`` fixture PVC
+# is not present on every federation initiator (notably the 1.1.0 demo host),
+# so the SDK-owned validation default must not depend on it.
+_DATASET_DEFAULT_PATH = "/app/tmp/eng10050-mini-clearance.csv"
 
 
 @dataclass

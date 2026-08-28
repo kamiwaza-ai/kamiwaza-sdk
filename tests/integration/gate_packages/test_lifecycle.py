@@ -12,11 +12,12 @@ Skipped by default (marker: ``integration``). Requires:
 - A live cluster with the WS-M5 chart applied (gate-packages PVC +
   bind-mounts + GatePackageAPI registered + cluster_gate_packages
   table)
-- ``M5_TEST_WHEEL_DIR`` pointing at a directory containing
-  ``acme_gates-1.0.0-py3-none-any.whl`` and (for the replace step)
-  ``acme_gates-1.0.1-py3-none-any.whl`` plus a simple HTTP server
-  serving them
-- ``M5_TEST_INDEX_URL`` pointing at the HTTP server URL
+- Run ``python -m tests.integration._gate_fixture provision --kubectl ...``
+  first. The SDK-owned provisioner builds and publishes the exact
+  ``acme_gates`` 1.0.0, 1.0.1, and 1.1.0 wheels plus the simple index; no
+  externally supplied fixture package is required.
+- ``M5_TEST_WHEEL_DIR`` and ``M5_TEST_INDEX_URL`` exported by that provisioner
+  (the live rig uses a receiver-local ``file://`` index)
 
 The test is structured so it can also serve as the canonical M5b
 smoke procedure when the human operator follows the playbook at

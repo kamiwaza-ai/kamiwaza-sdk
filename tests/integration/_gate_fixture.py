@@ -24,8 +24,11 @@ independent of cluster topology: no Service, no node IP, no egress path, and
 nothing for a future NetworkPolicy to break.
 
 It writes the wheel/index into the gate-packages PVC and the dataset into the
-Ray adapter's existing ``/app/models`` allowed root. Both volumes are already
-mounted and writable, so the fixture deliberately avoids a chart change:
+Ray adapter's always-mounted ``/app/tmp`` allowed root. The temporary root is
+present even on clusters without the optional fixture-model PVC, so the
+federation suite can use a receiver-only package fixture without requiring a
+second chart overlay. Both volumes are already mounted and writable, so the
+fixture deliberately avoids a chart change:
 mounting a ConfigMap would mean setting ``scheduler.extraVolumes``, and helm
 REPLACES list values rather than merging them. No new volume or pod restart is
 needed.
@@ -42,19 +45,29 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-WHEEL_NAME = "acme_gates-1.1.0-py3-none-any.whl"
+# The SDK owns both live fixture families.  The M5 lifecycle test exercises
+# install 1.0.0 -> replace 1.0.1, while the federation known-answer tests use
+# the fail-closed MiniClearanceGate in 1.1.0.  One provision command publishes
+# all three exact artifacts so no package test needs to skip for missing
+# fixture wheels.
+PACKAGE_VERSIONS = ("1.0.0", "1.0.1", "1.1.0")
+WHEEL_NAMES = {
+    version: f"acme_gates-{version}-py3-none-any.whl" for version in PACKAGE_VERSIONS
+}
+WHEEL_NAME = WHEEL_NAMES["1.1.0"]
 NAMESPACE = "kamiwaza"
 # The gate-packages PVC: already mounted, already writable, and its presence IS
 # the prerequisite for gate-package install.
 MOUNT = "/opt/kamiwaza/gate-packages-venv/_fixture"
 INDEX_URL = f"file://{MOUNT}/simple"
-DATASET_DIR = "/app/models"
+DATASET_DIR = "/app/tmp"
 DATASET_PATH = f"{DATASET_DIR}/eng10050-mini-clearance.csv"
 
 REPO = Path(__file__).resolve().parents[2]
@@ -111,11 +124,21 @@ def _build_error(cmd: list[str], staged: Path) -> str | None:
     return f"{cmd[0]}: {proc.stderr.strip()[:200]}"
 
 
-def _build_first_available(staged: Path) -> None:
+def _build_first_available(staged: Path, output_dir: Path | None = None) -> None:
     """Try the uv and pip wheel builders in order."""
+    destination = output_dir or WHEEL_DIR
     attempts = [
-        ["uv", "build", "--wheel", "--out-dir", str(WHEEL_DIR)],
-        [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "-w", str(WHEEL_DIR)],
+        ["uv", "build", "--wheel", "--out-dir", str(destination)],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            ".",
+            "--no-deps",
+            "-w",
+            str(destination),
+        ],
     ]
     errors = []
     for cmd in attempts:
@@ -126,15 +149,9 @@ def _build_first_available(staged: Path) -> None:
     raise SystemExit("wheel build failed:\n  " + "\n  ".join(errors))
 
 
-def build_wheel(src: Path) -> tuple[Path, str]:
-    """Build out-of-tree and return (wheel_path, 'sha256:<hex>').
-
-    Staged out of tree because an in-tree build leaves build/ and *.egg-info in
-    the kamiwaza repo, which is exactly the untracked residue this fixture
-    should not create.
-    """
-    WHEEL_DIR.mkdir(parents=True, exist_ok=True)
-    staged = STAGE / "src"
+def _stage_source(src: Path, version: str, stage_name: str) -> Path:
+    """Copy the SDK fixture out of tree and set the wheel's package version."""
+    staged = STAGE / stage_name
     if staged.exists():
         shutil.rmtree(staged)
     shutil.copytree(
@@ -142,23 +159,69 @@ def build_wheel(src: Path) -> tuple[Path, str]:
         staged,
         ignore=shutil.ignore_patterns("__pycache__", "build", "dist", "*.egg-info"),
     )
+    metadata = staged / "pyproject.toml"
+    text = metadata.read_text(encoding="utf-8")
+    rewritten, count = re.subn(
+        r'(?m)^(version\s*=\s*)"[^"]+"',
+        rf'\g<1>"{version}"',
+        text,
+        count=1,
+    )
+    if count != 1 and version != "1.1.0":
+        raise SystemExit(f"could not set acme-gates version {version} in {metadata}")
+    if count == 1:
+        metadata.write_text(rewritten, encoding="utf-8")
+    return staged
+
+
+def _build_version(src: Path, version: str, stage_name: str) -> tuple[Path, str]:
+    """Build one exact fixture version and return its path and SHA-256."""
+    wheel_name = WHEEL_NAMES.get(version)
+    if wheel_name is None:
+        raise ValueError(f"unsupported acme-gates fixture version: {version}")
+    staged = _stage_source(src, version, stage_name)
+    _build_first_available(staged)
+    wheel = WHEEL_DIR / wheel_name
+    if not wheel.exists():
+        built = sorted(p.name for p in WHEEL_DIR.glob("*.whl"))
+        raise SystemExit(f"expected {wheel_name}, built {built}")
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    return wheel, f"sha256:{digest}"
+
+
+def build_wheel(src: Path, version: str = "1.1.0") -> tuple[Path, str]:
+    """Build out-of-tree and return (wheel_path, 'sha256:<hex>').
+
+    Staged out of tree because an in-tree build leaves build/ and *.egg-info in
+    the kamiwaza repo, which is exactly the untracked residue this fixture
+    should not create.
+    """
+    WHEEL_DIR.mkdir(parents=True, exist_ok=True)
     for existing in WHEEL_DIR.glob("*.whl"):
         existing.unlink()
 
     # uv first: the SDK venv is uv-managed and ships without pip, so
     # `python -m pip` is not available there. Fall back for environments that
     # have pip but not uv.
-    _build_first_available(staged)
-
-    wheel = WHEEL_DIR / WHEEL_NAME
-    if not wheel.exists():
-        built = sorted(p.name for p in WHEEL_DIR.glob("*.whl"))
-        raise SystemExit(f"expected {WHEEL_NAME}, built {built}")
-    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-    return wheel, f"sha256:{digest}"
+    return _build_version(src, version, "src")
 
 
-def stage_index(wheel: Path, digest: str) -> Path:
+def build_wheels(src: Path) -> dict[str, tuple[Path, str]]:
+    """Build every SDK-owned wheel needed by the live suites."""
+    WHEEL_DIR.mkdir(parents=True, exist_ok=True)
+    for existing in WHEEL_DIR.glob("*.whl"):
+        existing.unlink()
+    return {
+        version: _build_version(src, version, f"src-{version}")
+        for version in PACKAGE_VERSIONS
+    }
+
+
+def stage_index(
+    wheel: Path,
+    digest: str,
+    additional_wheels: dict[str, tuple[Path, str]] | None = None,
+) -> Path:
     """Lay out the wheel, a PEP-503 leaf index, and the dataset.
 
     pip needs only the LEAF ``simple/<project>/index.html`` for an
@@ -167,11 +230,16 @@ def stage_index(wheel: Path, digest: str) -> Path:
     if STAGE_DIR.exists():
         shutil.rmtree(STAGE_DIR)
     STAGE_DIR.mkdir(parents=True)
-    shutil.copy2(wheel, STAGE_DIR / WHEEL_NAME)
+    artifacts = [(wheel, digest)] + list((additional_wheels or {}).values())
+    anchors: list[str] = []
+    for artifact, artifact_digest in artifacts:
+        name = artifact.name
+        shutil.copy2(artifact, STAGE_DIR / name)
+        anchors.append(
+            f'<a href="{name}#{artifact_digest.replace(":", "=")}">{name}</a>'
+        )
     (STAGE_DIR / "index.html").write_text(
-        "<!DOCTYPE html><html><body>"
-        f'<a href="{WHEEL_NAME}#{digest.replace(":", "=")}">{WHEEL_NAME}</a>'
-        "</body></html>\n",
+        "<!DOCTYPE html><html><body>" + "\n".join(sorted(anchors)) + "</body></html>\n",
         encoding="utf-8",
     )
     sys.path.insert(0, str(Path(__file__).parent))
@@ -297,31 +365,39 @@ def publish(argv: list[str], directory: Path) -> None:
     print(f"  published {len(items)} files into {MOUNT}")
 
 
-def verify(argv: list[str], digest: str) -> None:
+def verify(
+    argv: list[str],
+    digest: str,
+    additional_digests: dict[str, str] | None = None,
+) -> None:
     """The gate: the pod must serve the SAME bytes we hashed locally."""
     name = _ray_head_pod(argv)
-    remote = run(
-        argv
-        + [
-            "-n",
-            NAMESPACE,
-            "exec",
-            name,
-            "-c",
-            "ray-head",
-            "--",
-            "sha256sum",
-            f"{MOUNT}/simple/acme-gates/{WHEEL_NAME}",
-        ]
-    )
-    got = (remote.stdout.split() or [""])[0]
-    want = digest.split(":", 1)[1]
-    if got != want:
-        raise SystemExit(
-            "the wheel in the pod does not match the one hashed locally — the "
-            f"install would fail its hash check.\n  local: {want}\n  pod:   {got or remote.stderr.strip()}"
+    expected = {WHEEL_NAME: digest}
+    expected.update(additional_digests or {})
+    for wheel_name, wheel_digest in expected.items():
+        remote = run(
+            argv
+            + [
+                "-n",
+                NAMESPACE,
+                "exec",
+                name,
+                "-c",
+                "ray-head",
+                "--",
+                "sha256sum",
+                f"{MOUNT}/simple/acme-gates/{wheel_name}",
+            ]
         )
-    print(f"  verified in-pod wheel digest matches: {want[:16]}…")
+        got = (remote.stdout.split() or [""])[0]
+        want = wheel_digest.split(":", 1)[1]
+        if got != want:
+            raise SystemExit(
+                "the wheel in the pod does not match the one hashed locally — the "
+                f"install would fail its hash check.\n  wheel: {wheel_name}\n"
+                f"  local: {want}\n  pod:   {got or remote.stderr.strip()}"
+            )
+        print(f"  verified in-pod wheel digest matches {wheel_name}: {want[:16]}…")
 
 
 def main() -> int:
@@ -365,17 +441,26 @@ def main() -> int:
         print(f"  removed {MOUNT} and {DATASET_PATH}")
         return 0
 
-    wheel, digest = build_wheel(locate_source())
+    wheels = build_wheels(locate_source())
+    wheel, digest = wheels["1.1.0"]
     if args.action == "env":
         print(f"export M5_TEST_WHEEL_DIR={WHEEL_DIR}")
         print(f"export M5_TEST_INDEX_URL={INDEX_URL}")
         print(f"export MINI_CLEARANCE_DATASET_PATH={DATASET_PATH}")
         return 0
 
-    print(f"  built {wheel.name}  {digest}")
+    for version, (built_wheel, built_digest) in wheels.items():
+        print(f"  built {version}: {built_wheel.name}  {built_digest}")
     preflight(argv)
-    publish(argv, stage_index(wheel, digest))
-    verify(argv, digest)
+    additional = {
+        version: artifact for version, artifact in wheels.items() if version != "1.1.0"
+    }
+    publish(argv, stage_index(wheel, digest, additional))
+    verify(
+        argv,
+        digest,
+        {artifact[0].name: artifact[1] for artifact in additional.values()},
+    )
     print(f"\nexport M5_TEST_WHEEL_DIR={WHEEL_DIR}")
     print(f"export M5_TEST_INDEX_URL={INDEX_URL}")
     print(f"export MINI_CLEARANCE_DATASET_PATH={DATASET_PATH}")
