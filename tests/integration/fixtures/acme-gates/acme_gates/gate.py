@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from kamiwaza.services.authz.gates.protocol import (
+from .protocol_compat import (
     AttributeGate,
     AttributeSpec,
     GateAuditEntry,
