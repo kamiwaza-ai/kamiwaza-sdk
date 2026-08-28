@@ -32,7 +32,8 @@ def test_version_is_0_4_4():
     # front-channel URL from the browser base directly, since the
     # server-side proxy POST is unreachable in-cluster under ``kz-ext
     # dev``. 0.4.3 (ENG-8766) restricted model-endpoint re-hosting so
-    # in-cluster chat keeps the platform gateway URL. 0.4.4 (ENG-9199)
+    # in-cluster chat keeps the platform gateway URL and publishes the
+    # patched FastAPI/Starlette dependency floor. 0.4.4 (ENG-9199)
     # adds canonical, no-redirect platform requests and forwards the
     # complete signed ForwardAuth envelope; the compatibility floor moves
     # with it so new scaffolds can rely on that helper.

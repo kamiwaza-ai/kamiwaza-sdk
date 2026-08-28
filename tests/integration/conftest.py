@@ -1501,6 +1501,27 @@ def deployable_model_target(
     return _model_targets.select_inference_target(cluster_capability_snapshot)
 
 
+@pytest.fixture(scope="session")
+def ensure_model_lifecycle_target_ready(
+    ensure_repo_ready: Callable[..., object],
+    deployable_model_target: _model_targets.InferenceTarget,
+) -> Callable[[KamiwazaClient], object]:
+    """Prepare the model lifecycle target, failing if readiness cannot be proven.
+
+    Unlike ``ensure_deployable_model_ready``, readiness errors propagate because
+    lifecycle tests require a working target to verify their endpoint contracts.
+    """
+
+    def _ensure(client: KamiwazaClient) -> object:
+        return ensure_repo_ready(
+            client,
+            deployable_model_target.repo_id,
+            quantization=deployable_model_target.quantization,
+        )
+
+    return _ensure
+
+
 def _ensure_deployable_target_ready(
     client: KamiwazaClient,
     ensure_repo_ready: Callable[..., object],
@@ -1535,7 +1556,11 @@ def ensure_deployable_model_ready(
     ensure_repo_ready: Callable[..., object],
     deployable_model_target: _model_targets.InferenceTarget,
 ) -> Callable[[KamiwazaClient], Any]:
-    """Return a target-aware live model readiness helper."""
+    """Return a live readiness helper that skips unavailable capability targets.
+
+    Unlike ``ensure_model_lifecycle_target_ready``, expected host-capability
+    readiness failures skip deployment-oriented tests instead of failing them.
+    """
 
     def _ensure(client: KamiwazaClient) -> object:
         return _ensure_deployable_target_ready(
