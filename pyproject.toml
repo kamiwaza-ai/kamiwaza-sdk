@@ -42,6 +42,9 @@ dependencies = [
     # Security floor for CVE-2026-54283 / GHSA-wqp7-x3pw-xc5r.
     "starlette>=1.3.1,<2",
     "rich>=13.0",
+    # Security floor for the ENG-11024 advisory set. Keep this in published
+    # metadata so SDK consumers cannot resolve an older transitive wheel.
+    "cryptography>=50.0.1,<51.0.0",
     "kamiwaza-extensions-lib>=0.4.5,<0.5",
 ]
 
