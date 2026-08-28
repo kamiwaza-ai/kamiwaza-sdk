@@ -94,10 +94,13 @@ def _pod_for_selector(argv: list[str], selector: str, role: str) -> str:
             "-l",
             selector,
             "-o",
-            'jsonpath={.items[?(@.status.phase=="Running")][0].metadata.name}',
+            'jsonpath={range .items[?(@.status.phase=="Running")]}{.metadata.name}'
+            '{"\\n"}{end}',
         ],
     )
-    pod = result.stdout.strip()
+    pod = next(
+        (line.strip() for line in result.stdout.splitlines() if line.strip()), ""
+    )
     if result.returncode != 0 or not pod:
         pytest.fail(
             f"required Ray {role} pod not found ({selector}): {result.stderr.strip()}",

@@ -75,7 +75,7 @@ def test_running_pod_selector_ignores_pending_rollout_pods(
 
     def fake_run(argv: list[str], args: list[str]):
         observed["args"] = args
-        return _completed("worker-1")
+        return _completed("worker-1\nworker-2\n")
 
     monkeypatch.setattr(lifecycle, "_kubectl_run", fake_run)
     assert (
@@ -84,4 +84,7 @@ def test_running_pod_selector_ignores_pending_rollout_pods(
     )
     args = observed["args"]
     assert isinstance(args, list)
-    assert 'jsonpath={.items[?(@.status.phase=="Running")][0].metadata.name}' in args
+    assert (
+        'jsonpath={range .items[?(@.status.phase=="Running")]}{.metadata.name}'
+        '{"\\n"}{end}'
+    ) in args
