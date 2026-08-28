@@ -16,8 +16,8 @@ from tests.integration import _gate_fixture as fixture
 pytestmark = pytest.mark.unit
 
 
-def test_dataset_uses_the_ray_adapters_existing_allowed_root() -> None:
-    assert fixture.DATASET_PATH == "/app/models/eng10050-mini-clearance.csv"
+def test_dataset_uses_the_always_mounted_allowed_root() -> None:
+    assert fixture.DATASET_PATH == "/app/tmp/eng10050-mini-clearance.csv"
 
 
 def _completed(
@@ -124,6 +124,35 @@ def test_build_wheel_reports_all_failed_attempts(
     assert "wheel build failed" in message
     assert "uv failed" in message
     assert "python" in message
+
+
+def test_build_wheels_materializes_lifecycle_and_federation_versions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = _stage_build_paths(monkeypatch, tmp_path)
+    calls: list[tuple[str, str]] = []
+
+    def fake_build_version(
+        src: Path, version: str, stage_name: str
+    ) -> tuple[Path, str]:
+        calls.append((version, stage_name))
+        wheel = fixture.WHEEL_DIR / fixture.WHEEL_NAMES[version]
+        wheel.parent.mkdir(parents=True, exist_ok=True)
+        wheel.write_bytes(version.encode())
+        return wheel, f"sha256:{version}"
+
+    monkeypatch.setattr(fixture, "_build_version", fake_build_version)
+
+    result = fixture.build_wheels(source)
+
+    assert list(result) == list(fixture.PACKAGE_VERSIONS)
+    assert calls == [
+        (version, f"src-{version}") for version in fixture.PACKAGE_VERSIONS
+    ]
+    assert sorted(path.name for path, _ in result.values()) == sorted(
+        fixture.WHEEL_NAMES.values()
+    )
 
 
 def test_publish_routes_sorted_binary_files_over_ssh(
@@ -247,15 +276,14 @@ def test_teardown_removes_only_the_owned_fixture_paths(
         fixture.DATASET_PATH,
     ]
 
+
 def test_gate_fixture_source_is_owned_by_sdk() -> None:
     source = fixture.locate_source()
 
     assert source == (
-        Path(fixture.REPO)
-        / "tests"
-        / "integration"
-        / "fixtures"
-        / "acme-gates"
+        Path(fixture.REPO) / "tests" / "integration" / "fixtures" / "acme-gates"
     )
     assert (source / "pyproject.toml").is_file()
+    assert (source / "acme_gates" / "gate.py").is_file()
+    assert (source / "acme_gates" / "exec_gate.py").is_file()
     assert (source / "acme_gates" / "mini_clearance_gate.py").is_file()

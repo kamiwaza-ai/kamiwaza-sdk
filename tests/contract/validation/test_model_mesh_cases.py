@@ -26,7 +26,9 @@ class _Admin:
 
 
 class _Persona:
-    def __init__(self, username: str, calls: list[tuple[str, str, dict[str, Any]]]) -> None:
+    def __init__(
+        self, username: str, calls: list[tuple[str, str, dict[str, Any]]]
+    ) -> None:
         self.username = username
         self.calls = calls
 
@@ -43,9 +45,7 @@ class _Persona:
                     ]
                 }
             return {"items": []}
-        return {
-            "choices": [{"message": {"content": "mesh response"}}]
-        }
+        return {"choices": [{"message": {"content": "mesh response"}}]}
 
     def close(self) -> None:
         return None
@@ -62,6 +62,7 @@ def _context(calls: list[tuple[str, str, dict[str, Any]]]) -> RunContext:
         redacted_parameters={
             "realm": "realm-1",
             "federation_name": "fed-edge",
+            "initiator_federation_id": "initiator-fed-123",
             "model_id": "model-123",
             "model_repository": "Qwen/Qwen3-0.6B-GGUF",
             "deployment_id": "deploy-123",
@@ -94,13 +95,13 @@ def test_model_mesh_cases_use_exact_catalog_and_runtime_chat_paths(
     assert [item.case_id for item in evidence] == list(MODEL_MESH_CASE_IDS)
     assert all(item.status == "passed" for item in evidence)
     assert [(method, path) for method, path, _kwargs in calls] == [
-        ("GET", "/mesh/fed-edge/api/models/"),
-        ("GET", "/mesh/fed-edge/api/models/"),
+        ("GET", "/mesh/initiator-fed-123/api/models/"),
+        ("GET", "/mesh/initiator-fed-123/api/models/"),
         (
             "POST",
-            "/mesh/fed-edge/runtime/models/deploy-123/v1/chat/completions",
+            "/mesh/initiator-fed-123/runtime/models/deploy-123/v1/chat/completions",
         ),
-        ("GET", "/mesh/fed-edge/api/models/"),
+        ("GET", "/mesh/initiator-fed-123/api/models/"),
     ]
     chat_payload = calls[2][2]["json"]
     assert chat_payload["model"] == "served-qwen"

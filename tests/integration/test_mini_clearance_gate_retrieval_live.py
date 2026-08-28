@@ -8,8 +8,9 @@ then retrieve as U/S/TS personas and assert the exact post-gate counts
 (U:3/2, S:4/1, TS:5/0) with zero leakage.
 
 Soft-skips (contributor boxes stay green) unless the operator has provisioned:
-  * the WS-M5 gate-packages PVC, and a served 1.1.0 wheel/index
-    (M5_TEST_WHEEL_DIR + M5_TEST_INDEX_URL, per gate_packages/test_lifecycle.py);
+  * the WS-M5 gate-packages PVC and run ``_gate_fixture provision``. That
+    SDK-owned helper builds the 1.0.0, 1.0.1, and 1.1.0 wheels and publishes
+    the simple index (M5_TEST_WHEEL_DIR + M5_TEST_INDEX_URL);
   * a filesystem-source file the ray-head can read: place the fixture (see
     _mini_clearance.write_dataset_file) at an absolute path under the cluster's
     RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS and pass it via MINI_CLEARANCE_DATASET_PATH.

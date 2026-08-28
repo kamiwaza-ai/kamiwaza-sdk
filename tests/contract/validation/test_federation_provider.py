@@ -75,6 +75,17 @@ def _profile() -> ValidationProfile:
     return ValidationProfile.model_validate(payload)
 
 
+def test_provider_records_match_the_canonical_integration_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "integration"
+        / "fixtures"
+        / "mini_clearance_records.json"
+    )
+
+    assert list(records()) == json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
 def _runtime(tmp_path: Path) -> RuntimeContext:
     ownership = tmp_path / "ownership.key"
     ownership.write_bytes(b"o" * 48)
@@ -144,12 +155,15 @@ class _Federations:
         self.cluster_id = cluster_id
         self.remote_id = remote_id
         self.proxies: dict[str, _FederationProxy] = {}
+        self.id_proxies: dict[str, _FederationProxy] = {}
         self.deleted: list[str] = []
 
     def pair(self, *, name: str, role: str, **kwargs: Any) -> dict[str, str]:
         del kwargs
-        self.proxies.setdefault(name, _FederationProxy())
-        return {"id": f"{role}-{self.cluster_id}-fed", "name": name}
+        proxy = self.proxies.setdefault(name, _FederationProxy())
+        federation_id = f"{role}-{self.cluster_id}-fed"
+        self.id_proxies[federation_id] = proxy
+        return {"id": federation_id, "name": name}
 
     def get(self, federation_id: str) -> dict[str, str]:
         del federation_id
@@ -157,6 +171,12 @@ class _Federations:
 
     def __getitem__(self, name: str) -> _FederationProxy:
         return self.proxies[name]
+
+    def by_id(
+        self, federation_id: str, *, remote_name: str | None = None
+    ) -> _FederationProxy:
+        del remote_name
+        return self.id_proxies[federation_id]
 
 
 class _ClusterAPI:
@@ -437,6 +457,14 @@ def test_prepare_and_teardown_journal_every_owned_resource(
     assert {item.status for item in cleanup.results} == {"removed"}
     assert admin.deleted_realms
     assert len(admin.deleted_users) == len(PERSONAS) + 1 + len(TENANT_NEGATIVE_PERSONAS)
+    assert any(
+        method == "DELETE" and path.startswith("/cluster/federations/")
+        for method, path in factory.clients["edge-a"].client.requests
+    )
+    assert any(
+        method == "DELETE" and path.startswith("/cluster/federations/")
+        for method, path in factory.clients["edge-b"].client.requests
+    )
 
 
 def test_run_emits_all_nine_cases_with_redacted_failure_details(

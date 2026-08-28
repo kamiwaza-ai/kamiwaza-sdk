@@ -12,11 +12,12 @@ Skipped by default (marker: ``integration``). Requires:
 - A live cluster with the WS-M5 chart applied (gate-packages PVC +
   bind-mounts + GatePackageAPI registered + cluster_gate_packages
   table)
-- ``M5_TEST_WHEEL_DIR`` pointing at a directory containing
-  ``acme_gates-1.0.0-py3-none-any.whl`` and (for the replace step)
-  ``acme_gates-1.0.1-py3-none-any.whl`` plus a simple HTTP server
-  serving them
-- ``M5_TEST_INDEX_URL`` pointing at the HTTP server URL
+- Run ``python -m tests.integration._gate_fixture provision --kubectl ...``
+  first. The SDK-owned provisioner builds and publishes the exact
+  ``acme_gates`` 1.0.0, 1.0.1, and 1.1.0 wheels plus the simple index; no
+  externally supplied fixture package is required.
+- ``M5_TEST_WHEEL_DIR`` and ``M5_TEST_INDEX_URL`` exported by that provisioner
+  (the live rig uses a receiver-local ``file://`` index)
 
 The test is structured so it can also serve as the canonical M5b
 smoke procedure when the human operator follows the playbook at
@@ -74,8 +75,7 @@ def kz():
 @pytest.fixture(scope="module")
 def wheel_dir() -> Path:
     path = Path(_env("M5_TEST_WHEEL_DIR"))
-    if not (path / "acme_gates-1.0.0-py3-none-any.whl").exists():
-        pytest.skip(f"acme-gates v1.0.0 wheel not at {path}")
+    _require_wheel(path, "acme_gates-1.0.0-py3-none-any.whl")
     return path
 
 
@@ -88,6 +88,18 @@ def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     h.update(path.read_bytes())
     return f"sha256:{h.hexdigest()}"
+
+
+def _require_wheel(path: Path, filename: str) -> Path:
+    """Fail loudly when a configured live run lacks an SDK-owned wheel."""
+    wheel = path / filename
+    if not wheel.is_file():
+        pytest.fail(
+            f"required SDK-owned fixture wheel not at {wheel}; run "
+            "python -m tests.integration._gate_fixture provision first",
+            pytrace=False,
+        )
+    return wheel
 
 
 def _wheel_and_index_configured() -> bool:
@@ -174,9 +186,7 @@ class TestLifecycle:
         Requires acme_gates-1.0.1-py3-none-any.whl in wheel_dir AND a
         classpath superset (v1.0.1 must include AcmeAttributeGate).
         """
-        v2 = wheel_dir / "acme_gates-1.0.1-py3-none-any.whl"
-        if not v2.exists():
-            pytest.skip("acme-gates v1.0.1 wheel not built; replace test skipped")
+        v2 = _require_wheel(wheel_dir, "acme_gates-1.0.1-py3-none-any.whl")
         v2_hash = _sha256(v2)
 
         # NOTE: The binding-aware classpath-superset check requires binding

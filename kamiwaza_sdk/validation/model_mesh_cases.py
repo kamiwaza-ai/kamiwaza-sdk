@@ -11,6 +11,7 @@ from kamiwaza_sdk.validation.federation_cases import RunContext, _issue_token
 from kamiwaza_sdk.validation.federation_common import (
     close_client,
     elapsed_ms,
+    optional_text,
     required_text,
     token_client,
 )
@@ -62,7 +63,9 @@ def _run_authorized_discovery(context: RunContext) -> None:
 
 def _run_stable_discovery(context: RunContext) -> None:
     body = _remote_models(context, "fed-clr-u")
-    _assert_model_visible(body, context, "remote model discovery omitted stable model identity")
+    _assert_model_visible(
+        body, context, "remote model discovery omitted stable model identity"
+    )
     rows = _model_rows(body)
     repository = required_text(context.params, "model_repository")
     if not any(str(row.get("repo_modelId") or "") == repository for row in rows):
@@ -72,7 +75,7 @@ def _run_stable_discovery(context: RunContext) -> None:
 def _run_remote_chat(context: RunContext) -> None:
     token = _issue_token(context, "fed-clr-u")
     persona = token_client(context.initiator_base, token)
-    name = quote(required_text(context.params, "federation_name"), safe="")
+    name = quote(_mesh_target(context), safe="")
     deployment_id = required_text(context.params, "deployment_id")
     served_model_id = required_text(context.params, "served_model_id")
     try:
@@ -81,7 +84,7 @@ def _run_remote_chat(context: RunContext) -> None:
             f"/mesh/{name}/runtime/models/{quote(deployment_id, safe='')}/v1/chat/completions",
             json={
                 "model": served_model_id,
-                "messages":[
+                "messages": [
                     {"role": "user", "content": "kamiwaza model-mesh validation"}
                 ],
                 "temperature": 0,
@@ -108,7 +111,7 @@ def _run_unauthorized(context: RunContext) -> None:
 def _remote_models(context: RunContext, username: str) -> Any:
     token = _issue_token(context, username)
     persona = token_client(context.initiator_base, token)
-    name = quote(required_text(context.params, "federation_name"), safe="")
+    name = quote(_mesh_target(context), safe="")
     try:
         return persona._request("GET", f"/mesh/{name}/api/models/")
     except Exception as exc:
@@ -153,8 +156,24 @@ def _response_has_content(body: Any) -> bool:
     if not isinstance(first, Mapping):
         return False
     message = first.get("message")
-    return isinstance(message, Mapping) and bool(str(message.get("content") or "").strip())
+    return isinstance(message, Mapping) and bool(
+        str(message.get("content") or "").strip()
+    )
 
 
 def _body_status(body: Any) -> int | None:
     return getattr(body, "status_code", None) if not isinstance(body, Mapping) else None
+
+
+def _mesh_target(context: RunContext) -> str:
+    """Select the owned initiator federation deterministically.
+
+    Federation names are human-readable remote-cluster names and can be
+    duplicated after a failed teardown.  The API also accepts the exact
+    initiator federation UUID, which is the only stable selector for an owned
+    run.  Keep the name fallback for older state snapshots.
+    """
+
+    return optional_text(context.params, "initiator_federation_id") or required_text(
+        context.params, "federation_name"
+    )
