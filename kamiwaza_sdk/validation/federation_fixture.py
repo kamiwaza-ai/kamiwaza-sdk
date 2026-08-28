@@ -40,9 +40,9 @@ def records() -> tuple[dict[str, Any], ...]:
     """Return the deterministic five-row clearance fixture."""
 
     return (
-        {"id": "clearance-1", "classification": "U", "text": "public"},
-        {"id": "clearance-2", "classification": "U", "text": "internal"},
-        {"id": "clearance-3", "classification": "U", "text": "routine"},
-        {"id": "clearance-4", "classification": "S", "text": "sensitive"},
-        {"id": "clearance-5", "classification": "TS", "text": "restricted"},
+        {"id": "r1", "classification": "U", "payload": "unclassified-alpha"},
+        {"id": "r2", "classification": "U", "payload": "unclassified-bravo"},
+        {"id": "r3", "classification": "U", "payload": "unclassified-charlie"},
+        {"id": "r4", "classification": "S", "payload": "secret-delta"},
+        {"id": "r5", "classification": "TS", "payload": "topsecret-echo"},
     )

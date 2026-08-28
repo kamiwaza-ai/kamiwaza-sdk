@@ -75,6 +75,17 @@ def _profile() -> ValidationProfile:
     return ValidationProfile.model_validate(payload)
 
 
+def test_provider_records_match_the_canonical_integration_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "integration"
+        / "fixtures"
+        / "mini_clearance_records.json"
+    )
+
+    assert list(records()) == json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
 def _runtime(tmp_path: Path) -> RuntimeContext:
     ownership = tmp_path / "ownership.key"
     ownership.write_bytes(b"o" * 48)
