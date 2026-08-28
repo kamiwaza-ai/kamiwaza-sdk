@@ -33,6 +33,15 @@ def compose_with_build():
 
 class TestBuild:
     @patch("kamiwaza_extensions.image_builder.subprocess.run")
+    def test_build_forces_buildkit_for_load(self, mock_run, builder, tmp_path):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        compose = {"services": {"api": {"build": "."}}}
+
+        builder.build(tmp_path, compose, "test", "v1", "reg")
+
+        assert mock_run.call_args.kwargs["env"]["DOCKER_BUILDKIT"] == "1"
+
+    @patch("kamiwaza_extensions.image_builder.subprocess.run")
     def test_builds_services_with_build_context(
         self, mock_run, builder, compose_with_build, tmp_path
     ):

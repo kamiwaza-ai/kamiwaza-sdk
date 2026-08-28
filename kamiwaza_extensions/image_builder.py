@@ -153,12 +153,13 @@ class ImageBuilder:
             str(dockerfile),
             str(context),
         ]
+        env = {**os.environ, "DOCKER_BUILDKIT": "1"}
         try:
             if verbose:
-                subprocess.run(cmd, check=True, timeout=3600)
+                subprocess.run(cmd, check=True, timeout=3600, env=env)
             else:
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=3600
+                    cmd, capture_output=True, text=True, timeout=3600, env=env
                 )
                 if result.returncode != 0:
                     # Show last 20 lines of output on failure
