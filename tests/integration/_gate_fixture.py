@@ -38,6 +38,10 @@ Usage::
     python -m tests.integration._gate_fixture provision [--kubectl "ssh spark-2 kubectl"]
     python -m tests.integration._gate_fixture env       [--kubectl ...]
     python -m tests.integration._gate_fixture teardown  [--kubectl ...]
+
+``provision`` also prints ``M5_TEST_NETWORK_POLICY_ALLOWED_URL``.  Export that
+value and set ``M5_TEST_NETWORK_POLICY_REQUIRED=1`` when running the required
+gate-package NetworkPolicy cells.
 """
 
 from __future__ import annotations
@@ -67,6 +71,13 @@ NAMESPACE = "kamiwaza"
 # the prerequisite for gate-package install.
 MOUNT = "/opt/kamiwaza/gate-packages-venv/_fixture"
 INDEX_URL = f"file://{MOUNT}/simple"
+# The package lifecycle uses the receiver-local ``file://`` index so the
+# install path is independent of cluster routing.  NetworkPolicy validation
+# needs an actual HTTP request from a worker, however, so the provisioner also
+# serves that same index from the Ray head on this high, non-privileged port.
+NETWORK_INDEX_PORT = 18080
+NETWORK_INDEX_PIDFILE = "/tmp/kamiwaza-gate-index.pid"
+NETWORK_INDEX_LOG = "/tmp/kamiwaza-gate-index.log"
 DATASET_DIR = "/app/tmp"
 DATASET_PATH = f"{DATASET_DIR}/eng10050-mini-clearance.csv"
 
@@ -326,7 +337,68 @@ def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
         raise SystemExit(f"writing {item.name} failed: {detail}")
 
 
-def publish(argv: list[str], directory: Path) -> None:
+def _start_network_index(argv: list[str], pod: str) -> str:
+    """Serve the staged PEP-503 index from the head for worker probes.
+
+    The lifecycle install intentionally uses a ``file://`` URL.  Serving the
+    identical bytes over a pod-local HTTP listener gives the worker
+    NetworkPolicy probe a real network path without adding a chart service or
+    making the product image depend on an external mirror.
+    """
+    script = (
+        "set -eu; "
+        "python_bin=$(command -v python3 || command -v python || true); "
+        'test -n "$python_bin"; '
+        f"if test -s {NETWORK_INDEX_PIDFILE}; then "
+        f"  kill $(cat {NETWORK_INDEX_PIDFILE}) 2>/dev/null || true; "
+        "fi; "
+        f'nohup "$python_bin" -m http.server {NETWORK_INDEX_PORT} '
+        f"--bind 0.0.0.0 --directory {MOUNT} "
+        f">{NETWORK_INDEX_LOG} 2>&1 </dev/null & echo $! > {NETWORK_INDEX_PIDFILE}; "
+        "sleep 1; "
+        f"kill -0 $(cat {NETWORK_INDEX_PIDFILE});"
+    )
+    started = run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "exec",
+            pod,
+            "-c",
+            "ray-head",
+            "--",
+            "sh",
+            "-c",
+            script,
+        ]
+    )
+    if started.returncode != 0:
+        raise SystemExit(
+            f"could not start the in-pod package index server: {started.stderr.strip()}"
+        )
+    ip = run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "get",
+            "pod",
+            pod,
+            "-o",
+            "jsonpath={.status.podIP}",
+        ]
+    )
+    address = ip.stdout.strip()
+    if ip.returncode != 0 or not address:
+        raise SystemExit(
+            "could not determine the Ray head pod IP for NetworkPolicy "
+            f"validation: {ip.stderr.strip()}"
+        )
+    return f"http://{address}:{NETWORK_INDEX_PORT}/simple/acme-gates/"
+
+
+def publish(argv: list[str], directory: Path) -> str:
     """Copy the staged wheel/index and dataset into existing Ray-head mounts.
 
     ``kubectl cp`` rather than a ConfigMap: no new volume means no chart change,
@@ -363,6 +435,9 @@ def publish(argv: list[str], directory: Path) -> None:
     for item in items:
         _publish_item(argv, name, item, leaf)
     print(f"  published {len(items)} files into {MOUNT}")
+    network_index_url = _start_network_index(argv, name)
+    print(f"  serving NetworkPolicy probe index at {network_index_url}")
+    return network_index_url
 
 
 def verify(
@@ -432,6 +507,23 @@ def main() -> int:
                     "-c",
                     "ray-head",
                     "--",
+                    "sh",
+                    "-c",
+                    f"if test -s {NETWORK_INDEX_PIDFILE}; then "
+                    f"kill $(cat {NETWORK_INDEX_PIDFILE}) 2>/dev/null || true; "
+                    f"rm -f {NETWORK_INDEX_PIDFILE} {NETWORK_INDEX_LOG}; fi",
+                ]
+            )
+            run(
+                argv
+                + [
+                    "-n",
+                    NAMESPACE,
+                    "exec",
+                    pod,
+                    "-c",
+                    "ray-head",
+                    "--",
                     "rm",
                     "-rf",
                     MOUNT,
@@ -455,7 +547,7 @@ def main() -> int:
     additional = {
         version: artifact for version, artifact in wheels.items() if version != "1.1.0"
     }
-    publish(argv, stage_index(wheel, digest, additional))
+    network_index_url = publish(argv, stage_index(wheel, digest, additional))
     verify(
         argv,
         digest,
@@ -463,6 +555,7 @@ def main() -> int:
     )
     print(f"\nexport M5_TEST_WHEEL_DIR={WHEEL_DIR}")
     print(f"export M5_TEST_INDEX_URL={INDEX_URL}")
+    print(f"export M5_TEST_NETWORK_POLICY_ALLOWED_URL={network_index_url}")
     print(f"export MINI_CLEARANCE_DATASET_PATH={DATASET_PATH}")
     return 0
 
