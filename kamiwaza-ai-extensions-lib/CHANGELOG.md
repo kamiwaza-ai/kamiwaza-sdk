@@ -4,6 +4,14 @@ Versions follow semver. Published to npm as a standalone package
 (`@kamiwaza-ai/extensions-lib`) and versioned independently from
 `kamiwaza-sdk`.
 
+## [0.4.4] — 2026-08-28 (ENG-11065)
+
+### Security
+
+* Raised the development dependency floors and lockfile resolutions for Next.js,
+  PostCSS, nanoid, sharp, esbuild, form-data, and ws so the package tooling
+  installs without known npm audit findings.
+
 ## [0.4.3] — 2026-07-27 (ENG-9199)
 
 ### Fixed
