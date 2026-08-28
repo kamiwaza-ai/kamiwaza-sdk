@@ -66,3 +66,22 @@ def test_probe_reports_denied_connection_without_masking_it(
     assert lifecycle._probe(
         ["kubectl"], "worker-0", "ray-worker", "https://example.com"
     ) == (28, 0)
+
+
+def test_running_pod_selector_ignores_pending_rollout_pods(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(argv: list[str], args: list[str]):
+        observed["args"] = args
+        return _completed("worker-1")
+
+    monkeypatch.setattr(lifecycle, "_kubectl_run", fake_run)
+    assert (
+        lifecycle._pod_for_selector(["kubectl"], "ray.io/node-type=worker", "worker")
+        == "worker-1"
+    )
+    args = observed["args"]
+    assert isinstance(args, list)
+    assert 'jsonpath={.items[?(@.status.phase=="Running")][0].metadata.name}' in args

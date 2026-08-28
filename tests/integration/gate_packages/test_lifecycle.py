@@ -94,7 +94,7 @@ def _pod_for_selector(argv: list[str], selector: str, role: str) -> str:
             "-l",
             selector,
             "-o",
-            "jsonpath={.items[0].metadata.name}",
+            'jsonpath={.items[?(@.status.phase=="Running")][0].metadata.name}',
         ],
     )
     pod = result.stdout.strip()
@@ -354,6 +354,9 @@ class TestNetworkPolicyProbes:
         argv = _kubectl_argv()
         worker = _pod_for_selector(argv, "ray.io/node-type=worker", "worker")
         head = _pod_for_selector(argv, "ray.io/node-type=head", "head")
+        control = _pod_for_selector(
+            argv, "app.kubernetes.io/name=core-scheduler", "control"
+        )
         for name in ("core-ray-worker-egress", "core-ray-head-egress"):
             result = _kubectl_run(
                 argv,
@@ -365,7 +368,7 @@ class TestNetworkPolicyProbes:
                     f"{result.stderr.strip()}",
                     pytrace=False,
                 )
-        return {"argv": argv, "worker": worker, "head": head}
+        return {"argv": argv, "worker": worker, "head": head, "control": control}
 
     def test_worker_can_reach_pip_index(self, _network_policy_context):
         """TS-M5-26: worker pod can reach the configured pip index."""
@@ -382,13 +385,24 @@ class TestNetworkPolicyProbes:
     def test_worker_blocked_from_arbitrary_internet(self, _network_policy_context):
         """TS-M5-27: worker pod blocked from arbitrary egress."""
         url = os.getenv("M5_TEST_NETWORK_POLICY_BLOCKED_URL", "https://example.com")
+        control_rc, control_status = _probe(
+            _network_policy_context["argv"],
+            _network_policy_context["control"],
+            "core",
+            url,
+        )
+        assert control_rc == 0 and 200 <= control_status < 400, (
+            f"negative-probe control pod cannot reach {url}; refusing to treat an "
+            f"ambient outage as NetworkPolicy enforcement "
+            f"(curl_rc={control_rc}, HTTP {control_status})"
+        )
         curl_rc, status = _probe(
             _network_policy_context["argv"],
             _network_policy_context["worker"],
             "ray-worker",
             url,
         )
-        assert curl_rc != 0 or status == 0, (
+        assert curl_rc in {7, 28} and status == 0, (
             f"non-allowlisted egress unexpectedly reachable: {url} "
             f"(curl_rc={curl_rc}, HTTP {status})"
         )

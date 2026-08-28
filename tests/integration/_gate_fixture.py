@@ -337,6 +337,29 @@ def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
         raise SystemExit(f"writing {item.name} failed: {detail}")
 
 
+def _stop_network_index_script(*, remove_log: bool = False) -> str:
+    """Stop only the fixture-owned HTTP server recorded in the PID file."""
+    cleanup = (
+        f"rm -f {NETWORK_INDEX_PIDFILE} {NETWORK_INDEX_LOG}"
+        if remove_log
+        else f"rm -f {NETWORK_INDEX_PIDFILE}"
+    )
+    return (
+        f"if test -s {NETWORK_INDEX_PIDFILE}; then "
+        f"  pid=$(cat {NETWORK_INDEX_PIDFILE} 2>/dev/null || true); "
+        '  case "$pid" in '
+        "    ''|*[!0-9]*) ;; "
+        "    *) "
+        "      cmdline=$(tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null || true); "
+        f"      case \"$cmdline\" in *' -m http.server {NETWORK_INDEX_PORT} '*|*' -m http.server {NETWORK_INDEX_PORT}') "
+        '        kill "$pid" 2>/dev/null || true ;; '
+        "      esac ;; "
+        "  esac; "
+        f"  {cleanup}; "
+        "fi;"
+    )
+
+
 def _start_network_index(argv: list[str], pod: str) -> str:
     """Serve the staged PEP-503 index from the head for worker probes.
 
@@ -347,11 +370,9 @@ def _start_network_index(argv: list[str], pod: str) -> str:
     """
     script = (
         "set -eu; "
-        "python_bin=$(command -v python3 || command -v python || true); "
+        + _stop_network_index_script()
+        + "python_bin=$(command -v python3 || command -v python || true); "
         'test -n "$python_bin"; '
-        f"if test -s {NETWORK_INDEX_PIDFILE}; then "
-        f"  kill $(cat {NETWORK_INDEX_PIDFILE}) 2>/dev/null || true; "
-        "fi; "
         f'nohup "$python_bin" -m http.server {NETWORK_INDEX_PORT} '
         f"--bind 0.0.0.0 --directory {MOUNT} "
         f">{NETWORK_INDEX_LOG} 2>&1 </dev/null & echo $! > {NETWORK_INDEX_PIDFILE}; "
@@ -509,9 +530,7 @@ def main() -> int:
                     "--",
                     "sh",
                     "-c",
-                    f"if test -s {NETWORK_INDEX_PIDFILE}; then "
-                    f"kill $(cat {NETWORK_INDEX_PIDFILE}) 2>/dev/null || true; "
-                    f"rm -f {NETWORK_INDEX_PIDFILE} {NETWORK_INDEX_LOG}; fi",
+                    _stop_network_index_script(remove_log=True),
                 ]
             )
             run(
