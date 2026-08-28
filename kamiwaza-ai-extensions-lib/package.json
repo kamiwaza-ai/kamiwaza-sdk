@@ -1,6 +1,6 @@
 {
     "name": "@kamiwaza-ai/extensions-lib",
-    "version": "0.4.3",
+    "version": "0.4.4",
     "description": "TypeScript runtime library for Kamiwaza extensions — SessionProvider, AuthGuard, identity extraction, proxy utilities, local-dev auth bridge",
     "type": "module",
     "main": "./dist/index.js",
@@ -47,7 +47,7 @@
         "@types/node": "^20.0.0",
         "@types/react": "^18.0.0",
         "jsdom": "^24.0.0",
-        "next": "^15.5.20",
+        "next": "^15.5.24",
         "react": "^18.0.0",
         "react-dom": "^18.0.0",
         "tsup": "^8.0.0",
@@ -63,7 +63,9 @@
     "overrides": {
         "esbuild": "^0.28.1",
         "form-data": "^4.0.6",
-        "postcss": "^8.5.10",
+        "nanoid": "^3.3.18",
+        "postcss": "^8.5.26",
+        "sharp": "^0.35.4",
         "ws": "^8.21.0"
     }
 }

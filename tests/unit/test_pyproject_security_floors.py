@@ -98,15 +98,23 @@ def test_extensions_lib_javascript_security_floors():
     overrides = package_json["overrides"]
 
     assert _node_spec_floor(overrides["esbuild"]) >= Version("0.28.1")
-    assert _node_spec_floor(overrides["postcss"]) >= Version("8.5.10")
+    assert _node_spec_floor(overrides["nanoid"]) >= Version("3.3.18")
+    assert _node_spec_floor(overrides["postcss"]) >= Version("8.5.26")
+    assert _node_spec_floor(overrides["sharp"]) >= Version("0.35.0")
 
     package_lock = json.loads((TS_EXTENSIONS_LIB_ROOT / "package-lock.json").read_text())
     locked_packages = package_lock["packages"]
     assert Version(locked_packages["node_modules/esbuild"]["version"]) >= Version("0.28.1")
-    assert Version(locked_packages["node_modules/postcss"]["version"]) >= Version("8.5.10")
+    assert Version(locked_packages["node_modules/nanoid"]["version"]) >= Version("3.3.18")
+    assert Version(locked_packages["node_modules/postcss"]["version"]) >= Version("8.5.26")
+    assert Version(locked_packages["node_modules/sharp"]["version"]) >= Version("0.35.4")
 
     bun_lock = (TS_EXTENSIONS_LIB_ROOT / "bun.lock").read_text()
     assert '"esbuild": "^0.28.1"' in bun_lock
-    assert '"postcss": "^8.5.10"' in bun_lock
+    assert '"postcss": "^8.5.26"' in bun_lock
+    assert '"nanoid": "^3.3.18"' in bun_lock
+    assert '"sharp": "^0.35.4"' in bun_lock
     assert "esbuild@0.27.5" not in bun_lock
     assert "postcss@8.4.31" not in bun_lock
+    assert "nanoid@3.3.12" not in bun_lock
+    assert "sharp@0.34.5" not in bun_lock
