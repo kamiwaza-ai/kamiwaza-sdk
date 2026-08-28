@@ -82,7 +82,43 @@ jobs:
             exit 1
           fi
 
+          # ENG-11024: downstream SDK installs must remain on the audited
+          # cryptography 50.x line. Verify the built wheel, not only pyproject.toml.
+          if ! unzip -p dist/sdk/*.whl kamiwaza_sdk-*.dist-info/METADATA | grep -q "^Requires-Dist: cryptography<51.0.0,>=50.0.1$"; then
+            echo "::error::SDK wheel METADATA missing the ENG-11024 cryptography range"
+            exit 1
+          fi
+
           echo "SDK wheel verification passed"
+
+      - name: Smoke-test SDK cryptography runtime from built wheel
+        run: |
+          python -m venv /tmp/sdk-crypto-smoke
+          /tmp/sdk-crypto-smoke/bin/pip install --quiet "cryptography==50.0.1"
+          /tmp/sdk-crypto-smoke/bin/pip install --quiet --no-deps \
+            "$GITHUB_WORKSPACE"/dist/lib/*.whl \
+            "$GITHUB_WORKSPACE"/dist/sdk/*.whl
+          cd /tmp
+          /tmp/sdk-crypto-smoke/bin/python - <<'PY'
+          import cryptography
+          from cryptography.hazmat.backends.openssl.backend import backend
+
+          expected_cryptography = "50.0.1"
+          expected_openssl_prefix = "OpenSSL 4.0.2"
+          openssl_version = backend.openssl_version_text()
+
+          assert cryptography.__version__ == expected_cryptography, (
+              f"expected cryptography=={expected_cryptography}, "
+              f"got {cryptography.__version__}"
+          )
+          assert openssl_version.startswith(expected_openssl_prefix), (
+              f"expected {expected_openssl_prefix!r}, got {openssl_version!r}"
+          )
+          print(
+              f"SDK artifact cryptography runtime: "
+              f"cryptography=={cryptography.__version__}, {openssl_version}"
+          )
+          PY
 
       - name: Verify extensions-lib wheel contents
         run: |
