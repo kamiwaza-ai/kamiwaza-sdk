@@ -83,6 +83,26 @@ class TestBuild:
         assert len(primaries) == 1
         assert primaries[0].name == "frontend"
 
+    def test_explicit_x_kamiwaza_primary_overrides_service_order(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "etcd": {"image": "etcd:3.6", "ports": ["2379"]},
+                "standalone": {
+                    "image": "milvusdb/milvus:v2.5.27",
+                    "ports": ["19530"],
+                    "x-kamiwaza": {"primary": True},
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "test")
+
+        assert [service.name for service in payload.services if service.primary] == [
+            "standalone"
+        ]
+
     def test_ports_parsed(self, builder, metadata, transformed_compose, connection):
         payload = builder.build(metadata, transformed_compose, connection, "test")
         fe = next(s for s in payload.services if s.name == "frontend")
@@ -759,6 +779,44 @@ class TestEnvParsing:
 
 
 class TestServiceOverrides:
+    def test_compose_process_fields_map_to_kubernetes_command_and_args(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "milvus": {
+                    "image": "milvusdb/milvus:v2.5.27",
+                    "entrypoint": [
+                        "sh",
+                        "-c",
+                        "exec milvus --config=$${MILVUS_CONFIG}",
+                    ],
+                    "command": ["--config", "/etc/milvus.yaml"],
+                },
+                "etcd": {
+                    "image": "cgr.dev/chainguard/etcd:latest",
+                    "entrypoint": "sh -c 'exec wrapper --flag value'",
+                    "command": "etcd --data-dir /etcd",
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        services = {svc.name: svc for svc in payload.services}
+
+        assert services["milvus"].command == [
+            "sh",
+            "-c",
+            "exec milvus --config=${MILVUS_CONFIG}",
+        ]
+        assert services["milvus"].args == ["--config", "/etc/milvus.yaml"]
+        assert services["etcd"].command == [
+            "sh",
+            "-c",
+            "exec wrapper --flag value",
+        ]
+        assert services["etcd"].args == ["etcd", "--data-dir", "/etcd"]
+
     def test_x_kamiwaza_overrides_are_carried_into_service_spec(
         self, builder, metadata, connection
     ):
