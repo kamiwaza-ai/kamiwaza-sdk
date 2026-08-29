@@ -1844,7 +1844,9 @@ def live_kamiwaza_peer_client(
         admin PAT minting") and would 403 the pairing setup; an access-token
         also expires.
 
-    SSL verification is opted out per-client (dev self-signed certs).
+    SSL verification follows ``KAMIWAZA_VERIFY_SSL`` just like the primary
+    live client. Self-signed development clusters must opt out explicitly;
+    strict-TLS lanes can provide their CA through ``REQUESTS_CA_BUNDLE``.
     """
     if not live_peer_base_url:
         raise RuntimeError(
@@ -1858,7 +1860,10 @@ def live_kamiwaza_peer_client(
     password_client: KamiwazaClient | None = None
     probe_ok: bool | None = None
     if has_password:
-        password_client = KamiwazaClient(live_peer_base_url, verify=False)
+        password_client = KamiwazaClient(
+            live_peer_base_url,
+            verify=_verify_ssl_enabled(),
+        )
         password_client.authenticator = UserPasswordAuthenticator(
             live_username.strip(),
             live_password.strip(),
@@ -1872,7 +1877,7 @@ def live_kamiwaza_peer_client(
         # lazy-auth path and add no setup-time failure surface.
         if has_peer_key:
             try:
-                password_client.authenticator.authenticate(requests.Session())
+                password_client.authenticator.authenticate(password_client.session)
                 probe_ok = True
             except Exception:
                 probe_ok = False
@@ -1885,7 +1890,11 @@ def live_kamiwaza_peer_client(
     if choice == _peer_auth.PASSWORD:
         return password_client  # type: ignore[return-value]
     if choice == _peer_auth.PEER_KEY:
-        return KamiwazaClient(live_peer_base_url, api_key=peer_key, verify=False)
+        return KamiwazaClient(
+            live_peer_base_url,
+            api_key=peer_key,
+            verify=_verify_ssl_enabled(),
+        )
     message = (
         "requires_two_clusters: peer needs admin password "
         "(--live-username/--live-password) or an admin access-token "
