@@ -18,6 +18,10 @@ Skipped by default (marker: ``integration``). Requires:
   externally supplied fixture package is required.
 - ``M5_TEST_WHEEL_DIR`` and ``M5_TEST_INDEX_URL`` exported by that provisioner
   (the live rig uses a receiver-local ``file://`` index)
+- ``M5_TEST_NETWORK_POLICY_REQUIRED=1`` to select the required security lane;
+  the provisioner emits ``M5_TEST_NETWORK_POLICY_ALLOWED_URL`` for a real HTTP
+  request from the worker. ``M5_TEST_KUBECTL`` may be an SSH-wrapped kubectl
+  command (for example ``ssh demo3 kubectl``).
 
 The test is structured so it can also serve as the canonical M5b
 smoke procedure when the human operator follows the playbook at
@@ -30,6 +34,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
+import shlex
 from pathlib import Path
 from typing import Iterator
 
@@ -38,6 +44,114 @@ import pytest
 logger = logging.getLogger(__name__)
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
+
+
+def _network_policy_required() -> bool:
+    """Return whether this invocation selected the required NP validation lane."""
+    value = os.getenv("M5_TEST_NETWORK_POLICY_REQUIRED", "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"", "0", "false", "no", "off"}:
+        return False
+    pytest.fail(
+        "M5_TEST_NETWORK_POLICY_REQUIRED must be one of 1/0, true/false, "
+        f"yes/no, or on/off; got {value!r}",
+        pytrace=False,
+    )
+
+
+def _network_policy_env(name: str, default: str = "") -> str:
+    value = os.getenv(name, default).strip()
+    if not value:
+        pytest.fail(f"{name} is required for the NetworkPolicy validation lane")
+    return value
+
+
+def _kubectl_argv() -> list[str]:
+    # `_gate_fixture.run` handles the SSH form (`ssh host kubectl ...`) and
+    # quotes the remote command as one shell argument.
+    from tests.integration import _gate_fixture
+
+    return _gate_fixture.kubectl_argv(os.getenv("M5_TEST_KUBECTL", "kubectl"))
+
+
+def _kubectl_run(argv: list[str], args: list[str]):
+    from tests.integration import _gate_fixture
+
+    return _gate_fixture.run(argv + args)
+
+
+def _pod_for_selector(argv: list[str], selector: str, role: str) -> str:
+    from tests.integration import _gate_fixture
+
+    result = _kubectl_run(
+        argv,
+        [
+            "-n",
+            _gate_fixture.NAMESPACE,
+            "get",
+            "pod",
+            "-l",
+            selector,
+            "-o",
+            'jsonpath={range .items[?(@.status.phase=="Running")]}{.metadata.name}'
+            '{"\\n"}{end}',
+        ],
+    )
+    pod = next(
+        (line.strip() for line in result.stdout.splitlines() if line.strip()), ""
+    )
+    if result.returncode != 0 or not pod:
+        pytest.fail(
+            f"required Ray {role} pod not found ({selector}): {result.stderr.strip()}",
+            pytrace=False,
+        )
+    return pod
+
+
+def _probe(argv: list[str], pod: str, container: str, url: str) -> tuple[int, int]:
+    """Run a proxy-free curl probe and return (curl_rc, HTTP status)."""
+    from tests.integration import _gate_fixture
+
+    # Keep the shell wrapper successful so a denied connection is represented
+    # in the probe output instead of being mistaken for a kubectl failure.
+    script = (
+        "set +e; "
+        "if ! command -v curl >/dev/null 2>&1; then "
+        "  printf 'curl_rc=127 http_code=000\\n'; exit 0; fi; "
+        "code=$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY "
+        "curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' "
+        "--connect-timeout 3 --max-time 5 "
+        f"{shlex.quote(url)} 2>/dev/null); "
+        'curl_rc=$?; printf \'curl_rc=%s http_code=%s\\n\' "$curl_rc" "$code"'
+    )
+    result = _kubectl_run(
+        argv,
+        [
+            "-n",
+            _gate_fixture.NAMESPACE,
+            "exec",
+            pod,
+            "-c",
+            container,
+            "--",
+            "sh",
+            "-c",
+            script,
+        ],
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            f"kubectl exec probe failed for {pod}: {result.stderr.strip()}",
+            pytrace=False,
+        )
+    match = re.search(r"curl_rc=(\d+) http_code=(\d+)", result.stdout)
+    if not match:
+        pytest.fail(
+            f"probe returned no structured result for {pod}: {result.stdout!r}",
+            pytrace=False,
+        )
+    return int(match.group(1)), int(match.group(2))
 
 
 def _env(name: str) -> str:
@@ -224,31 +338,96 @@ class TestLifecycle:
 class TestNetworkPolicyProbes:
     """TS-M5-26/27/28 — NetworkPolicy egress validation.
 
-    Requires the chart's workerNetworkPolicy.enabled=true and
-    rayHeadNetworkPolicy.enabled=true (default false at M5 ship). Test
-    skips if NetworkPolicies aren't applied.
+    The chart defaults remain off.  Set M5_TEST_NETWORK_POLICY_REQUIRED=1 for
+    the validation profile; in that mode missing pods or policies fail loudly.
+    With the flag unset, these optional live probes retain a clear skip so a
+    normal package-lifecycle run is not misreported as a security pass.
     """
 
-    def test_worker_can_reach_pip_index(self, kz, index_url):
+    @pytest.fixture(autouse=True)
+    def _network_policy_context(self):
+        if not _network_policy_required():
+            pytest.skip(
+                "NetworkPolicy probes require the validation profile; set "
+                "M5_TEST_NETWORK_POLICY_REQUIRED=1 with the gate-packages "
+                "smoke overlay to make them required."
+            )
+        from tests.integration import _gate_fixture
+
+        argv = _kubectl_argv()
+        worker = _pod_for_selector(argv, "ray.io/node-type=worker", "worker")
+        head = _pod_for_selector(argv, "ray.io/node-type=head", "head")
+        control = _pod_for_selector(
+            argv, "app.kubernetes.io/name=core-scheduler", "control"
+        )
+        for name in ("core-ray-worker-egress", "core-ray-head-egress"):
+            result = _kubectl_run(
+                argv,
+                ["-n", _gate_fixture.NAMESPACE, "get", "networkpolicy", name],
+            )
+            if result.returncode != 0:
+                pytest.fail(
+                    f"required NetworkPolicy {name} is not applied: "
+                    f"{result.stderr.strip()}",
+                    pytrace=False,
+                )
+        return {"argv": argv, "worker": worker, "head": head, "control": control}
+
+    def test_worker_can_reach_pip_index(self, _network_policy_context):
         """TS-M5-26: worker pod can reach the configured pip index."""
-        pytest.skip(
-            "Requires kubectl exec into a worker pod + curl probe; "
-            "operator runs manually per the M5b smoke playbook."
+        url = _network_policy_env("M5_TEST_NETWORK_POLICY_ALLOWED_URL")
+        curl_rc, status = _probe(
+            _network_policy_context["argv"],
+            _network_policy_context["worker"],
+            "ray-worker",
+            url,
         )
+        assert curl_rc == 0, f"allowlisted package index probe failed for {url}"
+        assert 200 <= status < 400, f"allowlisted package index returned HTTP {status}"
 
-    def test_worker_blocked_from_arbitrary_internet(self, kz):
+    def test_worker_blocked_from_arbitrary_internet(self, _network_policy_context):
         """TS-M5-27: worker pod blocked from arbitrary egress."""
-        pytest.skip(
-            "Requires kubectl exec into a worker pod + curl probe to "
-            "a non-allowlisted internet host; operator runs manually."
+        url = os.getenv("M5_TEST_NETWORK_POLICY_BLOCKED_URL", "https://example.com")
+        control_rc, control_status = _probe(
+            _network_policy_context["argv"],
+            _network_policy_context["control"],
+            "core",
+            url,
+        )
+        assert control_rc == 0 and 200 <= control_status < 400, (
+            f"negative-probe control pod cannot reach {url}; refusing to treat an "
+            f"ambient outage as NetworkPolicy enforcement "
+            f"(curl_rc={control_rc}, HTTP {control_status})"
+        )
+        curl_rc, status = _probe(
+            _network_policy_context["argv"],
+            _network_policy_context["worker"],
+            "ray-worker",
+            url,
+        )
+        # Depending on the CNI/sidecar path, an egress-denied TLS socket can
+        # surface as CURLE_SSL_CONNECT_ERROR (35) after the connection is
+        # reset, rather than the connect/timeout codes (7/28).  All accepted
+        # codes still require that no HTTP response was received.
+        assert curl_rc in {7, 28, 35} and status == 0, (
+            f"non-allowlisted egress unexpectedly reachable: {url} "
+            f"(curl_rc={curl_rc}, HTTP {status})"
         )
 
-    def test_ray_head_can_reach_internal_endpoints(self, kz):
+    def test_ray_head_can_reach_internal_endpoints(self, _network_policy_context):
         """TS-M5-28: ray-head pod reaches Ray internal + scheduler."""
-        pytest.skip(
-            "Requires kubectl exec into the ray-head pod; operator runs "
-            "manually per the M5b smoke playbook."
+        url = os.getenv(
+            "M5_TEST_NETWORK_POLICY_INTERNAL_URL",
+            "http://core-api:7777/health",
         )
+        curl_rc, status = _probe(
+            _network_policy_context["argv"],
+            _network_policy_context["head"],
+            "ray-head",
+            url,
+        )
+        assert curl_rc == 0, f"internal service probe failed for {url}"
+        assert 200 <= status < 500, f"internal service returned HTTP {status}"
 
 
 class TestRegression:

@@ -19,25 +19,31 @@ bytes or the install fails its hash check. Rather than rely on a reproducible
 build producing an identical wheel twice, this builds ONCE and ships that exact
 file into the ConfigMap — identical by construction.
 
-Serving the index over ``file://`` from inside the pod keeps the whole thing
-independent of cluster topology: no Service, no node IP, no egress path, and
-nothing for a future NetworkPolicy to break.
+Serving the index over ``file://`` from inside the pod keeps package installs
+independent of cluster topology. The NetworkPolicy probe uses the chart-owned
+Ray head Service, which gives Istio a mesh-routed destination instead of a raw
+PodIP that cannot negotiate STRICT mTLS.
 
 It writes the wheel/index into the gate-packages PVC and the dataset into the
 Ray adapter's always-mounted ``/app/tmp`` allowed root. The temporary root is
 present even on clusters without the optional fixture-model PVC, so the
 federation suite can use a receiver-only package fixture without requiring a
 second chart overlay. Both volumes are already mounted and writable, so the
-fixture deliberately avoids a chart change:
-mounting a ConfigMap would mean setting ``scheduler.extraVolumes``, and helm
-REPLACES list values rather than merging them. No new volume or pod restart is
-needed.
+fixture needs no new volume or pod restart. The opt-in smoke profile exposes
+the existing Ray head Service on the fixture port so the probe remains inside
+the mesh. Mounting a ConfigMap would mean setting ``scheduler.extraVolumes``,
+and helm REPLACES list values rather than merging them, so the fixture keeps
+using the existing mounts.
 
 Usage::
 
     python -m tests.integration._gate_fixture provision [--kubectl "ssh spark-2 kubectl"]
     python -m tests.integration._gate_fixture env       [--kubectl ...]
     python -m tests.integration._gate_fixture teardown  [--kubectl ...]
+
+``provision`` also prints ``M5_TEST_NETWORK_POLICY_ALLOWED_URL``.  Export that
+value and set ``M5_TEST_NETWORK_POLICY_REQUIRED=1`` when running the required
+gate-package NetworkPolicy cells.
 """
 
 from __future__ import annotations
@@ -67,6 +73,14 @@ NAMESPACE = "kamiwaza"
 # the prerequisite for gate-package install.
 MOUNT = "/opt/kamiwaza/gate-packages-venv/_fixture"
 INDEX_URL = f"file://{MOUNT}/simple"
+# The package lifecycle uses the receiver-local ``file://`` index so the
+# install path is independent of cluster routing. NetworkPolicy validation
+# needs an actual HTTP request from a worker, however, so the provisioner also
+# serves that same index from the Ray head on this high, non-privileged port.
+NETWORK_INDEX_PORT = 18080
+NETWORK_INDEX_HOST = f"core-raycluster-head-svc.{NAMESPACE}.svc.cluster.local"
+NETWORK_INDEX_PIDFILE = "/tmp/kamiwaza-gate-index.pid"
+NETWORK_INDEX_LOG = "/tmp/kamiwaza-gate-index.log"
 DATASET_DIR = "/app/tmp"
 DATASET_PATH = f"{DATASET_DIR}/eng10050-mini-clearance.csv"
 
@@ -326,12 +340,75 @@ def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
         raise SystemExit(f"writing {item.name} failed: {detail}")
 
 
-def publish(argv: list[str], directory: Path) -> None:
+def _stop_network_index_script(*, remove_log: bool = False) -> str:
+    """Stop only the fixture-owned HTTP server recorded in the PID file."""
+    cleanup = (
+        f"rm -f {NETWORK_INDEX_PIDFILE} {NETWORK_INDEX_LOG}"
+        if remove_log
+        else f"rm -f {NETWORK_INDEX_PIDFILE}"
+    )
+    return (
+        f"if test -s {NETWORK_INDEX_PIDFILE}; then "
+        f"  pid=$(cat {NETWORK_INDEX_PIDFILE} 2>/dev/null || true); "
+        '  case "$pid" in '
+        "    ''|*[!0-9]*) ;; "
+        "    *) "
+        "      cmdline=$(tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null || true); "
+        f"      case \"$cmdline\" in *' -m http.server {NETWORK_INDEX_PORT} '*|*' -m http.server {NETWORK_INDEX_PORT}') "
+        '        kill "$pid" 2>/dev/null || true ;; '
+        "      esac ;; "
+        "  esac; "
+        f"  {cleanup}; "
+        "fi;"
+    )
+
+
+def _start_network_index(argv: list[str], pod: str) -> str:
+    """Serve the staged PEP-503 index from the head for worker probes.
+
+    The lifecycle install intentionally uses a ``file://`` URL.  Serving the
+    identical bytes over an HTTP listener gives the worker NetworkPolicy probe
+    a real network path. The chart exposes this opt-in port on the existing
+    mesh-routed Ray head Service; a raw PodIP would bypass Istio auto-mTLS.
+    """
+    script = (
+        "set -eu; "
+        + _stop_network_index_script()
+        + "python_bin=$(command -v python3 || command -v python || true); "
+        'test -n "$python_bin"; '
+        f'nohup "$python_bin" -m http.server {NETWORK_INDEX_PORT} '
+        f"--bind 0.0.0.0 --directory {MOUNT} "
+        f">{NETWORK_INDEX_LOG} 2>&1 </dev/null & echo $! > {NETWORK_INDEX_PIDFILE}; "
+        "sleep 1; "
+        f"kill -0 $(cat {NETWORK_INDEX_PIDFILE});"
+    )
+    started = run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "exec",
+            pod,
+            "-c",
+            "ray-head",
+            "--",
+            "sh",
+            "-c",
+            script,
+        ]
+    )
+    if started.returncode != 0:
+        raise SystemExit(
+            f"could not start the in-pod package index server: {started.stderr.strip()}"
+        )
+    return f"http://{NETWORK_INDEX_HOST}:{NETWORK_INDEX_PORT}/simple/acme-gates/"
+
+
+def publish(argv: list[str], directory: Path) -> str:
     """Copy the staged wheel/index and dataset into existing Ray-head mounts.
 
-    ``kubectl cp`` rather than a ConfigMap: no new volume means no chart change,
-    no pod restart, and no risk of an extraVolumes overlay replacing the
-    hot-reload source mounts.
+    ``kubectl cp`` rather than a ConfigMap: no new volume or pod restart, and no
+    risk of an extraVolumes overlay replacing the hot-reload source mounts.
     """
     name = _ray_head_pod(argv)
 
@@ -363,6 +440,9 @@ def publish(argv: list[str], directory: Path) -> None:
     for item in items:
         _publish_item(argv, name, item, leaf)
     print(f"  published {len(items)} files into {MOUNT}")
+    network_index_url = _start_network_index(argv, name)
+    print(f"  serving NetworkPolicy probe index at {network_index_url}")
+    return network_index_url
 
 
 def verify(
@@ -432,6 +512,21 @@ def main() -> int:
                     "-c",
                     "ray-head",
                     "--",
+                    "sh",
+                    "-c",
+                    _stop_network_index_script(remove_log=True),
+                ]
+            )
+            run(
+                argv
+                + [
+                    "-n",
+                    NAMESPACE,
+                    "exec",
+                    pod,
+                    "-c",
+                    "ray-head",
+                    "--",
                     "rm",
                     "-rf",
                     MOUNT,
@@ -455,7 +550,7 @@ def main() -> int:
     additional = {
         version: artifact for version, artifact in wheels.items() if version != "1.1.0"
     }
-    publish(argv, stage_index(wheel, digest, additional))
+    network_index_url = publish(argv, stage_index(wheel, digest, additional))
     verify(
         argv,
         digest,
@@ -463,6 +558,7 @@ def main() -> int:
     )
     print(f"\nexport M5_TEST_WHEEL_DIR={WHEEL_DIR}")
     print(f"export M5_TEST_INDEX_URL={INDEX_URL}")
+    print(f"export M5_TEST_NETWORK_POLICY_ALLOWED_URL={network_index_url}")
     print(f"export MINI_CLEARANCE_DATASET_PATH={DATASET_PATH}")
     return 0
 

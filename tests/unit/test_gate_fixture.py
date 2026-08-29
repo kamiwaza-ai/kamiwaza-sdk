@@ -175,7 +175,10 @@ def test_publish_routes_sorted_binary_files_over_ssh(
         cmd: list[str], **kwargs: Any
     ) -> subprocess.CompletedProcess[str]:
         setup_calls.append(cmd)
-        stdout = "ray-head-0" if "jsonpath={.items[0].metadata.name}" in cmd else ""
+        if "jsonpath={.items[0].metadata.name}" in cmd:
+            stdout = "ray-head-0"
+        else:
+            stdout = ""
         return _completed(cmd, stdout=stdout)
 
     writes: list[tuple[list[str], bytes]] = []
@@ -189,9 +192,13 @@ def test_publish_routes_sorted_binary_files_over_ssh(
     monkeypatch.setattr(fixture, "run", fake_fixture_run)
     monkeypatch.setattr(fixture.subprocess, "run", fake_subprocess_run)
 
-    fixture.publish(["ssh", "spark-2", "kubectl"], directory)
+    assert fixture.publish(["ssh", "spark-2", "kubectl"], directory) == (
+        "http://core-raycluster-head-svc.kamiwaza.svc.cluster.local:18080/simple/acme-gates/"
+    )
 
-    assert len(setup_calls) == 2
+    assert len(setup_calls) == 3
+    assert "http.server" in setup_calls[2][-1]
+    assert not any("jsonpath={.status.podIP}" in call for call in setup_calls)
     assert [base64.b64decode(payload) for _, payload in writes] == [
         contents[name] for name in sorted(contents)
     ]
@@ -275,6 +282,7 @@ def test_teardown_removes_only_the_owned_fixture_paths(
         fixture.MOUNT,
         fixture.DATASET_PATH,
     ]
+    assert "kamiwaza-gate-index.pid" in calls[-2][-1]
 
 
 def test_gate_fixture_source_is_owned_by_sdk() -> None:
