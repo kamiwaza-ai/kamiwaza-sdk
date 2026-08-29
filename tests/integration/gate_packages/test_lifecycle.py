@@ -405,7 +405,11 @@ class TestNetworkPolicyProbes:
             "ray-worker",
             url,
         )
-        assert curl_rc in {7, 28} and status == 0, (
+        # Depending on the CNI/sidecar path, an egress-denied TLS socket can
+        # surface as CURLE_SSL_CONNECT_ERROR (35) after the connection is
+        # reset, rather than the connect/timeout codes (7/28).  All accepted
+        # codes still require that no HTTP response was received.
+        assert curl_rc in {7, 28, 35} and status == 0, (
             f"non-allowlisted egress unexpectedly reachable: {url} "
             f"(curl_rc={curl_rc}, HTTP {status})"
         )
