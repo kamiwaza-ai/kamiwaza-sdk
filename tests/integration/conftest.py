@@ -540,7 +540,8 @@ def _compose_port(
 
 
 def _verify_ssl_enabled() -> bool:
-    return os.environ.get("KAMIWAZA_VERIFY_SSL", "true").lower() != "false"
+    value = os.environ.get("KAMIWAZA_VERIFY_SSL", "true")
+    return value.strip().lower() not in {"0", "false", "no"}
 
 
 def _api_error_detail(exc: APIError) -> str:

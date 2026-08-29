@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import peer_auth  # noqa: E402
 
@@ -97,8 +99,9 @@ def test_password_probe_uses_tls_configured_client_session(monkeypatch) -> None:
     assert client.session.verify is True
 
 
-def test_peer_client_tls_opt_out_remains_explicit(monkeypatch) -> None:
-    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+@pytest.mark.parametrize("value", ["false", "0", "no", " FALSE "])
+def test_peer_client_tls_opt_out_remains_explicit(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", value)
 
     client = integration_conftest.live_kamiwaza_peer_client.__wrapped__(
         "https://peer.example/api",
