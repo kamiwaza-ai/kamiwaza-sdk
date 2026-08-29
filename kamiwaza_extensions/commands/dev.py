@@ -246,8 +246,13 @@ def _build_patch_service_spec(service: Any) -> Any:
             repository=repository,
             digest=digest if separator else None,
         ),
+        primary=service.primary,
         env=service.env or None,
         replicas=service.replicas,
+        # Empty lists explicitly restore the image defaults when a Compose
+        # revision removes a prior entrypoint/command override.
+        command=service.command or [],
+        args=service.args or [],
         # Sent only when the extension declares it. Clearing a block the
         # extension removed would need the CR's current spec, and
         # ``get_extension`` returns a status projection

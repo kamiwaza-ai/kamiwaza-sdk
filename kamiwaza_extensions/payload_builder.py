@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 import socket
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -75,6 +76,29 @@ def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
         else:
             out[key] = val
     return out
+
+
+def _compose_process_args(value: Any) -> Optional[List[str]]:
+    """Normalize one Compose process field for a Kubernetes container spec.
+
+    Docker Compose ``entrypoint`` maps to Kubernetes ``command`` and Compose
+    ``command`` maps to Kubernetes ``args``.  Compose accepts either list or
+    string forms; Kubernetes accepts only a string array.  ``shlex`` preserves
+    quoted arguments without inventing an implicit shell (authors who need one
+    must continue to declare ``sh -c`` explicitly).
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = shlex.split(value)
+    elif isinstance(value, (list, tuple)):
+        parts = [str(part) for part in value]
+    else:
+        parts = [str(value)]
+    # ``$$`` is Compose's escape for a literal runtime ``$``. The normal
+    # Compose engine removes that escape before launching a container; the
+    # remote Kubernetes path bypasses the engine, so do the equivalent here.
+    return [part.replace("$$", "$") for part in parts]
 
 
 class PayloadBuilder:
@@ -297,6 +321,12 @@ class PayloadBuilder:
                 replicas=1,
                 resources=resources,
             )
+            entrypoint = _compose_process_args(svc.get("entrypoint"))
+            command = _compose_process_args(svc.get("command"))
+            if entrypoint is not None:
+                spec_kwargs["command"] = entrypoint
+            if command is not None:
+                spec_kwargs["args"] = command
             if health_check:
                 spec_kwargs["healthCheck"] = health_check
             _add_service_overrides(
@@ -311,6 +341,17 @@ class PayloadBuilder:
         return specs
 
     def _find_primary_service(self, services: Dict[str, Any]) -> Optional[str]:
+        explicit = next(
+            (
+                service_name
+                for service_name, service in services.items()
+                if isinstance(service, dict)
+                and _service_extension_field(service, "primary") is True
+            ),
+            None,
+        )
+        if explicit is not None:
+            return explicit
         frontend = services.get("frontend")
         if isinstance(frontend, dict) and self._parse_ports(frontend.get("ports", [])):
             return "frontend"
