@@ -99,7 +99,7 @@ def test_password_probe_uses_tls_configured_client_session(monkeypatch) -> None:
     assert client.session.verify is True
 
 
-@pytest.mark.parametrize("value", ["false", "0", "no", " FALSE "])
+@pytest.mark.parametrize("value", ["false", "0", "no", "off", " FALSE "])
 def test_peer_client_tls_opt_out_remains_explicit(monkeypatch, value: str) -> None:
     monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", value)
 
