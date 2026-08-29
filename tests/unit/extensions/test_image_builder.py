@@ -37,9 +37,23 @@ class TestBuild:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         compose = {"services": {"api": {"build": "."}}}
 
-        builder.build(tmp_path, compose, "test", "v1", "reg")
+        with patch.dict(
+            "kamiwaza_extensions.image_builder.os.environ",
+            {"KZ_TEST_AMBIENT": "preserved"},
+        ):
+            for verbose in (False, True):
+                mock_run.reset_mock()
 
-        assert mock_run.call_args.kwargs["env"]["DOCKER_BUILDKIT"] == "1"
+                builder.build(
+                    tmp_path, compose, "test", "v1", "reg", verbose=verbose
+                )
+
+                mock_run.assert_called_once()
+                cmd = mock_run.call_args.args[0]
+                env = mock_run.call_args.kwargs["env"]
+                assert "--load" in cmd
+                assert env["DOCKER_BUILDKIT"] == "1"
+                assert env["KZ_TEST_AMBIENT"] == "preserved"
 
     @patch("kamiwaza_extensions.image_builder.subprocess.run")
     def test_builds_services_with_build_context(
