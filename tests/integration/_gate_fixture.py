@@ -52,13 +52,16 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # The SDK owns both live fixture families.  The M5 lifecycle test exercises
 # install 1.0.0 -> replace 1.0.1, while the federation known-answer tests use
@@ -92,6 +95,14 @@ REPO = Path(__file__).resolve().parents[2]
 STAGE = REPO / ".gate-fixture"
 WHEEL_DIR = STAGE / "wheels"
 STAGE_DIR = STAGE / "index"
+
+
+@dataclass(frozen=True)
+class RayPodTarget:
+    """One active Ray pod and the workload container that owns its fixtures."""
+
+    pod: str
+    container: str
 
 
 def _quote_remote_command(cmd: list[str]) -> list[str]:
@@ -292,25 +303,59 @@ def preflight(argv: list[str]) -> None:
         )
 
 
-def _ray_head_pod(argv: list[str]) -> str:
-    """Return the active ray-head pod name or stop with a useful error."""
-    pod = run(
+def _target_from_pod(pod: dict[str, Any]) -> RayPodTarget | None:
+    """Convert one Kubernetes pod document into a supported Ray target."""
+    metadata = pod.get("metadata", {})
+    if metadata.get("deletionTimestamp"):
+        return None
+    node_type = metadata.get("labels", {}).get("ray.io/node-type")
+    if node_type not in {"head", "worker"}:
+        return None
+    name = metadata.get("name")
+    if not name:
+        return None
+    return RayPodTarget(pod=name, container=f"ray-{node_type}")
+
+
+def _head_target(targets: tuple[RayPodTarget, ...]) -> RayPodTarget:
+    """Return the active Ray head from an already consistent target snapshot."""
+    for target in targets:
+        if target.container == "ray-head":
+            return target
+    raise SystemExit("no running ray head pod found")
+
+
+def _ray_targets(argv: list[str]) -> tuple[RayPodTarget, ...]:
+    """Return every non-terminating, running Ray head and worker pod."""
+    pods = run(
         argv
         + [
             "-n",
             NAMESPACE,
             "get",
-            "pod",
+            "pods",
             "-l",
-            "ray.io/node-type=head",
+            "ray.io/cluster=core-raycluster",
+            "--field-selector",
+            "status.phase=Running",
             "-o",
-            "jsonpath={.items[0].metadata.name}",
+            "json",
         ]
     )
-    name = pod.stdout.strip()
-    if not name:
-        raise SystemExit("no ray head pod found")
-    return name
+    if pods.returncode != 0:
+        raise SystemExit(f"could not list Ray pods: {pods.stderr.strip()}")
+    try:
+        payload = json.loads(pods.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"could not parse Ray pod list: {exc}") from exc
+    targets = []
+    for pod in payload.get("items", []):
+        target = _target_from_pod(pod)
+        if target is not None:
+            targets.append(target)
+    result = tuple(sorted(targets, key=lambda target: (target.container, target.pod)))
+    _head_target(result)
+    return result
 
 
 def _publish_script(destination: str, expected_digest: str) -> str:
@@ -330,8 +375,8 @@ def _publish_script(destination: str, expected_digest: str) -> str:
     )
 
 
-def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
-    """Stream one staged file into its destination inside the ray head."""
+def _publish_item(argv: list[str], target: RayPodTarget, item: Path, leaf: str) -> None:
+    """Stream one staged file into its destination inside one Ray pod."""
     destination = (
         DATASET_PATH if item.name == "mini_clearance.csv" else f"{leaf}/{item.name}"
     )
@@ -343,9 +388,9 @@ def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
         NAMESPACE,
         "exec",
         "-i",
-        pod,
+        target.pod,
         "-c",
-        "ray-head",
+        target.container,
         "--",
         "sh",
         "-c",
@@ -432,12 +477,13 @@ def _start_network_index(argv: list[str], pod: str) -> str:
 
 
 def publish(argv: list[str], directory: Path) -> str:
-    """Copy the staged wheel/index and dataset into existing Ray-head mounts.
+    """Publish head-only packages and mirror the dataset into every Ray pod.
 
     ``kubectl cp`` rather than a ConfigMap: no new volume or pod restart, and no
     risk of an extraVolumes overlay replacing the hot-reload source mounts.
     """
-    name = _ray_head_pod(argv)
+    targets = _ray_targets(argv)
+    head = _head_target(targets)
 
     leaf = f"{MOUNT}/simple/acme-gates"
     mk = run(
@@ -446,9 +492,9 @@ def publish(argv: list[str], directory: Path) -> str:
             "-n",
             NAMESPACE,
             "exec",
-            name,
+            head.pod,
             "-c",
-            "ray-head",
+            head.container,
             "--",
             "mkdir",
             "-p",
@@ -465,46 +511,71 @@ def publish(argv: list[str], directory: Path) -> str:
     # binary wheel survives the ssh channel intact.
     items = sorted(directory.iterdir())
     for item in items:
-        _publish_item(argv, name, item, leaf)
-    print(f"  published {len(items)} files into {MOUNT}")
-    network_index_url = _start_network_index(argv, name)
+        destinations = targets if item.name == "mini_clearance.csv" else (head,)
+        for target in destinations:
+            _publish_item(argv, target, item, leaf)
+    print(f"  published {len(items)} staged files across {len(targets)} Ray pods")
+    network_index_url = _start_network_index(argv, head.pod)
     print(f"  serving NetworkPolicy probe index at {network_index_url}")
     return network_index_url
+
+
+def _verify_remote_digest(
+    argv: list[str], target: RayPodTarget, path: str, expected: str
+) -> None:
+    """Require one pod path to match an exact local SHA-256 digest."""
+    remote = run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "exec",
+            target.pod,
+            "-c",
+            target.container,
+            "--",
+            "sha256sum",
+            path,
+        ]
+    )
+    got = (remote.stdout.split() or [""])[0]
+    if got != expected:
+        detail = got or remote.stderr.strip()
+        raise SystemExit(
+            f"published fixture digest mismatch: {path}\n"
+            f"  pod:   {target.pod}\n  local: {expected}\n  pod:   {detail}"
+        )
 
 
 def verify(
     argv: list[str],
     digest: str,
     additional_digests: dict[str, str] | None = None,
+    *,
+    dataset: Path | None = None,
 ) -> None:
-    """The gate: the pod must serve the SAME bytes we hashed locally."""
-    name = _ray_head_pod(argv)
+    """Require head package bytes and every Ray pod's dataset to match local."""
+    targets = _ray_targets(argv)
+    head = _head_target(targets)
     expected = {WHEEL_NAME: digest}
     expected.update(additional_digests or {})
     for wheel_name, wheel_digest in expected.items():
-        remote = run(
-            argv
-            + [
-                "-n",
-                NAMESPACE,
-                "exec",
-                name,
-                "-c",
-                "ray-head",
-                "--",
-                "sha256sum",
-                f"{MOUNT}/simple/acme-gates/{wheel_name}",
-            ]
-        )
-        got = (remote.stdout.split() or [""])[0]
         want = wheel_digest.split(":", 1)[1]
-        if got != want:
-            raise SystemExit(
-                "the wheel in the pod does not match the one hashed locally — the "
-                f"install would fail its hash check.\n  wheel: {wheel_name}\n"
-                f"  local: {want}\n  pod:   {got or remote.stderr.strip()}"
-            )
+        _verify_remote_digest(
+            argv,
+            head,
+            f"{MOUNT}/simple/acme-gates/{wheel_name}",
+            want,
+        )
         print(f"  verified in-pod wheel digest matches {wheel_name}: {want[:16]}…")
+    dataset_path = dataset or STAGE_DIR / "mini_clearance.csv"
+    dataset_digest = hashlib.sha256(dataset_path.read_bytes()).hexdigest()
+    for target in targets:
+        _verify_remote_digest(argv, target, DATASET_PATH, dataset_digest)
+        print(
+            "  verified in-pod dataset digest matches "
+            f"{target.pod}: {dataset_digest[:16]}…"
+        )
 
 
 def _fixture_environment(network_index_url: str | None = None) -> dict[str, str]:
@@ -555,16 +626,17 @@ def auto_provision_from_env() -> dict[str, str]:
 
 def teardown(argv: list[str]) -> None:
     """Remove only runtime state owned by this fixture."""
-    pod = _ray_head_pod(argv)
+    targets = _ray_targets(argv)
+    head = _head_target(targets)
     run(
         argv
         + [
             "-n",
             NAMESPACE,
             "exec",
-            pod,
+            head.pod,
             "-c",
-            "ray-head",
+            head.container,
             "--",
             "sh",
             "-c",
@@ -577,17 +649,32 @@ def teardown(argv: list[str]) -> None:
             "-n",
             NAMESPACE,
             "exec",
-            pod,
+            head.pod,
             "-c",
-            "ray-head",
+            head.container,
             "--",
             "rm",
             "-rf",
             MOUNT,
-            DATASET_PATH,
         ]
     )
-    print(f"  removed {MOUNT} and {DATASET_PATH}")
+    for target in targets:
+        run(
+            argv
+            + [
+                "-n",
+                NAMESPACE,
+                "exec",
+                target.pod,
+                "-c",
+                target.container,
+                "--",
+                "rm",
+                "-f",
+                DATASET_PATH,
+            ]
+        )
+    print(f"  removed {MOUNT} and {DATASET_PATH} from {len(targets)} Ray pods")
 
 
 def main() -> int:

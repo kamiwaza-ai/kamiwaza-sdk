@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,22 @@ def _completed(
     stderr: str = "",
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+
+
+def _ray_pods(*pods: tuple[str, str]) -> str:
+    return json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {
+                        "name": name,
+                        "labels": {"ray.io/node-type": node_type},
+                    }
+                }
+                for name, node_type in pods
+            ]
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -190,7 +207,65 @@ def test_auto_provision_preserves_manual_fixture_mode_without_kubectl(
     assert fixture.auto_provision_from_env() == {}
 
 
-def test_publish_routes_sorted_binary_files_over_ssh(
+def test_ray_targets_keep_every_active_head_and_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = json.loads(
+        _ray_pods(
+            ("ray-worker-1", "worker"),
+            ("ray-head-0", "head"),
+            ("ray-worker-0", "worker"),
+            ("scheduler-0", "scheduler"),
+        )
+    )
+    payload["items"].append(
+        {
+            "metadata": {
+                "name": "ray-worker-terminating",
+                "labels": {"ray.io/node-type": "worker"},
+                "deletionTimestamp": "2026-08-29T00:00:00Z",
+            }
+        }
+    )
+    monkeypatch.setattr(
+        fixture,
+        "run",
+        lambda cmd, **_kwargs: _completed(cmd, stdout=json.dumps(payload)),
+    )
+
+    assert fixture._ray_targets(["kubectl"]) == (
+        fixture.RayPodTarget("ray-head-0", "ray-head"),
+        fixture.RayPodTarget("ray-worker-0", "ray-worker"),
+        fixture.RayPodTarget("ray-worker-1", "ray-worker"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("result", "message"),
+    [
+        (_completed(["kubectl"], 1, stderr="forbidden"), "could not list Ray pods"),
+        (_completed(["kubectl"], stdout="not json"), "could not parse Ray pod list"),
+        (
+            _completed(
+                ["kubectl"],
+                stdout=_ray_pods(("ray-worker-0", "worker")),
+            ),
+            "no running ray head pod found",
+        ),
+    ],
+)
+def test_ray_targets_fail_loudly_on_unusable_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+    result: subprocess.CompletedProcess[str],
+    message: str,
+) -> None:
+    monkeypatch.setattr(fixture, "run", lambda _cmd, **_kwargs: result)
+
+    with pytest.raises(SystemExit, match=message):
+        fixture._ray_targets(["kubectl"])
+
+
+def test_publish_routes_sorted_binary_files_and_mirrors_dataset_to_ray_worker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -210,8 +285,12 @@ def test_publish_routes_sorted_binary_files_over_ssh(
         cmd: list[str], **kwargs: Any
     ) -> subprocess.CompletedProcess[str]:
         setup_calls.append(cmd)
-        if "jsonpath={.items[0].metadata.name}" in cmd:
-            stdout = "ray-head-0"
+        if cmd[-2:] == ["-o", "json"]:
+            stdout = _ray_pods(
+                ("ray-head-0", "head"),
+                ("ray-worker-0", "worker"),
+                ("ray-worker-1", "worker"),
+            )
         else:
             stdout = ""
         return _completed(cmd, stdout=stdout)
@@ -232,15 +311,25 @@ def test_publish_routes_sorted_binary_files_over_ssh(
     )
 
     assert len(setup_calls) == 3
+    assert "status.phase=Running" in setup_calls[0]
     assert "http.server" in setup_calls[2][-1]
     assert not any("jsonpath={.status.podIP}" in call for call in setup_calls)
     assert [base64.b64decode(payload) for _, payload in writes] == [
-        contents[name] for name in sorted(contents)
+        contents[fixture.WHEEL_NAME],
+        contents["index.html"],
+        contents["mini_clearance.csv"],
+        contents["mini_clearance.csv"],
+        contents["mini_clearance.csv"],
     ]
     destinations = [cmd[2] for cmd, _ in writes]
     assert f"{fixture.MOUNT}/simple/acme-gates/{fixture.WHEEL_NAME}" in destinations[0]
     assert f"{fixture.MOUNT}/simple/acme-gates/index.html" in destinations[1]
     assert fixture.DATASET_PATH in destinations[2]
+    assert fixture.DATASET_PATH in destinations[3]
+    assert fixture.DATASET_PATH in destinations[4]
+    assert "-c ray-head" in destinations[2]
+    assert "-c ray-worker" in destinations[3]
+    assert "-c ray-worker" in destinations[4]
     assert all(cmd[:2] == ["ssh", "spark-2"] for cmd, _ in writes)
 
 
@@ -255,7 +344,7 @@ def test_publish_surfaces_the_failed_item(
     def fake_fixture_run(
         cmd: list[str], **kwargs: Any
     ) -> subprocess.CompletedProcess[str]:
-        stdout = "ray-head-0" if "jsonpath={.items[0].metadata.name}" in cmd else ""
+        stdout = _ray_pods(("ray-head-0", "head")) if cmd[-2:] == ["-o", "json"] else ""
         return _completed(cmd, stdout=stdout)
 
     def fail_write(
@@ -292,33 +381,79 @@ def test_publish_retries_a_truncated_file(
 
     monkeypatch.setattr(fixture.subprocess, "run", truncate_once)
 
-    fixture._publish_item(["kubectl"], "ray-head-0", item, "/fixture")
+    fixture._publish_item(
+        ["kubectl"],
+        fixture.RayPodTarget("ray-head-0", "ray-head"),
+        item,
+        "/fixture",
+    )
 
     assert len(attempts) == 2
 
 
-def test_verify_hashes_the_published_wheel_in_the_ray_head(
+def test_verify_hashes_wheels_on_head_and_dataset_on_every_ray_pod(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    expected = "a" * 64
+    wheel_digest = "a" * 64
+    dataset = tmp_path / "mini_clearance.csv"
+    dataset.write_bytes(b"id,classification\n1,U\n")
+    dataset_digest = hashlib.sha256(dataset.read_bytes()).hexdigest()
     calls: list[list[str]] = []
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
-        if "jsonpath={.items[0].metadata.name}" in cmd:
-            return _completed(cmd, stdout="ray-head-0")
-        return _completed(cmd, stdout=f"{expected}  {fixture.WHEEL_NAME}\n")
+        if cmd[-2:] == ["-o", "json"]:
+            return _completed(
+                cmd,
+                stdout=_ray_pods(
+                    ("ray-head-0", "head"),
+                    ("ray-worker-0", "worker"),
+                ),
+            )
+        digest = dataset_digest if fixture.DATASET_PATH in cmd else wheel_digest
+        return _completed(cmd, stdout=f"{digest}  fixture\n")
 
     monkeypatch.setattr(fixture, "run", fake_run)
 
-    fixture.verify(["kubectl"], f"sha256:{expected}")
+    fixture.verify(["kubectl"], f"sha256:{wheel_digest}", dataset=dataset)
 
-    assert len(calls) == 2
-    assert "ray-head-0" in calls[1]
+    assert len(calls) == 4
     assert calls[1][-2:] == [
         "sha256sum",
         f"{fixture.MOUNT}/simple/acme-gates/{fixture.WHEEL_NAME}",
     ]
+    assert calls[1][calls[1].index("-c") + 1] == "ray-head"
+    assert calls[2][-2:] == ["sha256sum", fixture.DATASET_PATH]
+    assert calls[2][calls[2].index("-c") + 1] == "ray-head"
+    assert calls[3][-2:] == ["sha256sum", fixture.DATASET_PATH]
+    assert calls[3][calls[3].index("-c") + 1] == "ray-worker"
+
+
+def test_verify_fails_when_any_worker_dataset_digest_differs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "mini_clearance.csv"
+    dataset.write_bytes(b"id,classification\n1,U\n")
+    expected = hashlib.sha256(dataset.read_bytes()).hexdigest()
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[-2:] == ["-o", "json"]:
+            return _completed(
+                cmd,
+                stdout=_ray_pods(
+                    ("ray-head-0", "head"),
+                    ("ray-worker-0", "worker"),
+                ),
+            )
+        digest = "0" * 64 if "ray-worker-0" in cmd else expected
+        return _completed(cmd, stdout=f"{digest}  fixture\n")
+
+    monkeypatch.setattr(fixture, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="ray-worker-0"):
+        fixture.verify(["kubectl"], f"sha256:{expected}", dataset=dataset)
 
 
 def test_teardown_removes_only_the_owned_fixture_paths(
@@ -328,21 +463,27 @@ def test_teardown_removes_only_the_owned_fixture_paths(
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
-        stdout = "ray-head-0" if "jsonpath={.items[0].metadata.name}" in cmd else ""
+        stdout = (
+            _ray_pods(
+                ("ray-head-0", "head"),
+                ("ray-worker-0", "worker"),
+            )
+            if cmd[-2:] == ["-o", "json"]
+            else ""
+        )
         return _completed(cmd, stdout=stdout)
 
     monkeypatch.setattr(fixture, "run", fake_run)
     monkeypatch.setattr(sys, "argv", ["_gate_fixture", "teardown"])
 
     assert fixture.main() == 0
-    assert calls[-1][-5:] == [
-        "--",
-        "rm",
-        "-rf",
-        fixture.MOUNT,
-        fixture.DATASET_PATH,
-    ]
-    assert "kamiwaza-gate-index.pid" in calls[-2][-1]
+    assert "kamiwaza-gate-index.pid" in calls[1][-1]
+    assert calls[2][-3:] == ["rm", "-rf", fixture.MOUNT]
+    assert calls[2][calls[2].index("-c") + 1] == "ray-head"
+    assert calls[3][-3:] == ["rm", "-f", fixture.DATASET_PATH]
+    assert calls[3][calls[3].index("-c") + 1] == "ray-head"
+    assert calls[4][-3:] == ["rm", "-f", fixture.DATASET_PATH]
+    assert calls[4][calls[4].index("-c") + 1] == "ray-worker"
 
 
 def test_gate_fixture_source_is_owned_by_sdk() -> None:
