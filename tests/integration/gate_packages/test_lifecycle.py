@@ -12,11 +12,10 @@ Skipped by default (marker: ``integration``). Requires:
 - A live cluster with the WS-M5 chart applied (gate-packages PVC +
   bind-mounts + GatePackageAPI registered + cluster_gate_packages
   table)
-- Run ``python -m tests.integration._gate_fixture provision --kubectl ...``
-  first. The SDK-owned provisioner builds and publishes the exact
-  ``acme_gates`` 1.0.0, 1.0.1, and 1.1.0 wheels plus the simple index; no
-  externally supplied fixture package is required.
-- ``M5_TEST_WHEEL_DIR`` and ``M5_TEST_INDEX_URL`` exported by that provisioner
+- Set ``M5_TEST_KUBECTL`` to the kubectl command for the target cluster. The
+  integration session builds and publishes the exact SDK-owned ``acme_gates``
+  1.0.0, 1.0.1, and 1.1.0 wheels plus the simple index after rollout.
+- ``M5_TEST_WHEEL_DIR`` and ``M5_TEST_INDEX_URL`` set by that provisioner
   (the live rig uses a receiver-local ``file://`` index)
 - ``M5_TEST_NETWORK_POLICY_REQUIRED=1`` to select the required security lane;
   the provisioner emits ``M5_TEST_NETWORK_POLICY_ALLOWED_URL`` for a real HTTP
@@ -209,8 +208,8 @@ def _require_wheel(path: Path, filename: str) -> Path:
     wheel = path / filename
     if not wheel.is_file():
         pytest.fail(
-            f"required SDK-owned fixture wheel not at {wheel}; run "
-            "python -m tests.integration._gate_fixture provision first",
+            f"required SDK-owned fixture wheel not at {wheel}; set "
+            "M5_TEST_KUBECTL or run tests.integration._gate_fixture provision",
             pytrace=False,
         )
     return wheel

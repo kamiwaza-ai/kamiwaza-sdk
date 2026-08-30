@@ -31,6 +31,7 @@ from kamiwaza_sdk.schemas.auth import PATCreate
 from kamiwaza_sdk.schemas.catalog import SecretCreate
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
 from kamiwaza_sdk.utils.model_file_readiness import model_file_download_satisfied
+from tests.integration import _gate_fixture
 
 # Co-located capability-marker helpers (M5). Add this directory to the path so
 # the import resolves regardless of pytest's package-import mode (this conftest
@@ -90,6 +91,22 @@ _API_KEY_PROBE_CACHE: dict[tuple[str, str], tuple[bool, str]] = {}
 _PROBE_TIMEOUT_SECONDS = 10.0
 _PROBE_ERROR_TRUNCATE = 200
 _logger = logging.getLogger(__name__)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def gate_fixture_runtime() -> Iterator[None]:
+    """Refresh ephemeral gate fixtures after an explicitly selected rollout."""
+    values = _gate_fixture.auto_provision_from_env()
+    previous = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for name, old_value in previous.items():
+            if old_value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old_value
 
 
 def _fail_or_skip_required_edge(request: pytest.FixtureRequest, message: str) -> None:

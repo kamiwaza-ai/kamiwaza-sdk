@@ -155,6 +155,41 @@ def test_build_wheels_materializes_lifecycle_and_federation_versions(
     )
 
 
+def test_auto_provision_refreshes_runtime_for_explicit_kubectl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {
+        "M5_TEST_WHEEL_DIR": "/tmp/wheels",
+        "M5_TEST_INDEX_URL": "file:///fixture/simple",
+        "M5_TEST_NETWORK_POLICY_ALLOWED_URL": "http://ray-head:18080/simple/",
+        "MINI_CLEARANCE_DATASET_PATH": "/app/tmp/mini-clearance.csv",
+    }
+    observed: list[list[str]] = []
+
+    def fake_provision(argv: list[str]) -> dict[str, str]:
+        observed.append(argv)
+        return expected
+
+    monkeypatch.setenv("M5_TEST_KUBECTL", "ssh spark-4 kubectl")
+    monkeypatch.setattr(fixture, "provision", fake_provision)
+
+    assert fixture.auto_provision_from_env() == expected
+    assert observed == [["ssh", "spark-4", "kubectl"]]
+
+
+def test_auto_provision_preserves_manual_fixture_mode_without_kubectl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("M5_TEST_KUBECTL", raising=False)
+    monkeypatch.setattr(
+        fixture,
+        "provision",
+        lambda _argv: pytest.fail("manual fixture mode must not provision"),
+    )
+
+    assert fixture.auto_provision_from_env() == {}
+
+
 def test_publish_routes_sorted_binary_files_over_ssh(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

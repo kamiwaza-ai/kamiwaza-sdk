@@ -13,9 +13,9 @@ dataset gate-binding, and the server-side gate invocation at retrieval time.
 
 Every live prerequisite is a soft skip (never a hard fail on a contributor box):
 the WS-M5 gate-packages PVC + the SDK-owned fixture provisioner output, and a
-filesystem-source root the ray-head can read. Run
-``python -m tests.integration._gate_fixture provision`` on the receiver to
-materialize all package versions and the deterministic dataset.
+filesystem-source root the ray-head can read. Set ``M5_TEST_KUBECTL`` to
+materialize all package versions and the deterministic dataset at session
+startup, or run ``python -m tests.integration._gate_fixture provision``.
 """
 
 from __future__ import annotations

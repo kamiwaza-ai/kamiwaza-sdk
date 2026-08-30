@@ -24,8 +24,8 @@ def provision_gated_dataset(state: dict[str, Any]) -> None:
     dataset_path = os.getenv("MINI_CLEARANCE_DATASET_PATH", "").strip()
     if not dataset_path:
         pytest.skip(
-            "MINI_CLEARANCE_DATASET_PATH not set — run "
-            "tests.integration._gate_fixture provision on the receiver"
+            "MINI_CLEARANCE_DATASET_PATH not set — set M5_TEST_KUBECTL for "
+            "automatic provisioning or run tests.integration._gate_fixture provision"
         )
 
     receiver = state["receiver"]

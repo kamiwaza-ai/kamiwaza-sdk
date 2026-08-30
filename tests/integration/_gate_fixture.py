@@ -35,7 +35,8 @@ the mesh. Mounting a ConfigMap would mean setting ``scheduler.extraVolumes``,
 and helm REPLACES list values rather than merging them, so the fixture keeps
 using the existing mounts.
 
-Usage::
+When ``M5_TEST_KUBECTL`` is set, the integration session provisions this rig
+automatically after cluster convergence. Manual operation remains available::
 
     python -m tests.integration._gate_fixture provision [--kubectl "ssh spark-2 kubectl"]
     python -m tests.integration._gate_fixture env       [--kubectl ...]
@@ -51,6 +52,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import os
 import re
 import shlex
 import shutil
@@ -256,8 +258,7 @@ def stage_index(
         "<!DOCTYPE html><html><body>" + "\n".join(sorted(anchors)) + "</body></html>\n",
         encoding="utf-8",
     )
-    sys.path.insert(0, str(Path(__file__).parent))
-    import _mini_clearance as mc  # noqa: PLC0415 — sibling test helper
+    from tests.integration import _mini_clearance as mc  # noqa: PLC0415
 
     mc.write_dataset_file(STAGE_DIR / "mini_clearance.csv")
     return STAGE_DIR
@@ -480,72 +481,31 @@ def verify(
         print(f"  verified in-pod wheel digest matches {wheel_name}: {want[:16]}…")
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["provision", "teardown", "env"])
-    ap.add_argument("--kubectl", default="kubectl")
-    args = ap.parse_args()
-    argv = kubectl_argv(args.kubectl)
+def _fixture_environment(network_index_url: str | None = None) -> dict[str, str]:
+    """Return the environment consumed by the package and federation suites."""
+    values = {
+        "M5_TEST_WHEEL_DIR": str(WHEEL_DIR),
+        "M5_TEST_INDEX_URL": INDEX_URL,
+        "MINI_CLEARANCE_DATASET_PATH": DATASET_PATH,
+    }
+    if network_index_url:
+        values["M5_TEST_NETWORK_POLICY_ALLOWED_URL"] = network_index_url
+    return values
 
-    if args.action == "teardown":
-        pod = run(
-            argv
-            + [
-                "-n",
-                NAMESPACE,
-                "get",
-                "pod",
-                "-l",
-                "ray.io/node-type=head",
-                "-o",
-                "jsonpath={.items[0].metadata.name}",
-            ]
-        ).stdout.strip()
-        if pod:
-            run(
-                argv
-                + [
-                    "-n",
-                    NAMESPACE,
-                    "exec",
-                    pod,
-                    "-c",
-                    "ray-head",
-                    "--",
-                    "sh",
-                    "-c",
-                    _stop_network_index_script(remove_log=True),
-                ]
-            )
-            run(
-                argv
-                + [
-                    "-n",
-                    NAMESPACE,
-                    "exec",
-                    pod,
-                    "-c",
-                    "ray-head",
-                    "--",
-                    "rm",
-                    "-rf",
-                    MOUNT,
-                    DATASET_PATH,
-                ]
-            )
-        print(f"  removed {MOUNT} and {DATASET_PATH}")
-        return 0
 
+def _print_environment(values: dict[str, str]) -> None:
+    """Print shell exports for manual fixture operation."""
+    for name, value in values.items():
+        print(f"export {name}={value}")
+
+
+def provision(argv: list[str]) -> dict[str, str]:
+    """Refresh cluster-side fixtures and return their pytest environment."""
     wheels = build_wheels(locate_source())
     wheel, digest = wheels["1.1.0"]
-    if args.action == "env":
-        print(f"export M5_TEST_WHEEL_DIR={WHEEL_DIR}")
-        print(f"export M5_TEST_INDEX_URL={INDEX_URL}")
-        print(f"export MINI_CLEARANCE_DATASET_PATH={DATASET_PATH}")
-        return 0
-
     for version, (built_wheel, built_digest) in wheels.items():
         print(f"  built {version}: {built_wheel.name}  {built_digest}")
+
     preflight(argv)
     additional = {
         version: artifact for version, artifact in wheels.items() if version != "1.1.0"
@@ -556,10 +516,73 @@ def main() -> int:
         digest,
         {artifact[0].name: artifact[1] for artifact in additional.values()},
     )
-    print(f"\nexport M5_TEST_WHEEL_DIR={WHEEL_DIR}")
-    print(f"export M5_TEST_INDEX_URL={INDEX_URL}")
-    print(f"export M5_TEST_NETWORK_POLICY_ALLOWED_URL={network_index_url}")
-    print(f"export MINI_CLEARANCE_DATASET_PATH={DATASET_PATH}")
+    return _fixture_environment(network_index_url)
+
+
+def auto_provision_from_env() -> dict[str, str]:
+    """Provision only when an explicit kubectl command selects a test cluster."""
+    kubectl = os.getenv("M5_TEST_KUBECTL", "").strip()
+    if not kubectl:
+        return {}
+    return provision(kubectl_argv(kubectl))
+
+
+def teardown(argv: list[str]) -> None:
+    """Remove only runtime state owned by this fixture."""
+    pod = _ray_head_pod(argv)
+    run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "exec",
+            pod,
+            "-c",
+            "ray-head",
+            "--",
+            "sh",
+            "-c",
+            _stop_network_index_script(remove_log=True),
+        ]
+    )
+    run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "exec",
+            pod,
+            "-c",
+            "ray-head",
+            "--",
+            "rm",
+            "-rf",
+            MOUNT,
+            DATASET_PATH,
+        ]
+    )
+    print(f"  removed {MOUNT} and {DATASET_PATH}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("action", choices=["provision", "teardown", "env"])
+    ap.add_argument("--kubectl", default="kubectl")
+    args = ap.parse_args()
+    argv = kubectl_argv(args.kubectl)
+
+    if args.action == "teardown":
+        teardown(argv)
+        return 0
+
+    if args.action == "env":
+        build_wheels(locate_source())
+        _print_environment(_fixture_environment())
+        return 0
+
+    values = provision(argv)
+    print()
+    _print_environment(values)
     return 0
 
 
