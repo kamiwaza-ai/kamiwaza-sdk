@@ -283,6 +283,7 @@ def _record_deployment(
     model_target_id = required_text(target, "model_target_id")
     resource = {
         "model_id": capture.config.model_id,
+        "model_repository": required_text(target, "model_repository"),
         "model_config_id": capture.config.config_id,
         "model_file_id": capture.config.model_file_id,
         "deployment_id": capture.deployment_id,

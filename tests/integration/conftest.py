@@ -31,6 +31,7 @@ from kamiwaza_sdk.schemas.auth import PATCreate
 from kamiwaza_sdk.schemas.catalog import SecretCreate
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
 from kamiwaza_sdk.utils.model_file_readiness import model_file_download_satisfied
+from tests.integration import _gate_fixture
 
 # Co-located capability-marker helpers (M5). Add this directory to the path so
 # the import resolves regardless of pytest's package-import mode (this conftest
@@ -90,6 +91,22 @@ _API_KEY_PROBE_CACHE: dict[tuple[str, str], tuple[bool, str]] = {}
 _PROBE_TIMEOUT_SECONDS = 10.0
 _PROBE_ERROR_TRUNCATE = 200
 _logger = logging.getLogger(__name__)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def gate_fixture_runtime() -> Iterator[None]:
+    """Refresh ephemeral gate fixtures after an explicitly selected rollout."""
+    values = _gate_fixture.auto_provision_from_env()
+    previous = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for name, old_value in previous.items():
+            if old_value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old_value
 
 
 def _fail_or_skip_required_edge(request: pytest.FixtureRequest, message: str) -> None:
@@ -540,7 +557,8 @@ def _compose_port(
 
 
 def _verify_ssl_enabled() -> bool:
-    return os.environ.get("KAMIWAZA_VERIFY_SSL", "true").lower() != "false"
+    value = os.environ.get("KAMIWAZA_VERIFY_SSL", "true")
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _api_error_detail(exc: APIError) -> str:
@@ -1844,7 +1862,9 @@ def live_kamiwaza_peer_client(
         admin PAT minting") and would 403 the pairing setup; an access-token
         also expires.
 
-    SSL verification is opted out per-client (dev self-signed certs).
+    SSL verification follows ``KAMIWAZA_VERIFY_SSL`` just like the primary
+    live client. Self-signed development clusters must opt out explicitly;
+    strict-TLS lanes can provide their CA through ``REQUESTS_CA_BUNDLE``.
     """
     if not live_peer_base_url:
         raise RuntimeError(
@@ -1858,7 +1878,10 @@ def live_kamiwaza_peer_client(
     password_client: KamiwazaClient | None = None
     probe_ok: bool | None = None
     if has_password:
-        password_client = KamiwazaClient(live_peer_base_url, verify=False)
+        password_client = KamiwazaClient(
+            live_peer_base_url,
+            verify=_verify_ssl_enabled(),
+        )
         password_client.authenticator = UserPasswordAuthenticator(
             live_username.strip(),
             live_password.strip(),
@@ -1872,7 +1895,7 @@ def live_kamiwaza_peer_client(
         # lazy-auth path and add no setup-time failure surface.
         if has_peer_key:
             try:
-                password_client.authenticator.authenticate(requests.Session())
+                password_client.authenticator.authenticate(password_client.session)
                 probe_ok = True
             except Exception:
                 probe_ok = False
@@ -1885,7 +1908,11 @@ def live_kamiwaza_peer_client(
     if choice == _peer_auth.PASSWORD:
         return password_client  # type: ignore[return-value]
     if choice == _peer_auth.PEER_KEY:
-        return KamiwazaClient(live_peer_base_url, api_key=peer_key, verify=False)
+        return KamiwazaClient(
+            live_peer_base_url,
+            api_key=peer_key,
+            verify=_verify_ssl_enabled(),
+        )
     message = (
         "requires_two_clusters: peer needs admin password "
         "(--live-username/--live-password) or an admin access-token "

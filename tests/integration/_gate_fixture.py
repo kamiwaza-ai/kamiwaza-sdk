@@ -35,7 +35,8 @@ the mesh. Mounting a ConfigMap would mean setting ``scheduler.extraVolumes``,
 and helm REPLACES list values rather than merging them, so the fixture keeps
 using the existing mounts.
 
-Usage::
+When ``M5_TEST_KUBECTL`` is set, the integration session provisions this rig
+automatically after cluster convergence. Manual operation remains available::
 
     python -m tests.integration._gate_fixture provision [--kubectl "ssh spark-2 kubectl"]
     python -m tests.integration._gate_fixture env       [--kubectl ...]
@@ -51,12 +52,16 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import json
+import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # The SDK owns both live fixture families.  The M5 lifecycle test exercises
 # install 1.0.0 -> replace 1.0.1, while the federation known-answer tests use
@@ -83,11 +88,21 @@ NETWORK_INDEX_PIDFILE = "/tmp/kamiwaza-gate-index.pid"
 NETWORK_INDEX_LOG = "/tmp/kamiwaza-gate-index.log"
 DATASET_DIR = "/app/tmp"
 DATASET_PATH = f"{DATASET_DIR}/eng10050-mini-clearance.csv"
+PUBLISH_ATTEMPTS = 3
+PUBLISH_DIGEST_MISMATCH_RC = 74
 
 REPO = Path(__file__).resolve().parents[2]
 STAGE = REPO / ".gate-fixture"
 WHEEL_DIR = STAGE / "wheels"
 STAGE_DIR = STAGE / "index"
+
+
+@dataclass(frozen=True)
+class RayPodTarget:
+    """One active Ray pod and the workload container that owns its fixtures."""
+
+    pod: str
+    container: str
 
 
 def _quote_remote_command(cmd: list[str]) -> list[str]:
@@ -256,8 +271,7 @@ def stage_index(
         "<!DOCTYPE html><html><body>" + "\n".join(sorted(anchors)) + "</body></html>\n",
         encoding="utf-8",
     )
-    sys.path.insert(0, str(Path(__file__).parent))
-    import _mini_clearance as mc  # noqa: PLC0415 — sibling test helper
+    from tests.integration import _mini_clearance as mc  # noqa: PLC0415
 
     mc.write_dataset_file(STAGE_DIR / "mini_clearance.csv")
     return STAGE_DIR
@@ -289,55 +303,113 @@ def preflight(argv: list[str]) -> None:
         )
 
 
-def _ray_head_pod(argv: list[str]) -> str:
-    """Return the active ray-head pod name or stop with a useful error."""
-    pod = run(
+def _target_from_pod(pod: dict[str, Any]) -> RayPodTarget | None:
+    """Convert one Kubernetes pod document into a supported Ray target."""
+    metadata = pod.get("metadata", {})
+    if metadata.get("deletionTimestamp"):
+        return None
+    node_type = metadata.get("labels", {}).get("ray.io/node-type")
+    if node_type not in {"head", "worker"}:
+        return None
+    name = metadata.get("name")
+    if not name:
+        return None
+    return RayPodTarget(pod=name, container=f"ray-{node_type}")
+
+
+def _head_target(targets: tuple[RayPodTarget, ...]) -> RayPodTarget:
+    """Return the active Ray head from an already consistent target snapshot."""
+    for target in targets:
+        if target.container == "ray-head":
+            return target
+    raise SystemExit("no running ray head pod found")
+
+
+def _ray_targets(argv: list[str]) -> tuple[RayPodTarget, ...]:
+    """Return every non-terminating, running Ray head and worker pod."""
+    pods = run(
         argv
         + [
             "-n",
             NAMESPACE,
             "get",
-            "pod",
+            "pods",
             "-l",
-            "ray.io/node-type=head",
+            "ray.io/cluster=core-raycluster",
+            "--field-selector",
+            "status.phase=Running",
             "-o",
-            "jsonpath={.items[0].metadata.name}",
+            "json",
         ]
     )
-    name = pod.stdout.strip()
-    if not name:
-        raise SystemExit("no ray head pod found")
-    return name
+    if pods.returncode != 0:
+        raise SystemExit(f"could not list Ray pods: {pods.stderr.strip()}")
+    try:
+        payload = json.loads(pods.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"could not parse Ray pod list: {exc}") from exc
+    targets = []
+    for pod in payload.get("items", []):
+        target = _target_from_pod(pod)
+        if target is not None:
+            targets.append(target)
+    result = tuple(sorted(targets, key=lambda target: (target.container, target.pod)))
+    _head_target(result)
+    return result
 
 
-def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
-    """Stream one staged file into its destination inside the ray head."""
+def _publish_script(destination: str, expected_digest: str) -> str:
+    """Decode to a temporary file and atomically publish exact bytes."""
+    temporary = shlex.quote(f"{destination}.partial")
+    target = shlex.quote(destination)
+    digest = shlex.quote(expected_digest)
+    return (
+        "set -eu; "
+        f"trap 'rm -f {temporary}' 0; "
+        f"base64 -d > {temporary}; "
+        f"set -- $(sha256sum {temporary}); "
+        f'if [ "$1" != {digest} ]; then '
+        f"echo 'published digest mismatch' >&2; exit {PUBLISH_DIGEST_MISMATCH_RC}; "
+        "fi; "
+        f"mv {temporary} {target}; trap - 0"
+    )
+
+
+def _publish_item(argv: list[str], target: RayPodTarget, item: Path, leaf: str) -> None:
+    """Stream one staged file into its destination inside one Ray pod."""
     destination = (
         DATASET_PATH if item.name == "mini_clearance.csv" else f"{leaf}/{item.name}"
     )
-    payload = base64.b64encode(item.read_bytes())
+    raw = item.read_bytes()
+    payload = base64.b64encode(raw)
+    expected_digest = hashlib.sha256(raw).hexdigest()
     cmd = argv + [
         "-n",
         NAMESPACE,
         "exec",
         "-i",
-        pod,
+        target.pod,
         "-c",
-        "ray-head",
+        target.container,
         "--",
         "sh",
         "-c",
-        f"base64 -d > {destination}",
+        _publish_script(destination, expected_digest),
     ]
-    wrote = subprocess.run(
-        _quote_remote_command(cmd),
-        input=payload,
-        capture_output=True,
-        timeout=180,
-    )
-    if wrote.returncode != 0:
+    detail = ""
+    for _attempt in range(PUBLISH_ATTEMPTS):
+        wrote = subprocess.run(
+            _quote_remote_command(cmd),
+            input=payload,
+            capture_output=True,
+            timeout=180,
+        )
+        if wrote.returncode == 0:
+            return
         detail = wrote.stderr.decode(errors="replace").strip()
-        raise SystemExit(f"writing {item.name} failed: {detail}")
+        if wrote.returncode != PUBLISH_DIGEST_MISMATCH_RC:
+            break
+    raise SystemExit(f"writing {item.name} failed: {detail}")
 
 
 def _stop_network_index_script(*, remove_log: bool = False) -> str:
@@ -405,12 +477,13 @@ def _start_network_index(argv: list[str], pod: str) -> str:
 
 
 def publish(argv: list[str], directory: Path) -> str:
-    """Copy the staged wheel/index and dataset into existing Ray-head mounts.
+    """Publish head-only packages and mirror the dataset into every Ray pod.
 
     ``kubectl cp`` rather than a ConfigMap: no new volume or pod restart, and no
     risk of an extraVolumes overlay replacing the hot-reload source mounts.
     """
-    name = _ray_head_pod(argv)
+    targets = _ray_targets(argv)
+    head = _head_target(targets)
 
     leaf = f"{MOUNT}/simple/acme-gates"
     mk = run(
@@ -419,9 +492,9 @@ def publish(argv: list[str], directory: Path) -> str:
             "-n",
             NAMESPACE,
             "exec",
-            name,
+            head.pod,
             "-c",
-            "ray-head",
+            head.container,
             "--",
             "mkdir",
             "-p",
@@ -438,114 +511,98 @@ def publish(argv: list[str], directory: Path) -> str:
     # binary wheel survives the ssh channel intact.
     items = sorted(directory.iterdir())
     for item in items:
-        _publish_item(argv, name, item, leaf)
-    print(f"  published {len(items)} files into {MOUNT}")
-    network_index_url = _start_network_index(argv, name)
+        destinations = targets if item.name == "mini_clearance.csv" else (head,)
+        for target in destinations:
+            _publish_item(argv, target, item, leaf)
+    print(f"  published {len(items)} staged files across {len(targets)} Ray pods")
+    network_index_url = _start_network_index(argv, head.pod)
     print(f"  serving NetworkPolicy probe index at {network_index_url}")
     return network_index_url
+
+
+def _verify_remote_digest(
+    argv: list[str], target: RayPodTarget, path: str, expected: str
+) -> None:
+    """Require one pod path to match an exact local SHA-256 digest."""
+    remote = run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "exec",
+            target.pod,
+            "-c",
+            target.container,
+            "--",
+            "sha256sum",
+            path,
+        ]
+    )
+    got = (remote.stdout.split() or [""])[0]
+    if got != expected:
+        detail = got or remote.stderr.strip()
+        raise SystemExit(
+            f"published fixture digest mismatch: {path}\n"
+            f"  pod:   {target.pod}\n  local: {expected}\n  pod:   {detail}"
+        )
 
 
 def verify(
     argv: list[str],
     digest: str,
     additional_digests: dict[str, str] | None = None,
+    *,
+    dataset: Path | None = None,
 ) -> None:
-    """The gate: the pod must serve the SAME bytes we hashed locally."""
-    name = _ray_head_pod(argv)
+    """Require head package bytes and every Ray pod's dataset to match local."""
+    targets = _ray_targets(argv)
+    head = _head_target(targets)
     expected = {WHEEL_NAME: digest}
     expected.update(additional_digests or {})
     for wheel_name, wheel_digest in expected.items():
-        remote = run(
-            argv
-            + [
-                "-n",
-                NAMESPACE,
-                "exec",
-                name,
-                "-c",
-                "ray-head",
-                "--",
-                "sha256sum",
-                f"{MOUNT}/simple/acme-gates/{wheel_name}",
-            ]
-        )
-        got = (remote.stdout.split() or [""])[0]
         want = wheel_digest.split(":", 1)[1]
-        if got != want:
-            raise SystemExit(
-                "the wheel in the pod does not match the one hashed locally — the "
-                f"install would fail its hash check.\n  wheel: {wheel_name}\n"
-                f"  local: {want}\n  pod:   {got or remote.stderr.strip()}"
-            )
+        _verify_remote_digest(
+            argv,
+            head,
+            f"{MOUNT}/simple/acme-gates/{wheel_name}",
+            want,
+        )
         print(f"  verified in-pod wheel digest matches {wheel_name}: {want[:16]}…")
+    dataset_path = dataset or STAGE_DIR / "mini_clearance.csv"
+    dataset_digest = hashlib.sha256(dataset_path.read_bytes()).hexdigest()
+    for target in targets:
+        _verify_remote_digest(argv, target, DATASET_PATH, dataset_digest)
+        print(
+            "  verified in-pod dataset digest matches "
+            f"{target.pod}: {dataset_digest[:16]}…"
+        )
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["provision", "teardown", "env"])
-    ap.add_argument("--kubectl", default="kubectl")
-    args = ap.parse_args()
-    argv = kubectl_argv(args.kubectl)
+def _fixture_environment(network_index_url: str | None = None) -> dict[str, str]:
+    """Return the environment consumed by the package and federation suites."""
+    values = {
+        "M5_TEST_WHEEL_DIR": str(WHEEL_DIR),
+        "M5_TEST_INDEX_URL": INDEX_URL,
+        "MINI_CLEARANCE_DATASET_PATH": DATASET_PATH,
+    }
+    if network_index_url:
+        values["M5_TEST_NETWORK_POLICY_ALLOWED_URL"] = network_index_url
+    return values
 
-    if args.action == "teardown":
-        pod = run(
-            argv
-            + [
-                "-n",
-                NAMESPACE,
-                "get",
-                "pod",
-                "-l",
-                "ray.io/node-type=head",
-                "-o",
-                "jsonpath={.items[0].metadata.name}",
-            ]
-        ).stdout.strip()
-        if pod:
-            run(
-                argv
-                + [
-                    "-n",
-                    NAMESPACE,
-                    "exec",
-                    pod,
-                    "-c",
-                    "ray-head",
-                    "--",
-                    "sh",
-                    "-c",
-                    _stop_network_index_script(remove_log=True),
-                ]
-            )
-            run(
-                argv
-                + [
-                    "-n",
-                    NAMESPACE,
-                    "exec",
-                    pod,
-                    "-c",
-                    "ray-head",
-                    "--",
-                    "rm",
-                    "-rf",
-                    MOUNT,
-                    DATASET_PATH,
-                ]
-            )
-        print(f"  removed {MOUNT} and {DATASET_PATH}")
-        return 0
 
+def _print_environment(values: dict[str, str]) -> None:
+    """Print shell exports for manual fixture operation."""
+    for name, value in values.items():
+        print(f"export {name}={value}")
+
+
+def provision(argv: list[str]) -> dict[str, str]:
+    """Refresh cluster-side fixtures and return their pytest environment."""
     wheels = build_wheels(locate_source())
     wheel, digest = wheels["1.1.0"]
-    if args.action == "env":
-        print(f"export M5_TEST_WHEEL_DIR={WHEEL_DIR}")
-        print(f"export M5_TEST_INDEX_URL={INDEX_URL}")
-        print(f"export MINI_CLEARANCE_DATASET_PATH={DATASET_PATH}")
-        return 0
-
     for version, (built_wheel, built_digest) in wheels.items():
         print(f"  built {version}: {built_wheel.name}  {built_digest}")
+
     preflight(argv)
     additional = {
         version: artifact for version, artifact in wheels.items() if version != "1.1.0"
@@ -556,10 +613,89 @@ def main() -> int:
         digest,
         {artifact[0].name: artifact[1] for artifact in additional.values()},
     )
-    print(f"\nexport M5_TEST_WHEEL_DIR={WHEEL_DIR}")
-    print(f"export M5_TEST_INDEX_URL={INDEX_URL}")
-    print(f"export M5_TEST_NETWORK_POLICY_ALLOWED_URL={network_index_url}")
-    print(f"export MINI_CLEARANCE_DATASET_PATH={DATASET_PATH}")
+    return _fixture_environment(network_index_url)
+
+
+def auto_provision_from_env() -> dict[str, str]:
+    """Provision only when an explicit kubectl command selects a test cluster."""
+    kubectl = os.getenv("M5_TEST_KUBECTL", "").strip()
+    if not kubectl:
+        return {}
+    return provision(kubectl_argv(kubectl))
+
+
+def teardown(argv: list[str]) -> None:
+    """Remove only runtime state owned by this fixture."""
+    targets = _ray_targets(argv)
+    head = _head_target(targets)
+    run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "exec",
+            head.pod,
+            "-c",
+            head.container,
+            "--",
+            "sh",
+            "-c",
+            _stop_network_index_script(remove_log=True),
+        ]
+    )
+    run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "exec",
+            head.pod,
+            "-c",
+            head.container,
+            "--",
+            "rm",
+            "-rf",
+            MOUNT,
+        ]
+    )
+    for target in targets:
+        run(
+            argv
+            + [
+                "-n",
+                NAMESPACE,
+                "exec",
+                target.pod,
+                "-c",
+                target.container,
+                "--",
+                "rm",
+                "-f",
+                DATASET_PATH,
+            ]
+        )
+    print(f"  removed {MOUNT} and {DATASET_PATH} from {len(targets)} Ray pods")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("action", choices=["provision", "teardown", "env"])
+    ap.add_argument("--kubectl", default="kubectl")
+    args = ap.parse_args()
+    argv = kubectl_argv(args.kubectl)
+
+    if args.action == "teardown":
+        teardown(argv)
+        return 0
+
+    if args.action == "env":
+        build_wheels(locate_source())
+        _print_environment(_fixture_environment())
+        return 0
+
+    values = provision(argv)
+    print()
+    _print_environment(values)
     return 0
 
 

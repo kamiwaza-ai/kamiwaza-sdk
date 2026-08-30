@@ -150,13 +150,18 @@ def test_model_mesh_provider_publishes_the_exact_model_mesh_plan(
     }
 
 
-def test_model_mesh_grant_tuple_does_not_inherit_retrieval_or_job_authority() -> None:
+def test_model_mesh_grant_tuples_do_not_inherit_retrieval_or_job_authority() -> None:
     assert initial_tuples(model_id="model-123", job_executor=False) == [
         {
             "subject": "user:{{user_id}}",
             "relation": "viewer",
             "object": "model:model-123",
-        }
+        },
+        {
+            "subject": "user:{{user_id}}",
+            "relation": "invoker",
+            "object": "model:model-123",
+        },
     ]
 
 
@@ -390,6 +395,13 @@ def test_model_mesh_prepare_owns_only_pairing_model_grant_and_no_gate_fixture(
                 "subject": "user:{{user_id}}",
                 "relation": "viewer",
                 "object": "model:model-123",
-            }
+            },
+            {
+                "subject": "user:{{user_id}}",
+                "relation": "invoker",
+                "object": "model:model-123",
+            },
         ]
     ]
+    edge = state.opaque["edges"][plan.selected[0].target_id]
+    assert edge["resources"]["model_repository"] == "Qwen/Qwen3-0.6B-GGUF"

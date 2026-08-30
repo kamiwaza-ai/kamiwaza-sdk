@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 _AUTH_ERROR_DETAIL_MAX_LEN = 500
 _AUTH_ERROR_DETAIL_TRUNCATED_SUFFIX = "... [truncated]"
-_VERIFY_SSL_FALSE_VALUES = {"false", "0", "no"}
+_VERIFY_SSL_FALSE_VALUES = {"false", "0", "no", "off"}
 
 
 # ----------------------------------------------------------------------------

@@ -63,13 +63,14 @@ def initial_tuples(
             }
         )
     if model_id:
-        tuples.append(
-            {
-                "subject": "user:{{user_id}}",
-                "relation": "viewer",
-                "object": f"model:{model_id}",
-            }
-        )
+        for relation in ("viewer", "invoker"):
+            tuples.append(
+                {
+                    "subject": "user:{{user_id}}",
+                    "relation": relation,
+                    "object": f"model:{model_id}",
+                }
+            )
     return tuples
 
 
