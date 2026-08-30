@@ -272,6 +272,31 @@ def test_publish_surfaces_the_failed_item(
         fixture.publish(["kubectl"], directory)
 
 
+def test_publish_retries_a_truncated_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    item = tmp_path / "acme-gates.whl"
+    item.write_bytes(b"exact wheel bytes")
+    attempts: list[list[str]] = []
+
+    def truncate_once(
+        cmd: list[str], *, input: bytes, **kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+        attempts.append(cmd)
+        assert hashlib.sha256(item.read_bytes()).hexdigest() in cmd[-1]
+        assert ".partial" in cmd[-1]
+        returncode = 74 if len(attempts) == 1 else 0
+        stderr = b"published digest mismatch" if returncode else b""
+        return subprocess.CompletedProcess(cmd, returncode, b"", stderr)
+
+    monkeypatch.setattr(fixture.subprocess, "run", truncate_once)
+
+    fixture._publish_item(["kubectl"], "ray-head-0", item, "/fixture")
+
+    assert len(attempts) == 2
+
+
 def test_verify_hashes_the_published_wheel_in_the_ray_head(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

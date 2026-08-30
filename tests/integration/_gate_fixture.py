@@ -85,6 +85,8 @@ NETWORK_INDEX_PIDFILE = "/tmp/kamiwaza-gate-index.pid"
 NETWORK_INDEX_LOG = "/tmp/kamiwaza-gate-index.log"
 DATASET_DIR = "/app/tmp"
 DATASET_PATH = f"{DATASET_DIR}/eng10050-mini-clearance.csv"
+PUBLISH_ATTEMPTS = 3
+PUBLISH_DIGEST_MISMATCH_RC = 74
 
 REPO = Path(__file__).resolve().parents[2]
 STAGE = REPO / ".gate-fixture"
@@ -311,12 +313,31 @@ def _ray_head_pod(argv: list[str]) -> str:
     return name
 
 
+def _publish_script(destination: str, expected_digest: str) -> str:
+    """Decode to a temporary file and atomically publish exact bytes."""
+    temporary = shlex.quote(f"{destination}.partial")
+    target = shlex.quote(destination)
+    digest = shlex.quote(expected_digest)
+    return (
+        "set -eu; "
+        f"trap 'rm -f {temporary}' 0; "
+        f"base64 -d > {temporary}; "
+        f"set -- $(sha256sum {temporary}); "
+        f'if [ "$1" != {digest} ]; then '
+        f"echo 'published digest mismatch' >&2; exit {PUBLISH_DIGEST_MISMATCH_RC}; "
+        "fi; "
+        f"mv {temporary} {target}; trap - 0"
+    )
+
+
 def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
     """Stream one staged file into its destination inside the ray head."""
     destination = (
         DATASET_PATH if item.name == "mini_clearance.csv" else f"{leaf}/{item.name}"
     )
-    payload = base64.b64encode(item.read_bytes())
+    raw = item.read_bytes()
+    payload = base64.b64encode(raw)
+    expected_digest = hashlib.sha256(raw).hexdigest()
     cmd = argv + [
         "-n",
         NAMESPACE,
@@ -328,17 +349,22 @@ def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
         "--",
         "sh",
         "-c",
-        f"base64 -d > {destination}",
+        _publish_script(destination, expected_digest),
     ]
-    wrote = subprocess.run(
-        _quote_remote_command(cmd),
-        input=payload,
-        capture_output=True,
-        timeout=180,
-    )
-    if wrote.returncode != 0:
+    detail = ""
+    for _attempt in range(PUBLISH_ATTEMPTS):
+        wrote = subprocess.run(
+            _quote_remote_command(cmd),
+            input=payload,
+            capture_output=True,
+            timeout=180,
+        )
+        if wrote.returncode == 0:
+            return
         detail = wrote.stderr.decode(errors="replace").strip()
-        raise SystemExit(f"writing {item.name} failed: {detail}")
+        if wrote.returncode != PUBLISH_DIGEST_MISMATCH_RC:
+            break
+    raise SystemExit(f"writing {item.name} failed: {detail}")
 
 
 def _stop_network_index_script(*, remove_log: bool = False) -> str:
