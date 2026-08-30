@@ -390,6 +390,13 @@ def test_model_mesh_prepare_owns_only_pairing_model_grant_and_no_gate_fixture(
                 "subject": "user:{{user_id}}",
                 "relation": "viewer",
                 "object": "model:model-123",
-            }
+            },
+            {
+                "subject": "user:{{user_id}}",
+                "relation": "invoker",
+                "object": "model:model-123",
+            },
         ]
     ]
+    edge = state.opaque["edges"][plan.selected[0].target_id]
+    assert edge["resources"]["model_repository"] == "Qwen/Qwen3-0.6B-GGUF"

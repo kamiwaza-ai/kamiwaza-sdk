@@ -25,6 +25,10 @@ class _Admin:
         return f"token:{username}"
 
 
+class _Denied(Exception):
+    status_code = 403
+
+
 class _Persona:
     def __init__(
         self, username: str, calls: list[tuple[str, str, dict[str, Any]]]
@@ -35,16 +39,16 @@ class _Persona:
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         self.calls.append((method, path, kwargs))
         if method == "GET":
-            if self.username == "fed-clr-u":
-                return {
-                    "items": [
-                        {
-                            "id": "model-123",
-                            "repo_modelId": "Qwen/Qwen3-0.6B-GGUF",
-                        }
-                    ]
-                }
-            return {"items": []}
+            return {
+                "items": [
+                    {
+                        "id": "model-123",
+                        "repo_modelId": "Qwen/Qwen3-0.6B-GGUF",
+                    }
+                ]
+            }
+        if self.username == "fed-clr-s":
+            raise _Denied("model invoke denied")
         return {"choices": [{"message": {"content": "mesh response"}}]}
 
     def close(self) -> None:
@@ -101,7 +105,10 @@ def test_model_mesh_cases_use_exact_catalog_and_runtime_chat_paths(
             "POST",
             "/mesh/initiator-fed-123/runtime/models/deploy-123/v1/chat/completions",
         ),
-        ("GET", "/mesh/initiator-fed-123/api/models/"),
+        (
+            "POST",
+            "/mesh/initiator-fed-123/runtime/models/deploy-123/v1/chat/completions",
+        ),
     ]
     chat_payload = calls[2][2]["json"]
     assert chat_payload["model"] == "served-qwen"
