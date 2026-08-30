@@ -29,6 +29,10 @@ class _Denied(Exception):
     status_code = 403
 
 
+class _ServerError(Exception):
+    status_code = 500
+
+
 class _Persona:
     def __init__(
         self, username: str, calls: list[tuple[str, str, dict[str, Any]]]
@@ -113,3 +117,16 @@ def test_model_mesh_cases_use_exact_catalog_and_runtime_chat_paths(
     chat_payload = calls[2][2]["json"]
     assert chat_payload["model"] == "served-qwen"
     assert chat_payload["messages"][0]["role"] == "user"
+
+
+def test_model_mesh_negative_propagates_non_auth_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_chat(context: RunContext, username: str) -> Any:
+        del context, username
+        raise _ServerError("receiver unavailable")
+
+    monkeypatch.setattr(model_mesh_cases, "_remote_chat", fail_chat)
+
+    with pytest.raises(_ServerError, match="receiver unavailable"):
+        model_mesh_cases._run_unauthorized(_context([]))
