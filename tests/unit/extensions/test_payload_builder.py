@@ -886,7 +886,7 @@ class TestServiceOverrides:
         assert services["milvus"].command == [
             "sh",
             "-c",
-            "exec milvus --config=${MILVUS_CONFIG}",
+            "exec milvus --config=$${MILVUS_CONFIG}",
         ]
         assert services["milvus"].args == ["--config", "/etc/milvus.yaml"]
         assert services["etcd"].command == [
@@ -895,6 +895,99 @@ class TestServiceOverrides:
             "exec wrapper --flag value",
         ]
         assert services["etcd"].args == ["etcd", "--data-dir", "/etcd"]
+
+    def test_compose_process_fields_resolve_host_variables(
+        self, builder, metadata, connection, monkeypatch
+    ):
+        monkeypatch.setenv(
+            "KZ_TEST_APP_ARGS", "--port 9999 --probe=$(CONTAINER_PROBE_PORT)"
+        )
+        monkeypatch.delenv("KZ_TEST_BIND_ADDRESS", raising=False)
+        transformed = {
+            "services": {
+                "app": {
+                    "image": "registry.test/app:dev",
+                    "entrypoint": "python app.py ${KZ_TEST_APP_ARGS}",
+                    "command": [
+                        "serve",
+                        "--host=${KZ_TEST_BIND_ADDRESS:-0.0.0.0}",
+                        "--literal=$$(CONTAINER_VALUE)",
+                    ],
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        assert payload.services[0].command == [
+            "python",
+            "app.py",
+            "--port",
+            "9999",
+            "--probe=$$(CONTAINER_PROBE_PORT)",
+        ]
+        assert payload.services[0].args == [
+            "serve",
+            "--host=0.0.0.0",
+            "--literal=$$(CONTAINER_VALUE)",
+        ]
+
+    def test_compose_dollar_escapes_survive_kubelet_expansion(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "command": ["sh", "-c", "printf '%s' $$$$LITERAL"],
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        assert payload.services[0].args == [
+            "sh",
+            "-c",
+            "printf '%s' $$$$LITERAL",
+        ]
+
+    def test_unresolvable_process_variable_names_service_and_field(
+        self, builder, metadata, connection, monkeypatch
+    ):
+        monkeypatch.delenv("KZ_TEST_MISSING_COMMAND", raising=False)
+        transformed = {
+            "services": {
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "command": ["run", "${KZ_TEST_MISSING_COMMAND:?required}"],
+                },
+            }
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="service 'worker': command contains an unresolvable Compose variable",
+        ):
+            builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+    def test_invalid_process_string_names_service_and_field(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "entrypoint": "sh -c 'unterminated",
+                },
+            }
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="service 'worker': invalid entrypoint string: No closing quotation",
+        ):
+            builder.build(metadata, transformed, connection, "my-app-dev-abc")
 
     def test_x_kamiwaza_overrides_are_carried_into_service_spec(
         self, builder, metadata, connection
