@@ -643,5 +643,6 @@ def _capability_floor_error(
 ) -> str:
     return (
         f"{capability} requires kz_ext_version '>={minimum}'; "
-        f"the declared range {declared}"
+        f"the declared range {declared}. Raise its lower bound to at least "
+        f"'>={minimum}' or remove the capability"
     )

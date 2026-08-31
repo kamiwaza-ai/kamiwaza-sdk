@@ -1179,11 +1179,28 @@ class DoctorChecker:
         except (json.JSONDecodeError, FileNotFoundError):
             return results
 
+        ext_dir = metadata_path.parent
         kz_ext_version = data.get("kz_ext_version")
         if kz_ext_version:
-            results.append(self._check_cli_version(kz_ext_version))
+            from kamiwaza_extensions.extension_detector import ExtensionDetector
+            from kamiwaza_extensions.validators.metadata import check_cli_contract
 
-        ext_dir = metadata_path.parent
+            compose_data = ExtensionDetector().detect(ext_dir).compose_data
+            contract_errors = check_cli_contract(data, compose_data)
+            if contract_errors:
+                results.append(
+                    CheckResult(
+                        "CLI version compatibility",
+                        "fail",
+                        "; ".join(contract_errors),
+                        fix=(
+                            "Raise kz_ext_version to the required capability floor "
+                            "or remove the unsupported manifest/Compose feature."
+                        ),
+                    )
+                )
+            else:
+                results.append(self._check_cli_version(kz_ext_version))
 
         # Python runtime lib
         req_file = ext_dir / "requirements.txt"
