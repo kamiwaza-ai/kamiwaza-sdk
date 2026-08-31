@@ -126,6 +126,7 @@ class TestCompatibilityBundleResource:
         from packaging.version import Version
 
         from kamiwaza_extensions.validators.metadata import (
+            COMPOSE_CAPABILITY_FLOORS,
             MANIFEST_CAPABILITY_FLOORS,
         )
 
@@ -134,10 +135,18 @@ class TestCompatibilityBundleResource:
             for capability, floor in MANIFEST_CAPABILITY_FLOORS.items()
         }
         assert bundle["manifest_capabilities"] == expected_capabilities
+        expected_compose_capabilities = {
+            capability: f">={floor}"
+            for capability, floor in COMPOSE_CAPABILITY_FLOORS.items()
+        }
+        assert bundle["compose_capabilities"] == expected_compose_capabilities
         cli_version = Version(bundle["cli_version"])
         assert all(
             cli_version in SpecifierSet(required)
-            for required in bundle["manifest_capabilities"].values()
+            for required in (
+                *bundle["manifest_capabilities"].values(),
+                *bundle["compose_capabilities"].values(),
+            )
         )
 
 

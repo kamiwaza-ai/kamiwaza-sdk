@@ -14,11 +14,13 @@ from rich.console import Console
 console = Console(stderr=True)
 
 
-def _enforce_cli_contract(metadata: Dict[str, Any]) -> None:
+def _enforce_cli_contract(
+    metadata: Dict[str, Any], compose_data: Optional[Dict[str, Any]] = None
+) -> None:
     """Stop before build/push when this kz-ext cannot honor the manifest."""
     from kamiwaza_extensions.validators.metadata import check_cli_contract
 
-    errors = check_cli_contract(metadata)
+    errors = check_cli_contract(metadata, compose_data)
     if not errors:
         return
     for error in errors:
@@ -544,7 +546,7 @@ def run_dev_remote(
     # 1. Detect extension
     detector = ExtensionDetector()
     info = detector.detect()
-    _enforce_cli_contract(info.metadata or {})
+    _enforce_cli_contract(info.metadata or {}, info.compose_data)
 
     if info.compose_data is None:
         console.print("[red]Error:[/red] No docker-compose.yml found.")

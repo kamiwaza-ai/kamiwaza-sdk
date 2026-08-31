@@ -210,6 +210,36 @@ class TestPublishAll:
 
         mock_publish_one.assert_not_called()
 
+    @patch("kamiwaza_extensions.commands.publish._publish_one")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_publish_all_preflights_compose_capabilities_before_side_effects(
+        self,
+        mock_detector_cls,
+        mock_publish_one,
+        tmp_path,
+    ):
+        compatible = _make_extension_info(tmp_path / "apps" / "compatible")
+        incompatible = _make_extension_info(
+            tmp_path / "apps" / "incompatible",
+            metadata={
+                "name": "incompatible",
+                "version": "1.0.0",
+                "kz_ext_version": ">=0.1.0,<1.0.0",
+            },
+            compose_data={"services": {"app": {"entrypoint": ["python"]}}},
+        )
+        mock_detector_cls.return_value.detect_all.return_value = [
+            compatible,
+            incompatible,
+        ]
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        with pytest.raises(CLI_EXIT_TYPES):
+            run_publish(stage="dev", publish_all=True)
+
+        mock_publish_one.assert_not_called()
+
     @patch("kamiwaza_extensions.connector_publisher.publish_connector")
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
     def test_connector_publish_rejects_incompatible_cli_contract(
