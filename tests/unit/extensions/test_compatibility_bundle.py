@@ -125,9 +125,15 @@ class TestCompatibilityBundleResource:
         from packaging.specifiers import SpecifierSet
         from packaging.version import Version
 
-        assert bundle["manifest_capabilities"] == {
-            "services.*.healthCheck": ">=0.2.0"
+        from kamiwaza_extensions.validators.metadata import (
+            MANIFEST_CAPABILITY_FLOORS,
+        )
+
+        expected_capabilities = {
+            capability: f">={floor}"
+            for capability, floor in MANIFEST_CAPABILITY_FLOORS.items()
         }
+        assert bundle["manifest_capabilities"] == expected_capabilities
         cli_version = Version(bundle["cli_version"])
         assert all(
             cli_version in SpecifierSet(required)

@@ -263,6 +263,17 @@ class TestMetadataValidator:
         assert not result.passed
         assert any("declared range is missing" in error for error in result.errors)
 
+    def test_null_healthcheck_does_not_require_0_2_floor(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["kz_ext_version"] = ">=0.1.0,<1.0.0"
+        data["services"] = {"tool": {"healthCheck": None}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f)
+
+        assert result.passed, result.errors
+
     def test_services_healthcheck_httpget_passes(self, tmp_path, validator):
         data = _valid_metadata()
         data["services"] = {

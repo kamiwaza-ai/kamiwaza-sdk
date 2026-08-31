@@ -63,17 +63,28 @@ class DevLocalRunner:
         # 1. Detect extension (shared logic)
         info = self._detector.detect()
 
-        # 2. Ensure compose file exists
+        # 2. Enforce the manifest/tooling contract before inspecting Compose or
+        # starting any build. Local and remote dev must fail the same way.
+        from kamiwaza_extensions.exit_codes import ExitCode
+        from kamiwaza_extensions.validators.metadata import check_cli_contract
+
+        contract_errors = check_cli_contract(info.metadata or {})
+        if contract_errors:
+            for error in contract_errors:
+                console.print(f"[red]Error:[/red] {error}")
+            return int(ExitCode.VALIDATION)
+
+        # 3. Ensure compose file exists
         if info.compose_path is None:
             raise FileNotFoundError(
                 f"No compose file found in {info.path}. "
                 "Expected docker-compose.yml or compose.yml."
             )
 
-        # 3. Detect compose command
+        # 4. Detect compose command
         compose_cmd = detect_compose_command()
 
-        # 4. Build env overlay (with optional --auth bridge)
+        # 5. Build env overlay (with optional --auth bridge)
         connection = self._conn_mgr.get_active_connection()
         bridge: Optional[BridgeContext] = None
         if auth:
@@ -135,7 +146,7 @@ class DevLocalRunner:
                 "[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]"
             )
 
-        # 5. Resolve SDK override
+        # 6. Resolve SDK override
         override_spec = resolve_sdk_override(sdk_repo, info.path)
 
         if override_spec:

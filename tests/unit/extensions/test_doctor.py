@@ -717,6 +717,8 @@ class TestDoctorExtensionChecks:
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_cli_version(">=99.0.0")
         assert result.status == "fail"
+        assert "bundles a compatible kz-ext capability" in result.fix
+        assert "kamiwaza-sdk>=99.0.0" not in result.fix
 
     def test_python_runtime_lib_found(self, tmp_path):
         req_file = tmp_path / "requirements.txt"

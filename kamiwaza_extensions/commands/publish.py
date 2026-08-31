@@ -746,6 +746,23 @@ def _publish_one(
     console.print(f"  Catalog: {result.catalog_file}")
 
 
+def _enforce_cli_contracts(infos: List[ExtensionInfo]) -> None:
+    """Validate every detected manifest before any publish side effect."""
+    from kamiwaza_extensions.exit_codes import ExitCode
+    from kamiwaza_extensions.validators.metadata import check_cli_contract
+
+    failures = [
+        (info.name, error)
+        for info in infos
+        for error in check_cli_contract(info.metadata or {})
+    ]
+    if not failures:
+        return
+    for name, error in failures:
+        console.print(f"[red]Error:[/red] {name}: {error}")
+    raise typer.Exit(code=int(ExitCode.VALIDATION))
+
+
 def run_publish(
     *,
     stage: str,
@@ -810,6 +827,8 @@ def run_publish(
             "or run from inside a specific extension directory."
         )
         raise typer.Exit(code=1) from exc
+
+    _enforce_cli_contracts(infos)
 
     for info in infos:
         # Connectors have no compose and aren't built by kz-ext — they publish
