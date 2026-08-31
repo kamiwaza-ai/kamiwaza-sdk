@@ -600,6 +600,28 @@ def _resolve_unbraced_reference(
     return "$", start + 1
 
 
+def _resolve_compose_token(
+    value: str,
+    start: int,
+    depth: int,
+    resolve_unbraced: bool,
+) -> Tuple[Optional[str], int]:
+    """Resolve the Compose token beginning at one dollar sign."""
+    if value.startswith("$$", start):
+        return "$", start + 2
+    if not value.startswith("${", start):
+        return _resolve_unbraced_reference(value, start, resolve_unbraced)
+    end = _compose_substitution_end(value, start)
+    if end is None:
+        return None, start
+    substitution = _resolve_compose_substitution(
+        value[start : end + 1],
+        depth,
+        resolve_unbraced=resolve_unbraced,
+    )
+    return substitution, end + 1
+
+
 def resolve_compose_value(
     value: str, depth: int = 0, *, resolve_unbraced: bool = False
 ) -> Optional[str]:
@@ -619,30 +641,15 @@ def resolve_compose_value(
             resolved.append(value[cursor:])
             break
         resolved.append(value[cursor:dollar])
-        if value.startswith("$$", dollar):
-            resolved.append("$")
-            cursor = dollar + 2
-            continue
-        if not value.startswith("${", dollar):
-            host_value, cursor = _resolve_unbraced_reference(
-                value, dollar, resolve_unbraced
-            )
-            if host_value is None:
-                return None
-            resolved.append(host_value)
-            continue
-        end = _compose_substitution_end(value, dollar)
-        if end is None:
-            return None
-        substitution = _resolve_compose_substitution(
-            value[dollar : end + 1],
+        replacement, cursor = _resolve_compose_token(
+            value,
+            dollar,
             depth,
-            resolve_unbraced=resolve_unbraced,
+            resolve_unbraced,
         )
-        if substitution is None:
+        if replacement is None:
             return None
-        resolved.append(substitution)
-        cursor = end + 1
+        resolved.append(replacement)
     return "".join(resolved)
 
 
