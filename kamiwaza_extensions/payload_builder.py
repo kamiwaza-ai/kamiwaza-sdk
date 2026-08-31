@@ -15,8 +15,8 @@ from kamiwaza_extensions.compose_ports import (
     extract_container_port,
 )
 from kamiwaza_extensions.compose_transformer import (
-    _resolve_compose_value,
     detect_service_url_rewrites,
+    resolve_compose_value,
 )
 from kamiwaza_extensions.compose_volumes import (
     ServiceVolumeSpec,
@@ -83,7 +83,7 @@ def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
 
 def _resolve_process_value(value: Any, service_name: str, field_name: str) -> str:
     """Resolve one Compose process value and shield it from kubelet expansion."""
-    resolved = _resolve_compose_value(str(value))
+    resolved = resolve_compose_value(str(value), resolve_unbraced=True)
     if resolved is None:
         raise ValueError(
             f"service '{service_name}': {field_name} contains an unresolvable "
