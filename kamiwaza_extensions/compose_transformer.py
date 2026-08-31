@@ -600,6 +600,36 @@ def _resolve_unbraced_reference(
     return "$", start + 1
 
 
+def _resolve_compose_segment(
+    value: str, cursor: int, depth: int, resolve_unbraced: bool
+) -> Optional[Tuple[str, int]]:
+    """Resolve the next literal-plus-substitution segment in *value*."""
+    dollar = value.find("$", cursor)
+    if dollar < 0:
+        return value[cursor:], len(value)
+    prefix = value[cursor:dollar]
+    if value.startswith("$$", dollar):
+        return f"{prefix}$", dollar + 2
+    if not value.startswith("${", dollar):
+        host_value, next_cursor = _resolve_unbraced_reference(
+            value, dollar, resolve_unbraced
+        )
+        if host_value is None:
+            return None
+        return prefix + host_value, next_cursor
+    end = _compose_substitution_end(value, dollar)
+    if end is None:
+        return None
+    substitution = _resolve_compose_substitution(
+        value[dollar : end + 1],
+        depth,
+        resolve_unbraced=resolve_unbraced,
+    )
+    if substitution is None:
+        return None
+    return prefix + substitution, end + 1
+
+
 def resolve_compose_value(
     value: str, depth: int = 0, *, resolve_unbraced: bool = False
 ) -> Optional[str]:
@@ -614,35 +644,13 @@ def resolve_compose_value(
     resolved: List[str] = []
     cursor = 0
     while cursor < len(value):
-        dollar = value.find("$", cursor)
-        if dollar < 0:
-            resolved.append(value[cursor:])
-            break
-        resolved.append(value[cursor:dollar])
-        if value.startswith("$$", dollar):
-            resolved.append("$")
-            cursor = dollar + 2
-            continue
-        if not value.startswith("${", dollar):
-            host_value, cursor = _resolve_unbraced_reference(
-                value, dollar, resolve_unbraced
-            )
-            if host_value is None:
-                return None
-            resolved.append(host_value)
-            continue
-        end = _compose_substitution_end(value, dollar)
-        if end is None:
-            return None
-        substitution = _resolve_compose_substitution(
-            value[dollar : end + 1],
-            depth,
-            resolve_unbraced=resolve_unbraced,
+        segment = _resolve_compose_segment(
+            value, cursor, depth, resolve_unbraced
         )
-        if substitution is None:
+        if segment is None:
             return None
-        resolved.append(substitution)
-        cursor = end + 1
+        text, cursor = segment
+        resolved.append(text)
     return "".join(resolved)
 
 
