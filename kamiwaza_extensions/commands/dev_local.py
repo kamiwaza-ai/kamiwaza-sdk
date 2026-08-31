@@ -14,17 +14,11 @@ console = Console(stderr=True)
 
 def _enforce_cli_contract() -> None:
     """Stop before local Compose inspection/build on a tooling mismatch."""
-    from kamiwaza_extensions.exit_codes import ExitCode
+    from kamiwaza_extensions.contract_enforcement import enforce_cli_contract
     from kamiwaza_extensions.extension_detector import ExtensionDetector
-    from kamiwaza_extensions.validators.metadata import check_cli_contract
 
     info = ExtensionDetector().detect()
-    errors = check_cli_contract(info.metadata or {}, info.compose_data)
-    if not errors:
-        return
-    for error in errors:
-        console.print(f"[red]Error:[/red] {error}")
-    raise typer.Exit(code=int(ExitCode.VALIDATION))
+    enforce_cli_contract(info.metadata or {}, info.compose_data, console=console)
 
 
 def run_dev_local(
