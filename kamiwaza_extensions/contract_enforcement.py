@@ -14,7 +14,12 @@ from kamiwaza_extensions.validators.metadata import check_cli_contract
 
 
 def _failures_for_info(info: ExtensionInfo) -> List[Tuple[str, str]]:
-    return list(zip(repeat(info.name), check_cli_contract(info.metadata)))
+    return list(
+        zip(
+            repeat(info.name),
+            check_cli_contract(info.metadata, info.compose_data),
+        )
+    )
 
 
 def _format_failure(failure: Tuple[str, str]) -> str:

@@ -274,6 +274,54 @@ class TestMetadataValidator:
 
         assert result.passed, result.errors
 
+    @pytest.mark.parametrize(
+        ("service", "capability"),
+        [
+            (
+                {"x-kamiwaza": {"healthCheck": {"tcpSocket": {"port": 8000}}}},
+                "compose.services.*.x-kamiwaza.healthCheck",
+            ),
+            (
+                {"x-kamiwaza": {"primary": True}},
+                "compose.services.*.x-kamiwaza.primary",
+            ),
+            ({"entrypoint": ["python"]}, "compose.services.*.entrypoint"),
+            ({"command": ["-m", "server"]}, "compose.services.*.command"),
+        ],
+    )
+    def test_compose_runtime_capabilities_require_0_2_floor(
+        self, tmp_path, validator, service, capability
+    ):
+        data = _valid_metadata()
+        data["kz_ext_version"] = ">=0.1.0,<1.0.0"
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f, compose_data={"services": {"app": service}})
+
+        assert not result.passed
+        assert any(capability in error for error in result.errors)
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {"x-kamiwaza": {"healthCheck": None}},
+            {"x-kamiwaza": {"primary": False}},
+            {"entrypoint": None, "command": None},
+        ],
+    )
+    def test_null_or_inactive_compose_fields_do_not_require_0_2_floor(
+        self, tmp_path, validator, service
+    ):
+        data = _valid_metadata()
+        data["kz_ext_version"] = ">=0.1.0,<1.0.0"
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f, compose_data={"services": {"app": service}})
+
+        assert result.passed, result.errors
+
     def test_services_healthcheck_httpget_passes(self, tmp_path, validator):
         data = _valid_metadata()
         data["services"] = {

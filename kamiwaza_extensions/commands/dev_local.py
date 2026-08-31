@@ -19,7 +19,7 @@ def _enforce_cli_contract() -> None:
     from kamiwaza_extensions.validators.metadata import check_cli_contract
 
     info = ExtensionDetector().detect()
-    errors = check_cli_contract(info.metadata or {})
+    errors = check_cli_contract(info.metadata or {}, info.compose_data)
     if not errors:
         return
     for error in errors:
