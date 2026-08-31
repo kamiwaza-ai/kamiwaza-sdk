@@ -51,7 +51,7 @@ kz-ext update [--dry-run] [--force] [--non-interactive] [--bootstrap]
 
 ## Known limitations (M2)
 
-- **`compatibility.json.cli_version` is hand-maintained.** A unit test asserts coherence with `kamiwaza_extensions.__version__`, but the JSON itself isn't auto-generated at build time.
+- **`compatibility.json.cli_version` is hand-maintained.** Unit tests assert coherence with `kamiwaza_extensions.__version__` and require each known manifest contract in `manifest_capabilities` to declare a supported floor, but the JSON itself isn't auto-generated at build time. This manifest-capability version is independent from both the `kamiwaza-sdk` distribution version and `template_version`; bump it when the CLI learns a new manifest contract.
 - **`--non-interactive` exits non-zero on the first conflict.** This is the documented contract — see [Errors](#errors). If you need partial-update semantics in CI, run without `--non-interactive` against a stub TTY.
 - **Hash-based clean detection requires a `--bootstrap` for old scaffolds** that predate `template_file_hashes`. Without recorded hashes, `update` cannot tell "unchanged since scaffold" from "edited" and routes everything through the conflict path. One-time cost per scaffold.
 

@@ -529,6 +529,22 @@ pip install kamiwaza-sdk[all]        # All three extras
 kz-ext --version
 ```
 
+`kz-ext` has its own manifest-capability version because it can evolve on a
+different cadence from the containing `kamiwaza-sdk` distribution. Version
+`0.2.0` is the first enforceable capability baseline that guarantees support
+for `kamiwaza.json.services.<service>.healthCheck` (ENG-4832). Extension
+manifests declare their required CLI range with `kz_ext_version`; incompatible
+tooling fails before build, publish, or remote deployment.
+
+For the Kamiwaza 1.2 release line, the distribution mapping is:
+
+| `kamiwaza-sdk` distribution | bundled `kz-ext` capability | validated platform range |
+| --- | --- | --- |
+| `1.1.0` | `0.2.0` | `>=1.2.0,<1.3.0` |
+
+The `kamiwaza-v1.2.0` and `release/1.2.1` SDK sources use the same extension
+payload contract, so this single artifact supports both platform releases.
+
 ### Quick Start
 
 ```bash

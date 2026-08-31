@@ -213,6 +213,14 @@ def _load_and_validate_metadata(cwd: Path) -> tuple[Path, dict, str]:
         console.print(f"[red]Error:[/red] kamiwaza.json is not valid JSON: {exc}")
         raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
 
+    from kamiwaza_extensions.validators.metadata import check_cli_contract
+
+    contract_errors = check_cli_contract(metadata)
+    if contract_errors:
+        for error in contract_errors:
+            console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
+
     template_shape = metadata.get("template_shape") or metadata.get("type")
     if template_shape not in MANIFESTS:
         console.print(

@@ -23,6 +23,7 @@ def _valid_metadata() -> dict:
         "description": "A test extension",
         "risk_tier": 0,
         "verified": False,
+        "kz_ext_version": ">=0.2.0,<1.0.0",
     }
 
 
@@ -189,6 +190,17 @@ class TestMetadataValidator:
         result = validator.validate(f)
         assert result.passed
 
+    def test_incompatible_kz_ext_version_is_an_error(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["kz_ext_version"] = ">=0.1.0,<0.2.0"
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f)
+
+        assert not result.passed
+        assert any("CLI version 0.2.0" in error for error in result.errors)
+
     def test_invalid_json_file(self, tmp_path, validator):
         f = tmp_path / "kamiwaza.json"
         f.write_text("{bad json")
@@ -218,6 +230,38 @@ class TestMetadataValidator:
         assert not result.passed
 
     # ── services.<name>.healthCheck (ENG-4832) ────────────────────────
+
+    def test_services_healthcheck_requires_0_2_floor(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["kz_ext_version"] = ">=0.1.0,<1.0.0"
+        data["services"] = {
+            "tool": {"healthCheck": {"httpGet": {"path": "/health", "port": 8000}}}
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f)
+
+        assert not result.passed
+        assert any(
+            "requires kz_ext_version '>=0.2.0'" in error for error in result.errors
+        )
+
+    def test_services_healthcheck_requires_declared_cli_range(
+        self, tmp_path, validator
+    ):
+        data = _valid_metadata()
+        del data["kz_ext_version"]
+        data["services"] = {
+            "tool": {"healthCheck": {"httpGet": {"path": "/health", "port": 8000}}}
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f)
+
+        assert not result.passed
+        assert any("declared range is missing" in error for error in result.errors)
 
     def test_services_healthcheck_httpget_passes(self, tmp_path, validator):
         data = _valid_metadata()
