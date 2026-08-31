@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-from itertools import chain, repeat
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,6 +16,7 @@ from kamiwaza_extensions.compose_transformer import (
     _repo_part,
     compute_canonical_refs,
 )
+from kamiwaza_extensions.contract_enforcement import enforce_cli_contracts
 from kamiwaza_extensions.extension_detector import ExtensionInfo, infer_extension_type
 
 console = Console(stderr=True)
@@ -747,29 +747,6 @@ def _publish_one(
     console.print(f"  Catalog: {result.catalog_file}")
 
 
-def _cli_contract_failures(info: ExtensionInfo) -> List[Tuple[str, str]]:
-    """Return named contract failures for one detected manifest."""
-    from kamiwaza_extensions.validators.metadata import check_cli_contract
-
-    return list(zip(repeat(info.name), check_cli_contract(info.metadata)))
-
-
-def _format_cli_contract_failure(failure: Tuple[str, str]) -> str:
-    name, error = failure
-    return f"[red]Error:[/red] {name}: {error}"
-
-
-def _enforce_cli_contracts(infos: List[ExtensionInfo]) -> None:
-    """Validate every detected manifest before any publish side effect."""
-    from kamiwaza_extensions.exit_codes import ExitCode
-
-    failures = list(chain.from_iterable(map(_cli_contract_failures, infos)))
-    if not failures:
-        return
-    console.print("\n".join(map(_format_cli_contract_failure, failures)))
-    raise typer.Exit(code=int(ExitCode.VALIDATION))
-
-
 def run_publish(
     *,
     stage: str,
@@ -835,7 +812,7 @@ def run_publish(
         )
         raise typer.Exit(code=1) from exc
 
-    _enforce_cli_contracts(infos)
+    enforce_cli_contracts(infos, console=console)
 
     for info in infos:
         # Connectors have no compose and aren't built by kz-ext — they publish
