@@ -23,6 +23,16 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_CONTEXT_LLM_REPO` | Higher-precedence required model override for context tests; readiness/deployment failures fail rather than skip | shared platform target |
 | `KAMIWAZA_CONTEXT_LLM_ENGINE` | Higher-precedence engine override for context tests | shared platform target |
 | `KAMIWAZA_CONTEXT_LLM_QUANTIZATION` | Quantization override for context tests | shared target, or `q6_k` with an explicit context repo |
+| `KAMIWAZA_TEST_DIFFUSION_REPO` | Required Hugging Face image model used for DiffusionEngine validation | `hf-internal-testing/tiny-stable-diffusion-pipe` |
+| `KAMIWAZA_TEST_DIFFUSION_FAMILY` | Diffusion family passed in the test model config | `sd15` |
+| `KAMIWAZA_TEST_DIFFUSION_BACKEND` | Runtime backend (`auto`, CPU, CUDA/NVIDIA, ROCm/AMD, MLX/MPS, or Intel) | `auto` |
+| `KAMIWAZA_TEST_DIFFUSION_IMAGE` | Optional runtime image override for Linux/Kubernetes fleets | unset |
+| `KAMIWAZA_TEST_DIFFUSION_FAKE` | Explicit control-plane-only mode; real inference is the default proof | `false` |
+| `KAMIWAZA_TEST_DIFFUSION_SIZE` | Generated image size | `64x64` |
+| `KAMIWAZA_TEST_DIFFUSION_STEPS` | Denoising steps for the live request | `2` |
+| `KAMIWAZA_TEST_DIFFUSION_GUIDANCE` | Guidance value for the live request | `1.0` |
+| `KAMIWAZA_TEST_DIFFUSION_TIMEOUT` | Deployment and inference timeout in seconds | `900` |
+| `KAMIWAZA_SKIP_DIFFUSION` | Explicitly opt out of diffusion validation | unset/false |
 
 Unless the explicit shared target is configured, live model tests select vLLM
 for NVIDIA clusters, MLX only when every reported platform is Apple Silicon,
@@ -57,6 +67,12 @@ auto-deselected — contributor PRs without peer creds see no false reds.
 # All live tests against one cluster
 make test-live
 
+# DiffusionEngine deployment + real OpenAI Images API inference
+make test-diffusion-live
+
+# Full integration suite without diffusion (explicit opt-out only)
+uv run pytest -m integration --skip-diffusion -v --tb=short
+
 # Two-cluster federation walkthrough (requires both clusters reachable)
 KAMIWAZA_BASE_URL=https://lyra.example/api \
 KAMIWAZA_API_KEY=... \
@@ -70,6 +86,7 @@ KAMIWAZA_PEER_API_KEY=... \
 | Marker | What it covers | Skip behavior |
 |---|---|---|
 | `live` | Tests that talk to a running Kamiwaza deployment | always selected when running `-m live` |
+| `diffusion` | Deploys DiffusionEngine, checks SDK routing, generates base64 PNGs, and validates the unsupported response-mode error | runs and fails closed by default; skipped only with `--skip-diffusion` or `KAMIWAZA_SKIP_DIFFUSION=1` |
 | `requires_embedding_model` | Live tests that need a platform embedding deployment that can generate embeddings | auto-provisioned by `embedding_model_prerequisite`, then probed by `embedding_test_target`; skipped if provisioning or the functional probe fails, and harness-provisioned failed deployments are stopped before skip |
 | `requires_two_clusters` | Live tests that need a federation peer cluster (ENG-5784) | auto-deselected at collection when `KAMIWAZA_PEER_BASE_URL` is unset; skipped at run time with an explicit reason when peer URL is set but `KAMIWAZA_PEER_API_KEY` is missing (partial-creds case) |
 

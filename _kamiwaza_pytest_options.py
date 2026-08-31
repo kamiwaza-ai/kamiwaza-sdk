@@ -62,6 +62,10 @@ DEFAULT_BASE_URL = (
 ).rstrip("/")
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def add_live_options(parser: pytest.Parser) -> None:
     group = parser.getgroup("kamiwaza")
     group.addoption(
@@ -132,6 +136,15 @@ def add_live_options(parser: pytest.Parser) -> None:
         ),
     )
     group.addoption(
+        "--skip-diffusion",
+        action="store_true",
+        default=_env_flag("KAMIWAZA_SKIP_DIFFUSION"),
+        help=(
+            "Explicitly skip live diffusion deployment and image-generation "
+            "coverage (defaults to env KAMIWAZA_SKIP_DIFFUSION)."
+        ),
+    )
+    group.addoption(
         "--require-federation-edge",
         action="store_true",
         default=os.environ.get("KAMIWAZA_REQUIRE_FEDERATION_EDGE", "").lower()
@@ -144,12 +157,21 @@ def add_live_options(parser: pytest.Parser) -> None:
     group.addoption(
         "--require-delegated-workload-edge",
         action="store_true",
-        default=os.environ.get(
-            "KAMIWAZA_REQUIRE_DELEGATED_WORKLOAD_EDGE", ""
-        ).lower()
+        default=os.environ.get("KAMIWAZA_REQUIRE_DELEGATED_WORKLOAD_EDGE", "").lower()
         in {"1", "true", "yes", "on"},
         help=(
             "Run the delegated shared-IDP workload edge fail-closed: its live "
             "case must collect and any skip is promoted to failure."
         ),
     )
+
+
+def mark_skipped_diffusion_items(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    if not config.getoption("skip_diffusion"):
+        return
+    skip_marker = pytest.mark.skip(reason="disabled by explicit --skip-diffusion")
+    for item in items:
+        if "diffusion" in item.keywords:
+            item.add_marker(skip_marker)

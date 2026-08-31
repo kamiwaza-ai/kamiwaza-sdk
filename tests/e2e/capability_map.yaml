@@ -132,6 +132,26 @@
   capability_ids: [models.local-deployment, models.openai-compatible-inference]
   scenario_name: "Deploy model locally and infer via OpenAI-compatible client"
 
+# Justification: the deployment assertion proves the SDK-created model config
+# routes to DiffusionEngine and reaches DEPLOYED with live instances.
+- pattern: "tests/integration/test_diffusion_live.py::test_diffusion_deployment_routes_through_sdk"
+  capability_ids: [models.local-deployment]
+  scenario_name: "Deploy a cross-platform diffusion model through the SDK"
+
+# Justification: this test calls client.openai.get_client(...).images.generate,
+# requests two real images with Kamiwaza extension controls, decodes the returned
+# base64 and verifies both PNG dimensions. Fake mode is explicit and defaults off.
+- pattern: "tests/integration/test_diffusion_live.py::test_diffusion_generates_base64_pngs_with_extension_controls"
+  capability_ids: [models.local-deployment, models.openai-compatible-inference]
+  scenario_name: "Generate images through the OpenAI-compatible SDK client"
+
+# Justification: source images are a DiffusionEngine extension on the OpenAI
+# generations endpoint. This sends the field through the official client and
+# proves the live runtime validates it before model inference.
+- pattern: "tests/integration/test_diffusion_live.py::test_diffusion_validates_source_images_through_sdk"
+  capability_ids: [models.openai-compatible-inference]
+  scenario_name: "Validate diffusion source images through the SDK client"
+
 # Justification: ENG-6948 engine matrix — test_deploy_and_infer_llamacpp_gguf /
 # test_deploy_and_infer_vllm_nvidia deploy with explicit engine_name and
 # assert a chat completion via the OpenAI-compatible client

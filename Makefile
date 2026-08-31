@@ -1,4 +1,4 @@
-.PHONY: sync test test-unit test-live lint format type-check build clean docs help
+.PHONY: sync test test-unit test-live test-diffusion-live lint format type-check build clean docs help
 
 # Default target
 help:
@@ -7,6 +7,7 @@ help:
 	@echo "  test       - Run unit tests"
 	@echo "  test-unit  - Run unit tests only"
 	@echo "  test-live  - Run live integration tests"
+	@echo "  test-diffusion-live - Deploy DiffusionEngine and generate images"
 	@echo "  lint       - Run ruff linter"
 	@echo "  format     - Format code with black and isort"
 	@echo "  type-check - Run mypy type checker"
@@ -27,6 +28,9 @@ test-unit: sync
 
 test-live: sync
 	uv run pytest -m "live"
+
+test-diffusion-live: sync
+	uv run pytest -m "integration and live and diffusion" tests/integration/test_diffusion_live.py -v --tb=short
 
 # Code quality
 lint: sync

@@ -9,6 +9,7 @@ M0 establishes the shared pytest scaffolding so every feature ships with determi
 - `contract` – schema/fixture verification against recorded API responses.
 - `integration` – exercises local dependencies (Docker/MinIO, seeded fixtures).
 - `live` – talks to a running Kamiwaza deployment (defaults to `https://localhost/api`).
+- `diffusion` – deploys a DiffusionEngine and generates real images through the SDK's OpenAI-compatible client.
 - `e2e` – multi-step workflows spanning ingest → catalog → retrieval, typically live.
 
 Enable strict marker checking via `pytest.ini`, so new suites must opt into at least one layer.
@@ -28,11 +29,24 @@ pytest -m "integration and not live"
 
 # Live smoke tests (needs running Kamiwaza server)
 pytest -m "integration and live" --live-base-url https://localhost/api --live-username admin --live-password kamiwaza
+
+# Run only the cross-platform DiffusionEngine proof.
+make test-diffusion-live
+
+# Explicitly omit diffusion from a full integration run.
+pytest -m integration --skip-diffusion
 ```
 
 `--live-base-url`, `--live-api-key`, `--live-username`, and `--live-password` override the defaults pulled from `KAMIWAZA_BASE_URL`, `KAMIWAZA_API_KEY`, `KAMIWAZA_USERNAME`, and `KAMIWAZA_PASSWORD`. When no API key is provided the fixtures fall back to password auth (defaulting to `admin` / `kamiwaza`, which may not match your local deployment). Live/integration tests automatically skip when container runtime access, server health, or credentials are missing, so CI can include them as optional jobs.
 
 Some live integration tests exercise admin-only mutation paths. For those tests, prefer supplying an admin-scoped PAT via `KAMIWAZA_API_KEY` instead of relying on the default session PAT minted from username/password bootstrap.
+
+Diffusion coverage is fail-closed and included in `pytest -m integration` by
+default. It deploys `hf-internal-testing/tiny-stable-diffusion-pipe`, performs
+real image inference, validates base64 PNG output and cleans up its deployment
+and config. Use `--skip-diffusion` or `KAMIWAZA_SKIP_DIFFUSION=1` only as an
+explicit operator choice; missing runtime images, host dependencies or model
+access are test failures rather than silent capability skips.
 
 The inference tests choose one model/engine/quantization target from the live
 cluster inventory. NVIDIA selects vLLM, complete Apple Silicon inventory selects
