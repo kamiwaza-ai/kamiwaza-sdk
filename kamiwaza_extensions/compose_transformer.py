@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -301,6 +302,16 @@ def _fallback_image_basename(
 # default → drop downstream).
 _DEFAULT_SUB_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}$")
 
+# General Compose interpolation used by process fields. The release branch's
+# legacy environment-only resolver above deliberately remains unchanged; SDK
+# #329 needs the full operator set for entrypoint/command values.
+_COMPOSE_SUB_RE = re.compile(
+    r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?+])(.*))?\}$",
+    re.DOTALL,
+)
+_COMPOSE_BRACE_RE = re.compile(r"[{}]")
+_MAX_COMPOSE_SUBSTITUTION_DEPTH = 100
+
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
 # ``env`` entry in the deployment would shadow it). Compose dev defaults
@@ -568,6 +579,71 @@ def _resolve_default_substitution(key: str, value: str) -> Optional[str]:
     if not m:
         return None
     return m.group(2)
+
+
+def _resolve_compose_value(value: str, depth: int = 0) -> Optional[str]:
+    """Resolve braced expressions while honoring Compose's ``$$`` escape."""
+    if depth >= _MAX_COMPOSE_SUBSTITUTION_DEPTH:
+        return None
+    resolved: List[str] = []
+    cursor = 0
+    while cursor < len(value):
+        dollar = value.find("$", cursor)
+        if dollar < 0:
+            resolved.append(value[cursor:])
+            break
+        resolved.append(value[cursor:dollar])
+        if value.startswith("$$", dollar):
+            resolved.append("$")
+            cursor = dollar + 2
+            continue
+        if not value.startswith("${", dollar):
+            resolved.append("$")
+            cursor = dollar + 1
+            continue
+        end = _compose_substitution_end(value, dollar)
+        if end is None:
+            return None
+        substitution = _resolve_compose_substitution(value[dollar : end + 1], depth)
+        if substitution is None:
+            return None
+        resolved.append(substitution)
+        cursor = end + 1
+    return "".join(resolved)
+
+
+def _compose_substitution_end(value: str, start: int) -> Optional[int]:
+    """Find the closing brace paired with the ``${`` at *start*."""
+    depth = 1
+    for brace in _COMPOSE_BRACE_RE.finditer(value, start + 2):
+        depth += 1 if brace.group() == "{" else -1
+        if depth == 0:
+            return brace.start()
+    final_brace = value.rfind("}", start + 2)
+    return final_brace if final_brace >= 0 else None
+
+
+def _resolve_compose_substitution(value: str, depth: int = 0) -> Optional[str]:
+    """Resolve one full substitution using Compose environment semantics."""
+    match = _COMPOSE_SUB_RE.match(value)
+    if match is None:
+        return None
+    name, operator, fallback = match.groups()
+    is_set = name in os.environ
+    host_value = os.environ.get(name, "")
+    if operator is None:
+        return host_value if is_set else None
+    if operator in (":-", ":?") and host_value:
+        return host_value
+    if operator in ("-", "?") and is_set:
+        return host_value
+    if operator == ":+":
+        return _resolve_compose_value(fallback, depth + 1) if host_value else ""
+    if operator == "+":
+        return _resolve_compose_value(fallback, depth + 1) if is_set else ""
+    if operator in (":?", "?"):
+        return None
+    return _resolve_compose_value(fallback, depth + 1)
 
 
 def _resolve_list_entry(entry: Any) -> Optional[str]:
