@@ -120,6 +120,20 @@ class TestCompatibilityBundleResource:
             "build time) so the doctor probe reports the correct CLI version."
         )
 
+    def test_manifest_capabilities_are_explicit_and_supported(self, bundle):
+        """Manifest contracts require a deliberate kz-ext capability floor."""
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+
+        assert bundle["manifest_capabilities"] == {
+            "services.*.healthCheck": ">=0.2.0"
+        }
+        cli_version = Version(bundle["cli_version"])
+        assert all(
+            cli_version in SpecifierSet(required)
+            for required in bundle["manifest_capabilities"].values()
+        )
+
 
 # ---------------------------------------------------------------------------
 # TS-M2-38: Python runtime-lib version probe + warn on out-of-range.

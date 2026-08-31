@@ -14,6 +14,18 @@ from rich.console import Console
 console = Console(stderr=True)
 
 
+def _enforce_cli_contract(metadata: Dict[str, Any]) -> None:
+    """Stop before build/push when this kz-ext cannot honor the manifest."""
+    from kamiwaza_extensions.validators.metadata import check_cli_contract
+
+    errors = check_cli_contract(metadata)
+    if not errors:
+        return
+    for error in errors:
+        console.print(f"[red]Error:[/red] {error}")
+    raise typer.Exit(code=1)
+
+
 # ---------------------------------------------------------------------------
 # Helpers extracted for unit testing — review re-review PR #84 H1 + H4
 # ---------------------------------------------------------------------------
@@ -532,6 +544,7 @@ def run_dev_remote(
     # 1. Detect extension
     detector = ExtensionDetector()
     info = detector.detect()
+    _enforce_cli_contract(info.metadata or {})
 
     if info.compose_data is None:
         console.print("[red]Error:[/red] No docker-compose.yml found.")

@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from kamiwaza_extensions import __version__
 from kamiwaza_extensions.template_manifest import (
     AUTHOR_OWNED_DENYLIST,
     MANIFESTS,
@@ -42,6 +43,12 @@ def template_root() -> Path:
 class TestRegistryShape:
     def test_manifests_cover_all_three_shapes(self):
         assert set(MANIFESTS.keys()) == {"app", "tool", "service"}
+
+    def test_template_revision_is_independent_from_cli_capability(self):
+        assert __version__ == "0.2.0"
+        assert {manifest.template_version for manifest in MANIFESTS.values()} == {
+            "0.1.0"
+        }
 
     @pytest.mark.parametrize("shape", ["app", "tool", "service"])
     def test_manifest_is_typed(self, shape: str):

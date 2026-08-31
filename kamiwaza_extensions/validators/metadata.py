@@ -33,6 +33,7 @@ _SEMVER_RE = re.compile(
 
 # Valid image extensions for preview_image
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
+_HEALTHCHECK_CAPABILITY_VERSION = Version("0.2.0")
 
 # Dockerfile ARGs that pin third-party runtime / base-image versions and
 # intentionally don't track the extension's own semver. Excluded from drift
@@ -164,19 +165,16 @@ class MetadataValidator:
         if ext_type == "service" and not name.startswith("service-"):
             warnings.append(f"Service extension name '{name}' should start with 'service-'")
 
-        # Version range fields
-        for range_field in ("kamiwaza_version", "kz_ext_version"):
-            value = getattr(metadata, range_field, None)
-            if value is not None:
-                if not _is_valid_specifier_set(value):
-                    errors.append(f"Invalid {range_field} range '{value}' — use semver ranges like '>=1.0.0,<2.0.0'")
-
-        # kz_ext_version compatibility check
-        if metadata.kz_ext_version:
-            if not _check_version_compat(metadata.kz_ext_version, __version__):
-                warnings.append(
-                    f"CLI version {__version__} is not compatible with kz_ext_version '{metadata.kz_ext_version}'"
+        # Version range fields. kz_ext_version is checked by the shared CLI
+        # contract gate below so validate/dev/publish cannot disagree.
+        if metadata.kamiwaza_version is not None:
+            if not _is_valid_specifier_set(metadata.kamiwaza_version):
+                errors.append(
+                    "Invalid kamiwaza_version range "
+                    f"'{metadata.kamiwaza_version}' — use semver ranges like "
+                    "'>=1.0.0,<2.0.0'"
                 )
+        errors.extend(check_cli_contract(data))
 
         # preview_image checks
         if metadata.preview_image:
@@ -513,3 +511,62 @@ def _check_version_compat(specifier_str: str, version_str: str) -> bool:
         return ver in spec
     except (InvalidSpecifier, InvalidVersion):
         return False
+
+
+def check_cli_contract(data: Dict[str, Any]) -> List[str]:
+    """Return fatal kz-ext compatibility errors for one manifest."""
+    if not isinstance(data, dict):
+        return ["kamiwaza.json must be a JSON object"]
+    declared = data.get("kz_ext_version")
+    uses_healthcheck = _uses_manifest_healthcheck(data.get("services"))
+    if declared is None:
+        if uses_healthcheck:
+            return [_healthcheck_floor_error("is missing")]
+        return []
+    if not isinstance(declared, str) or not _is_valid_specifier_set(declared):
+        return [
+            f"Invalid kz_ext_version range '{declared}' — use semver ranges "
+            "like '>=0.2.0,<1.0.0'"
+        ]
+
+    errors: List[str] = []
+    if not _check_version_compat(declared, __version__):
+        errors.append(
+            f"CLI version {__version__} is not compatible with "
+            f"kz_ext_version '{declared}'"
+        )
+    if uses_healthcheck and not _declares_capability_floor(
+        declared, _HEALTHCHECK_CAPABILITY_VERSION
+    ):
+        errors.append(_healthcheck_floor_error(f"is '{declared}'"))
+    return errors
+
+
+def _uses_manifest_healthcheck(services: Any) -> bool:
+    if not isinstance(services, dict):
+        return False
+    return any(
+        isinstance(block, dict) and "healthCheck" in block
+        for block in services.values()
+    )
+
+
+def _declares_capability_floor(specifier_str: str, minimum: Version) -> bool:
+    """Whether a range has an explicit lower/equality bound at *minimum*."""
+    for specifier in SpecifierSet(specifier_str):
+        if specifier.operator not in {">=", ">", "==", "===", "~="}:
+            continue
+        try:
+            bound = Version(specifier.version.removesuffix(".*"))
+        except InvalidVersion:
+            continue
+        if bound >= minimum:
+            return True
+    return False
+
+
+def _healthcheck_floor_error(declared: str) -> str:
+    return (
+        "services.*.healthCheck requires kz_ext_version '>=0.2.0'; "
+        f"the declared range {declared}"
+    )

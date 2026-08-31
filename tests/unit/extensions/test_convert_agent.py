@@ -619,7 +619,7 @@ class TestRunAgent:
                             "description": "repaired manifest",
                             "risk_tier": 1,
                             "verified": False,
-                            "kz_ext_version": ">=0.12.0,<1.0.0",
+                            "kz_ext_version": ">=0.2.0,<1.0.0",
                         }, indent=4)
                         + "\n",
                         "description": "Repair invalid manifest",
