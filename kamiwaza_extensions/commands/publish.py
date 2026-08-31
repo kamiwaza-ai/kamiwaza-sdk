@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from itertools import chain, repeat
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -746,20 +747,26 @@ def _publish_one(
     console.print(f"  Catalog: {result.catalog_file}")
 
 
+def _cli_contract_failures(info: ExtensionInfo) -> List[Tuple[str, str]]:
+    """Return named contract failures for one detected manifest."""
+    from kamiwaza_extensions.validators.metadata import check_cli_contract
+
+    return list(zip(repeat(info.name), check_cli_contract(info.metadata)))
+
+
+def _format_cli_contract_failure(failure: Tuple[str, str]) -> str:
+    name, error = failure
+    return f"[red]Error:[/red] {name}: {error}"
+
+
 def _enforce_cli_contracts(infos: List[ExtensionInfo]) -> None:
     """Validate every detected manifest before any publish side effect."""
     from kamiwaza_extensions.exit_codes import ExitCode
-    from kamiwaza_extensions.validators.metadata import check_cli_contract
 
-    failures = [
-        (info.name, error)
-        for info in infos
-        for error in check_cli_contract(info.metadata or {})
-    ]
+    failures = list(chain.from_iterable(map(_cli_contract_failures, infos)))
     if not failures:
         return
-    for name, error in failures:
-        console.print(f"[red]Error:[/red] {name}: {error}")
+    console.print("\n".join(map(_format_cli_contract_failure, failures)))
     raise typer.Exit(code=int(ExitCode.VALIDATION))
 
 
