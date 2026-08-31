@@ -59,10 +59,6 @@ kz-ext update [--dry-run] [--force] [--non-interactive] [--bootstrap]
 
 - It never deploys, builds, pushes, or modifies cluster state. That's `kz-ext dev`.
 - It never bumps your extension's `version` field — only `template_version`, which describes which scaffold version your project is reconciled against.
-- It never changes the author-owned `kz_ext_version` range. When you add a
-  manifest or Compose capability that requires a newer CLI, raise that lower
-  bound manually before running `update` or another lifecycle command (for
-  example, `>=0.2.0,<1.0.0` for the 0.2 capability set).
 - It never deletes author-owned files. The author-owned deny-list in `template_manifest.py` is opt-out by design — anything not template-owned stays put.
 
 ## Recovery

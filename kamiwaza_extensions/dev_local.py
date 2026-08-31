@@ -21,7 +21,6 @@ from rich.console import Console
 from kamiwaza_extensions.connections import ConnectionInfo, ConnectionManager
 from kamiwaza_extensions.extension_detector import (
     ExtensionDetector,
-    ExtensionInfo,
     infer_extension_type,
 )
 from kamiwaza_extensions_lib.local_dev import (
@@ -49,7 +48,6 @@ class DevLocalRunner:
         detach: bool = False,
         sdk_repo: Optional[str] = None,
         auth: bool = False,
-        info: Optional[ExtensionInfo] = None,
     ) -> int:
         from kamiwaza_extensions.sdk_override import (
             SdkOverrideSpec,
@@ -63,7 +61,7 @@ class DevLocalRunner:
         )
 
         # 1. Detect extension (shared logic)
-        info = info or self._detector.detect()
+        info = self._detector.detect()
 
         # 2. Ensure compose file exists
         if info.compose_path is None:

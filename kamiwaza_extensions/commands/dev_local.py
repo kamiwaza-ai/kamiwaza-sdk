@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -11,18 +11,14 @@ from rich.console import Console
 # (`kz-ext dev local --auth 2>errors.log`). Matches the rest of the CLI.
 console = Console(stderr=True)
 
-if TYPE_CHECKING:
-    from kamiwaza_extensions.extension_detector import ExtensionInfo
 
-
-def _enforce_cli_contract() -> ExtensionInfo:
-    """Return one validated detection or stop on a tooling mismatch."""
+def _enforce_cli_contract() -> None:
+    """Stop before local Compose inspection/build on a tooling mismatch."""
     from kamiwaza_extensions.contract_enforcement import enforce_cli_contract
     from kamiwaza_extensions.extension_detector import ExtensionDetector
 
     info = ExtensionDetector().detect()
     enforce_cli_contract(info.metadata or {}, info.compose_data, console=console)
-    return info
 
 
 def run_dev_local(
@@ -35,15 +31,10 @@ def run_dev_local(
     from kamiwaza_extensions.dev_local import DevLocalRunner
     from kamiwaza_extensions_lib.local_dev import LocalDevAuthError
 
-    info = _enforce_cli_contract()
+    _enforce_cli_contract()
     runner = DevLocalRunner()
     try:
-        exit_code = runner.run(
-            detach=detach,
-            sdk_repo=sdk_repo,
-            auth=auth,
-            info=info,
-        )
+        exit_code = runner.run(detach=detach, sdk_repo=sdk_repo, auth=auth)
     except LocalDevAuthError as exc:
         # Surface the developer-facing message and exit non-zero so the user
         # sees a clear "run kz-ext login" hint instead of a stack trace.
