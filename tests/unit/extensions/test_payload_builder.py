@@ -823,15 +823,17 @@ class TestServiceOverrides:
         monkeypatch.setenv(
             "KZ_TEST_APP_ARGS", "--port 9999 --probe=$(CONTAINER_PROBE_PORT)"
         )
-        monkeypatch.delenv("KZ_TEST_BIND_ADDRESS", raising=False)
+        monkeypatch.setenv("KZ_TEST_BIND_ADDRESS", "0.0.0.0")
+        monkeypatch.delenv("KZ_TEST_MISSING_BIND_ADDRESS", raising=False)
         transformed = {
             "services": {
                 "app": {
                     "image": "registry.test/app:dev",
-                    "entrypoint": "python app.py ${KZ_TEST_APP_ARGS}",
+                    "entrypoint": "python app.py $KZ_TEST_APP_ARGS",
                     "command": [
                         "serve",
-                        "--host=${KZ_TEST_BIND_ADDRESS:-0.0.0.0}",
+                        "--host=$KZ_TEST_BIND_ADDRESS",
+                        "--fallback=${KZ_TEST_MISSING_BIND_ADDRESS:-$KZ_TEST_BIND_ADDRESS}",
                         "--literal=$$(CONTAINER_VALUE)",
                     ],
                 },
@@ -850,6 +852,7 @@ class TestServiceOverrides:
         assert payload.services[0].args == [
             "serve",
             "--host=0.0.0.0",
+            "--fallback=0.0.0.0",
             "--literal=$$(CONTAINER_VALUE)",
         ]
 
@@ -873,15 +876,19 @@ class TestServiceOverrides:
             "printf '%s' $$$$LITERAL",
         ]
 
+    @pytest.mark.parametrize(
+        "command_value",
+        ["${KZ_TEST_MISSING_COMMAND:?required}", "$KZ_TEST_MISSING_COMMAND"],
+    )
     def test_unresolvable_process_variable_names_service_and_field(
-        self, builder, metadata, connection, monkeypatch
+        self, builder, metadata, connection, monkeypatch, command_value
     ):
         monkeypatch.delenv("KZ_TEST_MISSING_COMMAND", raising=False)
         transformed = {
             "services": {
                 "worker": {
                     "image": "registry.test/worker:dev",
-                    "command": ["run", "${KZ_TEST_MISSING_COMMAND:?required}"],
+                    "command": ["run", command_value],
                 },
             }
         }
