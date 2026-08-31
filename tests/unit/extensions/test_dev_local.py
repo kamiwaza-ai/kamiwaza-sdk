@@ -10,6 +10,7 @@ import pytest
 
 from kamiwaza_extensions.connections import ConnectionInfo
 from kamiwaza_extensions.dev_local import (
+    DevLocalRunner,
     apply_port_remaps,
     build_compose_extra_hosts,
     build_env_overlay,
@@ -20,6 +21,29 @@ from kamiwaza_extensions.dev_local import (
     resolve_port_conflicts,
 )
 from kamiwaza_extensions_lib.local_dev import BridgeContext
+
+
+@pytest.mark.unit
+class TestRunnerCliContract:
+    def test_incompatible_manifest_fails_before_compose_detection(self, tmp_path):
+        from kamiwaza_extensions import dev_local as dev_local_mod
+        from kamiwaza_extensions.exit_codes import ExitCode
+
+        info = MagicMock()
+        info.metadata = {
+            "name": "future-extension",
+            "kz_ext_version": ">=99.0.0",
+        }
+
+        runner = DevLocalRunner()
+        runner._detector = MagicMock()
+        runner._detector.detect.return_value = info
+
+        with patch.object(dev_local_mod, "detect_compose_command") as detect_compose:
+            result = runner.run()
+
+        assert result == int(ExitCode.VALIDATION)
+        detect_compose.assert_not_called()
 
 
 @pytest.mark.unit

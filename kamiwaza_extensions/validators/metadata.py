@@ -33,7 +33,13 @@ _SEMVER_RE = re.compile(
 
 # Valid image extensions for preview_image
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
-_HEALTHCHECK_CAPABILITY_VERSION = Version("0.2.0")
+
+# Single source of truth for manifest capability floors enforced by this CLI.
+# ``compatibility.json`` publishes the same registry for humans and external
+# tooling; a packaging test below keeps that bundled copy in lockstep.
+MANIFEST_CAPABILITY_FLOORS: Dict[str, Version] = {
+    "services.*.healthCheck": Version("0.2.0"),
+}
 
 # Dockerfile ARGs that pin third-party runtime / base-image versions and
 # intentionally don't track the extension's own semver. Excluded from drift
@@ -536,7 +542,7 @@ def check_cli_contract(data: Dict[str, Any]) -> List[str]:
             f"kz_ext_version '{declared}'"
         )
     if uses_healthcheck and not _declares_capability_floor(
-        declared, _HEALTHCHECK_CAPABILITY_VERSION
+        declared, MANIFEST_CAPABILITY_FLOORS["services.*.healthCheck"]
     ):
         errors.append(_healthcheck_floor_error(f"is '{declared}'"))
     return errors
@@ -546,7 +552,7 @@ def _uses_manifest_healthcheck(services: Any) -> bool:
     if not isinstance(services, dict):
         return False
     return any(
-        isinstance(block, dict) and "healthCheck" in block
+        isinstance(block, dict) and block.get("healthCheck") is not None
         for block in services.values()
     )
 
