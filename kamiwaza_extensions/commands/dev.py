@@ -18,15 +18,9 @@ def _enforce_cli_contract(
     metadata: Dict[str, Any], compose_data: Optional[Dict[str, Any]] = None
 ) -> None:
     """Stop before build/push when this kz-ext cannot honor the manifest."""
-    from kamiwaza_extensions.exit_codes import ExitCode
-    from kamiwaza_extensions.validators.metadata import check_cli_contract
+    from kamiwaza_extensions.contract_enforcement import enforce_cli_contract
 
-    errors = check_cli_contract(metadata, compose_data)
-    if not errors:
-        return
-    for error in errors:
-        console.print(f"[red]Error:[/red] {error}")
-    raise typer.Exit(code=int(ExitCode.VALIDATION))
+    enforce_cli_contract(metadata, compose_data, console=console)
 
 
 # ---------------------------------------------------------------------------

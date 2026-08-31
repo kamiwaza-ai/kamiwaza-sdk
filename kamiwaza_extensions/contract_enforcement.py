@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from itertools import chain, repeat
-from typing import Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import typer
 from rich.console import Console
@@ -22,9 +22,32 @@ def _failures_for_info(info: ExtensionInfo) -> List[Tuple[str, str]]:
     )
 
 
-def _format_failure(failure: Tuple[str, str]) -> str:
+def _format_failure(failure: Tuple[Optional[str], str]) -> str:
     name, error = failure
-    return f"[red]Error:[/red] {name}: {error}"
+    subject = f"{name}: " if name else ""
+    return f"Error: {subject}{error}"
+
+
+def _abort(failures: Iterable[Tuple[Optional[str], str]], console: Console) -> None:
+    """Render untrusted manifest text literally, then exit as validation."""
+    console.print(
+        "\n".join(map(_format_failure, failures)),
+        style="red",
+        markup=False,
+    )
+    raise typer.Exit(code=int(ExitCode.VALIDATION))
+
+
+def enforce_cli_contract(
+    metadata: Dict[str, Any],
+    compose_data: Optional[Dict[str, Any]] = None,
+    *,
+    console: Console,
+) -> None:
+    """Validate one detected manifest before a lifecycle side effect."""
+    errors = check_cli_contract(metadata, compose_data)
+    if errors:
+        _abort(((None, error) for error in errors), console)
 
 
 def enforce_cli_contracts(
@@ -32,7 +55,5 @@ def enforce_cli_contracts(
 ) -> None:
     """Validate every detected manifest before a lifecycle side effect."""
     failures = list(chain.from_iterable(map(_failures_for_info, infos)))
-    if not failures:
-        return
-    console.print("\n".join(map(_format_failure, failures)))
-    raise typer.Exit(code=int(ExitCode.VALIDATION))
+    if failures:
+        _abort(failures, console)
