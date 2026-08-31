@@ -14,7 +14,10 @@ from kamiwaza_extensions.compose_ports import (
     default_service_port_name,
     extract_container_port,
 )
-from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+from kamiwaza_extensions.compose_transformer import (
+    _resolve_compose_value,
+    detect_service_url_rewrites,
+)
 from kamiwaza_extensions.compose_volumes import (
     ServiceVolumeSpec,
     build_service_volume_specs,
@@ -78,27 +81,47 @@ def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
     return out
 
 
-def _compose_process_args(value: Any) -> Optional[List[str]]:
+def _resolve_process_value(value: Any, service_name: str, field_name: str) -> str:
+    """Resolve one Compose process value and shield it from kubelet expansion."""
+    resolved = _resolve_compose_value(str(value))
+    if resolved is None:
+        raise ValueError(
+            f"service '{service_name}': {field_name} contains an unresolvable "
+            "Compose variable"
+        )
+    # Kubelet performs its own ``$(VAR)`` substitution in command/args and
+    # reduces ``$$`` to ``$``. Escape the fully Compose-resolved value once so
+    # that second pass delivers the intended literal string to the container.
+    return resolved.replace("$", "$$")
+
+
+def _compose_process_args(
+    value: Any, service_name: str, field_name: str
+) -> Optional[List[str]]:
     """Normalize one Compose process field for a Kubernetes container spec.
 
     Docker Compose ``entrypoint`` maps to Kubernetes ``command`` and Compose
     ``command`` maps to Kubernetes ``args``.  Compose accepts either list or
     string forms; Kubernetes accepts only a string array.  ``shlex`` preserves
     quoted arguments without inventing an implicit shell (authors who need one
-    must continue to declare ``sh -c`` explicitly).
+    must continue to declare ``sh -c`` explicitly). Compose interpolation runs
+    before string-form splitting, matching Compose's configuration phase.
     """
     if value is None:
         return None
     if isinstance(value, str):
-        parts = shlex.split(value)
+        resolved = _resolve_process_value(value, service_name, field_name)
+        try:
+            return shlex.split(resolved)
+        except ValueError as exc:
+            raise ValueError(
+                f"service '{service_name}': invalid {field_name} string: {exc}"
+            ) from exc
     elif isinstance(value, (list, tuple)):
-        parts = [str(part) for part in value]
-    else:
-        parts = [str(value)]
-    # ``$$`` is Compose's escape for a literal runtime ``$``. The normal
-    # Compose engine removes that escape before launching a container; the
-    # remote Kubernetes path bypasses the engine, so do the equivalent here.
-    return [part.replace("$$", "$") for part in parts]
+        return [
+            _resolve_process_value(part, service_name, field_name) for part in value
+        ]
+    return [_resolve_process_value(value, service_name, field_name)]
 
 
 class PayloadBuilder:
@@ -321,8 +344,10 @@ class PayloadBuilder:
                 replicas=1,
                 resources=resources,
             )
-            entrypoint = _compose_process_args(svc.get("entrypoint"))
-            command = _compose_process_args(svc.get("command"))
+            entrypoint = _compose_process_args(
+                svc.get("entrypoint"), svc_name, "entrypoint"
+            )
+            command = _compose_process_args(svc.get("command"), svc_name, "command")
             if entrypoint is not None:
                 spec_kwargs["command"] = entrypoint
             if command is not None:
