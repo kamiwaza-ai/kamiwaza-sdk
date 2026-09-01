@@ -841,7 +841,8 @@ class KamiwazaClient:
 
         def _origin(url: str) -> tuple:
             p = parse_url(url)
-            return (p.scheme, p.host, p.port or _default_ports.get(p.scheme))
+            scheme = p.scheme or ""
+            return (scheme, p.host, p.port or _default_ports.get(scheme))
 
         home = parse_url(self.base_url)
         try:
