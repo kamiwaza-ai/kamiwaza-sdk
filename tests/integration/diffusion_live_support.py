@@ -165,12 +165,33 @@ def _paeth_predictor(left: int, above: int, upper_left: int) -> int:
     return upper_left
 
 
-def _png_rgb_bytes(payload: bytes) -> tuple[int, int, bytes]:
-    """Decode non-interlaced 8-bit RGB/RGBA PNGs without an image dependency."""
-    if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise AssertionError("Diffusion response is not a PNG")
+@dataclass(frozen=True)
+class _PngLayout:
+    width: int
+    height: int
+    channels: int
+
+    @property
+    def stride(self) -> int:
+        return self.width * self.channels
+
+
+def _png_layout(chunk: bytes) -> _PngLayout:
+    width, height, bit_depth, color_type, _, _, interlace = struct.unpack(
+        ">IIBBBBB", chunk
+    )
+    if bit_depth != 8:
+        raise AssertionError("Mask validation requires an 8-bit PNG")
+    if color_type not in {2, 6}:
+        raise AssertionError("Mask validation requires an RGB/RGBA PNG")
+    if interlace != 0:
+        raise AssertionError("Mask validation requires a non-interlaced PNG")
+    return _PngLayout(width, height, 3 if color_type == 2 else 4)
+
+
+def _png_chunks(payload: bytes) -> tuple[_PngLayout, bytes]:
     offset = 8
-    width = height = color_type = interlace = None
+    layout: _PngLayout | None = None
     compressed = bytearray()
     while offset < len(payload):
         length = struct.unpack(">I", payload[offset : offset + 4])[0]
@@ -178,52 +199,73 @@ def _png_rgb_bytes(payload: bytes) -> tuple[int, int, bytes]:
         chunk = payload[offset + 8 : offset + 8 + length]
         offset += length + 12
         if kind == b"IHDR":
-            width, height, bit_depth, color_type, _, _, interlace = struct.unpack(
-                ">IIBBBBB", chunk
-            )
-            if bit_depth != 8 or color_type not in {2, 6} or interlace != 0:
-                raise AssertionError(
-                    "Mask validation requires a non-interlaced 8-bit RGB/RGBA PNG"
-                )
+            layout = _png_layout(chunk)
         elif kind == b"IDAT":
             compressed.extend(chunk)
         elif kind == b"IEND":
             break
-    if width is None or height is None or color_type is None or interlace is None:
+    if layout is None:
         raise AssertionError("PNG is missing its IHDR chunk")
+    return layout, bytes(compressed)
 
-    channels = 3 if color_type == 2 else 4
-    stride = width * channels
-    encoded = zlib.decompress(bytes(compressed))
-    if len(encoded) != height * (stride + 1):
+
+def _filter_adjustment(filter_type: int, neighbors: tuple[int, int, int]) -> int:
+    left, above, upper_left = neighbors
+    if filter_type == 0:
+        return 0
+    if filter_type == 1:
+        return left
+    if filter_type == 2:
+        return above
+    if filter_type == 3:
+        return (left + above) // 2
+    if filter_type == 4:
+        return _paeth_predictor(left, above, upper_left)
+    raise AssertionError(f"Unsupported PNG filter type: {filter_type}")
+
+
+def _unfilter_png_row(
+    row: bytearray, previous: bytearray, channels: int, filter_type: int
+) -> bytearray:
+    for index, value in enumerate(row):
+        left = row[index - channels] if index >= channels else 0
+        above = previous[index]
+        upper_left = previous[index - channels] if index >= channels else 0
+        adjustment = _filter_adjustment(filter_type, (left, above, upper_left))
+        row[index] = (value + adjustment) & 0xFF
+    return row
+
+
+def _rgb_row(row: bytearray, channels: int) -> bytes:
+    if channels == 3:
+        return bytes(row)
+    return b"".join(bytes(row[index : index + 3]) for index in range(0, len(row), 4))
+
+
+def _decode_png_rows(encoded: bytes, layout: _PngLayout) -> bytes:
+    expected_length = layout.height * (layout.stride + 1)
+    if len(encoded) != expected_length:
         raise AssertionError("PNG scanline length does not match its dimensions")
-    previous = bytearray(stride)
+
+    previous = bytearray(layout.stride)
     rgb = bytearray()
-    for row_index in range(height):
-        start = row_index * (stride + 1)
+    for row_index in range(layout.height):
+        start = row_index * (layout.stride + 1)
         filter_type = encoded[start]
-        row = bytearray(encoded[start + 1 : start + 1 + stride])
-        for index, value in enumerate(row):
-            left = row[index - channels] if index >= channels else 0
-            above = previous[index]
-            upper_left = previous[index - channels] if index >= channels else 0
-            if filter_type == 1:
-                row[index] = (value + left) & 0xFF
-            elif filter_type == 2:
-                row[index] = (value + above) & 0xFF
-            elif filter_type == 3:
-                row[index] = (value + ((left + above) // 2)) & 0xFF
-            elif filter_type == 4:
-                row[index] = (value + _paeth_predictor(left, above, upper_left)) & 0xFF
-            elif filter_type != 0:
-                raise AssertionError(f"Unsupported PNG filter type: {filter_type}")
-        if channels == 3:
-            rgb.extend(row)
-        else:
-            for index in range(0, len(row), 4):
-                rgb.extend(row[index : index + 3])
+        row = bytearray(encoded[start + 1 : start + 1 + layout.stride])
+        row = _unfilter_png_row(row, previous, layout.channels, filter_type)
+        rgb.extend(_rgb_row(row, layout.channels))
         previous = row
-    return width, height, bytes(rgb)
+    return bytes(rgb)
+
+
+def _png_rgb_bytes(payload: bytes) -> tuple[int, int, bytes]:
+    """Decode non-interlaced 8-bit RGB/RGBA PNGs without an image dependency."""
+    if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise AssertionError("Diffusion response is not a PNG")
+    layout, compressed = _png_chunks(payload)
+    rgb = _decode_png_rows(zlib.decompress(compressed), layout)
+    return layout.width, layout.height, rgb
 
 
 def unmasked_pixel_change_fraction(
@@ -292,27 +334,64 @@ def _rgb_png(width: int, height: int, pixels: bytes) -> bytes:
     )
 
 
+@dataclass(frozen=True)
+class _MaskGeometry:
+    width: int
+    height: int
+    left: int
+    right: int
+    top: int
+    bottom: int
+
+    @classmethod
+    def centered(cls, width: int, height: int) -> _MaskGeometry:
+        return cls(
+            width=width,
+            height=height,
+            left=width * 3 // 10,
+            right=width * 7 // 10,
+            top=height * 3 // 10,
+            bottom=height * 7 // 10,
+        )
+
+    def contains(self, x: int, y: int) -> bool:
+        return self.left <= x < self.right and self.top <= y < self.bottom
+
+    def borders(self, x: int, y: int) -> bool:
+        within_x = self.left - 6 <= x < self.right + 6
+        within_y = self.top - 6 <= y < self.bottom + 6
+        if not within_x:
+            return False
+        if not within_y:
+            return False
+        return not self.contains(x, y)
+
+    def is_window(self, x: int, y: int) -> bool:
+        within_x = x < self.width // 4
+        within_y = self.height // 5 < y < self.height * 4 // 5
+        return within_x and within_y
+
+
+def _fixture_source_pixel(geometry: _MaskGeometry, x: int, y: int) -> tuple[int, ...]:
+    if geometry.contains(x, y):
+        return (35, 42, 52)
+    if geometry.borders(x, y):
+        return (205, 210, 218)
+    if geometry.is_window(x, y):
+        return (95, 175, 215)
+    return (28, 83, 112)
+
+
 def masked_edit_fixture(size: str) -> tuple[bytes, bytes]:
     """Build a deterministic airplane-screen source and center-screen mask."""
     width, height = (int(part) for part in size.split("x"))
-    left, right = width * 3 // 10, width * 7 // 10
-    top, bottom = height * 3 // 10, height * 7 // 10
+    geometry = _MaskGeometry.centered(width, height)
     source = bytearray()
     mask = bytearray()
     for y in range(height):
         for x in range(width):
-            inside = left <= x < right and top <= y < bottom
-            border = (
-                left - 6 <= x < right + 6 and top - 6 <= y < bottom + 6 and not inside
-            )
-            if inside:
-                source.extend((35, 42, 52))
-            elif border:
-                source.extend((205, 210, 218))
-            elif x < width // 4 and height // 5 < y < height * 4 // 5:
-                source.extend((95, 175, 215))
-            else:
-                source.extend((28, 83, 112))
+            inside = geometry.contains(x, y)
+            source.extend(_fixture_source_pixel(geometry, x, y))
             mask.extend((255, 255, 255) if inside else (0, 0, 0))
     return _rgb_png(width, height, bytes(source)), _rgb_png(width, height, bytes(mask))
 
