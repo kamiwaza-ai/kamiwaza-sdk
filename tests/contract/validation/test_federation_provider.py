@@ -28,13 +28,19 @@ from kamiwaza_sdk.validation.federation_provider import (
     FEDERATION_PROVIDER_REVISION,
     FederationLifecycleProvider,
 )
-from kamiwaza_sdk.validation.federation_runtime import KeycloakAdminFactory
+from kamiwaza_sdk.validation.federation_runtime import (
+    KeycloakAdminFactory,
+    KeycloakTokenClient,
+)
+from kamiwaza_sdk.validation.federation_state import sign_state
+from kamiwaza_sdk.validation.inference_state import runtime_ownership_key
 from kamiwaza_sdk.validation.federation_spec import (
     FEDERATION_CASE_IDS,
     FEDERATION_SCENARIO_ID,
+    SHARED_REALM_EXTERNAL_CLIENT_ID_REF,
     planned_shared_issuer,
 )
-from kamiwaza_sdk.validation.models import RuntimeSecretReference
+from kamiwaza_sdk.validation.models import FixtureMutation, RuntimeSecretReference
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.testkit import RecordingFixtureStateWriter
 from tests.contract.validation.support import profile_payload
@@ -119,6 +125,28 @@ def _runtime(tmp_path: Path) -> RuntimeContext:
     )
 
 
+def _external_profile() -> ValidationProfile:
+    payload = _profile().model_dump(mode="json")
+    payload["validation"]["fixture_mode"] = "external"  # type: ignore[index]
+    return ValidationProfile.model_validate(payload)
+
+
+def _external_runtime(tmp_path: Path) -> RuntimeContext:
+    runtime = _runtime(tmp_path)
+    client_id = tmp_path / "external-client-id"
+    client_id.write_text("customer-shared-cli\n", encoding="utf-8")
+    return runtime.model_copy(
+        update={
+            "secret_refs": {
+                SHARED_REALM_EXTERNAL_CLIENT_ID_REF: client_id.as_uri(),
+                "shared-idp-persona-password": runtime.secret_refs[
+                    "shared-idp-persona-password"
+                ],
+            }
+        }
+    )
+
+
 def _jwt(subject: str) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"none"}').decode().rstrip("=")
     payload = (
@@ -157,6 +185,7 @@ class _Federations:
         self.proxies: dict[str, _FederationProxy] = {}
         self.id_proxies: dict[str, _FederationProxy] = {}
         self.deleted: list[str] = []
+        self.revoked: set[str] = set()
 
     def pair(self, *, name: str, role: str, **kwargs: Any) -> dict[str, str]:
         del kwargs
@@ -227,6 +256,8 @@ class _Datasets:
         del urn, type, config
 
     def delete(self, urn: str) -> None:
+        if urn not in self.created:
+            raise _NotFound("dataset is already absent")
         self.created.remove(urn)
 
 
@@ -241,6 +272,11 @@ class _Client:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         del kwargs
+        if method in {"DELETE", "POST"} and any(
+            old_method == method and old_path == path
+            for old_method, old_path in self.requests
+        ):
+            raise _NotFound("federation is already absent")
         self.requests.append((method, path))
         return {}
 
@@ -272,6 +308,7 @@ class _Admin:
         self.deleted_users: list[str] = []
         self.deleted_clients: list[str] = []
         self.deleted_realms: list[str] = []
+        self.token_client_ids: list[str] = []
 
     def create_owned_realm(self, realm: str, owner_nonce: str) -> dict[str, Any]:
         del owner_nonce
@@ -279,6 +316,8 @@ class _Admin:
 
     def delete_owned_realm(self, realm: str, owner_nonce: str) -> bool:
         del owner_nonce
+        if realm in self.deleted_realms:
+            raise _NotFound("realm is already absent")
         self.deleted_realms.append(realm)
         return True
 
@@ -302,18 +341,23 @@ class _Admin:
 
     def delete_user(self, realm: str, user_id: str) -> bool:
         del realm
+        if user_id in self.deleted_users:
+            raise _NotFound("user is already absent")
         self.deleted_users.append(user_id)
         return True
 
     def delete_client(self, realm: str, client_uuid: str) -> bool:
         del realm
+        if client_uuid in self.deleted_clients:
+            raise _NotFound("client is already absent")
         self.deleted_clients.append(client_uuid)
         return True
 
     def ropc_token(
         self, realm: str, client_id: str, username: str, password: str
     ) -> str:
-        del realm, client_id, password
+        del realm, password
+        self.token_client_ids.append(client_id)
         return _jwt(username)
 
 
@@ -380,6 +424,154 @@ def test_resolution_is_deterministic_and_publishes_issuer_trust(
     assert planned_shared_issuer(profile).startswith(
         "https://idp.test/realms/kz-validation-"
     )
+
+
+def test_external_resolution_uses_customer_issuer_and_advertises_external_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "KAMIWAZA_SHARED_IDP_EXTERNAL_ISSUER",
+        "https://customer-idp.test/realms/shared",
+    )
+
+    provider = FederationLifecycleProvider()
+    plan = provider.resolve(_external_profile())
+
+    assert "external" in provider.describe()[0].fixture_modes
+    assert plan.selected[0].redacted_parameters == {
+        "issuer": "https://customer-idp.test/realms/shared",
+        "realm": "shared",
+        "client_id_ref": SHARED_REALM_EXTERNAL_CLIENT_ID_REF,
+        "persona_usernames": [
+            "fed-clr-u",
+            "fed-clr-s",
+            "fed-clr-ts",
+            "fed-clr-unonboarded",
+            "fed-tenant-missing",
+            "fed-tenant-legacy-only",
+            "fed-tenant-nondefault",
+        ],
+        "fixture_mode": "external",
+    }
+
+
+def test_external_prepare_never_mutates_idp_and_uses_external_client_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "KAMIWAZA_SHARED_IDP_EXTERNAL_ISSUER",
+        "https://customer-idp.test/realms/shared",
+    )
+    factory = _ClusterFactory()
+    admin = _Admin()
+    provider = FederationLifecycleProvider(
+        cluster_factory=factory,
+        admin_factory=_AdminFactory(admin),
+    )
+    runtime = _external_runtime(tmp_path)
+    plan = provider.resolve(_external_profile())
+
+    state = provider.prepare(plan, runtime, RecordingFixtureStateWriter())
+
+    assert not admin.deleted_realms
+    assert not admin.deleted_clients
+    assert not admin.deleted_users
+    assert set(admin.token_client_ids) == {"customer-shared-cli"}
+    assert not any(item.resource_type.startswith("keycloak-") for item in state.journal)
+    assert state.opaque["ownership"]["scheme"] == "kamiwaza.validation/v1"  # type: ignore[index]
+    edge = state.opaque["edges"][plan.selected[0].target_id]  # type: ignore[index]
+    assert edge["fixture_mode"] == "external"  # type: ignore[index]
+
+
+def test_teardown_is_idempotent_after_resources_are_already_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KAMIWAZA_SHARED_IDP_PUBLIC_URL", "https://idp.test")
+    monkeypatch.setenv("KAMIWAZA_VALIDATION_RUN_ID", "run-federation-1")
+    factory = _ClusterFactory()
+    admin = _Admin()
+    provider = FederationLifecycleProvider(
+        cluster_factory=factory,
+        admin_factory=_AdminFactory(admin),
+    )
+    runtime = _runtime(tmp_path)
+    state = provider.prepare(
+        provider.resolve(_profile()), runtime, RecordingFixtureStateWriter()
+    )
+
+    first = provider.teardown(runtime, state)
+    second = provider.teardown(runtime, state)
+
+    assert first.status == "passed"
+    assert second.status == "passed"
+    assert all(item.status != "failed" for item in second.results)
+    assert "absent" in {item.status for item in second.results}
+
+
+def test_legacy_owned_state_without_provider_tag_remains_reconcilable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KAMIWAZA_SHARED_IDP_PUBLIC_URL", "https://idp.test")
+    monkeypatch.setenv("KAMIWAZA_VALIDATION_RUN_ID", "run-federation-1")
+    factory = _ClusterFactory()
+    admin = _Admin()
+    provider = FederationLifecycleProvider(
+        cluster_factory=factory,
+        admin_factory=_AdminFactory(admin),
+    )
+    runtime = _runtime(tmp_path)
+    state = provider.prepare(
+        provider.resolve(_profile()), runtime, RecordingFixtureStateWriter()
+    )
+    opaque = dict(state.opaque)
+    opaque.pop("ownership", None)
+    edges = {}
+    for target_id, edge in state.opaque["edges"].items():  # type: ignore[index]
+        legacy_edge = dict(edge)
+        legacy_edge.pop("ownership", None)
+        edges[target_id] = legacy_edge
+    opaque["edges"] = edges
+    legacy = sign_state(
+        state.model_copy(update={"opaque": opaque}), runtime_ownership_key(runtime)
+    )
+
+    cleanup = provider.teardown(runtime, legacy)
+
+    assert cleanup.status == "passed"
+    assert all(item.status != "failed" for item in cleanup.results)
+
+
+def test_cleanup_rejects_a_foreign_ownership_tag_before_deleting(
+    tmp_path: Path,
+) -> None:
+    from kamiwaza_sdk.validation.federation_cleanup import (
+        CleanupContext,
+        cleanup_mutation,
+    )
+
+    mutation = FixtureMutation(
+        sequence=1,
+        target_id="edge",
+        resource_type="receiver-federation",
+        resource_id="foreign-id",
+        action="created",
+    )
+    context = CleanupContext(
+        resources={
+            "ownership": {
+                "scheme": "kamiwaza.validation/v1",
+                "owner": "sha256:" + "f" * 64,
+            }
+        },
+        receiver=SimpleNamespace(
+            _request=lambda *args, **kwargs: pytest.fail("deleted foreign resource")
+        ),
+        admin=None,
+        runtime=_runtime(tmp_path),
+    )
+
+    with pytest.raises(RuntimeError, match="ownership metadata"):
+        cleanup_mutation(mutation, context)
 
 
 @pytest.mark.parametrize(
@@ -567,6 +759,38 @@ def test_keycloak_admin_factory_honors_sdk_tls_setting(
     KeycloakAdminFactory()(runtime, runtime.clusters[0])
 
     assert captured["verify"] is False
+
+
+def test_external_token_client_uses_issuer_without_admin_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {"access_token": "jwt-token"}
+
+    def post(url: str, **kwargs: Any) -> _Response:
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return _Response()
+
+    import requests
+
+    monkeypatch.setattr(requests, "post", post)
+
+    token = KeycloakTokenClient(
+        "https://customer-idp.test/realms/shared", verify=False
+    ).ropc_token("ignored", "customer-cli", "fed-clr-u", "persona-secret")
+
+    assert token == "jwt-token"
+    assert captured["url"] == (
+        "https://customer-idp.test/realms/shared/protocol/openid-connect/token"
+    )
+    assert captured["kwargs"]["verify"] is False
+    assert captured["kwargs"]["data"]["client_id"] == "customer-cli"
 
 
 def test_explicit_scenario_without_mesh_edge_fails_closed(

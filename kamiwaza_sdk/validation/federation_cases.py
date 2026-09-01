@@ -65,7 +65,9 @@ class TenantDenialRequest:
 
 @dataclass(frozen=True)
 class CaseHooks:
-    mesh_retrieve: Callable[[RetrievalRequest], tuple[list[dict[str, Any]], list[dict[str, Any]]]]
+    mesh_retrieve: Callable[
+        [RetrievalRequest], tuple[list[dict[str, Any]], list[dict[str, Any]]]
+    ]
     assert_tenant_denial: Callable[[TenantDenialRequest], None]
     make_client: Callable[[str, str], Any]
 
@@ -75,7 +77,9 @@ def run_edge(
     *,
     hooks: CaseHooks | None = None,
 ) -> list[CaseResult]:
-    active_hooks = hooks or CaseHooks(_mesh_retrieve, _assert_tenant_denial, token_client)
+    active_hooks = hooks or CaseHooks(
+        _mesh_retrieve, _assert_tenant_denial, token_client
+    )
     return [
         _run_one_case(context, case_id, active_hooks)
         for case_id in context.selected.case_ids
@@ -240,7 +244,9 @@ def _run_unonboarded_case(context: RunContext, hooks: CaseHooks) -> None:
     name = required_text(context.params, "federation_name")
     try:
         try:
-            persona._request("GET", f"/mesh/{quote(name, safe='')}/api/cluster/diagnose")
+            persona._request(
+                "GET", f"/mesh/{quote(name, safe='')}/api/cluster/diagnose"
+            )
         except Exception as exc:
             if getattr(exc, "status_code", None) != 403:
                 raise
@@ -253,9 +259,10 @@ def _run_unonboarded_case(context: RunContext, hooks: CaseHooks) -> None:
 
 
 def _issue_token(context: RunContext, username: str) -> str:
+    client_id = context.params.get("client_id") or SHARED_REALM_CLIENT_ID
     return context.admin.ropc_token(
         required_text(context.params, "realm"),
-        SHARED_REALM_CLIENT_ID,
+        client_id,
         username,
         context.password,
     )
@@ -265,7 +272,9 @@ def _sort_rows(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return sorted(rows, key=lambda row: str(row.get("id", "")))
 
 
-def _mesh_retrieve(request: RetrievalRequest) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _mesh_retrieve(
+    request: RetrievalRequest,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     credential_headers = federation_credential_headers(request.federation_name)
     job = request.persona._request(
         "POST",
@@ -314,11 +323,15 @@ def _retrieval_stream(request: RetrievalRequest) -> Any:
         timeout=120,
     )
     if response.status_code >= 400:
-        raise RuntimeError(f"mesh retrieval stream returned HTTP {response.status_code}")
+        raise RuntimeError(
+            f"mesh retrieval stream returned HTTP {response.status_code}"
+        )
     return response
 
 
-def _collect_retrieval_stream(response: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _collect_retrieval_stream(
+    response: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     audits: list[dict[str, Any]] = []
     event: str | None = None
@@ -332,7 +345,9 @@ def _collect_retrieval_stream(response: Any) -> tuple[list[dict[str, Any]], list
     return rows, audits
 
 
-def _parse_sse_line(raw: str, event: str | None, data_lines: list[str]) -> tuple[str | None, list[str]]:
+def _parse_sse_line(
+    raw: str, event: str | None, data_lines: list[str]
+) -> tuple[str | None, list[str]]:
     if raw.startswith("event:"):
         return raw[6:].strip(), data_lines
     if raw.startswith("data:"):
@@ -358,7 +373,9 @@ def _payload_rows(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, Mapping):
         return []
     rows = payload.get("data") or payload.get("records") or payload.get("rows") or []
-    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    return (
+        [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    )
 
 
 def _payload_audits(payload: Any) -> list[dict[str, Any]]:
@@ -383,7 +400,11 @@ def _assert_tenant_denial(request: TenantDenialRequest) -> None:
     finally:
         response.close()
     reason = payload.get("detail") if isinstance(payload, Mapping) else None
-    expected_reason = "mesh_tenant_not_admitted" if request.expected_status == 403 else "tenant_required"
+    expected_reason = (
+        "mesh_tenant_not_admitted"
+        if request.expected_status == 403
+        else "tenant_required"
+    )
     if reason != expected_reason:
         raise AssertionError("tenant-negative reason did not match contract")
 

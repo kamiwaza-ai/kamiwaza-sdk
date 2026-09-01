@@ -52,33 +52,27 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
+
+from kamiwaza_sdk.validation.federation_fixture import (
+    DEFAULT_TENANT_ID,
+    PERSONAS,
+    TENANT_NEGATIVE_PERSONAS,
+    UNONBOARDED_PERSONA,
+)
+from kamiwaza_sdk.validation.federation_spec import SHARED_REALM_CLIENT_ID
 from typing import Iterator
 
 NAMESPACE = "kamiwaza"
-ROPC_CLIENT = "kamiwaza-shared-cli"
-DEFAULT_TENANT_ID = "__default__"
+ROPC_CLIENT = SHARED_REALM_CLIENT_ID
 # Verified against the live chart: svc/keycloak exposes 80 (http) and 9000
 # (management), NOT 8080. Overridable for a chart that differs.
 KEYCLOAK_SVC_PORT = os.getenv("KEYCLOAK_SVC_PORT", "80")
+
+
 # These names are a CONTRACT with the consumer, not a local choice: the live
 # test passes every value straight to ROPC as the username, so a missing user
 # is a module-fixture ERROR, not a skip. Keep both constants aligned there.
 # Clearance values match _mini_clearance.KNOWN: U sees 3 rows, S sees 4, TS sees all 5.
-PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
-UNONBOARDED_PERSONA = "fed-clr-unonboarded"
-TENANT_NEGATIVE_PERSONAS: dict[str, tuple[str, dict[str, str]]] = {
-    "missing-canonical": ("fed-tenant-missing", {"clearance": "U"}),
-    "legacy-only": (
-        "fed-tenant-legacy-only",
-        {"clearance": "U", "tenant": DEFAULT_TENANT_ID},
-    ),
-    "canonical-nondefault": (
-        "fed-tenant-nondefault",
-        {"clearance": "U", "tenant_id": "tenant-a"},
-    ),
-}
-
-
 @dataclass(frozen=True)
 class OwnedRealm:
     name: str

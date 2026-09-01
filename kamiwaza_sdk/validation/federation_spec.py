@@ -39,6 +39,9 @@ FEDERATION_CASE_IDS = (
 SHARED_REALM_CLIENT_ID = "kamiwaza-shared-cli"
 SHARED_REALM_ADMIN_PASSWORD_REF = "shared-idp-admin-password"
 SHARED_REALM_PERSONA_PASSWORD_REF = "shared-idp-persona-password"
+SHARED_REALM_EXTERNAL_CLIENT_ID_REF = "shared-idp-external-client-id"
+EXTERNAL_SHARED_IDP_ISSUER_ENV = "KAMIWAZA_SHARED_IDP_EXTERNAL_ISSUER"
+FEDERATION_OWNERSHIP_SCHEME = "kamiwaza.validation/v1"
 
 
 def scenario_descriptor() -> ScenarioDescriptor:
@@ -63,7 +66,7 @@ def scenario_descriptor() -> ScenarioDescriptor:
             ),
         ),
         requires=("cluster-api", "ownership-key"),
-        fixture_modes=("owned",),
+        fixture_modes=("owned", "external"),
         case_ids=FEDERATION_CASE_IDS,
     )
 
@@ -78,21 +81,52 @@ def resolve_candidates(
 
     if not candidates:
         if explicit:
-            raise ProviderContractError("requested scenario has no compatible mesh edge")
+            raise ProviderContractError(
+                "requested scenario has no compatible mesh edge"
+            )
         return ()
 
-    shared_issuer = planned_shared_issuer(profile)
+    fixture_mode = profile.validation.fixture_mode
+    shared_issuer = (
+        _external_shared_issuer()
+        if fixture_mode == "external"
+        else planned_shared_issuer(profile)
+    )
     realm = shared_issuer.rsplit("/", 1)[-1]
-    return tuple(_resolve_candidate(candidate, shared_issuer, realm) for candidate in candidates)
+    return tuple(
+        _resolve_candidate(candidate, shared_issuer, realm, fixture_mode)
+        for candidate in candidates
+    )
 
 
 def _resolve_candidate(
-    candidate: ApplicableTarget, shared_issuer: str, realm: str
+    candidate: ApplicableTarget,
+    shared_issuer: str,
+    realm: str,
+    fixture_mode: str,
 ) -> ResolvedScenario:
     if not candidate.cluster_ids or len(candidate.cluster_ids) != 2:
         raise ProviderContractError(
             "shared-IdP edge candidate must bind both endpoint clusters"
         )
+    parameters: dict[str, Any] = {
+        "issuer": shared_issuer,
+        "realm": realm,
+        "persona_usernames": [
+            "fed-clr-u",
+            "fed-clr-s",
+            "fed-clr-ts",
+            "fed-clr-unonboarded",
+            "fed-tenant-missing",
+            "fed-tenant-legacy-only",
+            "fed-tenant-nondefault",
+        ],
+        "fixture_mode": fixture_mode,
+    }
+    if fixture_mode == "external":
+        parameters["client_id_ref"] = SHARED_REALM_EXTERNAL_CLIENT_ID_REF
+    else:
+        parameters["client_id"] = SHARED_REALM_CLIENT_ID
     return ResolvedScenario(
         target_id=candidate.target_id,
         cluster_id=candidate.cluster_id,
@@ -100,21 +134,7 @@ def _resolve_candidate(
         scenario_id=FEDERATION_SCENARIO_ID,
         required=candidate.required,
         case_ids=FEDERATION_CASE_IDS,
-        redacted_parameters={
-            "issuer": shared_issuer,
-            "realm": realm,
-            "client_id": SHARED_REALM_CLIENT_ID,
-            "persona_usernames": [
-                "fed-clr-u",
-                "fed-clr-s",
-                "fed-clr-ts",
-                "fed-clr-unonboarded",
-                "fed-tenant-missing",
-                "fed-tenant-legacy-only",
-                "fed-tenant-nondefault",
-            ],
-            "fixture_mode": "owned",
-        },
+        redacted_parameters=parameters,
     )
 
 
@@ -132,6 +152,35 @@ def planned_shared_issuer(profile: ValidationProfile) -> str:
     suffix_source = os.environ.get("KAMIWAZA_VALIDATION_RUN_ID", "").strip()
     suffix_source = suffix_source or model_digest(profile)
     return f"{base}/realms/{_issuer_realm(suffix_source)}"
+
+
+def _external_shared_issuer() -> str:
+    issuer = os.environ.get(EXTERNAL_SHARED_IDP_ISSUER_ENV, "").strip().rstrip("/")
+    if not issuer:
+        raise ProviderContractError(
+            f"{EXTERNAL_SHARED_IDP_ISSUER_ENV} is required for external fixture mode"
+        )
+    _validate_external_issuer(issuer)
+    return issuer
+
+
+def _validate_external_issuer(issuer: str) -> None:
+    try:
+        parsed = urlsplit(issuer)
+    except ValueError:
+        raise ProviderContractError("external shared-IdP issuer is invalid") from None
+    _validate_scheme(parsed.scheme)
+    _validate_netloc(parsed.netloc)
+    _validate_userinfo(parsed.username)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) != 2 or parts[0] != "realms" or not parts[1]:
+        raise ProviderContractError(
+            "external shared-IdP issuer must be an HTTPS /realms/<realm> URL"
+        )
+    if parsed.query or parsed.fragment:
+        raise ProviderContractError(
+            "external shared-IdP issuer must not contain query or fragment"
+        )
 
 
 def _shared_idp_base_url() -> str:

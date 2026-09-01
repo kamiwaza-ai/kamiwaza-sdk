@@ -29,13 +29,17 @@ from typing import Any, NoReturn, Optional
 
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.services.federation_credentials import federation_credential_headers
+from kamiwaza_sdk.validation.federation_fixture import (
+    GATE_CLASSPATH,
+    GATE_NAME,
+    GATE_PACKAGE_NAME,
+    GATE_PACKAGE_SPEC,
+    KNOWN as SDK_KNOWN,
+    records as sdk_records,
+)
 
-GATE_CLASSPATH = "acme_gates.mini_clearance_gate.MiniClearanceGate"
-GATE_NAME = "mini_clearance_gate"
 WHEEL_NAME = "acme_gates-1.1.0-py3-none-any.whl"
-PACKAGE_SPEC = "acme-gates==1.1.0"
-
-_FIXTURE = Path(__file__).parent / "fixtures" / "mini_clearance_records.json"
+PACKAGE_SPEC = GATE_PACKAGE_SPEC
 
 # FastAPI auth denials are normally a few hundred bytes. Keep enough room for
 # structured detail while preventing a peer from making this live-test helper
@@ -55,15 +59,14 @@ class _MeshStreamAPIError(APIError):
 
 # persona clearance -> (included, redacted, allowed classifications)
 KNOWN: dict[str, tuple[int, int, set[str]]] = {
-    "U": (3, 2, {"U"}),
-    "S": (4, 1, {"U", "S"}),
-    "TS": (5, 0, {"U", "S", "TS"}),
+    clearance: (included, len(sdk_records()) - included, set(allowed))
+    for clearance, (included, allowed) in SDK_KNOWN.items()
 }
 _EXACT_FIXTURE_CLEARANCES = frozenset(KNOWN)
 
 
 def records() -> list[dict[str, Any]]:
-    return json.loads(_FIXTURE.read_text())
+    return [dict(row) for row in sdk_records()]
 
 
 def write_dataset_file(path: Path) -> str:
@@ -122,7 +125,7 @@ def _already_installed(kz: Any) -> bool:
     except Exception:  # noqa: BLE001 — treat an unreadable listing as not-installed
         return False
     for pkg in getattr(listing, "items", listing) or []:
-        if getattr(pkg, "name", None) == "acme-gates" and GATE_CLASSPATH in (
+        if getattr(pkg, "name", None) == GATE_PACKAGE_NAME and GATE_CLASSPATH in (
             getattr(pkg, "classpaths", None) or []
         ):
             return True
@@ -145,9 +148,9 @@ def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
             hash_digest=_wheel_sha256(wheel_dir),
             index_url=index_url,
         )
-        assert (
-            GATE_CLASSPATH in result.package.classpaths
-        ), f"{GATE_CLASSPATH} not recorded in installed classpaths: {result.package.classpaths}"
+        assert GATE_CLASSPATH in result.package.classpaths, (
+            f"{GATE_CLASSPATH} not recorded in installed classpaths: {result.package.classpaths}"
+        )
     gate = kz.gates.discover(GATE_CLASSPATH)
     assert gate.name == GATE_NAME
 
@@ -497,9 +500,9 @@ def assert_persona_result(
     """
     included, redacted, allowed = KNOWN[clearance]
     assert gate_audits, "no gate_audit footer in retrieval stream — gate not invoked?"
-    assert (
-        len(rows) == included
-    ), f"expected {included} rows for {clearance}, got {len(rows)}"
+    assert len(rows) == included, (
+        f"expected {included} rows for {clearance}, got {len(rows)}"
+    )
     _assert_exact_fixture_rows(clearance, rows, allowed)
     assert any(bool(audit.get("filtered")) for audit in gate_audits) is (
         redacted > 0

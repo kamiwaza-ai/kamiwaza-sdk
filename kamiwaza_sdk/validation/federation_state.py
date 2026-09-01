@@ -20,6 +20,7 @@ from kamiwaza_sdk.validation.models import (
 from kamiwaza_sdk.validation.provider import FixtureStateWriter, ProviderContractError
 from kamiwaza_sdk.validation.registry import model_digest
 from kamiwaza_sdk.validation.inference_state import runtime_ownership_key
+from kamiwaza_sdk.validation.federation_spec import FEDERATION_OWNERSHIP_SCHEME
 
 FEDERATION_STATE_MAC_KEY = "ownership_mac"
 
@@ -70,6 +71,7 @@ def sign_state(state: FixtureState, key: bytes) -> FixtureState:
 def validate_state(runtime: RuntimeContext, state: FixtureState, revision: str) -> None:
     _validate_state_identity(runtime, state, revision)
     _validate_state_owner(runtime, state, revision)
+    _validate_state_ownership_metadata(runtime, state, revision)
     _validate_state_mac(runtime, state)
 
 
@@ -104,6 +106,39 @@ def _validate_state_mac(runtime: RuntimeContext, state: FixtureState) -> None:
         raise ProviderContractError("fixture state ownership MAC mismatch")
 
 
+def _validate_state_ownership_metadata(
+    runtime: RuntimeContext, state: FixtureState, revision: str
+) -> None:
+    """Accept legacy states while rejecting an explicitly foreign owner.
+
+    Older v1 snapshots did not carry provider-neutral ownership metadata; the
+    authenticated owner digest remains sufficient for those snapshots.  New
+    snapshots carry the metadata at both the envelope and edge level so cleanup
+    can refuse a resource whose tag belongs to another run before making an API
+    call.
+    """
+
+    expected_owner = owner_digest(runtime.run_id, revision)
+    metadata = state.opaque.get("ownership")
+    if metadata is not None:
+        _require_ownership(metadata, expected_owner)
+    edges = state.opaque.get("edges")
+    if not isinstance(edges, Mapping):
+        return
+    for edge in edges.values():
+        if isinstance(edge, Mapping) and edge.get("ownership") is not None:
+            _require_ownership(edge["ownership"], expected_owner)
+
+
+def _require_ownership(value: Any, expected_owner: str) -> None:
+    if not isinstance(value, Mapping):
+        raise ProviderContractError("fixture ownership metadata is invalid")
+    if value.get("scheme") != FEDERATION_OWNERSHIP_SCHEME or not hmac.compare_digest(
+        str(value.get("owner", "")), expected_owner
+    ):
+        raise ProviderContractError("fixture ownership metadata belongs to another run")
+
+
 class FederationStateStore:
     """Write authenticated, monotonic fixture snapshots around mutations."""
 
@@ -113,11 +148,16 @@ class FederationStateStore:
         self.revision = revision
 
     def initial(self, plan: ScenarioPlan, runtime: RuntimeContext) -> FixtureState:
+        ownership = {
+            "scheme": FEDERATION_OWNERSHIP_SCHEME,
+            "owner": owner_digest(runtime.run_id, self.revision),
+        }
         edges = {
             item.target_id: {
                 "cluster_id": item.cluster_id,
                 "cluster_ids": list(item.cluster_ids or (item.cluster_id,)),
                 "scenario_id": item.scenario_id,
+                "ownership": ownership,
                 "resources": {},
             }
             for item in plan.selected
@@ -130,7 +170,10 @@ class FederationStateStore:
             run_id=runtime.run_id,
             owner_token_digest=owner_digest(runtime.run_id, self.revision),
             journal=(),
-            opaque={"edges": cast(JsonValue, edges)},
+            opaque={
+                "ownership": cast(JsonValue, ownership),
+                "edges": cast(JsonValue, edges),
+            },
         )
         return self._write(state)
 
