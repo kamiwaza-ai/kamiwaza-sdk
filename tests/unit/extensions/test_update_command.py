@@ -866,7 +866,16 @@ def test_stamp_version_preserves_merge_added_kamiwaza_fields(tmp_path, monkeypat
 
     real_merge = upd._reconcile_json_merge
 
-    def merge_with_field(*, rel, target_path, existing_content, new_content, dry_run):
+    def merge_with_field(
+        *,
+        rel,
+        target_path,
+        existing_content,
+        new_content,
+        dry_run,
+        force,
+        non_interactive,
+    ):
         if rel == "kamiwaza.json" and not dry_run:
             existing = json.loads(existing_content)
             existing["new_template_field"] = "from-merge"
@@ -878,6 +887,8 @@ def test_stamp_version_preserves_merge_added_kamiwaza_fields(tmp_path, monkeypat
             existing_content=existing_content,
             new_content=new_content,
             dry_run=dry_run,
+            force=force,
+            non_interactive=non_interactive,
         )
 
     monkeypatch.setattr(upd, "_reconcile_json_merge", merge_with_field)

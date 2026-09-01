@@ -548,6 +548,8 @@ def _reconcile_file(
             existing_content=existing_content,
             new_content=new_content,
             dry_run=dry_run,
+            force=force,
+            non_interactive=non_interactive,
         )
         if merged is not None:
             return merged
@@ -729,6 +731,8 @@ def _reconcile_json_merge(
     existing_content: str,
     new_content: str,
     dry_run: bool,
+    force: bool,
+    non_interactive: bool,
 ) -> FileResult:
     """Field-level merge for JSON files.
 
@@ -737,12 +741,26 @@ def _reconcile_json_merge(
     fields the template added since the scaffold was rendered are
     inherited from the rendered template.
     """
-    existing, error = _parse_json_object(existing_content)
-    if error is not None:
-        return FileResult(rel, "skipped", error)
     rendered, error = _parse_json_object(new_content)
     if error is not None:
-        return FileResult(rel, "skipped", error)
+        raise ValueError(f"rendered template {rel} is {error}")
+
+    existing, error = _parse_json_object(existing_content)
+    if error is not None:
+        # An invalid author manifest cannot be merged safely. Route it through
+        # the ordinary conflict machinery so non-interactive updates fail
+        # before writing or stamping a new template version, interactive runs
+        # ask before replacing it, and --force retains a recoverable backup.
+        return _apply_preserve_if_modified(
+            rel,
+            target_path,
+            existing_content,
+            new_content,
+            recorded_hash=None,
+            dry_run=dry_run,
+            force=force,
+            non_interactive=non_interactive,
+        )
 
     merged = {**rendered, **existing}
     if rel == "frontend/package.json":
@@ -940,6 +958,8 @@ def _reconcile_structured_merge(
     existing_content: str,
     new_content: str,
     dry_run: bool,
+    force: bool,
+    non_interactive: bool,
 ) -> FileResult | None:
     if rel.endswith(".json"):
         return _reconcile_json_merge(
@@ -948,6 +968,8 @@ def _reconcile_structured_merge(
             existing_content=existing_content,
             new_content=new_content,
             dry_run=dry_run,
+            force=force,
+            non_interactive=non_interactive,
         )
     if rel == "backend/requirements.txt":
         return _reconcile_requirements_merge(

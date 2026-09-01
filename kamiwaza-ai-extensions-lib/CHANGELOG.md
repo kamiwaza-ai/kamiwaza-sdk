@@ -4,7 +4,7 @@ Versions follow semver. Published to npm as a standalone package
 (`@kamiwaza-ai/extensions-lib`) and versioned independently from
 `kamiwaza-sdk`.
 
-## [0.5.0] — 2026-07-28
+## [0.5.0] — 2026-09-01
 
 ### Added
 

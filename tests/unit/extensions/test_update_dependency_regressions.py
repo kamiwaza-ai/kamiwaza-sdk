@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+import typer
+
 from kamiwaza_extensions.commands import update as upd
 from kamiwaza_extensions.commands.update import _merge_dockerignore
+from kamiwaza_extensions.exit_codes import ExitCode
 from kamiwaza_extensions.scaffolder import Scaffolder
 
 
@@ -39,6 +43,62 @@ def test_pristine_package_receives_complete_template_update(tmp_path, monkeypatc
     assert "clean" in result.reason
     package = json.loads(package_path.read_text())
     assert package["dependencies"]["tailwindcss"] == "^9.9.9"
+
+
+@pytest.mark.parametrize("invalid_package", ["{\n", "[]\n"])
+def test_invalid_package_blocks_noninteractive_update(
+    invalid_package, tmp_path, monkeypatch
+):
+    """An unmergeable package must not be hidden by a version stamp."""
+    monkeypatch.chdir(tmp_path)
+    with patch("subprocess.run"):
+        scaffold = Scaffolder().create(type_="app", name="my")
+
+    metadata_path = scaffold / "kamiwaza.json"
+    original_metadata = json.loads(metadata_path.read_text())
+    package_path = scaffold / "frontend" / "package.json"
+    package_path.write_text(invalid_package)
+
+    original_manifest = upd.MANIFESTS["app"]
+    bumped_manifest = upd.TemplateManifest(
+        shape=original_manifest.shape,
+        template_version="9.9.9-invalid-package-test",
+        files=original_manifest.files,
+        migrations=original_manifest.migrations,
+    )
+    monkeypatch.setitem(upd.MANIFESTS, "app", bumped_manifest)
+    monkeypatch.chdir(scaffold)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        upd.run_update(non_interactive=True)
+
+    assert exc_info.value.exit_code == int(ExitCode.VALIDATION)
+    assert package_path.read_text() == invalid_package
+    updated_metadata = json.loads(metadata_path.read_text())
+    assert updated_metadata["template_version"] == original_metadata["template_version"]
+
+
+def test_force_replaces_invalid_package_with_backup(tmp_path, monkeypatch):
+    """--force repairs an invalid structured manifest without losing it."""
+    monkeypatch.chdir(tmp_path)
+    with patch("subprocess.run"):
+        scaffold = Scaffolder().create(type_="app", name="my")
+
+    package_path = scaffold / "frontend" / "package.json"
+    invalid_package = "{\n"
+    package_path.write_text(invalid_package)
+    monkeypatch.chdir(scaffold)
+
+    summary = upd.run_update(force=True)
+
+    package = json.loads(package_path.read_text())
+    assert package["dependencies"]["@kamiwaza-ai/extensions-lib"] == ">=0.5 <0.6"
+    assert package_path.with_name("package.json.orig").read_text() == invalid_package
+    result = next(
+        item for item in summary.files if item.relative_path == "frontend/package.json"
+    )
+    assert result.action == "applied"
+    assert result.reason == "force (.orig backup)"
 
 
 def test_dockerignore_merge_preserves_crlf():
