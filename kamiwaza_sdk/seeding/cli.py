@@ -58,7 +58,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Dict, NamedTuple, Optional, Sequence, Tuple, Union
 
-from ..exceptions import DeploymentFailedError, KamiwazaError
+from ..exceptions import DeploymentFailedError, KamiwazaError, OffHostBaseURLError
 from ..schemas.kaizen import AgentDefinition, LLMConfig
 from ..schemas.models.external_endpoint import (
     AWSBedrockChatEndpoint,
@@ -282,8 +282,15 @@ def cmd_resolve_kaizen_url(args: argparse.Namespace, *, client) -> Optional[dict
             timeout_seconds=args.timeout,
             poll_interval_seconds=args.poll_interval,
         )
-    except (TimeoutError, AmbiguousExtensionError) as exc:
+    except (TimeoutError, AmbiguousExtensionError, OffHostBaseURLError) as exc:
+        # Only the credential guard's own refusal is a clean exit; any other
+        # ValueError is a bug and keeps its traceback.
         raise SystemExit(str(exc))
+    # The platform reports an in-cluster extension as a path. Callers consume
+    # this value from a shell ("$(... --raw)"), where only an absolute URL is
+    # usable, so resolve it here rather than emitting a root that works through
+    # the SDK and nowhere else.
+    url = client._absolutize_base_url(url)
     if args.raw:
         print(url)
         return None

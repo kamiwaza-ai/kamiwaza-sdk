@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kamiwaza_sdk.client import KamiwazaClient
 from kamiwaza_sdk.exceptions import DeploymentFailedError, KamiwazaError
 from kamiwaza_sdk.seeding import cli
 
@@ -30,6 +31,12 @@ class RecordingService:
 
 class FakeClient:
     """A client whose service methods record their calls."""
+
+    base_url = "https://kamiwaza.test/api"
+    # The real implementation, not a stub: the CLI resolves the extension root
+    # against the platform origin before printing it, and a double that skipped
+    # that would pass while the shipped path failed.
+    _absolutize_base_url = KamiwazaClient._absolutize_base_url
 
     def __init__(self):
         self.auth = SimpleNamespace(
@@ -1305,3 +1312,20 @@ def test_chat_timeout_exits_nonzero(monkeypatch):
             client,
         )
 
+
+
+def test_resolve_kaizen_url_absolutizes_relative_root(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    monkeypatch.setattr(
+        cli, "wait_for_base_url", lambda *a, **k: "/runtime/apps/kaizen-ddd84430"
+    )
+
+    # The value is consumed as URL="$(... --raw)" in a shell, where a bare path
+    # is not fetchable.
+    _run(["resolve-kaizen-url", "--workroom-id", "wr-1", "--raw"], client)
+
+    assert (
+        capsys.readouterr().out.strip()
+        == "https://kamiwaza.test/runtime/apps/kaizen-ddd84430"
+    )

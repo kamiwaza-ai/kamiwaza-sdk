@@ -144,6 +144,16 @@ class ValidationError(KamiwazaError):
     """Raised when input validation fails (HTTP 400 / 422)."""
 
 
+class OffHostBaseURLError(ValueError):
+    """A base_url override does not share the platform's origin.
+
+    Deliberately NOT a KamiwazaError: the readiness probe in
+    ``services.kaizen._is_serving`` treats every KamiwazaError as "the backend
+    answered", so classing it there would report an off-host URL as serving.
+    Subclasses ValueError because that is the contract callers already catch.
+    """
+
+
 class TimeoutError(KamiwazaError):
     """Raised when a request times out."""
 

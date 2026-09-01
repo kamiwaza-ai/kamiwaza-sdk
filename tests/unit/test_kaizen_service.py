@@ -27,6 +27,7 @@ from kamiwaza_sdk.services.kaizen import (
     agent_contract_for_extension,
     _CONVERSATIONS_PATH,
     _agent_error_from_events,
+    _endpoint_from_extension,
     _has_finish_action,
     _is_serving,
     _is_transient_resolve_error,
@@ -2261,3 +2262,134 @@ def test_conversation_contract_rejects_an_unknown_identity_directly():
     args = SimpleNamespace(extension_name="kaizen-next")
     with pytest.raises(SystemExit, match="not a known Kaizen catalog identity"):
         kaizen_turns.conversation_contract(args)
+
+
+def test_wait_for_base_url_accepts_relative_endpoint_from_platform(monkeypatch):
+    # A real client, because the point is that the credentialed readiness probe
+    # resolves a path-only endpoint against the platform origin rather than
+    # refusing it as off-host.
+    from kamiwaza_sdk.client import KamiwazaClient
+
+    relative = "/runtime/apps/kaizen-ddd84430"
+    client = KamiwazaClient(base_url="https://testhelm.kamiwaza.dev/api")
+    client._extensions = SimpleNamespace(
+        get_extension=lambda name: SimpleNamespace(
+            endpoints=SimpleNamespace(external=relative, public_api_url=None)
+        )
+    )
+    seen: list[str] = []
+
+    def fake_request(method, url, **kwargs):
+        seen.append(url)
+        return SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+            json=lambda: {"agents": []},
+        )
+
+    monkeypatch.setattr(client.session, "request", fake_request)
+
+    assert wait_for_base_url(client, "kaizen", timeout_seconds=0) == relative
+    assert seen == [
+        "https://testhelm.kamiwaza.dev/runtime/apps/kaizen-ddd84430/api/agents"
+    ]
+
+
+def test_wait_for_base_url_timeout_names_the_url_stage():
+    unpublished = SimpleNamespace(
+        endpoints=SimpleNamespace(external=None, public_api_url=None)
+    )
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=lambda name: unpublished)
+    )
+
+    with pytest.raises(TimeoutError, match="could not determine the extension's URL"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)
+
+
+def test_wait_for_base_url_timeout_names_the_serving_stage():
+    def always_503(*_a, **_k):
+        raise APIError("no healthy upstream", status_code=503)
+
+    client = _serving_client(always_503)
+    with pytest.raises(TimeoutError, match="extension not ready"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)
+
+
+def test_wait_for_base_url_does_not_retry_offhost_probe_refusal(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+    from kamiwaza_sdk.client import KamiwazaClient
+    from kamiwaza_sdk.exceptions import KamiwazaError, OffHostBaseURLError
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # A real client resolving a genuinely off-host endpoint, so the guard itself
+    # raises rather than a stand-in: the refusal is deterministic, and retrying
+    # it would spend the whole budget and then report the wrong stage.
+    client = KamiwazaClient(base_url="https://example.test/api")
+    client._extensions = SimpleNamespace(
+        get_extension=lambda name: SimpleNamespace(
+            endpoints=SimpleNamespace(
+                external="https://evil.example/kaizen", public_api_url=None
+            )
+        )
+    )
+    attempts = []
+    client.session.request = lambda *a, **k: attempts.append(1)
+
+    with pytest.raises(OffHostBaseURLError) as caught:
+        wait_for_base_url(client, "kaizen", poll_interval_seconds=0)
+
+    # _is_serving answers True for any KamiwazaError, so a refusal that landed in
+    # that hierarchy would be read as "the backend answered" and the off-host URL
+    # returned as serving.
+    assert not isinstance(caught.value, KamiwazaError)
+    assert attempts == []
+
+
+@pytest.mark.parametrize("attr", ["external", "api_url", "public_api_url"])
+def test_endpoint_of_slash_is_treated_as_unpublished(attr):
+    # "/" rstrips to "", which downstream would read as an unusable root and
+    # abort the wait. It means the route exists but its path is not stamped yet,
+    # which is a state that clears on its own.
+    endpoints = SimpleNamespace(external=None, api_url=None, public_api_url=None)
+    setattr(endpoints, attr, "/")
+    assert _endpoint_from_extension(SimpleNamespace(endpoints=endpoints), public=False) is None
+
+
+def test_wait_for_base_url_polls_when_endpoint_is_slash(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(
+            get_extension=lambda name: SimpleNamespace(
+                endpoints=SimpleNamespace(external="/", public_api_url=None)
+            )
+        )
+    )
+
+    with pytest.raises(TimeoutError, match="could not determine the extension's URL"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)
+
+
+def test_offhost_refusal_stays_outside_the_kamiwaza_hierarchy():
+    from kamiwaza_sdk.exceptions import KamiwazaError, OffHostBaseURLError
+
+    # _is_serving treats every KamiwazaError as "the backend answered", so this
+    # placement is what stops an off-host URL being reported as serving. It stays
+    # a ValueError so existing callers keep working.
+    assert issubclass(OffHostBaseURLError, ValueError)
+    assert not issubclass(OffHostBaseURLError, KamiwazaError)
+
+
+def test_is_serving_would_mistake_a_kamiwaza_scoped_refusal_for_a_live_backend():
+    from kamiwaza_sdk.exceptions import KamiwazaError
+
+    # Pins the reason for the placement above: were the guard's error moved into
+    # the KamiwazaError hierarchy, this is what the readiness probe would answer.
+    def refuse(*_a, **_k):
+        raise KamiwazaError("off-host")
+
+    assert _is_serving(_serving_client(refuse), KAIZEN_URL, workroom_id=None) is True
