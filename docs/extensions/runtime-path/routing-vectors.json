@@ -429,6 +429,15 @@
       "expect_error": true
     },
     {
+      "name": "path_mode_app_path_url_with_fragment_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_PATH_URL": "https://host.example/runtime/apps/550e8400#legacy"
+      },
+      "expect_error": true
+    },
+    {
       "name": "port_mode_ignores_stale_path",
       "env": {
         "KAMIWAZA_ROUTING_MODE": "port",

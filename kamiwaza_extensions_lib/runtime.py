@@ -16,13 +16,15 @@ import re
 from dataclasses import dataclass
 from ipaddress import IPv6Address
 from typing import Literal, Mapping
-from urllib.parse import unquote_to_bytes, urlsplit
+from urllib.parse import SplitResult, unquote_to_bytes, urlsplit
 
 import idna
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+_HOST_CONTROL_RE = re.compile(r"[\x00-\x20\x7f]")
 _SENTINEL_FAMILY_RE = re.compile(r"__KZ_RUNTIME_BASE_[0-9A-F]+__")
+_INVALID_HOST_CHARACTERS = frozenset("/\\?#@")
 _MAX_PATH_LENGTH = 512
 _MAX_SEGMENT_LENGTH = 128
 _ASCII_C0_AND_SPACE = "".join(chr(value) for value in range(0x21))
@@ -121,6 +123,66 @@ def _origin_with_app_path(value: str, app_path: str) -> str:
     return f"{_normalized_http_origin(value)}{app_path}"
 
 
+def _invalid_public_url(value: str) -> ValueError:
+    return ValueError(f"invalid public app URL for path routing: {value!r}")
+
+
+def _parse_http_origin(value: str) -> tuple[SplitResult, str, str, int | None]:
+    candidate = value.strip(_ASCII_C0_AND_SPACE)
+    # WHATWG treats backslashes as path separators for special schemes,
+    # while ``urlsplit`` can interpret one before ``@`` as userinfo and select
+    # a different host. Reject the ambiguous spelling in both runtimes.
+    if "\\" in candidate:
+        raise _invalid_public_url(value)
+    parsed = urlsplit(candidate)
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise _invalid_public_url(value)
+    hostname = parsed.hostname
+    if not hostname:
+        raise _invalid_public_url(value)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise _invalid_public_url(value) from exc
+    return parsed, scheme, hostname, port
+
+
+def _assert_valid_decoded_host(decoded_host: str) -> None:
+    if _HOST_CONTROL_RE.search(decoded_host):
+        raise ValueError
+    if any(char in _INVALID_HOST_CHARACTERS for char in decoded_host):
+        raise ValueError
+
+
+def _format_decoded_host(decoded_host: str) -> str:
+    if ":" in decoded_host:
+        return f"[{IPv6Address(decoded_host).compressed}]"
+    return idna.encode(
+        decoded_host,
+        uts46=True,
+        transitional=False,
+    ).decode("ascii")
+
+
+def _normalized_hostname(hostname: str, value: str) -> str:
+    try:
+        decoded_host = unquote_to_bytes(hostname).decode("utf-8")
+        _assert_valid_decoded_host(decoded_host)
+        return _format_decoded_host(decoded_host)
+    except (UnicodeError, ValueError, idna.IDNAError) as exc:
+        raise _invalid_public_url(value) from exc
+
+
+def _port_suffix(scheme: str, port: int | None) -> str:
+    if port is None:
+        return ""
+    default_port = 443 if scheme == "https" else 80
+    if port == default_port:
+        return ""
+    return f":{port}"
+
+
 def _normalized_http_origin(value: str) -> str:
     """Normalize a browser-visible HTTP origin conservatively.
 
@@ -129,41 +191,19 @@ def _normalized_http_origin(value: str) -> str:
     default ports, and casing. Inputs outside that supported absolute-URL
     grammar fail closed instead of emitting a malformed auth redirect.
     """
-    candidate = value.strip(_ASCII_C0_AND_SPACE)
-    # WHATWG treats backslashes as path separators for special schemes,
-    # while ``urlsplit`` can interpret one before ``@`` as userinfo and select
-    # a different host. Reject the ambiguous spelling in both runtimes.
-    if "\\" in candidate:
-        raise ValueError(f"invalid public app URL for path routing: {value!r}")
-    parsed = urlsplit(candidate)
-    scheme = parsed.scheme.lower()
-    hostname = parsed.hostname
-    if scheme not in ("http", "https") or not hostname:
-        raise ValueError(f"invalid public app URL for path routing: {value!r}")
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError(f"invalid public app URL for path routing: {value!r}") from exc
-    try:
-        decoded_host = unquote_to_bytes(hostname).decode("utf-8")
-        if any(
-            ord(char) <= 0x20 or ord(char) == 0x7F or char in "/\\?#@"
-            for char in decoded_host
-        ):
-            raise ValueError
-        if ":" in decoded_host:
-            normalized_host = f"[{IPv6Address(decoded_host).compressed}]"
-        else:
-            normalized_host = idna.encode(
-                decoded_host,
-                uts46=True,
-                transitional=False,
-            ).decode("ascii")
-    except (UnicodeError, ValueError, idna.IDNAError) as exc:
-        raise ValueError(f"invalid public app URL for path routing: {value!r}") from exc
-    default_port = 443 if scheme == "https" else 80
-    port_suffix = f":{port}" if port is not None and port != default_port else ""
-    return f"{scheme}://{normalized_host}{port_suffix}"
+    _, scheme, hostname, port = _parse_http_origin(value)
+    normalized_host = _normalized_hostname(hostname, value)
+    return f"{scheme}://{normalized_host}{_port_suffix(scheme, port)}"
+
+
+def _has_unexpected_url_components(parsed: SplitResult) -> bool:
+    if parsed.username is not None:
+        return True
+    if parsed.password is not None:
+        return True
+    if parsed.query:
+        return True
+    return bool(parsed.fragment)
 
 
 def _normalized_app_path_url(value: str, app_path: str) -> str:
@@ -171,13 +211,12 @@ def _normalized_app_path_url(value: str, app_path: str) -> str:
     candidate = value.strip(_ASCII_C0_AND_SPACE)
     origin = _normalized_http_origin(candidate)
     parsed = urlsplit(candidate)
-    if (
-        parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or _trim_trailing_slash(parsed.path) != app_path
-    ):
+    if _has_unexpected_url_components(parsed):
+        raise ValueError(
+            "KAMIWAZA_APP_PATH_URL must be the public origin plus "
+            f"KAMIWAZA_APP_PATH: {value!r}"
+        )
+    if _trim_trailing_slash(parsed.path) != app_path:
         raise ValueError(
             "KAMIWAZA_APP_PATH_URL must be the public origin plus "
             f"KAMIWAZA_APP_PATH: {value!r}"

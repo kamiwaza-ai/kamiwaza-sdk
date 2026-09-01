@@ -100,3 +100,22 @@ def test_runtime_routing_is_frozen():
 def test_over_length_all_slash_path_does_not_degrade_to_port_mode():
     with pytest.raises(ValueError, match="length"):
         RuntimeRouting.from_env({"KAMIWAZA_APP_PATH": "/" * 513})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "app_path_url",
+    [
+        "https://@host.example/runtime/apps/x",
+        "https://:@host.example/runtime/apps/x",
+    ],
+)
+def test_app_path_url_rejects_empty_userinfo(app_path_url):
+    with pytest.raises(ValueError, match="public origin plus"):
+        RuntimeRouting.from_env(
+            {
+                "KAMIWAZA_ROUTING_MODE": "path",
+                "KAMIWAZA_APP_PATH": "/runtime/apps/x",
+                "KAMIWAZA_APP_PATH_URL": app_path_url,
+            }
+        )

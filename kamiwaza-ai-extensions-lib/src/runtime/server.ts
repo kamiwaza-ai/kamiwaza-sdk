@@ -13,63 +13,83 @@ import {
     resolveRuntimeRouting,
 } from "./shared";
 
+const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
+
+type AppPathUrlInput = Readonly<{
+    value: string;
+    appPath: string;
+}>;
+
+type PublicUrlInput = Readonly<{
+    value: string;
+    field: "KAMIWAZA_APP_PATH_URL" | "public app URL for path routing";
+}>;
+
+type ForwardedPrefixInput = Readonly<{
+    forwardedPrefix: string | null | undefined;
+    appPath: string;
+}>;
+
 function trimTrailingSlash(value: string): string {
     return value.replace(/\/+$/, "");
 }
 
-function originWithAppPath(value: string, appPath: string): string {
-    // Keep the Python and WHATWG parsers from selecting different hosts for
-    // ambiguous inputs such as `https://example.com\@evil.com`.
-    if (value.includes("\\")) {
-        throw new Error(
-            `invalid public app URL for path routing: ${JSON.stringify(value)}`,
-        );
-    }
-    let parsed: URL;
-    try {
-        parsed = new URL(value);
-    } catch {
-        throw new Error(
-            `invalid public app URL for path routing: ${JSON.stringify(value)}`,
-        );
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        throw new Error(
-            `invalid public app URL for path routing: ${JSON.stringify(value)}`,
-        );
-    }
-    return `${parsed.origin}${appPath}`;
+function invalidPublicUrl(input: PublicUrlInput): Error {
+    return new Error(
+        `invalid ${input.field}: ${JSON.stringify(input.value)}`,
+    );
 }
 
-function normalizeAppPathUrl(value: string, appPath: string): string {
-    if (value.includes("\\")) {
-        throw new Error(
-            `invalid KAMIWAZA_APP_PATH_URL: ${JSON.stringify(value)}`,
-        );
+function parsePublicHttpUrl(input: PublicUrlInput): URL {
+    // Keep the Python and WHATWG parsers from selecting different hosts for
+    // ambiguous inputs such as `https://example.com\@evil.com`.
+    if (input.value.includes("\\")) {
+        throw invalidPublicUrl(input);
     }
     let parsed: URL;
     try {
-        parsed = new URL(value);
+        parsed = new URL(input.value);
     } catch {
-        throw new Error(
-            `invalid KAMIWAZA_APP_PATH_URL: ${JSON.stringify(value)}`,
-        );
+        throw invalidPublicUrl(input);
     }
-    const parsedPath = trimTrailingSlash(parsed.pathname);
-    if (
-        (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-        parsed.username !== "" ||
-        parsed.password !== "" ||
-        parsed.search !== "" ||
-        parsed.hash !== "" ||
-        parsedPath !== appPath
-    ) {
+    if (!HTTP_PROTOCOLS.has(parsed.protocol)) {
+        throw invalidPublicUrl(input);
+    }
+    return parsed;
+}
+
+function originWithAppPath(input: AppPathUrlInput): string {
+    const parsed = parsePublicHttpUrl({
+        value: input.value,
+        field: "public app URL for path routing",
+    });
+    return `${parsed.origin}${input.appPath}`;
+}
+
+function hasUnexpectedUrlComponents(parsed: URL): boolean {
+    return [parsed.username, parsed.password, parsed.search, parsed.hash].some(
+        (component) => component !== "",
+    );
+}
+
+function normalizeAppPathUrl(input: AppPathUrlInput): string {
+    const parsed = parsePublicHttpUrl({
+        value: input.value,
+        field: "KAMIWAZA_APP_PATH_URL",
+    });
+    if (hasUnexpectedUrlComponents(parsed)) {
         throw new Error(
             `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +
-                `KAMIWAZA_APP_PATH: ${JSON.stringify(value)}`,
+                `KAMIWAZA_APP_PATH: ${JSON.stringify(input.value)}`,
         );
     }
-    return `${parsed.origin}${appPath}`;
+    if (trimTrailingSlash(parsed.pathname) !== input.appPath) {
+        throw new Error(
+            `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +
+                `KAMIWAZA_APP_PATH: ${JSON.stringify(input.value)}`,
+        );
+    }
+    return `${parsed.origin}${input.appPath}`;
 }
 
 function resolveAppUrls(
@@ -86,7 +106,7 @@ function resolveAppUrls(
         env.KAMIWAZA_APP_PATH_URL ?? "",
     );
     const appPathUrl = configuredAppPathUrl
-        ? normalizeAppPathUrl(configuredAppPathUrl, appPath)
+        ? normalizeAppPathUrl({ value: configuredAppPathUrl, appPath })
         : "";
     const configuredAppUrl = trimTrailingSlash(env.KAMIWAZA_APP_URL ?? "");
     const origin = trimTrailingSlash(env.KAMIWAZA_ORIGIN ?? "");
@@ -95,25 +115,30 @@ function resolveAppUrls(
         appPathUrl,
         appUrl:
             appPathUrl ||
-            (publicOrigin ? originWithAppPath(publicOrigin, appPath) : ""),
+            (publicOrigin
+                ? originWithAppPath({ value: publicOrigin, appPath })
+                : ""),
     };
 }
 
-function warnOnForwardedPrefix(
-    forwardedPrefix: string | null | undefined,
-    appPath: string,
-): void {
-    if (forwardedPrefix == null || appPath === "") {
+function warnOnForwardedPrefix(input: ForwardedPrefixInput): void {
+    if (input.forwardedPrefix == null) {
         return;
     }
-    const forwarded = trimTrailingSlash(forwardedPrefix);
-    if (forwarded === "" || forwarded === appPath) {
+    if (input.appPath === "") {
+        return;
+    }
+    const forwarded = trimTrailingSlash(input.forwardedPrefix);
+    if (forwarded === "") {
+        return;
+    }
+    if (forwarded === input.appPath) {
         return;
     }
     // Diagnostics only — the env-derived identity always wins.
     console.warn(
         `[kamiwaza-runtime] x-forwarded-prefix ${JSON.stringify(forwarded)} ` +
-            `does not match KAMIWAZA_APP_PATH ${JSON.stringify(appPath)}`,
+            `does not match KAMIWAZA_APP_PATH ${JSON.stringify(input.appPath)}`,
     );
 }
 
@@ -123,7 +148,7 @@ export function getKamiwazaRuntimeServer(
 ): Readonly<KamiwazaRuntimeConfig> {
     const routing = resolveRuntimeRouting(env);
     const urls = resolveAppUrls(env, routing.appPath);
-    warnOnForwardedPrefix(forwardedPrefix, routing.appPath);
+    warnOnForwardedPrefix({ forwardedPrefix, appPath: routing.appPath });
 
     return Object.freeze({
         ...routing,

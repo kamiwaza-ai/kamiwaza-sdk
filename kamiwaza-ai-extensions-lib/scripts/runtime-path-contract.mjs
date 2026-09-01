@@ -3,6 +3,7 @@
 const SENTINEL_FAMILY_RE = /__KZ_RUNTIME_BASE_[0-9A-F]+__/;
 const SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
+const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
 const INVALID_SEGMENTS = new Set(["", ".", "." + "."]);
 const MAX_PATH_LENGTH = 512;
 const MAX_SEGMENT_LENGTH = 128;
@@ -62,44 +63,70 @@ function assertRuntimeSegment(segment) {
     }
 }
 
-function validatePublicHttpUrl(value, field) {
-    if (typeof value !== "string" || value === "" || value.includes("\\")) {
+function assertPublicUrlInput(value, field) {
+    if (typeof value !== "string") {
         throw new Error(`invalid ${field}: ${JSON.stringify(value)}`);
     }
+    if (value === "") {
+        throw new Error(`invalid ${field}: ${JSON.stringify(value)}`);
+    }
+    if (value.includes("\\")) {
+        throw new Error(`invalid ${field}: ${JSON.stringify(value)}`);
+    }
+}
+
+function validatePublicHttpUrl(value, field) {
+    assertPublicUrlInput(value, field);
     let parsed;
     try {
         parsed = new URL(value);
     } catch {
         throw new Error(`invalid ${field}: ${JSON.stringify(value)}`);
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    if (!HTTP_PROTOCOLS.has(parsed.protocol)) {
         throw new Error(`invalid ${field}: ${JSON.stringify(value)}`);
     }
     return parsed;
+}
+
+function hasUnexpectedUrlComponents(parsed) {
+    return [parsed.username, parsed.password, parsed.search, parsed.hash].some(
+        (component) => component !== "",
+    );
+}
+
+function assertAppPathUrl(parsed, appPath, appPathUrl) {
+    if (hasUnexpectedUrlComponents(parsed)) {
+        throw new Error(
+            `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +
+                `KAMIWAZA_APP_PATH: ${JSON.stringify(appPathUrl)}`,
+        );
+    }
+    if (parsed.pathname.replace(/\/+$/, "") !== appPath) {
+        throw new Error(
+            `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +
+                `KAMIWAZA_APP_PATH: ${JSON.stringify(appPathUrl)}`,
+        );
+    }
+}
+
+function resolvePublicOrigin(env) {
+    for (const candidate of [env.KAMIWAZA_APP_URL, env.KAMIWAZA_ORIGIN]) {
+        if (candidate) {
+            return candidate.replace(/\/+$/, "");
+        }
+    }
+    return "";
 }
 
 function validatePathModePublicUrls(env, appPath) {
     const appPathUrl = (env.KAMIWAZA_APP_PATH_URL ?? "").replace(/\/+$/, "");
     if (appPathUrl !== "") {
         const parsed = validatePublicHttpUrl(appPathUrl, "KAMIWAZA_APP_PATH_URL");
-        if (
-            parsed.username !== "" ||
-            parsed.password !== "" ||
-            parsed.search !== "" ||
-            parsed.hash !== "" ||
-            parsed.pathname.replace(/\/+$/, "") !== appPath
-        ) {
-            throw new Error(
-                `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +
-                    `KAMIWAZA_APP_PATH: ${JSON.stringify(appPathUrl)}`,
-            );
-        }
+        assertAppPathUrl(parsed, appPath, appPathUrl);
         return;
     }
-    const publicOrigin = (env.KAMIWAZA_APP_URL || env.KAMIWAZA_ORIGIN || "").replace(
-        /\/+$/,
-        "",
-    );
+    const publicOrigin = resolvePublicOrigin(env);
     if (publicOrigin !== "") {
         validatePublicHttpUrl(publicOrigin, "public app URL for path routing");
     }
