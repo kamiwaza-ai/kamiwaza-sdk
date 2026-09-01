@@ -300,6 +300,7 @@ _COMPOSE_SUB_RE = re.compile(
     r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?+])(.*))?\}$",
     re.DOTALL,
 )
+_COMPOSE_UNBRACED_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 _COMPOSE_BRACE_RE = re.compile(r"[{}]")
 _MAX_COMPOSE_SUBSTITUTION_DEPTH = 100
 
@@ -572,7 +573,7 @@ def _resolve_env_value(key: str, value: str) -> Optional[str]:
     is_platform_key = key.startswith(_PLATFORM_INJECTED_PREFIX)
     if is_platform_key and _has_braced_substitution(value):
         return None
-    return _resolve_compose_value(value)
+    return resolve_compose_value(value)
 
 
 def _has_braced_substitution(value: str) -> bool:
@@ -588,8 +589,48 @@ def _has_braced_substitution(value: str) -> bool:
     return False
 
 
-def _resolve_compose_value(value: str, depth: int = 0) -> Optional[str]:
-    """Resolve braced expressions while honoring Compose's ``$$`` escape."""
+def _resolve_unbraced_reference(
+    value: str, start: int, enabled: bool
+) -> Tuple[Optional[str], int]:
+    """Return an unbraced host value and the cursor after its variable name."""
+    if enabled:
+        match = _COMPOSE_UNBRACED_RE.match(value, start)
+        if match is not None:
+            return os.environ.get(match.group(1)), match.end()
+    return "$", start + 1
+
+
+def _resolve_compose_token(
+    value: str,
+    start: int,
+    depth: int,
+    resolve_unbraced: bool,
+) -> Tuple[Optional[str], int]:
+    """Resolve the Compose token beginning at one dollar sign."""
+    if value.startswith("$$", start):
+        return "$", start + 2
+    if not value.startswith("${", start):
+        return _resolve_unbraced_reference(value, start, resolve_unbraced)
+    end = _compose_substitution_end(value, start)
+    if end is None:
+        return None, start
+    substitution = _resolve_compose_substitution(
+        value[start : end + 1],
+        depth,
+        resolve_unbraced=resolve_unbraced,
+    )
+    return substitution, end + 1
+
+
+def resolve_compose_value(
+    value: str, depth: int = 0, *, resolve_unbraced: bool = False
+) -> Optional[str]:
+    """Resolve Compose expressions while honoring its ``$$`` escape.
+
+    Environment payloads retain the historical braced-only behavior. Process
+    fields opt into unbraced ``$VAR`` resolution because Compose interpolates
+    both forms before applying ``entrypoint`` and ``command``.
+    """
     if depth >= _MAX_COMPOSE_SUBSTITUTION_DEPTH:
         return None
     resolved: List[str] = []
@@ -600,22 +641,15 @@ def _resolve_compose_value(value: str, depth: int = 0) -> Optional[str]:
             resolved.append(value[cursor:])
             break
         resolved.append(value[cursor:dollar])
-        if value.startswith("$$", dollar):
-            resolved.append("$")
-            cursor = dollar + 2
-            continue
-        if not value.startswith("${", dollar):
-            resolved.append("$")
-            cursor = dollar + 1
-            continue
-        end = _compose_substitution_end(value, dollar)
-        if end is None:
+        replacement, cursor = _resolve_compose_token(
+            value,
+            dollar,
+            depth,
+            resolve_unbraced,
+        )
+        if replacement is None:
             return None
-        substitution = _resolve_compose_substitution(value[dollar : end + 1], depth)
-        if substitution is None:
-            return None
-        resolved.append(substitution)
-        cursor = end + 1
+        resolved.append(replacement)
     return "".join(resolved)
 
 
@@ -632,7 +666,9 @@ def _compose_substitution_end(value: str, start: int) -> Optional[int]:
     return final_brace if final_brace >= 0 else None
 
 
-def _resolve_compose_substitution(value: str, depth: int = 0) -> Optional[str]:
+def _resolve_compose_substitution(
+    value: str, depth: int = 0, *, resolve_unbraced: bool = False
+) -> Optional[str]:
     """Resolve one full substitution using Compose environment semantics."""
     match = _COMPOSE_SUB_RE.match(value)
     if match is None:
@@ -647,12 +683,26 @@ def _resolve_compose_substitution(value: str, depth: int = 0) -> Optional[str]:
     if operator in ("-", "?") and is_set:
         return host_value
     if operator == ":+":
-        return _resolve_compose_value(fallback, depth + 1) if host_value else ""
+        return (
+            resolve_compose_value(
+                fallback, depth + 1, resolve_unbraced=resolve_unbraced
+            )
+            if host_value
+            else ""
+        )
     if operator == "+":
-        return _resolve_compose_value(fallback, depth + 1) if is_set else ""
+        return (
+            resolve_compose_value(
+                fallback, depth + 1, resolve_unbraced=resolve_unbraced
+            )
+            if is_set
+            else ""
+        )
     if operator in (":?", "?"):
         return None
-    return _resolve_compose_value(fallback, depth + 1)
+    return resolve_compose_value(
+        fallback, depth + 1, resolve_unbraced=resolve_unbraced
+    )
 
 
 def _resolve_list_entry(entry: Any) -> Optional[Any]:

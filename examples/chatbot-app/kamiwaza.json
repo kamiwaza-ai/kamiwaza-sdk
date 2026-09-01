@@ -7,7 +7,7 @@
     "description": "A Kamiwaza app extension",
     "risk_tier": 0,
     "verified": false,
-    "kz_ext_version": ">=0.1.0,<1.0.0",
+    "kz_ext_version": ">=0.2.0,<1.0.0",
     "tags": [],
     "env_defaults": {},
     "required_env_vars": []

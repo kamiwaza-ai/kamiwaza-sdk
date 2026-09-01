@@ -108,6 +108,12 @@ class TestCLISkeleton:
         monkeypatch.setattr(
             dev_local_mod, "DevLocalRunner", lambda *a, **kw: StubRunner()
         )
+        # This test isolates runner error translation; manifest contract
+        # preflight has dedicated command-boundary coverage.
+        monkeypatch.setattr(
+            "kamiwaza_extensions.commands.dev_local._enforce_cli_contract",
+            lambda: None,
+        )
 
         result = runner.invoke(app, ["dev", "local", "--auth"])
         assert result.exit_code == 2
