@@ -813,7 +813,6 @@ _FRONTEND_DEPENDENCY_SELECTOR_MAPS = (
     "devDependencies",
     "optionalDependencies",
     "peerDependencies",
-    "overrides",
     "resolutions",
 )
 _PYTHON_RUNTIME_REQUIREMENT_RE = re.compile(
@@ -835,41 +834,44 @@ def _merge_frontend_package(rendered: dict, existing: dict, merged: dict) -> dic
     for name in _FRONTEND_RUNTIME_DEPENDENCIES:
         if name in rendered_dependencies:
             dependencies[name] = rendered_dependencies[name]
-    reconciled = {**merged, "dependencies": dependencies}
+    return _reconcile_frontend_selectors(
+        {**merged, "dependencies": dependencies}, rendered_dependencies
+    )
+
+
+def _reconcile_frontend_selectors(merged: dict, rendered: dict) -> dict:
+    reconciled = dict(merged)
     for field in _FRONTEND_DEPENDENCY_SELECTOR_MAPS:
         if field in reconciled:
             reconciled[field] = _reconcile_runtime_dependency_map(
                 reconciled[field],
-                rendered_dependencies,
-                nested_direct=field == "overrides",
+                rendered,
             )
+    if "overrides" in reconciled:
+        reconciled["overrides"] = _reconcile_npm_overrides(
+            reconciled["overrides"], rendered
+        )
     pnpm = reconciled.get("pnpm")
     if isinstance(pnpm, dict) and "overrides" in pnpm:
         reconciled["pnpm"] = {
             **pnpm,
-            "overrides": _reconcile_runtime_dependency_map(
-                pnpm["overrides"], rendered_dependencies
-            ),
+            "overrides": _reconcile_runtime_dependency_map(pnpm["overrides"], rendered),
         }
     return reconciled
 
 
-def _reconcile_runtime_dependency_map(
-    values: object, rendered: dict, *, nested_direct: bool = False
-) -> object:
+def _reconcile_runtime_dependency_map(values: object, rendered: dict) -> object:
     """Advance controlled packages wherever a package manager can select them."""
     if not isinstance(values, dict):
         return values
     return {
-        name: _reconciled_runtime_dependency(
-            name, current, rendered, nested_direct=nested_direct
-        )
+        name: _reconciled_runtime_dependency(name, current, rendered)
         for name, current in values.items()
     }
 
 
 def _reconciled_runtime_dependency(
-    selector: str, current: object, rendered: dict, *, nested_direct: bool
+    selector: str, current: object, rendered: dict
 ) -> object:
     name = _runtime_dependency_from_selector(selector)
     if name is None:
@@ -877,22 +879,63 @@ def _reconciled_runtime_dependency(
     desired = rendered.get(name)
     if desired is None:
         return current
-    if nested_direct and isinstance(current, dict):
-        return {**current, ".": desired}
     return desired
 
 
+def _reconcile_npm_overrides(values: object, rendered: dict) -> object:
+    if not isinstance(values, dict):
+        return values
+    return _reconcile_npm_override_map(values, rendered)
+
+
+def _reconcile_npm_override_map(values: dict, rendered: dict) -> dict:
+    return {
+        selector: _reconciled_npm_override(selector, current, rendered)
+        for selector, current in values.items()
+    }
+
+
+def _reconciled_npm_override(selector: str, current: object, rendered: dict) -> object:
+    name = _runtime_dependency_from_selector(selector)
+    if name is None:
+        return _reconcile_npm_overrides(current, rendered)
+    desired = rendered.get(name)
+    if desired is None:
+        return _reconcile_npm_overrides(current, rendered)
+    return _replace_npm_override_value(current, desired, rendered)
+
+
+def _replace_npm_override_value(
+    current: object, desired: object, rendered: dict
+) -> object:
+    if not isinstance(current, dict):
+        return desired
+    children = _reconcile_npm_override_map(current, rendered)
+    return {**children, ".": desired}
+
+
 def _runtime_dependency_from_selector(selector: str) -> str | None:
+    target = _selector_target_package(selector)
     for name in _FRONTEND_RUNTIME_DEPENDENCIES:
-        if _selector_targets_dependency(selector, name):
+        if target == name:
             return name
     return None
 
 
-def _selector_targets_dependency(selector: str, name: str) -> bool:
-    prefix = r"(?:^|[/ >])"
-    version = r"(?:@[^/ >]+)?$"
-    return re.search(f"{prefix}{re.escape(name)}{version}", selector) is not None
+def _selector_target_package(selector: str) -> str:
+    """Extract the selected package from npm, Yarn, or pnpm selector syntax."""
+    descendant = selector.rsplit(">", maxsplit=1)[-1]
+    segments = descendant.split("/")
+    if len(segments) >= 2 and segments[-2].startswith("@"):
+        return _strip_selector_version("/".join(segments[-2:]))
+    return _strip_selector_version(segments[-1])
+
+
+def _strip_selector_version(package: str) -> str:
+    separator = package.rfind("@")
+    if separator <= 0:
+        return package
+    return package[:separator]
 
 
 def _find_runtime_requirement(content: str) -> str | None:

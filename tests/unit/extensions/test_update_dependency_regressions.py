@@ -211,10 +211,25 @@ def test_frontend_merge_reconciles_runtime_pins_in_secondary_maps():
         "peerDependencies": {"next": "^14"},
         "overrides": {
             "next@^14": {".": "14.2.0", "sharp": "0.33.5"},
+            "plugin": {
+                "next": "14.2.0",
+                "@scope/next": "9.9.9",
+            },
+            "@scope/next": "9.9.9",
             "react": "18.3.1",
         },
-        "resolutions": {"**/@kamiwaza-ai/extensions-lib": "0.4.9"},
-        "pnpm": {"overrides": {"next@*": "14.2.0", "react": "18.3.1"}},
+        "resolutions": {
+            "**/@kamiwaza-ai/extensions-lib": "0.4.9",
+            "**/next": "14.2.0",
+            "**/@scope/next": "9.9.9",
+        },
+        "pnpm": {
+            "overrides": {
+                "next@*": "14.2.0",
+                "@scope/next": "9.9.9",
+                "react": "18.3.1",
+            }
+        },
     }
     merged = {**rendered, **existing}
 
@@ -228,11 +243,21 @@ def test_frontend_merge_reconciles_runtime_pins_in_secondary_maps():
     assert package["peerDependencies"]["next"] == "15.5.24"
     assert package["overrides"] == {
         "next@^14": {".": "15.5.24", "sharp": "0.33.5"},
+        "plugin": {
+            "next": "15.5.24",
+            "@scope/next": "9.9.9",
+        },
+        "@scope/next": "9.9.9",
         "react": "18.3.1",
     }
-    assert package["resolutions"]["**/@kamiwaza-ai/extensions-lib"] == (">=0.5 <0.6")
+    assert package["resolutions"] == {
+        "**/@kamiwaza-ai/extensions-lib": ">=0.5 <0.6",
+        "**/next": "15.5.24",
+        "**/@scope/next": "9.9.9",
+    }
     assert package["pnpm"]["overrides"] == {
         "next@*": "15.5.24",
+        "@scope/next": "9.9.9",
         "react": "18.3.1",
     }
 
