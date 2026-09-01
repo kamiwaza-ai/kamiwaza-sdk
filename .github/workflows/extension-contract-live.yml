@@ -46,6 +46,17 @@ jobs:
   contract:
     name: Extension contract (live cluster)
     runs-on: ubuntu-latest
+    # The fixture provisioner targets a fixed package/dataset/index namespace.
+    # Serialize all live runs (cron, manual, and in-repo PRs) so one run's
+    # teardown cannot remove resources another run is still exercising.
+    concurrency:
+      group: sdk-extension-contract-live
+      cancel-in-progress: false
+    env:
+      # Job-level env is intentional: GitHub Actions does not allow the
+      # `secrets` context directly in a step-level `if` expression.
+      M5_TEST_KUBECTL: ${{ secrets.M5_TEST_KUBECTL }}
+      M5_TEST_NETWORK_POLICY_REQUIRED: ${{ secrets.M5_TEST_NETWORK_POLICY_REQUIRED }}
     # 30-min ceiling: deploy probes default to 900s and HTTP probes to 180s;
     # without this the job could run for hours on a stuck cluster before
     # GitHub's 6-hour default cuts it. 30 min is generous for the install →
@@ -126,8 +137,6 @@ jobs:
         env:
           KAMIWAZA_BASE_URL: ${{ secrets.KAMIWAZA_BASE_URL }}
           KAMIWAZA_ADMIN_TOKEN: ${{ secrets.KAMIWAZA_API_KEY }}
-          M5_TEST_KUBECTL: ${{ secrets.M5_TEST_KUBECTL }}
-          M5_TEST_NETWORK_POLICY_REQUIRED: ${{ secrets.M5_TEST_NETWORK_POLICY_REQUIRED }}
         run: |
           # The provisioner creates all three exact wheel versions, publishes
           # the deterministic dataset, and exports the allowlisted HTTP URL
@@ -150,9 +159,7 @@ jobs:
           uv run pytest tests/integration/gate_packages/ -v --tb=short
 
       - name: Tear down gate-package fixture
-        if: always() && steps.probe.outputs.available == 'true' && secrets.M5_TEST_KUBECTL != ''
-        env:
-          M5_TEST_KUBECTL: ${{ secrets.M5_TEST_KUBECTL }}
+        if: always() && steps.probe.outputs.available == 'true' && env.M5_TEST_KUBECTL != ''
         run: |
           uv run python -m tests.integration._gate_fixture teardown \
             --kubectl "${M5_TEST_KUBECTL}"
