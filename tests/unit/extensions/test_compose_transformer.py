@@ -4,7 +4,10 @@ from typing import Any, Dict
 
 import pytest
 
-from kamiwaza_extensions.compose_transformer import ComposeTransformer
+from kamiwaza_extensions.compose_transformer import (
+    ComposeTransformer,
+    resolve_compose_value,
+)
 
 
 @pytest.fixture
@@ -463,6 +466,29 @@ class TestResolveEnvPlaceholders:
     """``resolve_env_placeholders`` collapses ``${VAR:-default}`` env
     placeholders to their default, drops unresolvable forms, and drops
     ``KAMIWAZA_*`` keys (so the operator's ConfigMap envFrom wins)."""
+
+    def test_process_resolution_handles_unbraced_defaults_and_escape(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("KZ_TEST_PROCESS", "serve")
+        monkeypatch.delenv("KZ_TEST_MISSING", raising=False)
+
+        resolved = resolve_compose_value(
+            "$KZ_TEST_PROCESS ${KZ_TEST_MISSING:-fallback} $$(LITERAL)",
+            resolve_unbraced=True,
+        )
+
+        assert resolved == "serve fallback $(LITERAL)"
+
+    def test_process_resolution_rejects_missing_unbraced_variable(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("KZ_TEST_MISSING", raising=False)
+
+        assert (
+            resolve_compose_value("$KZ_TEST_MISSING", resolve_unbraced=True)
+            is None
+        )
 
     def test_resolves_default_substitution_dict_form(self, transformer):
         compose = {

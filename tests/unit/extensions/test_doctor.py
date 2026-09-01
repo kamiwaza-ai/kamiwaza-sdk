@@ -717,6 +717,38 @@ class TestDoctorExtensionChecks:
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_cli_version(">=99.0.0")
         assert result.status == "fail"
+        assert "bundles a compatible kz-ext capability" in result.fix
+        assert "kamiwaza-sdk>=99.0.0" not in result.fix
+
+    def test_extension_context_rejects_undeclared_compose_capability(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "kamiwaza.json").write_text(
+            json.dumps(
+                {
+                    "name": "capability-test",
+                    "kz_ext_version": ">=0.1.0,<1.0.0",
+                }
+            )
+        )
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n  app:\n    command: [serve]\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+
+        results = checker._check_extension_context()
+
+        compatibility = next(
+            result
+            for result in results
+            if result.name == "CLI version compatibility"
+        )
+        assert compatibility.status == "fail"
+        assert "compose.services.*.command requires kz_ext_version '>=0.2.0'" in (
+            compatibility.message
+        )
+        assert "Raise kz_ext_version" in compatibility.fix
 
     def test_python_runtime_lib_found(self, tmp_path):
         req_file = tmp_path / "requirements.txt"

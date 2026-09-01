@@ -12,6 +12,15 @@ from rich.console import Console
 console = Console(stderr=True)
 
 
+def _enforce_cli_contract() -> None:
+    """Stop before local Compose inspection/build on a tooling mismatch."""
+    from kamiwaza_extensions.contract_enforcement import enforce_cli_contract
+    from kamiwaza_extensions.extension_detector import ExtensionDetector
+
+    info = ExtensionDetector().detect()
+    enforce_cli_contract(info.metadata or {}, info.compose_data, console=console)
+
+
 def run_dev_local(
     *,
     detach: bool,
@@ -22,6 +31,7 @@ def run_dev_local(
     from kamiwaza_extensions.dev_local import DevLocalRunner
     from kamiwaza_extensions_lib.local_dev import LocalDevAuthError
 
+    _enforce_cli_contract()
     runner = DevLocalRunner()
     try:
         exit_code = runner.run(detach=detach, sdk_repo=sdk_repo, auth=auth)

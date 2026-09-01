@@ -83,6 +83,26 @@ class TestBuild:
         assert len(primaries) == 1
         assert primaries[0].name == "frontend"
 
+    def test_explicit_x_kamiwaza_primary_overrides_service_order(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "etcd": {"image": "etcd:3.6", "ports": ["2379"]},
+                "standalone": {
+                    "image": "milvusdb/milvus:v2.5.27",
+                    "ports": ["19530"],
+                    "x-kamiwaza": {"primary": True},
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "test")
+
+        assert [service.name for service in payload.services if service.primary] == [
+            "standalone"
+        ]
+
     def test_ports_parsed(self, builder, metadata, transformed_compose, connection):
         payload = builder.build(metadata, transformed_compose, connection, "test")
         fe = next(s for s in payload.services if s.name == "frontend")
@@ -759,6 +779,144 @@ class TestEnvParsing:
 
 
 class TestServiceOverrides:
+    def test_compose_process_fields_map_to_kubernetes_command_and_args(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "milvus": {
+                    "image": "milvusdb/milvus:v2.5.27",
+                    "entrypoint": [
+                        "sh",
+                        "-c",
+                        "exec milvus --config=$${MILVUS_CONFIG}",
+                    ],
+                    "command": ["--config", "/etc/milvus.yaml"],
+                },
+                "etcd": {
+                    "image": "cgr.dev/chainguard/etcd:latest",
+                    "entrypoint": "sh -c 'exec wrapper --flag value'",
+                    "command": "etcd --data-dir /etcd",
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        services = {svc.name: svc for svc in payload.services}
+
+        assert services["milvus"].command == [
+            "sh",
+            "-c",
+            "exec milvus --config=$${MILVUS_CONFIG}",
+        ]
+        assert services["milvus"].args == ["--config", "/etc/milvus.yaml"]
+        assert services["etcd"].command == [
+            "sh",
+            "-c",
+            "exec wrapper --flag value",
+        ]
+        assert services["etcd"].args == ["etcd", "--data-dir", "/etcd"]
+
+    def test_compose_process_fields_resolve_host_variables(
+        self, builder, metadata, connection, monkeypatch
+    ):
+        monkeypatch.setenv(
+            "KZ_TEST_APP_ARGS", "--port 9999 --probe=$(CONTAINER_PROBE_PORT)"
+        )
+        monkeypatch.setenv("KZ_TEST_BIND_ADDRESS", "0.0.0.0")
+        monkeypatch.delenv("KZ_TEST_MISSING_BIND_ADDRESS", raising=False)
+        transformed = {
+            "services": {
+                "app": {
+                    "image": "registry.test/app:dev",
+                    "entrypoint": "python app.py $KZ_TEST_APP_ARGS",
+                    "command": [
+                        "serve",
+                        "--host=$KZ_TEST_BIND_ADDRESS",
+                        "--fallback=${KZ_TEST_MISSING_BIND_ADDRESS:-$KZ_TEST_BIND_ADDRESS}",
+                        "--literal=$$(CONTAINER_VALUE)",
+                    ],
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        assert payload.services[0].command == [
+            "python",
+            "app.py",
+            "--port",
+            "9999",
+            "--probe=$$(CONTAINER_PROBE_PORT)",
+        ]
+        assert payload.services[0].args == [
+            "serve",
+            "--host=0.0.0.0",
+            "--fallback=0.0.0.0",
+            "--literal=$$(CONTAINER_VALUE)",
+        ]
+
+    def test_compose_dollar_escapes_survive_kubelet_expansion(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "command": ["sh", "-c", "printf '%s' $$$$LITERAL"],
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        assert payload.services[0].args == [
+            "sh",
+            "-c",
+            "printf '%s' $$$$LITERAL",
+        ]
+
+    @pytest.mark.parametrize(
+        "command_value",
+        ["${KZ_TEST_MISSING_COMMAND:?required}", "$KZ_TEST_MISSING_COMMAND"],
+    )
+    def test_unresolvable_process_variable_names_service_and_field(
+        self, builder, metadata, connection, monkeypatch, command_value
+    ):
+        monkeypatch.delenv("KZ_TEST_MISSING_COMMAND", raising=False)
+        transformed = {
+            "services": {
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "command": ["run", command_value],
+                },
+            }
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="service 'worker': command contains an unresolvable Compose variable",
+        ):
+            builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+    def test_invalid_process_string_names_service_and_field(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "entrypoint": "sh -c 'unterminated",
+                },
+            }
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="service 'worker': invalid entrypoint string: No closing quotation",
+        ):
+            builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
     def test_x_kamiwaza_overrides_are_carried_into_service_spec(
         self, builder, metadata, connection
     ):

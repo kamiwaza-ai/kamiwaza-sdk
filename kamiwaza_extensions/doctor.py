@@ -338,6 +338,32 @@ class CheckResult:
     exit_code: Optional[int] = None
 
 
+def _check_extension_cli_contract(metadata: dict, ext_dir: Path) -> CheckResult:
+    """Report runtime capability compatibility without growing doctor orchestration."""
+    from kamiwaza_extensions.extension_detector import ExtensionDetector
+    from kamiwaza_extensions.validators.metadata import check_cli_contract
+
+    compose_data = ExtensionDetector().detect(ext_dir).compose_data
+    errors = check_cli_contract(metadata, compose_data)
+    if errors:
+        return CheckResult(
+            "CLI version compatibility",
+            "fail",
+            "; ".join(errors),
+            fix=(
+                "Raise kz_ext_version to the required capability floor or remove "
+                "the unsupported manifest/Compose feature."
+            ),
+        )
+
+    declared = metadata["kz_ext_version"]
+    return CheckResult(
+        "CLI version compatibility",
+        "pass",
+        f"{__version__} matches {declared}",
+    )
+
+
 class DoctorChecker:
     """Runs diagnostic checks on the development environment."""
 
@@ -1179,11 +1205,10 @@ class DoctorChecker:
         except (json.JSONDecodeError, FileNotFoundError):
             return results
 
+        ext_dir = metadata_path.parent
         kz_ext_version = data.get("kz_ext_version")
         if kz_ext_version:
-            results.append(self._check_cli_version(kz_ext_version))
-
-        ext_dir = metadata_path.parent
+            results.append(_check_extension_cli_contract(data, ext_dir))
 
         # Python runtime lib
         req_file = ext_dir / "requirements.txt"
@@ -1215,7 +1240,10 @@ class DoctorChecker:
                 "CLI version compatibility",
                 "fail",
                 f"{__version__} does not match {specifier_str}",
-                fix=f"Install a compatible version: pip install 'kamiwaza-sdk{specifier_str}'",
+                fix=(
+                    "Install a kamiwaza-sdk release that bundles a compatible "
+                    "kz-ext capability; see the distribution mapping in the SDK README."
+                ),
             )
         except (InvalidSpecifier, InvalidVersion) as exc:
             return CheckResult(

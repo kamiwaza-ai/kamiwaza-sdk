@@ -43,6 +43,11 @@ class TestRegistryShape:
     def test_manifests_cover_all_three_shapes(self):
         assert set(MANIFESTS.keys()) == {"app", "tool", "service"}
 
+    def test_template_revision_is_independent_from_cli_capability(self):
+        assert {manifest.template_version for manifest in MANIFESTS.values()} == {
+            "0.1.0"
+        }
+
     @pytest.mark.parametrize("shape", ["app", "tool", "service"])
     def test_manifest_is_typed(self, shape: str):
         m = MANIFESTS[shape]

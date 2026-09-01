@@ -51,7 +51,7 @@ kz-ext update [--dry-run] [--force] [--non-interactive] [--bootstrap]
 
 ## Known limitations (M2)
 
-- **`compatibility.json.cli_version` is hand-maintained.** A unit test asserts coherence with `kamiwaza_extensions.__version__`, but the JSON itself isn't auto-generated at build time.
+- **`compatibility.json.cli_version` is hand-maintained.** Unit tests assert coherence with `kamiwaza_extensions.__version__` and require each known manifest or Compose contract in `manifest_capabilities` and `compose_capabilities` to declare a supported floor, but the JSON itself isn't auto-generated at build time. This CLI-capability version is independent from both the `kamiwaza-sdk` distribution version and `template_version`; bump it when the CLI learns a new extension contract.
 - **`--non-interactive` exits non-zero on the first conflict.** This is the documented contract — see [Errors](#errors). If you need partial-update semantics in CI, run without `--non-interactive` against a stub TTY.
 - **Hash-based clean detection requires a `--bootstrap` for old scaffolds** that predate `template_file_hashes`. Without recorded hashes, `update` cannot tell "unchanged since scaffold" from "edited" and routes everything through the conflict path. One-time cost per scaffold.
 
@@ -59,6 +59,10 @@ kz-ext update [--dry-run] [--force] [--non-interactive] [--bootstrap]
 
 - It never deploys, builds, pushes, or modifies cluster state. That's `kz-ext dev`.
 - It never bumps your extension's `version` field — only `template_version`, which describes which scaffold version your project is reconciled against.
+- It never changes the author-owned `kz_ext_version` range. When you add a
+  manifest or Compose capability that requires a newer CLI, raise that lower
+  bound manually before running `update` or another lifecycle command (for
+  example, `>=0.2.0,<1.0.0` for the 0.2 capability set).
 - It never deletes author-owned files. The author-owned deny-list in `template_manifest.py` is opt-out by design — anything not template-owned stays put.
 
 ## Recovery
