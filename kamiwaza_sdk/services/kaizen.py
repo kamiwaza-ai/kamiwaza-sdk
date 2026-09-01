@@ -484,6 +484,32 @@ def _is_transient_resolve_error(exc: KamiwazaError, *, workroom_scoped: bool) ->
     return status in _TRANSIENT_RESOLVE_STATUSES
 
 
+def _resolve_url_and_probe(
+    client,
+    extension_name: str,
+    *,
+    workroom_id: Optional[Union[str, object]],
+    public: bool,
+) -> Tuple[str, str]:
+    """Resolve the URL to return and the URL to probe for readiness.
+
+    The readiness probe rides the credentialed platform client, which refuses
+    off-host URLs so it cannot leak the bearer. A public endpoint may be
+    off-host (it is browser-facing), so readiness is probed against the
+    same-host ingress — the route the backend actually serves on — while the
+    caller still gets whichever URL it asked for.
+    """
+    url = resolve_base_url(
+        client, extension_name, workroom_id=workroom_id, public=public
+    )
+    if not public:
+        return url, url
+    probe_url = resolve_base_url(
+        client, extension_name, workroom_id=workroom_id, public=False
+    )
+    return url, probe_url
+
+
 def wait_for_base_url(
     client,
     extension_name: str = "kaizen",
@@ -541,20 +567,8 @@ def wait_for_base_url(
     while True:
         attempts += 1
         try:
-            url = resolve_base_url(
+            url, probe_url = _resolve_url_and_probe(
                 client, extension_name, workroom_id=workroom_id, public=public
-            )
-            # The readiness probe rides the credentialed platform client, which
-            # refuses off-host URLs (it won't leak the bearer). The public URL
-            # may be off-host (browser-facing), so probe the same-host ingress
-            # endpoint — the route the backend actually serves on — and return
-            # whichever URL the caller asked for.
-            probe_url = (
-                url
-                if not public
-                else resolve_base_url(
-                    client, extension_name, workroom_id=workroom_id, public=False
-                )
             )
         except (ValueError, NotFoundError) as exc:
             last_err = f"{_URL_STAGE}: {exc}"
