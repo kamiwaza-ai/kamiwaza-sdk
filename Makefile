@@ -1,4 +1,4 @@
-.PHONY: sync test test-unit test-live test-next-runtime-canary lint format type-check build clean docs help
+.PHONY: sync test test-unit test-live test-diffusion-live test-next-runtime-canary lint format type-check build clean docs help
 
 # Default target
 help:
@@ -8,6 +8,7 @@ help:
 	@echo "  test-unit  - Run unit tests only"
 	@echo "  test-live  - Run live integration tests"
 	@echo "  test-next-runtime-canary - Validate the pinned dual-artifact Next runtime"
+	@echo "  test-diffusion-live - Run portable, Qwen, masked-edit, and eligible split-GPU diffusion proof"
 	@echo "  lint       - Run ruff linter"
 	@echo "  format     - Format code with black and isort"
 	@echo "  type-check - Run mypy type checker"
@@ -31,6 +32,9 @@ test-live: sync
 
 test-next-runtime-canary:
 	./scripts/test-next-runtime-canary.sh
+
+test-diffusion-live: sync
+	scripts/run_diffusion_live.sh
 
 # Code quality
 lint: sync
