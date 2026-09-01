@@ -14,6 +14,7 @@ import {
 } from "./shared";
 
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
+const RAW_USERINFO_RE = /^[\u0000-\u0020]*[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i;
 
 type AppPathUrlInput = Readonly<{
     value: string;
@@ -77,6 +78,12 @@ function normalizeAppPathUrl(input: AppPathUrlInput): string {
         value: input.value,
         field: "KAMIWAZA_APP_PATH_URL",
     });
+    if (RAW_USERINFO_RE.test(input.value)) {
+        throw new Error(
+            `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +
+                `KAMIWAZA_APP_PATH: ${JSON.stringify(input.value)}`,
+        );
+    }
     if (hasUnexpectedUrlComponents(parsed)) {
         throw new Error(
             `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +

@@ -420,6 +420,15 @@
       "expect_error": true
     },
     {
+      "name": "path_mode_app_path_url_with_empty_userinfo_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_PATH_URL": "\thttps://@host.example/runtime/apps/550e8400"
+      },
+      "expect_error": true
+    },
+    {
       "name": "path_mode_app_path_url_with_query_fails",
       "env": {
         "KAMIWAZA_ROUTING_MODE": "path",

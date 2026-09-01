@@ -4,6 +4,7 @@ const SENTINEL_FAMILY_RE = /__KZ_RUNTIME_BASE_[0-9A-F]+__/;
 const SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
+const RAW_USERINFO_RE = /^[\u0000-\u0020]*[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i;
 const INVALID_SEGMENTS = new Set(["", ".", "." + "."]);
 const MAX_PATH_LENGTH = 512;
 const MAX_SEGMENT_LENGTH = 128;
@@ -96,6 +97,12 @@ function hasUnexpectedUrlComponents(parsed) {
 }
 
 function assertAppPathUrl(parsed, appPath, appPathUrl) {
+    if (RAW_USERINFO_RE.test(appPathUrl)) {
+        throw new Error(
+            `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +
+                `KAMIWAZA_APP_PATH: ${JSON.stringify(appPathUrl)}`,
+        );
+    }
     if (hasUnexpectedUrlComponents(parsed)) {
         throw new Error(
             `KAMIWAZA_APP_PATH_URL must be the public origin plus ` +

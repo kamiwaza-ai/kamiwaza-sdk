@@ -185,28 +185,26 @@ function scopeSetCookie(cookie: string, appPath: string): string {
 function rebaseLocation(
     headers: Headers,
     appPath: string,
-    target: string,
+    configuredTarget: URL,
+    upstreamTarget: URL,
 ): boolean {
     const location = headers.get("location");
     if (location == null) {
         return true;
     }
-    const configuredTarget = new URL(target);
-    const targetPath = configuredTarget.pathname.replace(/\/+$/, "");
-    if (location.startsWith("/") && !location.startsWith("//")) {
-        const redirected = new URL(location, configuredTarget);
-        const redirectPath = stripOnce(redirected.pathname, targetPath).replace(
-            /^\/+/,
-            "/",
-        );
-        const local = `${redirectPath}${redirected.search}${redirected.hash}`;
-        headers.set("location", withAppPath(local, appPath));
-        return true;
-    }
-    if (!URL.canParse(location)) {
+    if (location.startsWith("//")) {
         return false;
     }
-    const redirected = new URL(location);
+    if (/[\s\\]/.test(location)) {
+        return false;
+    }
+    const targetPath = configuredTarget.pathname.replace(/\/+$/, "");
+    let redirected: URL;
+    try {
+        redirected = new URL(location, upstreamTarget);
+    } catch {
+        return false;
+    }
     if (redirected.origin !== configuredTarget.origin) {
         return false;
     }
@@ -222,7 +220,7 @@ function makeHandler(
     runtimeAppPath: string,
 ): RouteHandler {
     // Pre-parse the target to fail fast on bad config
-    new URL(config.target);
+    const configuredTarget = new URL(config.target);
 
     return async (request: NextRequest) => {
         const url = new URL(request.url);
@@ -269,7 +267,14 @@ function makeHandler(
 
         // Stream the response back, filtering sensitive headers.
         const responseHeaders = new Headers(filterResponseHeaders(upstream.headers));
-        if (!rebaseLocation(responseHeaders, runtimeAppPath, config.target)) {
+        if (
+            !rebaseLocation(
+                responseHeaders,
+                runtimeAppPath,
+                configuredTarget,
+                new URL(target),
+            )
+        ) {
             return new Response("Bad Gateway: untrusted upstream redirect", {
                 status: 502,
                 headers: { "cache-control": "no-store" },

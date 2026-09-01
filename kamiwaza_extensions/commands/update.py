@@ -1042,44 +1042,34 @@ def _merge_dockerignore(existing_content: str, new_content: str) -> str:
     """Add template ignore rules without discarding author exclusions.
 
     Docker ignore order is significant, so retain the existing file byte-for-byte
-    and append only missing template rules. Re-append explicit author negations
-    afterward so a rule such as ``!.env.production`` keeps its original intent
-    under Docker's last-match-wins semantics.
+    and append only missing template rules. Replay the complete ordered author
+    rules afterward so Docker's last-match-wins semantics remain unchanged.
     """
-    author_rules = [
-        line.strip()
-        for line in existing_content.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
+    author_rules = _dockerignore_rules(existing_content)
     existing_rules = set(author_rules)
     additions = [
-        line.strip()
-        for line in new_content.splitlines()
-        if line.strip()
-        and not line.lstrip().startswith("#")
-        and line.strip() not in existing_rules
+        rule for rule in _dockerignore_rules(new_content) if rule not in existing_rules
     ]
     if not additions:
         return existing_content
-    repeated_negations = [rule for rule in author_rules if rule.startswith("!")]
     newline = "\r\n" if "\r\n" in existing_content else "\n"
     separator = "" if existing_content.endswith(("\n", "\r")) else newline
-    suffix = additions + repeated_negations
+    suffix = additions + author_rules
     return existing_content + separator + newline.join(suffix) + newline
+
+
+def _dockerignore_rules(content: str) -> list[str]:
+    return [
+        line.strip()
+        for line in content.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
 
 
 def _dockerignore_adds_env_exclusion(existing_content: str, new_content: str) -> bool:
     """Whether this merge newly makes the template's broad ``.env*`` rule active."""
-    existing_rules = {
-        line.strip()
-        for line in existing_content.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
-    new_rules = {
-        line.strip()
-        for line in new_content.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
+    existing_rules = set(_dockerignore_rules(existing_content))
+    new_rules = set(_dockerignore_rules(new_content))
     return ".env*" in new_rules and ".env*" not in existing_rules
 
 

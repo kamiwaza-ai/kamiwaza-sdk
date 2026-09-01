@@ -95,6 +95,20 @@ describe("getKamiwazaRuntimeServer", () => {
         ).toThrow(/invalid public app URL for path routing/i);
     });
 
+    it.each([
+        "https://@host.example/runtime/apps/x",
+        "https://:@host.example/runtime/apps/x",
+        "\thttps://@host.example/runtime/apps/x",
+    ])("rejects empty userinfo in the public path URL: %s", (appPathUrl) => {
+        expect(() =>
+            getKamiwazaRuntimeServer({
+                KAMIWAZA_ROUTING_MODE: "path",
+                KAMIWAZA_APP_PATH: "/runtime/apps/x",
+                KAMIWAZA_APP_PATH_URL: appPathUrl,
+            } as NodeJS.ProcessEnv),
+        ).toThrow(/must be the public origin plus/i);
+    });
+
     it("ignores a mismatched forwarded prefix (env is authoritative)", () => {
         const runtime = getKamiwazaRuntimeServer(PATH_ENV, "/runtime/apps/other");
         expect(runtime.appPath).toBe("/runtime/apps/550e8400");

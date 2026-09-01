@@ -268,6 +268,17 @@ describe("createProxyHandlers redirects and target paths", () => {
         );
     });
 
+    it.each([
+        ["login", `${APP}/login`],
+        ["?next=1", `${APP}/session?next=1`],
+        ["#section", `${APP}/session#section`],
+    ])("resolves a relative upstream redirect: %s", async (location, expected) => {
+        fetchSpy.mockResolvedValue(upstream("", { location }));
+        const { GET } = createProxyHandlers({ target: TARGET });
+        const response = await GET(new Request(`http://localhost${APP}/session`));
+        expect(response.headers.get("location")).toBe(expected);
+    });
+
     it("rebases absolute redirects back to the trusted target origin", async () => {
         fetchSpy.mockResolvedValue(
             upstream("", { location: `${TARGET}/v1/login?next=%2Fdashboard` }),

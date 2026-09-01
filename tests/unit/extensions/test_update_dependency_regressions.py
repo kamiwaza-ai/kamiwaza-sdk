@@ -275,9 +275,21 @@ def test_dockerignore_merge_preserves_crlf():
 
 
 def test_dockerignore_merge_preserves_author_negation_precedence():
-    existing = "# build-time public config\n!.env.production\n"
+    existing = "\n".join(
+        (
+            "# build-time public config",
+            "*.env",
+            "!*.example.env",
+            "secret.example.env",
+            "",
+        )
+    )
     rendered = "node_modules\n.next\n.env*\n.git\n"
 
     merged = _merge_dockerignore(existing, rendered)
 
-    assert merged.splitlines()[-1] == "!.env.production"
+    assert merged.splitlines()[-3:] == [
+        "*.env",
+        "!*.example.env",
+        "secret.example.env",
+    ]
