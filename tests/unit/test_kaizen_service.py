@@ -2261,3 +2261,76 @@ def test_conversation_contract_rejects_an_unknown_identity_directly():
     args = SimpleNamespace(extension_name="kaizen-next")
     with pytest.raises(SystemExit, match="not a known Kaizen catalog identity"):
         kaizen_turns.conversation_contract(args)
+
+
+def test_wait_for_base_url_accepts_relative_endpoint_from_platform(monkeypatch):
+    # A real client, because the point is that the credentialed readiness probe
+    # resolves a path-only endpoint against the platform origin rather than
+    # refusing it as off-host.
+    from kamiwaza_sdk.client import KamiwazaClient
+
+    relative = "/runtime/apps/kaizen-ddd84430"
+    client = KamiwazaClient(base_url="https://testhelm.kamiwaza.dev/api")
+    client._extensions = SimpleNamespace(
+        get_extension=lambda name: SimpleNamespace(
+            endpoints=SimpleNamespace(external=relative, public_api_url=None)
+        )
+    )
+    seen: list[str] = []
+
+    def fake_request(method, url, **kwargs):
+        seen.append(url)
+        return SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+            json=lambda: {"agents": []},
+        )
+
+    monkeypatch.setattr(client.session, "request", fake_request)
+
+    assert wait_for_base_url(client, "kaizen", timeout_seconds=0) == relative
+    assert seen == [
+        "https://testhelm.kamiwaza.dev/runtime/apps/kaizen-ddd84430/api/agents"
+    ]
+
+
+def test_wait_for_base_url_timeout_names_the_url_stage():
+    unpublished = SimpleNamespace(
+        endpoints=SimpleNamespace(external=None, public_api_url=None)
+    )
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=lambda name: unpublished)
+    )
+
+    with pytest.raises(TimeoutError, match="could not determine the extension's URL"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)
+
+
+def test_wait_for_base_url_timeout_names_the_serving_stage():
+    def always_503(*_a, **_k):
+        raise APIError("no healthy upstream", status_code=503)
+
+    client = _serving_client(always_503)
+    with pytest.raises(TimeoutError, match="extension not ready"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)
+
+
+def test_wait_for_base_url_does_not_retry_offhost_probe_refusal(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # The credential guard's refusal is deterministic; retrying it would spend
+    # the whole budget and then report the wrong stage.
+    attempts = []
+
+    def refuse(*_a, **_k):
+        attempts.append(1)
+        raise ValueError("base_url '...' is not on the platform host '...'")
+
+    client = _serving_client(refuse)
+    with pytest.raises(ValueError, match="not on the platform host"):
+        wait_for_base_url(client, "kaizen", poll_interval_seconds=0)
+
+    assert len(attempts) == 1

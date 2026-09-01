@@ -64,3 +64,51 @@ def test_request_base_url_override_rejects_foreign_host(
         client._request("POST", "api/agents/", base_url="https://evil.example/kaizen")
 
     assert seen == []
+
+
+def test_request_base_url_override_resolves_relative_extension_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    # The platform reports an in-cluster extension as a path. It is same-origin,
+    # so the bearer is safe, and it must be joined onto the platform origin —
+    # not the /api prefix — to be issuable.
+    client._request("POST", "api/agents", base_url="/runtime/apps/kaizen-ddd84430")
+
+    assert seen == ["https://example.test/runtime/apps/kaizen-ddd84430/api/agents"]
+
+
+def test_request_base_url_override_rejects_protocol_relative_foreign_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    # //evil.example parses with a netloc, so it is a host reference, not a
+    # same-origin path — the guard must still refuse it.
+    with pytest.raises(ValueError, match="not on the platform host"):
+        client._request("POST", "api/agents", base_url="//evil.example/kaizen")
+
+    assert seen == []
+
+
+def test_request_base_url_override_rejects_scheme_downgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    with pytest.raises(ValueError, match="not on the platform host"):
+        client._request("POST", "api/agents", base_url="http://example.test/kaizen")
+
+    assert seen == []
+
+
+def test_request_base_url_override_rejects_empty_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    with pytest.raises(ValueError, match="base_url override is empty"):
+        client._request("POST", "api/agents", base_url="")
+
+    assert seen == []

@@ -282,7 +282,9 @@ def cmd_resolve_kaizen_url(args: argparse.Namespace, *, client) -> Optional[dict
             timeout_seconds=args.timeout,
             poll_interval_seconds=args.poll_interval,
         )
-    except (TimeoutError, AmbiguousExtensionError) as exc:
+    except (TimeoutError, AmbiguousExtensionError, ValueError) as exc:
+        # ValueError = the resolved endpoint is off-host and the credential
+        # guard refused it; a bare traceback would bury that in the seed log.
         raise SystemExit(str(exc))
     if args.raw:
         print(url)

@@ -791,6 +791,32 @@ class KamiwazaClient:
             response_text=response.text,
         )
 
+    def _absolutize_base_url(self, base_url: str) -> str:
+        """Resolve a path-only base_url against the platform origin.
+
+        The platform reports an in-cluster extension's endpoint as a path such
+        as ``/runtime/apps/<deployment-id>``. That form is same-origin, so it
+        cannot leak the bearer, but it is unusable as a request root — joining
+        an endpoint onto it yields a relative URL ``requests`` cannot issue.
+        Anything carrying a scheme or a netloc (including protocol-relative
+        ``//host/x``) is left untouched for :meth:`_assert_same_host` to judge.
+
+        A blank base_url is a caller that failed to resolve an endpoint; it
+        would otherwise absolutize to the platform root and silently send an
+        extension call to the platform API.
+        """
+        from urllib.parse import urljoin, urlparse
+
+        if not base_url.strip():
+            raise ValueError(
+                "base_url override is empty; resolve the extension's endpoint "
+                "or omit base_url to target the platform API."
+            )
+        parsed = urlparse(base_url)
+        if parsed.scheme or parsed.netloc:
+            return base_url
+        return urljoin(self.base_url, base_url)
+
     def _assert_same_host(self, base_url: str) -> None:
         """Require base_url to share the platform's scheme/host/port.
 
@@ -889,6 +915,7 @@ class KamiwazaClient:
         # ingress; it must stay same-host since the platform bearer is attached
         # to every request.
         if base_url is not None:
+            base_url = self._absolutize_base_url(base_url)
             self._assert_same_host(base_url)
         root = (base_url or self.base_url).rstrip("/")
         url = f"{root}/{endpoint.lstrip('/')}"

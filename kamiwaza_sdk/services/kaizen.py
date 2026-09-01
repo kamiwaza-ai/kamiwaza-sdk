@@ -445,6 +445,13 @@ def _is_serving(client, base_url: str, *, workroom_id) -> bool:
     return True
 
 
+# Which of the two startup stages the last attempt died in. The stage prefixes
+# the terminal TimeoutError so a nightly log alone separates "the extension's URL
+# could not be determined" from "the URL is known and the backend is not up".
+_URL_STAGE = "could not determine the extension's URL"
+_SERVING_STAGE = "extension not ready"
+
+
 # Statuses that are retryable regardless of resolve scope. The full policy
 # (no-status, 5xx, scoped 403) lives in _is_transient_resolve_error.
 _TRANSIENT_RESOLVE_STATUSES = frozenset({429})
@@ -496,6 +503,10 @@ def wait_for_base_url(
        upstream`` (ENG-7111). :func:`_is_serving` probes the backend and we keep
        polling until it answers, so the returned URL is immediately usable.
 
+    Only the resolve stage is retried on ``ValueError``; the same exception out
+    of the probe means the off-host credential guard refused the URL, which no
+    amount of waiting fixes.
+
     Mirrors ``serving.wait_deployment_ready``'s wait contract. A deterministic
     ``AmbiguousExtensionError`` is NOT retried — it propagates immediately rather
     than burning the full timeout on something that will never resolve.
@@ -514,10 +525,16 @@ def wait_for_base_url(
 
     Raises:
         TimeoutError: If the extension isn't serving within ``timeout_seconds``.
+            The message names which stage stalled — see :data:`_URL_STAGE` /
+            :data:`_SERVING_STAGE`.
+        ValueError: If the resolved endpoint is off-host, so the readiness probe
+            would send the platform bearer somewhere it cannot be confirmed
+            safe. Deterministic, so it surfaces at once rather than after the
+            full timeout.
     """
     deadline = time.monotonic() + timeout_seconds
     attempts = 0
-    last_err: object = "not resolvable yet"
+    last_err: object = f"{_URL_STAGE}: not resolvable yet"
     while True:
         attempts += 1
         try:
@@ -536,11 +553,8 @@ def wait_for_base_url(
                     client, extension_name, workroom_id=workroom_id, public=False
                 )
             )
-            if _is_serving(client, probe_url, workroom_id=workroom_id):
-                return url
-            last_err = "ingress published but backend not serving yet (503)"
         except (ValueError, NotFoundError) as exc:
-            last_err = exc
+            last_err = f"{_URL_STAGE}: {exc}"
         except (APIError, AuthorizationError) as exc:
             # resolve_base_url lists the workroom's extensions on the platform
             # API; on a freshly-installed box that call can transiently fail
@@ -558,7 +572,14 @@ def wait_for_base_url(
                 exc, workroom_scoped=workroom_id is not None
             ):
                 raise
-            last_err = exc
+            last_err = f"{_URL_STAGE}: {exc}"
+        else:
+            if _is_serving(client, probe_url, workroom_id=workroom_id):
+                return url
+            last_err = (
+                f"{_SERVING_STAGE}: ingress '{probe_url}' published but the backend "
+                "is not serving yet (5xx or no response)"
+            )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError(
