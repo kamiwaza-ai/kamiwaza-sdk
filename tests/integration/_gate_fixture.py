@@ -90,6 +90,9 @@ DATASET_DIR = "/app/tmp"
 DATASET_PATH = f"{DATASET_DIR}/eng10050-mini-clearance.csv"
 PUBLISH_ATTEMPTS = 3
 PUBLISH_DIGEST_MISMATCH_RC = 74
+# Set by workflows that explicitly provision before invoking pytest.  Manual
+# callers leave this unset and retain the convenient automatic provisioning.
+PREPROVISIONED_ENV = "M5_TEST_FIXTURE_PREPROVISIONED"
 
 REPO = Path(__file__).resolve().parents[2]
 STAGE = REPO / ".gate-fixture"
@@ -618,6 +621,13 @@ def provision(argv: list[str]) -> dict[str, str]:
 
 def auto_provision_from_env() -> dict[str, str]:
     """Provision only when an explicit kubectl command selects a test cluster."""
+    if os.getenv(PREPROVISIONED_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return {}
     kubectl = os.getenv("M5_TEST_KUBECTL", "").strip()
     if not kubectl:
         return {}

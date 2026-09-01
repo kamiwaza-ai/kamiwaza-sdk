@@ -168,6 +168,10 @@ jobs:
             [ -n "${name}" ] || continue
             export "${name}=${value}"
           done < <(sed -n '/^export /s/^export //' "${fixture_log}")
+          # Tell the integration session that this step already provisioned
+          # the fixture; it must not rebuild and republish it from conftest.
+          export M5_TEST_FIXTURE_PREPROVISIONED=1
+          echo "M5_TEST_FIXTURE_PREPROVISIONED=1" >> "${GITHUB_ENV}"
           uv run pytest tests/integration/gate_packages/ -v --tb=short
 
       - name: Tear down gate-package fixture
