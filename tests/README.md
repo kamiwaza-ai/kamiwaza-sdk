@@ -42,11 +42,19 @@ pytest -m integration --skip-diffusion
 Some live integration tests exercise admin-only mutation paths. For those tests, prefer supplying an admin-scoped PAT via `KAMIWAZA_API_KEY` instead of relying on the default session PAT minted from username/password bootstrap.
 
 Diffusion coverage is fail-closed and included in `pytest -m integration` by
-default. It deploys `hf-internal-testing/tiny-stable-diffusion-pipe`, performs
+default. It deploys `dg845/tiny-random-stable-diffusion`, performs
 real image inference, validates base64 PNG output and cleans up its deployment
 and config. Use `--skip-diffusion` or `KAMIWAZA_SKIP_DIFFUSION=1` only as an
 explicit operator choice; missing runtime images, host dependencies or model
 access are test failures rather than silent capability skips.
+
+`make test-diffusion-live` first sources `scripts/prepare_diffusion_live.sh`.
+On macOS it creates the checked-out platform's user-space `diffusion-venv` and
+verifies Metal/MPS. On Linux it builds the current CPU or NVIDIA runtime source,
+pushes it to the KZUAT registry, and exports the cluster-pullable image. Set
+`KAMIWAZA_PLATFORM_ROOT` when the platform checkout is not the SDK's sibling.
+An explicit `KAMIWAZA_TEST_DIFFUSION_IMAGE` remains available for ROCm, Intel,
+Spark, or fleet-specific images.
 
 The inference tests choose one model/engine/quantization target from the live
 cluster inventory. NVIDIA selects vLLM, complete Apple Silicon inventory selects

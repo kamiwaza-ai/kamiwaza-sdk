@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Final
 
-DEFAULT_DIFFUSION_REPO: Final = "hf-internal-testing/tiny-stable-diffusion-pipe"
+DEFAULT_DIFFUSION_REPO: Final = "dg845/tiny-random-stable-diffusion"
 SUPPORTED_BACKENDS: Final = frozenset(
     {
         "auto",

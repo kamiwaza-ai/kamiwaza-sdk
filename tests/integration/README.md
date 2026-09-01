@@ -23,7 +23,7 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_CONTEXT_LLM_REPO` | Higher-precedence required model override for context tests; readiness/deployment failures fail rather than skip | shared platform target |
 | `KAMIWAZA_CONTEXT_LLM_ENGINE` | Higher-precedence engine override for context tests | shared platform target |
 | `KAMIWAZA_CONTEXT_LLM_QUANTIZATION` | Quantization override for context tests | shared target, or `q6_k` with an explicit context repo |
-| `KAMIWAZA_TEST_DIFFUSION_REPO` | Required Hugging Face image model used for DiffusionEngine validation | `hf-internal-testing/tiny-stable-diffusion-pipe` |
+| `KAMIWAZA_TEST_DIFFUSION_REPO` | Required Hugging Face image model used for DiffusionEngine validation | `dg845/tiny-random-stable-diffusion` |
 | `KAMIWAZA_TEST_DIFFUSION_FAMILY` | Diffusion family passed in the test model config | `sd15` |
 | `KAMIWAZA_TEST_DIFFUSION_BACKEND` | Runtime backend (`auto`, CPU, CUDA/NVIDIA, ROCm/AMD, MLX/MPS, or Intel) | `auto` |
 | `KAMIWAZA_TEST_DIFFUSION_IMAGE` | Optional runtime image override for Linux/Kubernetes fleets | unset |
@@ -33,6 +33,12 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_TEST_DIFFUSION_GUIDANCE` | Guidance value for the live request | `1.0` |
 | `KAMIWAZA_TEST_DIFFUSION_TIMEOUT` | Deployment and inference timeout in seconds | `900` |
 | `KAMIWAZA_SKIP_DIFFUSION` | Explicitly opt out of diffusion validation | unset/false |
+
+For source-based user-space acceptance, source
+`scripts/prepare_diffusion_live.sh` before `pytest -m integration`, or run
+`make test-diffusion-live`. The script prepares the host runtime on macOS and
+builds/pushes the current CPU or NVIDIA engine image on Linux. Fleet-specific
+accelerators can supply a cluster-pullable `KAMIWAZA_TEST_DIFFUSION_IMAGE`.
 
 Unless the explicit shared target is configured, live model tests select vLLM
 for NVIDIA clusters, MLX only when every reported platform is Apple Silicon,
