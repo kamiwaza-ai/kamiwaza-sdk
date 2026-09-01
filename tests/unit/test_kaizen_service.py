@@ -27,6 +27,7 @@ from kamiwaza_sdk.services.kaizen import (
     agent_contract_for_extension,
     _CONVERSATIONS_PATH,
     _agent_error_from_events,
+    _endpoint_from_extension,
     _has_finish_action,
     _is_serving,
     _is_transient_resolve_error,
@@ -2334,3 +2335,29 @@ def test_wait_for_base_url_does_not_retry_offhost_probe_refusal(monkeypatch):
         wait_for_base_url(client, "kaizen", poll_interval_seconds=0)
 
     assert len(attempts) == 1
+
+
+@pytest.mark.parametrize("attr", ["external", "api_url", "public_api_url"])
+def test_endpoint_of_slash_is_treated_as_unpublished(attr):
+    # "/" rstrips to "", which downstream would read as an unusable root and
+    # abort the wait. It means the route exists but its path is not stamped yet,
+    # which is a state that clears on its own.
+    endpoints = SimpleNamespace(external=None, api_url=None, public_api_url=None)
+    setattr(endpoints, attr, "/")
+    assert _endpoint_from_extension(SimpleNamespace(endpoints=endpoints), public=False) is None
+
+
+def test_wait_for_base_url_polls_when_endpoint_is_slash(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(
+            get_extension=lambda name: SimpleNamespace(
+                endpoints=SimpleNamespace(external="/", public_api_url=None)
+            )
+        )
+    )
+
+    with pytest.raises(TimeoutError, match="could not determine the extension's URL"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)

@@ -103,6 +103,39 @@ def test_request_base_url_override_rejects_scheme_downgrade(
     assert seen == []
 
 
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "https://evil.example\\@example.test/kaizen",
+        "https://evil.example\\@example.test",
+        "https://evil.example\\.example.test/kaizen",
+    ],
+)
+def test_request_base_url_override_rejects_authority_confusion(
+    monkeypatch: pytest.MonkeyPatch, hostile: str
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    # urllib.parse splits userinfo at the last "@" and reports example.test,
+    # while the transport ends the authority at the backslash and connects to
+    # evil.example. The guard must agree with the transport, or the platform
+    # bearer is delivered off-host.
+    with pytest.raises(ValueError, match="not on the platform host"):
+        client._request("POST", "api/agents", base_url=hostile)
+
+    assert seen == []
+
+
+def test_request_base_url_override_allows_legitimate_userinfo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    client._request("POST", "api/agents", base_url="https://u:p@example.test/kaizen")
+
+    assert seen == ["https://u:p@example.test/kaizen/api/agents"]
+
+
 def test_request_base_url_override_rejects_empty_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

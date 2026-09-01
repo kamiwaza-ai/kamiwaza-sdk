@@ -337,8 +337,16 @@ def _endpoint_from_extension(extension, *, public: bool) -> Optional[str]:
     )
     for attr in order:
         value = getattr(endpoints, attr, None)
-        if value:
-            return str(value).rstrip("/")
+        if not value:
+            continue
+        # "/" survives the truthiness test and rstrips to "", which downstream
+        # reads as an unusable root rather than an absent one. Treat it as
+        # absent so the caller raises "no published endpoint yet" and keeps
+        # polling, which is what a route published before its path is stamped
+        # needs.
+        root = str(value).rstrip("/")
+        if root:
+            return root
     return None
 
 
@@ -503,9 +511,9 @@ def wait_for_base_url(
        upstream`` (ENG-7111). :func:`_is_serving` probes the backend and we keep
        polling until it answers, so the returned URL is immediately usable.
 
-    Only the resolve stage is retried on ``ValueError``; the same exception out
-    of the probe means the off-host credential guard refused the URL, which no
-    amount of waiting fixes.
+    Only the resolve stage is retried on ``ValueError``; an
+    ``OffHostBaseURLError`` out of the probe means the credential guard refused
+    the URL, which no amount of waiting fixes.
 
     Mirrors ``serving.wait_deployment_ready``'s wait contract. A deterministic
     ``AmbiguousExtensionError`` is NOT retried — it propagates immediately rather
@@ -527,10 +535,10 @@ def wait_for_base_url(
         TimeoutError: If the extension isn't serving within ``timeout_seconds``.
             The message names which stage stalled — see :data:`_URL_STAGE` /
             :data:`_SERVING_STAGE`.
-        ValueError: If the resolved endpoint is off-host, so the readiness probe
-            would send the platform bearer somewhere it cannot be confirmed
-            safe. Deterministic, so it surfaces at once rather than after the
-            full timeout.
+        OffHostBaseURLError: If the resolved endpoint is off-host, so the
+            readiness probe would send the platform bearer somewhere it cannot
+            be confirmed safe. Deterministic, so it surfaces at once rather than
+            after the full timeout.
     """
     deadline = time.monotonic() + timeout_seconds
     attempts = 0
