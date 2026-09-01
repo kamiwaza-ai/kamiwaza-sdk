@@ -21,7 +21,7 @@
  * CLI:
  *   node index-next-runtime.mjs --root /out/path \
  *     --sentinel /__KZ_RUNTIME_BASE_7F3A91C2__ \
- *     --next-version 15.5.19 --output /out/kz-next-relocations.json
+ *     --next-version 15.5.24 --output /out/kz-next-relocations.json
  */
 
 import { realpathSync } from "node:fs";

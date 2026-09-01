@@ -10,7 +10,11 @@ from kamiwaza_sdk.validation.federation_common import (
     optional_text,
     required_text,
 )
-from kamiwaza_sdk.validation.federation_state import owner_nonce
+from kamiwaza_sdk.validation.federation_state import owner_digest, owner_nonce
+from kamiwaza_sdk.validation.federation_spec import (
+    FEDERATION_OWNERSHIP_SCHEME,
+    FEDERATION_PROVIDER_REVISION,
+)
 from kamiwaza_sdk.validation.inference_state import runtime_ownership_key
 from kamiwaza_sdk.validation.models import CleanupResult, RuntimeContext
 
@@ -24,14 +28,27 @@ class CleanupContext:
         receiver: Any,
         admin: Any,
         runtime: RuntimeContext,
+        initiator: Any | None = None,
+        provider_revision: str = FEDERATION_PROVIDER_REVISION,
     ) -> None:
         self.resources = resources
         self.receiver = receiver
         self.admin = admin
         self.runtime = runtime
+        self.initiator = initiator
+        self.provider_revision = provider_revision
 
 
 def cleanup_mutation(mutation: Any, context: CleanupContext) -> CleanupResult:
+    if mutation.action == "adopted":
+        return CleanupResult(
+            target_id=mutation.target_id,
+            resource_type=mutation.resource_type,
+            resource_id=mutation.resource_id,
+            status="retained_foreign",
+            detail=None,
+        )
+    _assert_owned(mutation, context)
     handler = CLEANUP_HANDLERS.get(mutation.resource_type)
     if handler is None:
         raise RuntimeError("unsupported fixture resource")
@@ -43,6 +60,27 @@ def cleanup_mutation(mutation: Any, context: CleanupContext) -> CleanupResult:
         status="removed",
         detail=None,
     )
+
+
+def _assert_owned(mutation: Any, context: CleanupContext) -> None:
+    """Refuse deletion when a new provider-neutral tag names another run.
+
+    Legacy snapshots have no tag and remain valid because the authenticated
+    owner digest and resource journal predate this metadata.  Once a tag is
+    present, it is checked before dispatching any destructive API call.
+    """
+
+    metadata = context.resources.get("ownership")
+    if metadata is None:
+        return
+    if not isinstance(metadata, Mapping):
+        raise RuntimeError("fixture ownership metadata is invalid")
+    expected = owner_digest(context.runtime.run_id, context.provider_revision)
+    if (
+        metadata.get("scheme") != FEDERATION_OWNERSHIP_SCHEME
+        or metadata.get("owner") != expected
+    ):
+        raise RuntimeError("fixture ownership metadata belongs to another run")
 
 
 def cleanup_failure(mutation: Any, exc: Exception) -> CleanupResult:
@@ -84,7 +122,14 @@ def _cleanup_dataset(mutation: Any, context: CleanupContext) -> None:
 
 
 def _cleanup_federation(mutation: Any, context: CleanupContext) -> None:
-    context.receiver._request(
+    client = (
+        context.initiator
+        if mutation.resource_type == "initiator-federation"
+        else context.receiver
+    )
+    if client is None:
+        raise RuntimeError("initiator federation cleanup client is unavailable")
+    client._request(
         "DELETE", f"/cluster/federations/{quote(mutation.resource_id, safe='')}"
     )
 

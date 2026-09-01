@@ -10,7 +10,7 @@
     "dependencies": {
         "@kamiwaza-ai/extensions-lib": "{{ts_runtime_lib_version}}",
         "autoprefixer": "^10.4.27",
-        "next": "15.5.19",
+        "next": "15.5.24",
         "postcss": "^8.5.8",
         "react": "^18.0.0",
         "react-dom": "^18.0.0",

@@ -10,7 +10,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from kamiwaza_sdk.validation.applicability import applicable_targets, descriptor_is_active
+from kamiwaza_sdk.validation.applicability import (
+    applicable_targets,
+    descriptor_is_active,
+)
 from kamiwaza_sdk.validation.federation_cases import (
     CaseHooks as _CaseHooks,
     RetrievalRequest as _RetrievalRequest,
@@ -38,6 +41,7 @@ from kamiwaza_sdk.validation.federation_common import (
 from kamiwaza_sdk.validation.federation_runtime import (
     AdminFactory,
     ClusterFactory,
+    KeycloakExternalTokenFactory,
     KeycloakAdminFactory,
     SdkFederationClusterFactory,
 )
@@ -53,7 +57,10 @@ from kamiwaza_sdk.validation.federation_spec import (
     resolve_candidates,
     scenario_descriptor,
 )
-from kamiwaza_sdk.validation.federation_state import FederationStateStore, validate_state
+from kamiwaza_sdk.validation.federation_state import (
+    FederationStateStore,
+    validate_state,
+)
 from kamiwaza_sdk.validation.inference_state import runtime_ownership_key
 from kamiwaza_sdk.validation.models import (
     CaseResult,
@@ -96,6 +103,7 @@ class FederationLifecycleProvider:
         provider_revision: str = FEDERATION_PROVIDER_REVISION,
     ) -> None:
         self._cluster_factory = cluster_factory or SdkFederationClusterFactory()
+        self._custom_admin_factory = admin_factory is not None
         self._admin_factory = admin_factory or KeycloakAdminFactory()
         self._provider_revision = provider_revision
 
@@ -146,11 +154,19 @@ class FederationLifecycleProvider:
         try:
             first = plan.selected[0]
             receiver_id = _selected_endpoints(first)[1]
-            admin = self._admin_factory(runtime, runtime_clusters[receiver_id])
+            admin = self._admin_for(
+                runtime,
+                runtime_clusters[receiver_id],
+                first.redacted_parameters,
+            )
             state = prepare_realm(
                 _RealmContext(state, store, plan, runtime, admin, first.target_id)
             )
             for selected in plan.selected:
+                edge_params = {
+                    **dict(selected.redacted_parameters),
+                    **dict(_edge_state(state, selected.target_id)),
+                }
                 state = self._prepare_edge(
                     _EdgeContext(
                         state=state,
@@ -160,7 +176,7 @@ class FederationLifecycleProvider:
                         runtime_clusters=runtime_clusters,
                         runtime=runtime,
                         admin=admin,
-                        params=dict(selected.redacted_parameters),
+                        params=edge_params,
                     )
                 )
             return state
@@ -201,7 +217,11 @@ class FederationLifecycleProvider:
                 edge = _edge_state(state, selected.target_id)
                 params = _resource_map(edge)
                 initiator_id, receiver_id = _selected_endpoints(selected)
-                admin = self._admin_factory(runtime, runtime_clusters[receiver_id])
+                admin = self._admin_for(
+                    runtime,
+                    runtime_clusters[receiver_id],
+                    selected.redacted_parameters,
+                )
                 results.extend(
                     self._run_edge(
                         _RunContext(
@@ -286,9 +306,19 @@ class FederationLifecycleProvider:
             client_wrapper = context.clusters.get(receiver_id)
             if receiver_cluster is None or client_wrapper is None:
                 raise RuntimeError("cleanup runtime omits receiver cluster")
-            admin = context.admins.setdefault(
-                receiver_id, self._admin_factory(context.runtime, receiver_cluster)
-            )
+            edge = _edge_state(context.state, mutation.target_id)
+            edge_clusters = _edge_cluster_ids(edge)
+            if not edge_clusters:
+                raise RuntimeError("cleanup runtime omits initiator cluster")
+            initiator_wrapper = context.clusters.get(edge_clusters[0])
+            if initiator_wrapper is None:
+                raise RuntimeError("cleanup runtime omits initiator cluster")
+            admin = None
+            if mutation.resource_type.startswith("keycloak-"):
+                admin = context.admins.setdefault(
+                    receiver_id,
+                    self._admin_for(context.runtime, receiver_cluster, edge),
+                )
             return _cleanup_mutation_impl(
                 mutation,
                 _CleanupContext(
@@ -298,10 +328,25 @@ class FederationLifecycleProvider:
                     receiver=client_wrapper.client,
                     admin=admin,
                     runtime=context.runtime,
+                    initiator=initiator_wrapper.client,
+                    provider_revision=self._provider_revision,
                 ),
             )
         except Exception as exc:
             return _cleanup_failure(mutation, exc)
+
+    def _admin_for(
+        self,
+        runtime: RuntimeContext,
+        runtime_cluster: RuntimeCluster,
+        params: Mapping[str, Any],
+    ) -> Any:
+        if params.get("fixture_mode") == "external" and not self._custom_admin_factory:
+            issuer = params.get("issuer")
+            if not isinstance(issuer, str) or not issuer:
+                raise ProviderContractError("external shared-IdP issuer is missing")
+            return KeycloakExternalTokenFactory(issuer)(runtime, runtime_cluster)
+        return self._admin_factory(runtime, runtime_cluster)
 
     def _open_clusters(
         self,

@@ -47,11 +47,11 @@ describe("buildRelocationManifest", () => {
         const manifest = await buildRelocationManifest({
             root,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
 
         expect(manifest.schemaVersion).toBe(1);
-        expect(manifest.nextVersion).toBe("15.5.19");
+        expect(manifest.nextVersion).toBe("15.5.24");
         expect(manifest.sentinel).toBe(SENTINEL);
 
         const byPath = Object.fromEntries(manifest.files.map((f) => [f.path, f]));
@@ -70,7 +70,7 @@ describe("buildRelocationManifest", () => {
         const manifest = await buildRelocationManifest({
             root,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
         const kinds = Object.fromEntries(manifest.files.map((f) => [f.path, f.kind]));
         expect(kinds["server.js"]).toBe("js");
@@ -86,7 +86,7 @@ describe("buildRelocationManifest", () => {
             Buffer.concat([Buffer.from([0x89, 0x50, 0x00]), Buffer.from(SENTINEL)]),
         );
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/binary|unrecognized/i);
     });
 
@@ -100,7 +100,7 @@ describe("buildRelocationManifest", () => {
         const manifest = await buildRelocationManifest({
             root,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
         expect(
             manifest.files.find((file) => file.path === ".next/server/encoded.js")
@@ -112,7 +112,7 @@ describe("buildRelocationManifest", () => {
         writeStandardFixture();
         write(".next/server/noncanonical.js", `const bare = "${SENTINEL.slice(1)}";`);
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/non-canonical relocation sentinel/i);
     });
 
@@ -120,7 +120,7 @@ describe("buildRelocationManifest", () => {
         writeStandardFixture();
         write("node_modules/evil/index.js", `const p = "${SENTINEL}";`);
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/node_modules/i);
     });
 
@@ -128,7 +128,7 @@ describe("buildRelocationManifest", () => {
         writeStandardFixture();
         write(".next/static/chunks/main-abc123.js.map", `{"x":"${SENTINEL}"}`);
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/source map/i);
     });
 
@@ -136,7 +136,7 @@ describe("buildRelocationManifest", () => {
         writeStandardFixture();
         write(".next/cache/webpack/0.pack", "cache");
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/cache/i);
     });
 
@@ -149,7 +149,7 @@ describe("buildRelocationManifest", () => {
         const manifest = await buildRelocationManifest({
             root,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
         const entry = manifest.files.find((f) => f.path === ".next/server/app/go.meta");
         expect(entry?.kind).toBe("json");
@@ -160,7 +160,7 @@ describe("buildRelocationManifest", () => {
         writeStandardFixture();
         write(".next/static/chunks/clean.js.map", `{"version":3,"mappings":"AAAA"}`);
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/source map/i);
     });
 
@@ -170,7 +170,7 @@ describe("buildRelocationManifest", () => {
         const manifest = await buildRelocationManifest({
             root,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
         expect(manifest.files.length).toBeGreaterThan(0);
     });
@@ -181,7 +181,7 @@ describe("buildRelocationManifest", () => {
         const manifest = await buildRelocationManifest({
             root,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
         expect(manifest.files.some((file) => file.path.startsWith("public/"))).toBe(
             false,
@@ -196,7 +196,7 @@ describe("buildRelocationManifest", () => {
             path.join(root, ".next/static/chunks/linked.js.map"),
         );
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/source map/i);
     });
 
@@ -204,7 +204,7 @@ describe("buildRelocationManifest", () => {
         writeStandardFixture();
         write("public/config.txt", `base=${SENTINEL}`);
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/public/i);
     });
 
@@ -216,7 +216,7 @@ describe("buildRelocationManifest", () => {
             path.join(root, ".next/server/linked.js"),
         );
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/symlink/i);
     });
 
@@ -224,13 +224,13 @@ describe("buildRelocationManifest", () => {
         writeStandardFixture();
         symlinkSync(path.join(root, "does-not-exist"), path.join(root, ".next/broken"));
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/symlink/i);
 
         rmSync(path.join(root, ".next/broken"));
         symlinkSync(path.join(root, ".next/loop"), path.join(root, ".next/loop"));
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/symlink/i);
     });
 
@@ -238,7 +238,7 @@ describe("buildRelocationManifest", () => {
         writeStandardFixture();
         symlinkSync("/etc/hosts", path.join(root, ".next/escape"));
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/symlink|escape/i);
     });
 
@@ -252,7 +252,7 @@ describe("buildRelocationManifest", () => {
         const manifest = await buildRelocationManifest({
             root,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
         const entry = manifest.files.find((f) => f.path === ".next/server/app/feed.body");
         expect(entry?.occurrences).toBe(1);
@@ -276,7 +276,7 @@ describe("buildRelocationManifest", () => {
         const manifest = await buildRelocationManifest({
             root,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
 
         const entry = manifest.files.find(
@@ -304,7 +304,7 @@ describe("buildRelocationManifest", () => {
         const manifest = await buildRelocationManifest({
             root,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
 
         const entry = manifest.files.find(
@@ -325,7 +325,7 @@ describe("buildRelocationManifest", () => {
             JSON.stringify({ status: 200, headers: { "content-type": "image/png" } }),
         );
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/body|binary/i);
     });
 
@@ -343,7 +343,7 @@ describe("buildRelocationManifest", () => {
             }),
         );
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/content-length/i);
     });
 
@@ -354,7 +354,7 @@ describe("buildRelocationManifest", () => {
         write(".next/routes-manifest.json", JSON.stringify({ basePath: "" }));
         write(".next/static/chunks/main.js", "x()");
         await expect(
-            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.24" }),
         ).rejects.toThrow(/mandatory/i);
     });
 });

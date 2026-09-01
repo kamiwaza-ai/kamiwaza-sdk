@@ -1,5 +1,14 @@
 {
-  "cli_version": "0.1.0",
+  "cli_version": "0.2.0",
+  "manifest_capabilities": {
+    "services.*.healthCheck": ">=0.2.0"
+  },
+  "compose_capabilities": {
+    "compose.services.*.x-kamiwaza.healthCheck": ">=0.2.0",
+    "compose.services.*.x-kamiwaza.primary": ">=0.2.0",
+    "compose.services.*.entrypoint": ">=0.2.0",
+    "compose.services.*.command": ">=0.2.0"
+  },
   "runtime_lib_compat": {
     "python": {
       "kamiwaza-extensions-lib": ">=0.5,<0.6"

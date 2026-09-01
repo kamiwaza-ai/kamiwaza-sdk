@@ -19,7 +19,8 @@ follow semver. The library is published to PyPI as a standalone package
 
 * Generated apps now require the 0.5 minor line so the frontend relocation
   runtime and backend routing behavior are upgraded together.
-* FastAPI now requires 0.115 or newer for the supported `root_path` behavior.
+* FastAPI now requires 0.136.3 or newer and Starlette 1.3.1 or newer, preserving
+  the patched floors inherited from 0.4.4 while supporting `root_path` routing.
   Uvicorn remains optional for pure library/SDK clients and is available via
   the `asgi` extra; generated backends declare `uvicorn[standard]` directly.
 * Path-mode public URLs are derived from the configured origin plus the
@@ -105,6 +106,12 @@ follow semver. The library is published to PyPI as a standalone package
   any other host is treated as the platform's canonical model URL and
   kept verbatim. The starter template's `_normalize_model_endpoint`
   received the same fix.
+* **Published the patched runtime dependency floor for standalone
+  `kamiwaza-extensions-lib` consumers.** The library advertises
+  `fastapi>=0.136.3,<1.0.0` and `starlette>=1.3.1,<2.0.0` for the 1.1.0
+  vulnerability burn-down. Because the package is published independently
+  from `kamiwaza-sdk`, PyPI consumers need this runtime release to receive the
+  corrected dependency metadata.
 
 ## [0.4.2] — 2026-06-15 (ENG-6911)
 

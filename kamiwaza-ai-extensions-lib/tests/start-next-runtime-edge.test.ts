@@ -114,14 +114,14 @@ function writeFixture(): void {
     write(".next/static/chunks/main-abc.js", `p="${SENTINEL}/_next/";`);
     write(
         "node_modules/next/package.json",
-        JSON.stringify({ name: "next", version: "15.5.19" }),
+        JSON.stringify({ name: "next", version: "15.5.24" }),
     );
     write("node_modules/next/dist/server.js", "module.exports = {};");
     write("public/icon.png", Buffer.from([0x89, 0x50]));
 }
 
 async function manifestFor(): Promise<any> {
-    return buildRelocationManifest({ root: sourceRoot, sentinel: SENTINEL, nextVersion: "15.5.19" });
+    return buildRelocationManifest({ root: sourceRoot, sentinel: SENTINEL, nextVersion: "15.5.24" });
 }
 
 beforeEach(() => {
@@ -183,7 +183,7 @@ describe("transformRscBuffer (B1)", () => {
         expect(transformRscBuffer(input, SENTINEL, REAL).equals(input)).toBe(true);
     });
 
-    it("handles empty-id hint rows (:HL) as emitted by real Next 15.5.19 output", () => {
+    it("handles empty-id hint rows (:HL) as emitted by real Next 15.5.24 output", () => {
         const input = Buffer.from(
             `:HL["${SENTINEL}/_next/static/css/x.css","style"]\n0:{"p":"${SENTINEL}/y"}\n`,
         );

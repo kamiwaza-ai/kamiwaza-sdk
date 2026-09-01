@@ -14,6 +14,7 @@ from .exceptions import (
     AuthenticationError,
     FederationPairTimeoutError,
     NonAPIResponseError,
+    OffHostBaseURLError,
     VectorDBUnavailableError,
 )
 from .services.models import ModelService
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 _AUTH_ERROR_DETAIL_MAX_LEN = 500
 _AUTH_ERROR_DETAIL_TRUNCATED_SUFFIX = "... [truncated]"
-_VERIFY_SSL_FALSE_VALUES = {"false", "0", "no"}
+_VERIFY_SSL_FALSE_VALUES = {"false", "0", "no", "off"}
 
 
 # ----------------------------------------------------------------------------
@@ -791,24 +792,65 @@ class KamiwazaClient:
             response_text=response.text,
         )
 
+    def _absolutize_base_url(self, base_url: str) -> str:
+        """Resolve a path-only base_url against the platform origin.
+
+        The platform reports an in-cluster extension's endpoint as a path such
+        as ``/runtime/apps/<deployment-id>``. That form is same-origin, so it
+        cannot leak the bearer, but it is unusable as a request root — joining
+        an endpoint onto it yields a relative URL ``requests`` cannot issue.
+        Anything carrying a scheme or a netloc (including protocol-relative
+        ``//host/x``) is left untouched for :meth:`_assert_same_host` to judge.
+
+        A blank base_url is rejected rather than joined: it would resolve to the
+        platform root and send an extension call to the platform API. Other
+        degenerate joins ("." , "..") are not screened here — they cannot leave
+        the platform origin, which is what this method exists to preserve.
+        """
+        from urllib.parse import urljoin, urlparse
+
+        if not base_url.strip():
+            raise ValueError(
+                "base_url override is empty; resolve the extension's endpoint "
+                "or omit base_url to target the platform API."
+            )
+        parsed = urlparse(base_url)
+        if parsed.scheme or parsed.netloc:
+            return base_url
+        return urljoin(self.base_url, base_url)
+
     def _assert_same_host(self, base_url: str) -> None:
         """Require base_url to share the platform's scheme/host/port.
 
         The platform bearer is attached to every request, so an off-host
         base_url would leak the credential. In-cluster extensions (Kaizen)
         share the platform ingress, so this never fires in normal use.
+
+        Origins are compared with urllib3's parser — the one the transport
+        itself uses to pick a host. ``urllib.parse`` disagrees with it on
+        authorities such as ``https://evil.example\\@host/x``: it splits
+        userinfo at the last "@" and reports ``host``, while urllib3 ends the
+        authority at the backslash and connects to ``evil.example``. Comparing
+        with anything other than the parser that resolves the socket leaves that
+        gap open by construction.
         """
-        from urllib.parse import urlparse
+        from urllib3.exceptions import LocationParseError
+        from urllib3.util import parse_url
 
         _default_ports = {"https": 443, "http": 80}
 
         def _origin(url: str) -> tuple:
-            p = urlparse(url)
-            return (p.scheme, p.hostname, p.port or _default_ports.get(p.scheme))
+            p = parse_url(url)
+            scheme = p.scheme or ""
+            return (scheme, p.host, p.port or _default_ports.get(scheme))
 
-        if _origin(base_url) != _origin(self.base_url):
-            home = urlparse(self.base_url)
-            raise ValueError(
+        home = parse_url(self.base_url)
+        try:
+            same = _origin(base_url) == _origin(self.base_url)
+        except LocationParseError:
+            same = False
+        if not same:
+            raise OffHostBaseURLError(
                 f"base_url '{base_url}' is not on the platform host "
                 f"'{home.scheme}://{home.netloc}'; refusing to send the platform "
                 "credential off-host."
@@ -889,6 +931,7 @@ class KamiwazaClient:
         # ingress; it must stay same-host since the platform bearer is attached
         # to every request.
         if base_url is not None:
+            base_url = self._absolutize_base_url(base_url)
             self._assert_same_host(base_url)
         root = (base_url or self.base_url).rstrip("/")
         url = f"{root}/{endpoint.lstrip('/')}"

@@ -21,17 +21,23 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "requests",
+    # Direct security floors keep loose installers from resolving vulnerable transitives.
+    "requests>=2.33.0,<3.0.0",
+    "urllib3>=2.7.0,<3.0.0",
+    "idna>=3.15,<4.0.0",
     "pydantic[email]>=2.11",
     "httpx",
     "filelock>=3.20",
     "openai>=1.0",
     "huggingface_hub>=0.23",
-    "typer>=0.9.0",
+    "typer>=0.24.1,<1.0.0",
+    "click>=8.3.3,<9.0.0",
     "pyyaml>=6.0",
     "packaging>=23.0",
-    "fastapi>=0.100.0",
+    "fastapi>=0.136.3,<1.0.0",
+    "starlette>=1.3.1,<2.0.0",
     "rich>=13.0",
+    "pygments>=2.20.0,<3.0.0",
     "kamiwaza-extensions-lib>=0.5,<0.6",
     "PyJWT[crypto]>=2.8",
 ]
@@ -45,7 +51,8 @@ convert = [
 ]
 # Install contract for connector repos building against kamiwaza_sdk.connectors.
 connector = [
-    "fastapi>=0.100.0",
+    "fastapi>=0.136.3,<1.0.0",
+    "starlette>=1.3.1,<2.0.0",
     "pydantic[email]>=2.11",
 ]
 flight = [
@@ -65,7 +72,7 @@ Issues = "https://github.com/kamiwaza-ai/kamiwaza-sdk/issues"
 [build-system]
 # setuptools>=77 supports PEP 639 SPDX `license = "Apache-2.0"` in [project]
 # and auto-discovers a top-level LICENSE file into the wheel's dist-info.
-requires = ["setuptools>=77", "wheel"]
+requires = ["setuptools>=77", "wheel>=0.46.2"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
@@ -75,6 +82,7 @@ kamiwaza-federation = "kamiwaza_sdk.seeding.federation.cli:main"
 kamiwaza-validate-inference = "kamiwaza_sdk.validation.inference_provider:main"
 kamiwaza-validate-federation = "kamiwaza_sdk.validation.federation_provider:main"
 kamiwaza-validate-model-mesh = "kamiwaza_sdk.validation.model_mesh_provider:main"
+kamiwaza-validate-delegated-workload = "kamiwaza_sdk.validation.delegated_workload_provider:main"
 
 # `kamiwaza-extensions-lib` is published as its own PyPI distribution
 # from `kamiwaza_extensions_lib/pyproject.toml`. For local dev / tests we
@@ -116,17 +124,18 @@ python_version = "3.10"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.1",  # __wrapped__ on FixtureFunctionDefinition required by tests/unit/test_live_server_available_fixture.py (ENG-6504)
+    "pytest>=9.0.3,<10.0.0",  # __wrapped__ on FixtureFunctionDefinition required by tests/unit/test_live_server_available_fixture.py (ENG-6504)
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.0",
     "pytest-responses>=0.5",
     "pytest-httpx>=0.30",
-    "jsonschema>=4.23.0,<5.0.0",
+    "jsonschema>=4.26.0,<5.0.0",
     "boto3>=1.34",
     "numpy>=1.26",
     "pandas>=2.2",
     "pyarrow>=17.0",
-    "black>=23.0",
+    "black>=26.5.1",
+    "cryptography>=48.0.1,<49.0.0",
     "isort>=5.12",
     "ruff>=0.1",
     "mypy>=1.0",

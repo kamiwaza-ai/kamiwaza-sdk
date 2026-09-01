@@ -88,7 +88,7 @@ jobs:
           "$RUNNER_TEMP/wheel-venv/bin/kz-ext" create --type app --name wheel-canary
           "$RUNNER_TEMP/wheel-venv/bin/kz-ext" validate .
           grep -q 'index-next-runtime.mjs' frontend/Dockerfile
-          grep -q '"next": "15.5.19"' frontend/package.json
+          grep -q '"next": "15.5.24"' frontend/package.json
           grep -Fqx 'node_modules' frontend/.dockerignore
           grep -Fqx '.next' frontend/.dockerignore
           grep -Fqx '.env*' frontend/.dockerignore

@@ -21,9 +21,12 @@ Versions follow semver. Published to npm as a standalone package
 
 ### Changed
 
-* Next.js production scaffolds must use exactly `15.5.19`, the version covered
+* Next.js production scaffolds must use exactly `15.5.24`, the version covered
   by the relocation manifest and canary. The package peer now names that exact
   validated version and no longer advertises unvalidated Next releases.
+* The 0.5 line carries forward the 0.4.4 security floors for Next.js, PostCSS,
+  nanoid, sharp, esbuild, form-data, and ws while retaining the exact Next.js
+  pin required by the relocation contract.
 * Proxy responses drop `Set-Cookie` by default, including on scaffolded
   session/logout routes. Custom trusted routes may opt in with
   `setCookiePaths`, which rebases accepted cookies to the deployment path. An
@@ -39,6 +42,14 @@ Versions follow semver. Published to npm as a standalone package
   limited to the regex-safe platform alphabet `[A-Za-z0-9_-]+`. Boot and
   request-time auth configuration now apply the same fail-closed public-URL
   validation.
+
+## [0.4.4] — 2026-08-28 (ENG-11065)
+
+### Security
+
+* Raised the development dependency floors and lockfile resolutions for Next.js,
+  PostCSS, nanoid, sharp, esbuild, form-data, and ws so the package tooling
+  installs without known npm audit findings.
 
 ## [0.4.3] — 2026-07-27 (ENG-9199)
 

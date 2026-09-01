@@ -24,8 +24,9 @@ RELEASE_SCRIPT_PATH = REPO_ROOT / "release.sh"
 def test_version_is_0_5_0():
     # Runtime 0.5 adds the canonical path-routing helpers and ASGI launcher
     # required by the dual-artifact Next.js scaffold. The compatibility
-    # floor moves with it so every freshly generated app has both sides of
-    # the runtime-relocation contract.
+    # floor moves with it so every freshly generated app has both sides of the
+    # runtime-relocation contract plus the patched FastAPI/Starlette floors
+    # inherited from 0.4.4 release hardening.
     assert kamiwaza_extensions_lib.__version__ == "0.5.0", (
         "Runtime lib is 0.5.0 (dual-artifact path relocation contract). "
         "Update both __version__ and CHANGELOG.md if the version is "
@@ -89,9 +90,14 @@ def test_asgi_launcher_declares_uvicorn_optional_dependency():
     ), "the optional ASGI launcher extra must declare a compatible uvicorn runtime"
 
     assert any(
-        dependency.startswith("fastapi>=0.115")
+        dependency.startswith("fastapi>=0.136.3")
         for dependency in pyproject["project"]["dependencies"]
     ), "ASGI root_path routing requires the compatible FastAPI/Starlette floor"
+
+    assert any(
+        dependency.startswith("starlette>=1.3.1")
+        for dependency in pyproject["project"]["dependencies"]
+    ), "the standalone runtime must preserve the patched Starlette floor"
 
 
 def test_release_publishes_required_npm_runtime_before_sdk():

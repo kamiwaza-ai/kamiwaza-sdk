@@ -72,6 +72,39 @@ def test_update_on_fresh_scaffold_makes_no_changes(shape: str, tmp_path, monkeyp
     assert summary.updated == 0
 
 
+def test_update_rejects_incompatible_cli_contract(tmp_path, monkeypatch):
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    manifest_path = scaffold / "kamiwaza.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["kz_ext_version"] = ">=0.3.0,<1.0.0"
+    manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
+    monkeypatch.chdir(scaffold)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        run_update()
+
+    assert exc_info.value.exit_code == int(ExitCode.VALIDATION)
+
+
+def test_update_rejects_compose_capability_with_old_floor(tmp_path, monkeypatch):
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    manifest_path = scaffold / "kamiwaza.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["kz_ext_version"] = ">=0.1.0,<1.0.0"
+    manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
+    compose_path = scaffold / "docker-compose.yml"
+    compose = compose_path.read_text()
+    compose_path.write_text(
+        compose.replace("    build: .", "    build: .\n    command: [serve]", 1)
+    )
+    monkeypatch.chdir(scaffold)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        run_update()
+
+    assert exc_info.value.exit_code == int(ExitCode.VALIDATION)
+
+
 # ---------------------------------------------------------------------------
 # Author modification → conflict path (TS-M2-4..6).
 # ---------------------------------------------------------------------------

@@ -25,27 +25,35 @@ class _Admin:
         return f"token:{username}"
 
 
+class _Denied(Exception):
+    status_code = 403
+
+
+class _ServerError(Exception):
+    status_code = 500
+
+
 class _Persona:
-    def __init__(self, username: str, calls: list[tuple[str, str, dict[str, Any]]]) -> None:
+    def __init__(
+        self, username: str, calls: list[tuple[str, str, dict[str, Any]]]
+    ) -> None:
         self.username = username
         self.calls = calls
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         self.calls.append((method, path, kwargs))
         if method == "GET":
-            if self.username == "fed-clr-u":
-                return {
-                    "items": [
-                        {
-                            "id": "model-123",
-                            "repo_modelId": "Qwen/Qwen3-0.6B-GGUF",
-                        }
-                    ]
-                }
-            return {"items": []}
-        return {
-            "choices": [{"message": {"content": "mesh response"}}]
-        }
+            return {
+                "items": [
+                    {
+                        "id": "model-123",
+                        "repo_modelId": "Qwen/Qwen3-0.6B-GGUF",
+                    }
+                ]
+            }
+        if self.username == "fed-clr-s":
+            raise _Denied("model invoke denied")
+        return {"choices": [{"message": {"content": "mesh response"}}]}
 
     def close(self) -> None:
         return None
@@ -62,6 +70,7 @@ def _context(calls: list[tuple[str, str, dict[str, Any]]]) -> RunContext:
         redacted_parameters={
             "realm": "realm-1",
             "federation_name": "fed-edge",
+            "initiator_federation_id": "initiator-fed-123",
             "model_id": "model-123",
             "model_repository": "Qwen/Qwen3-0.6B-GGUF",
             "deployment_id": "deploy-123",
@@ -94,14 +103,30 @@ def test_model_mesh_cases_use_exact_catalog_and_runtime_chat_paths(
     assert [item.case_id for item in evidence] == list(MODEL_MESH_CASE_IDS)
     assert all(item.status == "passed" for item in evidence)
     assert [(method, path) for method, path, _kwargs in calls] == [
-        ("GET", "/mesh/fed-edge/api/models/"),
-        ("GET", "/mesh/fed-edge/api/models/"),
+        ("GET", "/mesh/initiator-fed-123/api/models/"),
+        ("GET", "/mesh/initiator-fed-123/api/models/"),
         (
             "POST",
-            "/mesh/fed-edge/runtime/models/deploy-123/v1/chat/completions",
+            "/mesh/initiator-fed-123/runtime/models/deploy-123/v1/chat/completions",
         ),
-        ("GET", "/mesh/fed-edge/api/models/"),
+        (
+            "POST",
+            "/mesh/initiator-fed-123/runtime/models/deploy-123/v1/chat/completions",
+        ),
     ]
     chat_payload = calls[2][2]["json"]
     assert chat_payload["model"] == "served-qwen"
     assert chat_payload["messages"][0]["role"] == "user"
+
+
+def test_model_mesh_negative_propagates_non_auth_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_chat(context: RunContext, username: str) -> Any:
+        del context, username
+        raise _ServerError("receiver unavailable")
+
+    monkeypatch.setattr(model_mesh_cases, "_remote_chat", fail_chat)
+
+    with pytest.raises(_ServerError, match="receiver unavailable"):
+        model_mesh_cases._run_unauthorized(_context([]))

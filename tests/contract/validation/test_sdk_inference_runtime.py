@@ -10,15 +10,72 @@ from uuid import UUID
 
 import pytest
 
+import kamiwaza_sdk.validation.sdk_inference_runtime as sdk_runtime
 from kamiwaza_sdk.validation.inference_runtime import DeploymentRequest
 from kamiwaza_sdk.validation.models import RuntimeCluster
 from kamiwaza_sdk.validation.sdk_inference_runtime import (
     KubectlRuntimeObserver,
     SdkInferenceCluster,
     SdkInferenceClusterFactory,
+    TemporaryRayHeadCatalogEgress,
 )
 
 pytestmark = pytest.mark.contract
+
+_KUBECONFIG = Path("/secure/evo.kubeconfig")
+
+
+def _ray_head_list_command() -> tuple[str, ...]:
+    return (
+        "kubectl",
+        "--kubeconfig",
+        str(_KUBECONFIG),
+        "get",
+        "pods",
+        "--namespace",
+        "kamiwaza",
+        "--selector",
+        "ray.io/cluster=core-raycluster,ray.io/node-type=head",
+        "--output",
+        "json",
+    )
+
+
+def _ray_head_label_command(pod_name: str, *, remove: bool) -> tuple[str, ...]:
+    assignment = (
+        "kamiwaza.ai/egress-policy-"
+        if remove
+        else ("kamiwaza.ai/egress-policy=ray-strict")
+    )
+    command = (
+        "kubectl",
+        "--kubeconfig",
+        str(_KUBECONFIG),
+        "label",
+        "pods",
+        "--namespace",
+        "kamiwaza",
+        pod_name,
+        assignment,
+        "--overwrite",
+    )
+    return command
+
+
+def _strict_ray_heads(*pod_names: str) -> str:
+    return json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {
+                        "name": pod_name,
+                        "labels": {"kamiwaza.ai/egress-policy": "ray-strict"},
+                    }
+                }
+                for pod_name in pod_names
+            ]
+        }
+    )
 
 
 def _client() -> Mock:
@@ -106,7 +163,9 @@ def test_discovery_accepts_exact_remote_result_before_platform_registration() ->
     assert model.model_id is None
 
 
-def test_download_waits_for_exact_quantized_file_to_become_ready() -> None:
+def test_download_waits_for_exact_quantized_file_to_become_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client = _client()
     pending = SimpleNamespace(
         id=UUID("22222222-2222-2222-2222-222222222222"),
@@ -122,6 +181,11 @@ def test_download_waits_for_exact_quantized_file_to_become_ready() -> None:
         m_files=[pending],
     )
     client.models.list_models.side_effect = [[pending_model], [ready_model]]
+    monkeypatch.setattr(
+        sdk_runtime,
+        "_run_command",
+        lambda _command: json.dumps({"items": []}),
+    )
     cluster = SdkInferenceCluster(client, Path("/tmp/kubeconfig"), Mock())
 
     model = cluster.ensure_download("Qwen/Qwen3-0.6B-GGUF", "q8_0")
@@ -133,6 +197,122 @@ def test_download_waits_for_exact_quantized_file_to_become_ready() -> None:
         "Qwen/Qwen3-0.6B-GGUF", timeout=900, show_progress=False
     )
     assert model.files[0].ready is True
+
+
+def test_download_opens_catalog_egress_only_around_model_initiation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client()
+    ready_model = client.models.list_models.return_value[0]
+    client.models.list_models.side_effect = [[], [ready_model]]
+    events: list[object] = []
+
+    def runner(command: tuple[str, ...]) -> str:
+        events.append(command)
+        if "get" in command:
+            return _strict_ray_heads("core-raycluster-head-strict")
+        return ""
+
+    client.models.initiate_model_download.side_effect = lambda *_args, **_kwargs: (
+        events.append("initiate")
+    )
+    client.models.wait_for_download.side_effect = lambda *_args, **_kwargs: (
+        events.append("wait")
+    )
+    monkeypatch.setattr(sdk_runtime, "_run_command", runner)
+    cluster = SdkInferenceCluster(client, _KUBECONFIG, Mock())
+
+    cluster.ensure_download("Qwen/Qwen3-0.6B-GGUF", "q8_0")
+
+    assert events == [
+        _ray_head_list_command(),
+        _ray_head_label_command("core-raycluster-head-strict", remove=True),
+        "initiate",
+        _ray_head_label_command("core-raycluster-head-strict", remove=False),
+        "wait",
+    ]
+
+
+def test_catalog_egress_restores_modified_heads_after_body_failure() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(command: tuple[str, ...]) -> str:
+        calls.append(command)
+        return _strict_ray_heads("head-a") if "get" in command else ""
+
+    with pytest.raises(ValueError, match="download failed"):
+        with TemporaryRayHeadCatalogEgress(_KUBECONFIG, runner):
+            raise ValueError("download failed")
+
+    assert calls == [
+        _ray_head_list_command(),
+        _ray_head_label_command("head-a", remove=True),
+        _ray_head_label_command("head-a", remove=False),
+    ]
+
+
+def test_catalog_egress_rolls_back_after_partial_open_failure() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(command: tuple[str, ...]) -> str:
+        calls.append(command)
+        if "get" in command:
+            return _strict_ray_heads("head-a", "head-b")
+        if command == _ray_head_label_command("head-b", remove=True):
+            raise RuntimeError("open failed")
+        return ""
+
+    with pytest.raises(RuntimeError, match="open failed"):
+        with TemporaryRayHeadCatalogEgress(_KUBECONFIG, runner):
+            pytest.fail("body must not run")
+
+    assert calls[-1] == _ray_head_label_command("head-a", remove=False)
+
+
+def test_catalog_egress_reports_body_and_restore_failures() -> None:
+    def runner(command: tuple[str, ...]) -> str:
+        if "get" in command:
+            return _strict_ray_heads("head-a")
+        if command == _ray_head_label_command("head-a", remove=False):
+            raise RuntimeError("restore failed")
+        return ""
+
+    with pytest.raises(RuntimeError) as error:
+        with TemporaryRayHeadCatalogEgress(_KUBECONFIG, runner):
+            raise ValueError("download failed")
+
+    assert type(error.value).__name__ == "RayHeadEgressRestoreError"
+    assert isinstance(getattr(error.value, "operation_error", None), ValueError)
+    assert [str(item) for item in getattr(error.value, "restore_errors", ())] == [
+        "restore failed"
+    ]
+
+
+def test_catalog_egress_attempts_every_restore_before_failing() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(command: tuple[str, ...]) -> str:
+        calls.append(command)
+        if "get" in command:
+            return _strict_ray_heads("head-a", "head-b")
+        if any(value.endswith("=ray-strict") for value in command):
+            raise RuntimeError(f"restore failed for {command[7]}")
+        return ""
+
+    with pytest.raises(RuntimeError) as error:
+        with TemporaryRayHeadCatalogEgress(_KUBECONFIG, runner):
+            pass
+
+    restores = [
+        command
+        for command in calls
+        if any(value.endswith("=ray-strict") for value in command)
+    ]
+    assert restores == [
+        _ray_head_label_command("head-b", remove=False),
+        _ray_head_label_command("head-a", remove=False),
+    ]
+    assert type(error.value).__name__ == "RayHeadEgressRestoreError"
 
 
 def test_sdk_cluster_chat_targets_exact_deployment_and_returns_text() -> None:

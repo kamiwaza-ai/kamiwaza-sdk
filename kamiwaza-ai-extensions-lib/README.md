@@ -16,11 +16,10 @@ Both follow the same semver track but are versioned independently.
 npm install @kamiwaza-ai/extensions-lib
 ```
 
-The general client/server helpers accept the package's declared Next 15 peer
-range. The App Garden dual-artifact production runtime is narrower: apps using
-`withKamiwazaAppGarden()` must use the exact Next version validated by that
-wrapper (currently `15.5.19`). Generated scaffolds pin it, and production image
-builds fail closed on any other version.
+The package declares the exact Next version validated by the App Garden
+dual-artifact runtime (currently `15.5.24`). Generated scaffolds pin the same
+version, `withKamiwazaAppGarden()` enforces it for production builds, and image
+assembly fails closed on any other version.
 
 ## Usage
 

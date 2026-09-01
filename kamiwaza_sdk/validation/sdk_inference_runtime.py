@@ -31,6 +31,9 @@ _IMAGE_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _TERMINAL_INACTIVE_STATUSES = frozenset({"STOPPED"})
 _SUPPORTED_ENGINES = frozenset({"llamacpp", "vllm"})
 _KAMIWAZA_NAMESPACE = "kamiwaza"
+_RAY_HEAD_SELECTOR = "ray.io/cluster=core-raycluster,ray.io/node-type=head"
+_RAY_EGRESS_LABEL = "kamiwaza.ai/egress-policy"
+_RAY_STRICT_EGRESS = "ray-strict"
 _SECRET_ARG_KEYS = frozenset(
     {
         "access-token",
@@ -48,6 +51,19 @@ _REDACTED = "<redacted>"
 
 CommandRunner = Callable[[tuple[str, ...]], str]
 ClientBuilder = Callable[[str, str], Any]
+
+
+class RayHeadEgressRestoreError(RuntimeError):
+    """Report bootstrap failure without losing strict-egress restore failures."""
+
+    def __init__(
+        self,
+        operation_error: BaseException | None,
+        restore_errors: tuple[Exception, ...],
+    ) -> None:
+        super().__init__("failed to restore strict Ray head egress")
+        self.operation_error = operation_error
+        self.restore_errors = restore_errors
 
 
 class KubectlRuntimeObserver:
@@ -92,6 +108,89 @@ class KubectlRuntimeObserver:
         )
 
 
+class TemporaryRayHeadCatalogEgress:
+    """Open hub access only while a strict Ray head resolves model metadata."""
+
+    def __init__(
+        self, kubeconfig_path: Path, runner: CommandRunner | None = None
+    ) -> None:
+        self._kubeconfig_path = kubeconfig_path
+        self._runner = runner
+        self._modified: list[str] = []
+
+    def __enter__(self) -> "TemporaryRayHeadCatalogEgress":
+        runner = self._runner or _run_command
+        try:
+            payload = _json_object(runner(self._list_command()))
+            for pod_name in _strict_ray_head_names(payload):
+                self._modified.append(pod_name)
+                runner(self._label_command(pod_name, remove=True))
+        except Exception as operation_error:
+            restore_errors = self._restore_modified()
+            if restore_errors:
+                raise RayHeadEgressRestoreError(
+                    operation_error, restore_errors
+                ) from operation_error
+            raise
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: object,
+        operation_error: BaseException | None,
+        _traceback: object,
+    ) -> None:
+        restore_errors = self._restore_modified()
+        if restore_errors:
+            raise RayHeadEgressRestoreError(operation_error, restore_errors)
+
+    def _restore_modified(self) -> tuple[Exception, ...]:
+        runner = self._runner or _run_command
+        errors = []
+        for pod_name in reversed(self._modified):
+            try:
+                runner(self._label_command(pod_name, remove=False))
+            except Exception as error:
+                errors.append(error)
+        self._modified.clear()
+        return tuple(errors)
+
+    def _list_command(self) -> tuple[str, ...]:
+        return (
+            "kubectl",
+            "--kubeconfig",
+            str(self._kubeconfig_path),
+            "get",
+            "pods",
+            "--namespace",
+            _KAMIWAZA_NAMESPACE,
+            "--selector",
+            _RAY_HEAD_SELECTOR,
+            "--output",
+            "json",
+        )
+
+    def _label_command(self, pod_name: str, *, remove: bool) -> tuple[str, ...]:
+        assignment = (
+            f"{_RAY_EGRESS_LABEL}-"
+            if remove
+            else (f"{_RAY_EGRESS_LABEL}={_RAY_STRICT_EGRESS}")
+        )
+        command = (
+            "kubectl",
+            "--kubeconfig",
+            str(self._kubeconfig_path),
+            "label",
+            "pods",
+            "--namespace",
+            _KAMIWAZA_NAMESPACE,
+            pod_name,
+            assignment,
+            "--overwrite",
+        )
+        return command
+
+
 class SdkInferenceCluster:
     """Product API operations plus read-only runtime observation."""
 
@@ -127,9 +226,10 @@ class SdkInferenceCluster:
         model = self._local_model(repository)
         if model is not None and _model_ready(model, quantization):
             return _catalog_model(model, repository)
-        self._client.models.initiate_model_download(
-            repository, quantization=quantization
-        )
+        with TemporaryRayHeadCatalogEgress(self.kubeconfig_path):
+            self._client.models.initiate_model_download(
+                repository, quantization=quantization
+            )
         self._client.models.wait_for_download(
             repository,
             timeout=_DOWNLOAD_TIMEOUT_SECONDS,
@@ -421,6 +521,25 @@ def _json_object(payload: str) -> Mapping[str, Any]:
     except (TypeError, ValueError):
         raise RuntimeError("kubectl returned invalid JSON") from None
     return _as_object(value, "kubectl response")
+
+
+def _strict_ray_head_names(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise RuntimeError("kubectl returned an invalid pod collection")
+    names = []
+    for pod in items:
+        metadata = _as_object(
+            _as_object(pod, "Ray head pod").get("metadata"), "pod metadata"
+        )
+        labels = _as_object(metadata.get("labels", {}), "pod labels")
+        if labels.get(_RAY_EGRESS_LABEL) != _RAY_STRICT_EGRESS:
+            continue
+        name = metadata.get("name")
+        if not isinstance(name, str) or not name:
+            raise RuntimeError("Ray head pod name is unavailable")
+        names.append(name)
+    return tuple(names)
 
 
 def _as_object(value: Any, label: str) -> Mapping[str, Any]:

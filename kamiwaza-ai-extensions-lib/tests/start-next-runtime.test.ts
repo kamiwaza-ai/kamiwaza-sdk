@@ -46,7 +46,7 @@ function writeFixture(): void {
     write("package.json", JSON.stringify({ name: "fixture" }));
     write(
         "node_modules/next/package.json",
-        JSON.stringify({ name: "next", version: "15.5.19" }),
+        JSON.stringify({ name: "next", version: "15.5.24" }),
     );
     write("node_modules/next/dist/server.js", "module.exports = {};");
     write("public/icon.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]));
@@ -121,7 +121,7 @@ describe("prepareRuntime", () => {
         const manifest = await buildRelocationManifest({
             root: sourceRoot,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
 
         const stats = await prepareRuntime({
@@ -169,7 +169,7 @@ describe("prepareRuntime", () => {
         const manifest = await buildRelocationManifest({
             root: sourceRoot,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
         write(".next/routes-manifest.json", JSON.stringify({ basePath: SENTINEL, extra: 1 }));
 
@@ -183,7 +183,7 @@ describe("prepareRuntime", () => {
         const manifest = await buildRelocationManifest({
             root: sourceRoot,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
         // Simulate an indexer blind spot: a sentinel-bearing file added after
         // indexing. The boot-time zero-sentinel scan must catch it.
@@ -199,7 +199,7 @@ describe("prepareRuntime", () => {
         const manifest = await buildRelocationManifest({
             root: sourceRoot,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         }).catch(() => null);
         // The truncated JSON still indexes (indexer checks bytes, not JSON
         // validity), so prepareRuntime's parse step must be the one to fail.
@@ -215,7 +215,7 @@ describe("prepareRuntime", () => {
         const manifest = await buildRelocationManifest({
             root: sourceRoot,
             sentinel: SENTINEL,
-            nextVersion: "15.5.19",
+            nextVersion: "15.5.24",
         });
         await expect(
             prepareRuntime({ sourceRoot, targetRoot, manifest, replacement: SENTINEL }),

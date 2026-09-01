@@ -19,7 +19,7 @@ import type { NextConfig } from "next";
 export const KAMIWAZA_BASE_PATH_SENTINEL = "/__KZ_RUNTIME_BASE_7F3A91C2__";
 
 /** Exact Next versions the relocation contract is validated against. */
-export const SUPPORTED_NEXT_VERSIONS: readonly string[] = ["15.5.19"];
+export const SUPPORTED_NEXT_VERSIONS: readonly string[] = ["15.5.24"];
 
 export type KamiwazaBuildVariant = "path" | "port";
 

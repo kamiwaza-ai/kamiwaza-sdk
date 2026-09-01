@@ -42,17 +42,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from kamiwaza_extensions import __version__
-
 FileStrategy = Literal["overwrite", "preserve_if_modified", "merge"]
 ShapeName = Literal["app", "tool", "service"]
 
 
 @dataclass(frozen=True)
 class TemplateOwnedFile:
-    """A path the template owns at this CLI version.
+    """A path the template owns at this template version.
 
-    ``since_version`` is the CLI version where this path first became
+    ``since_version`` is the template version where this path first became
     template-owned; ``until_version`` is the last version where it was
     (None means still current). Both bounds are informational at the
     file level — ``UpdateCommand`` uses them when applying historical
@@ -91,10 +89,10 @@ class TemplateManifest:
 # Helpers — keep manifest definitions concise and consistent.
 # ---------------------------------------------------------------------------
 
-# Track the CLI's __version__ so manifests don't drift from it on each
-# release (review iteration-1 I9 + Suggestion: hard-coded version was a
-# release-time foot-gun).
-_M2_VERSION = __version__
+# Template revisions describe scaffold content, not the independently versioned
+# kz-ext manifest contract. ENG-11333 advances the latter to 0.2.0 without a
+# template change, so keep the original M2 scaffold revision stable.
+_M2_VERSION = "0.1.0"
 
 
 def _owned(

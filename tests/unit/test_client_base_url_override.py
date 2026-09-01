@@ -64,3 +64,84 @@ def test_request_base_url_override_rejects_foreign_host(
         client._request("POST", "api/agents/", base_url="https://evil.example/kaizen")
 
     assert seen == []
+
+
+def test_request_base_url_override_resolves_relative_extension_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    # The platform reports an in-cluster extension as a path. It is same-origin,
+    # so the bearer is safe, and it must be joined onto the platform origin —
+    # not the /api prefix — to be issuable.
+    client._request("POST", "api/agents", base_url="/runtime/apps/kaizen-ddd84430")
+
+    assert seen == ["https://example.test/runtime/apps/kaizen-ddd84430/api/agents"]
+
+
+def test_request_base_url_override_rejects_protocol_relative_foreign_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    # //evil.example parses with a netloc, so it is a host reference, not a
+    # same-origin path — the guard must still refuse it.
+    with pytest.raises(ValueError, match="not on the platform host"):
+        client._request("POST", "api/agents", base_url="//evil.example/kaizen")
+
+    assert seen == []
+
+
+def test_request_base_url_override_rejects_scheme_downgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    with pytest.raises(ValueError, match="not on the platform host"):
+        client._request("POST", "api/agents", base_url="http://example.test/kaizen")
+
+    assert seen == []
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "https://evil.example\\@example.test/kaizen",
+        "https://evil.example\\@example.test",
+        "https://evil.example\\.example.test/kaizen",
+    ],
+)
+def test_request_base_url_override_rejects_authority_confusion(
+    monkeypatch: pytest.MonkeyPatch, hostile: str
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    # urllib.parse splits userinfo at the last "@" and reports example.test,
+    # while the transport ends the authority at the backslash and connects to
+    # evil.example. The guard must agree with the transport, or the platform
+    # bearer is delivered off-host.
+    with pytest.raises(ValueError, match="not on the platform host"):
+        client._request("POST", "api/agents", base_url=hostile)
+
+    assert seen == []
+
+
+def test_request_base_url_override_allows_legitimate_userinfo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    client._request("POST", "api/agents", base_url="https://u:p@example.test/kaizen")
+
+    assert seen == ["https://u:p@example.test/kaizen/api/agents"]
+
+
+def test_request_base_url_override_rejects_empty_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, seen = _client_capturing_url(monkeypatch)
+
+    with pytest.raises(ValueError, match="base_url override is empty"):
+        client._request("POST", "api/agents", base_url="")
+
+    assert seen == []

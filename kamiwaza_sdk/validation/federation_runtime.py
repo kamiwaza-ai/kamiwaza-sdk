@@ -158,6 +158,56 @@ class KeycloakAdminFactory:
         )
 
 
+class KeycloakTokenClient:
+    """Minimal external-IdP adapter used when admin ownership is unavailable."""
+
+    def __init__(self, issuer: str, *, verify: bool | None = None) -> None:
+        self._issuer = issuer.rstrip("/")
+        self._verify = _verify_ssl_from_env() if verify is None else verify
+
+    def ropc_token(
+        self, realm: str, client_id: str, username: str, password: str
+    ) -> str:
+        del realm
+        import requests  # type: ignore[import-untyped]
+
+        response = requests.post(
+            f"{self._issuer}/protocol/openid-connect/token",
+            data={
+                "grant_type": "password",
+                "client_id": client_id,
+                "username": username,
+                "password": password,
+            },
+            verify=self._verify,
+            timeout=30.0,
+        )
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"external shared-IdP token request failed ({response.status_code})"
+            )
+        token = response.json().get("access_token")
+        if not isinstance(token, str) or not token:
+            raise RuntimeError(
+                "external shared-IdP token response omitted access_token"
+            )
+        return token
+
+
+class KeycloakExternalTokenFactory:
+    """Build a token-only adapter for a customer-managed issuer."""
+
+    def __init__(self, issuer: str, *, verify: bool | None = None) -> None:
+        self._issuer = issuer
+        self._verify = verify
+
+    def __call__(
+        self, runtime: RuntimeContext, runtime_cluster: RuntimeCluster
+    ) -> FederationAdmin:
+        del runtime, runtime_cluster
+        return KeycloakTokenClient(self._issuer, verify=self._verify)  # type: ignore[return-value]
+
+
 def _verify_ssl_from_env() -> bool:
     """Resolve the SDK-wide TLS switch for the Keycloak admin channel."""
 

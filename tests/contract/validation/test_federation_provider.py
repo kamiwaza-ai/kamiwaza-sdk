@@ -75,6 +75,17 @@ def _profile() -> ValidationProfile:
     return ValidationProfile.model_validate(payload)
 
 
+def test_provider_records_match_the_canonical_integration_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "integration"
+        / "fixtures"
+        / "mini_clearance_records.json"
+    )
+
+    assert list(records()) == json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
 def _runtime(tmp_path: Path) -> RuntimeContext:
     ownership = tmp_path / "ownership.key"
     ownership.write_bytes(b"o" * 48)
@@ -144,12 +155,16 @@ class _Federations:
         self.cluster_id = cluster_id
         self.remote_id = remote_id
         self.proxies: dict[str, _FederationProxy] = {}
+        self.id_proxies: dict[str, _FederationProxy] = {}
         self.deleted: list[str] = []
+        self.revoked: set[str] = set()
 
     def pair(self, *, name: str, role: str, **kwargs: Any) -> dict[str, str]:
         del kwargs
-        self.proxies.setdefault(name, _FederationProxy())
-        return {"id": f"{role}-{self.cluster_id}-fed", "name": name}
+        proxy = self.proxies.setdefault(name, _FederationProxy())
+        federation_id = f"{role}-{self.cluster_id}-fed"
+        self.id_proxies[federation_id] = proxy
+        return {"id": federation_id, "name": name}
 
     def get(self, federation_id: str) -> dict[str, str]:
         del federation_id
@@ -157,6 +172,12 @@ class _Federations:
 
     def __getitem__(self, name: str) -> _FederationProxy:
         return self.proxies[name]
+
+    def by_id(
+        self, federation_id: str, *, remote_name: str | None = None
+    ) -> _FederationProxy:
+        del remote_name
+        return self.id_proxies[federation_id]
 
 
 class _ClusterAPI:
@@ -207,6 +228,8 @@ class _Datasets:
         del urn, type, config
 
     def delete(self, urn: str) -> None:
+        if urn not in self.created:
+            raise _NotFound("dataset is already absent")
         self.created.remove(urn)
 
 
@@ -221,6 +244,11 @@ class _Client:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         del kwargs
+        if method in {"DELETE", "POST"} and any(
+            old_method == method and old_path == path
+            for old_method, old_path in self.requests
+        ):
+            raise _NotFound("federation is already absent")
         self.requests.append((method, path))
         return {}
 
@@ -252,6 +280,7 @@ class _Admin:
         self.deleted_users: list[str] = []
         self.deleted_clients: list[str] = []
         self.deleted_realms: list[str] = []
+        self.token_client_ids: list[str] = []
 
     def create_owned_realm(self, realm: str, owner_nonce: str) -> dict[str, Any]:
         del owner_nonce
@@ -259,6 +288,8 @@ class _Admin:
 
     def delete_owned_realm(self, realm: str, owner_nonce: str) -> bool:
         del owner_nonce
+        if realm in self.deleted_realms:
+            raise _NotFound("realm is already absent")
         self.deleted_realms.append(realm)
         return True
 
@@ -282,18 +313,23 @@ class _Admin:
 
     def delete_user(self, realm: str, user_id: str) -> bool:
         del realm
+        if user_id in self.deleted_users:
+            raise _NotFound("user is already absent")
         self.deleted_users.append(user_id)
         return True
 
     def delete_client(self, realm: str, client_uuid: str) -> bool:
         del realm
+        if client_uuid in self.deleted_clients:
+            raise _NotFound("client is already absent")
         self.deleted_clients.append(client_uuid)
         return True
 
     def ropc_token(
         self, realm: str, client_id: str, username: str, password: str
     ) -> str:
-        del realm, client_id, password
+        del realm, password
+        self.token_client_ids.append(client_id)
         return _jwt(username)
 
 
@@ -437,6 +473,14 @@ def test_prepare_and_teardown_journal_every_owned_resource(
     assert {item.status for item in cleanup.results} == {"removed"}
     assert admin.deleted_realms
     assert len(admin.deleted_users) == len(PERSONAS) + 1 + len(TENANT_NEGATIVE_PERSONAS)
+    assert any(
+        method == "DELETE" and path.startswith("/cluster/federations/")
+        for method, path in factory.clients["edge-a"].client.requests
+    )
+    assert any(
+        method == "DELETE" and path.startswith("/cluster/federations/")
+        for method, path in factory.clients["edge-b"].client.requests
+    )
 
 
 def test_run_emits_all_nine_cases_with_redacted_failure_details(

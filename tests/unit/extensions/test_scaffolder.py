@@ -75,7 +75,7 @@ class TestScaffolder:
             runtime_next,
             canary_next,
             supported.group(1),
-        } == {"15.5.19"}
+        } == {"15.5.24"}
 
     def test_create_app(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

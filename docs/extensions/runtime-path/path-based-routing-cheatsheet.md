@@ -24,7 +24,7 @@
 > The SDK app scaffold
 > (`kamiwaza_extensions/templates/app/frontend/Dockerfile`) is the source of
 > truth for the **dual-artifact Next.js runtime**: the exact
-> `next@15.5.19` pin, the `withKamiwazaAppGarden()` config wrapper, the boot
+> `next@15.5.24` pin, the `withKamiwazaAppGarden()` config wrapper, the boot
 > relocation entrypoint, and the `0.5.x` runtime libraries
 > (`@kamiwaza-ai/extensions-lib` / `kamiwaza-extensions-lib`). Apps scaffolded
 > before this change ran `next build` **at every spawn** (minutes of startup,
@@ -114,7 +114,7 @@ verbatim `public/` assets. Preserve the compatible SDK scaffold's
 `build-port`, `build-path`, `runtime-assembly`, and `runner` stages rather than
 maintaining an abbreviated second recipe.
 
-**Measured cost** (canary against real Next 15.5.19): relocation takes **~24 ms at ~53 MiB RSS**. The old spawn-time rebuild took minutes and 1.5–3 GB. The host canary allows 10 seconds for boot-to-health and enforces the runtime's reported preparation ≤ 5,000 ms and preparation RSS ≤ 96 MiB. The scaffold compose does not set a memory limit; deploy-time transformation defaults frontend services to 1 GiB, and repository validation reports a missing limit as informational.
+**Measured cost** (canary against real Next 15.5.24): relocation takes **~24 ms at ~56 MiB RSS**. The old spawn-time rebuild took minutes and 1.5–3 GB. The host canary allows 10 seconds for boot-to-health and enforces the runtime's reported preparation ≤ 5,000 ms and preparation RSS ≤ 96 MiB. The scaffold compose does not set a memory limit; deploy-time transformation defaults frontend services to 1 GiB, and repository validation reports a missing limit as informational.
 
 The tradeoff is image size: production images carry both complete standalone
 artifacts (including traced dependencies), so the frontend portion is roughly
@@ -136,7 +136,7 @@ The lifecycle is fail-closed at every stage:
 
 | Stage | What happens | Fails the build/boot if… |
 |-------|--------------|--------------------------|
-| **Build** | Two `next build` runs (`port`, `path` variants) assembled as standalone artifacts | Next version isn't exactly `15.5.19`; wrapper-rejected options are set |
+| **Build** | Two `next build` runs (`port`, `path` variants) assembled as standalone artifacts | Next version isn't exactly `15.5.24`; wrapper-rejected options are set |
 | **Index + dry relocation** (image build) | `index-next-runtime.mjs` records every sentinel-bearing file: path, size, SHA-256, occurrence count, kind (`js`/`json`/`html`/`rsc`/`css`/`txt`), then `start-next-runtime.mjs --validate-only` runs the full transform against a throwaway target | Sentinel appears in a binary/unrecognized file, in `node_modules`, or under `public/`; a source map ships outside `node_modules`; broken/directory/root-escaping symlinks; `.next/cache` present; a mandatory role (server.js, server config, client chunks) has zero occurrences; HTML/Flight relocation cannot be transformed safely |
 | **Boot verify** | Manifest schema, per-file SHA-256 + occurrence counts, artifact Next version re-checked against the manifest | Any hash/count/version mismatch — the artifact no longer matches its index |
 | **Patch** | Sparse mirror into `/tmp`: indexed files copied + byte-replaced (Flight-frame-aware for `.rsc` and inline Flight streams in prerendered HTML; byte-length headers recomputed), everything else symlinked, `server.js` always copied | Patched JSON doesn't parse; sentinel inside an unsupported Flight row type |
@@ -482,7 +482,7 @@ The entrypoint emits single-line JSON events tagged `kz_next_runtime`:
 
 ### Next version pin policy
 
-Next.js is pinned **exactly** (`15.5.19` — no `^`/`~`). The relocation contract is validated per-version: `withKamiwazaAppGarden()` refuses production build variants on any other version, and the indexer cross-checks the artifact's traced `next` package against the manifest.
+Next.js is pinned **exactly** (`15.5.24` — no `^`/`~`). The relocation contract is validated per-version: `withKamiwazaAppGarden()` refuses production build variants on any other version, and the indexer cross-checks the artifact's traced `next` package against the manifest.
 
 **To bump the pin**: update the version, then run the canary — a version bump is acceptable only when it passes:
 
