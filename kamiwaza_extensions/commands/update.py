@@ -809,6 +809,13 @@ _FRONTEND_RUNTIME_DEPENDENCIES = (
     "@kamiwaza-ai/extensions-lib",
     "next",
 )
+_FRONTEND_DEPENDENCY_SELECTOR_MAPS = (
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+    "overrides",
+    "resolutions",
+)
 _PYTHON_RUNTIME_REQUIREMENT_RE = re.compile(
     r"^\s*(?P<name>kamiwaza[-_]extensions[-_]lib)"
     r"(?P<extras>\[[^]]+\])?(?=\s|[<>=!~@;]|$)",
@@ -828,7 +835,40 @@ def _merge_frontend_package(rendered: dict, existing: dict, merged: dict) -> dic
     for name in _FRONTEND_RUNTIME_DEPENDENCIES:
         if name in rendered_dependencies:
             dependencies[name] = rendered_dependencies[name]
-    return {**merged, "dependencies": dependencies}
+    reconciled = {**merged, "dependencies": dependencies}
+    for field in _FRONTEND_DEPENDENCY_SELECTOR_MAPS:
+        if field in reconciled:
+            reconciled[field] = _reconcile_runtime_dependency_map(
+                reconciled[field],
+                rendered_dependencies,
+                nested_direct=field == "overrides",
+            )
+    pnpm = reconciled.get("pnpm")
+    if isinstance(pnpm, dict) and "overrides" in pnpm:
+        reconciled["pnpm"] = {
+            **pnpm,
+            "overrides": _reconcile_runtime_dependency_map(
+                pnpm["overrides"], rendered_dependencies
+            ),
+        }
+    return reconciled
+
+
+def _reconcile_runtime_dependency_map(
+    values: object, rendered: dict, *, nested_direct: bool = False
+) -> object:
+    """Advance controlled packages wherever a package manager can select them."""
+    if not isinstance(values, dict):
+        return values
+    reconciled = dict(values)
+    for name in _FRONTEND_RUNTIME_DEPENDENCIES:
+        if name in reconciled and name in rendered:
+            current = reconciled[name]
+            if nested_direct and isinstance(current, dict):
+                reconciled[name] = {**current, ".": rendered[name]}
+            else:
+                reconciled[name] = rendered[name]
+    return reconciled
 
 
 def _find_runtime_requirement(content: str) -> str | None:
@@ -845,6 +885,16 @@ def _runtime_requirement_marker(requirement: str) -> str | None:
     except InvalidRequirement:
         return None
     return str(marker) if marker is not None else None
+
+
+def _runtime_requirement_identity(requirement: str) -> tuple[tuple[str, ...], str]:
+    """Identify equivalent extras/marker branches after pin reconciliation."""
+    try:
+        parsed = Requirement(requirement)
+    except InvalidRequirement:
+        return (), requirement.strip()
+    marker = str(parsed.marker) if parsed.marker is not None else ""
+    return tuple(sorted(parsed.extras)), marker
 
 
 def _preserve_runtime_requirement_constraints(
@@ -872,14 +922,18 @@ def _merge_requirements(existing_content: str, new_content: str) -> str | None:
     had_final_newline = existing_content.endswith(("\n", "\r"))
     merged: list[str] = []
     inserted = False
+    runtime_branches: set[tuple[tuple[str, ...], str]] = set()
     for line in existing_content.splitlines():
         runtime_match = _PYTHON_RUNTIME_REQUIREMENT_RE.match(line)
         if runtime_match:
-            if not inserted:
-                merged.append(
-                    _preserve_runtime_requirement_constraints(desired, runtime_match)
-                )
-                inserted = True
+            requirement = _preserve_runtime_requirement_constraints(
+                desired, runtime_match
+            )
+            branch = _runtime_requirement_identity(requirement)
+            if branch not in runtime_branches:
+                merged.append(requirement)
+                runtime_branches.add(branch)
+            inserted = True
             continue
         merged.append(line)
     if not inserted:

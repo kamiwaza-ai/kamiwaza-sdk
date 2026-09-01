@@ -141,6 +141,30 @@ def test_requirements_update_preserves_runtime_extra_and_marker(tmp_path, monkey
     assert result.reason == "requirements-merge"
 
 
+def test_requirements_merge_preserves_distinct_conditional_branches():
+    existing = "\n".join(
+        (
+            'kamiwaza-extensions-lib[asgi]>=0.4,<0.5; python_version < "3.11"',
+            'kamiwaza-extensions-lib>=0.4,<0.5; python_version >= "3.11"',
+            'kamiwaza_extensions_lib>=0.4,<0.5; python_version>="3.11"',
+            "httpx>=0.27",
+            "",
+        )
+    )
+    rendered = "kamiwaza-extensions-lib>=0.5,<0.6\n"
+
+    merged = upd._merge_requirements(existing, rendered)
+
+    assert merged == "\n".join(
+        (
+            'kamiwaza-extensions-lib[asgi]>=0.5,<0.6; python_version < "3.11"',
+            'kamiwaza-extensions-lib>=0.5,<0.6; python_version >= "3.11"',
+            "httpx>=0.27",
+            "",
+        )
+    )
+
+
 def test_requirements_merge_does_not_treat_url_semicolon_as_marker():
     existing = "kamiwaza-extensions-lib @ https://example.test/runtime.whl;param\n"
     rendered = "kamiwaza-extensions-lib>=0.5,<0.6\n"
@@ -148,6 +172,46 @@ def test_requirements_merge_does_not_treat_url_semicolon_as_marker():
     merged = upd._merge_requirements(existing, rendered)
 
     assert merged == rendered
+
+
+def test_frontend_merge_reconciles_runtime_pins_in_secondary_maps():
+    rendered = {
+        "dependencies": {
+            "@kamiwaza-ai/extensions-lib": ">=0.5 <0.6",
+            "next": "15.5.24",
+        }
+    }
+    existing = {
+        "dependencies": {"next": "14.2.0"},
+        "devDependencies": {"next": "14.2.0", "eslint": "^9"},
+        "optionalDependencies": {"@kamiwaza-ai/extensions-lib": "^0.4"},
+        "peerDependencies": {"next": "^14"},
+        "overrides": {
+            "next": {".": "14.2.0", "sharp": "0.33.5"},
+            "react": "18.3.1",
+        },
+        "resolutions": {"@kamiwaza-ai/extensions-lib": "0.4.9"},
+        "pnpm": {"overrides": {"next": "14.2.0", "react": "18.3.1"}},
+    }
+    merged = {**rendered, **existing}
+
+    package = upd._merge_frontend_package(rendered, existing, merged)
+
+    assert package["dependencies"]["next"] == "15.5.24"
+    assert package["devDependencies"] == {"next": "15.5.24", "eslint": "^9"}
+    assert package["optionalDependencies"]["@kamiwaza-ai/extensions-lib"] == (
+        ">=0.5 <0.6"
+    )
+    assert package["peerDependencies"]["next"] == "15.5.24"
+    assert package["overrides"] == {
+        "next": {".": "15.5.24", "sharp": "0.33.5"},
+        "react": "18.3.1",
+    }
+    assert package["resolutions"]["@kamiwaza-ai/extensions-lib"] == ">=0.5 <0.6"
+    assert package["pnpm"]["overrides"] == {
+        "next": "15.5.24",
+        "react": "18.3.1",
+    }
 
 
 def test_dockerignore_merge_preserves_crlf():
