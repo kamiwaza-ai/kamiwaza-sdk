@@ -138,6 +138,7 @@ jobs:
           KAMIWAZA_BASE_URL: ${{ secrets.KAMIWAZA_BASE_URL }}
           KAMIWAZA_ADMIN_TOKEN: ${{ secrets.KAMIWAZA_API_KEY }}
         run: |
+          set -euo pipefail
           # The provisioner creates all three exact wheel versions, publishes
           # the deterministic dataset, and exports the allowlisted HTTP URL
           # consumed by the required NetworkPolicy probes.  Missing fixture
