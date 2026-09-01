@@ -2319,22 +2319,33 @@ def test_wait_for_base_url_timeout_names_the_serving_stage():
 
 def test_wait_for_base_url_does_not_retry_offhost_probe_refusal(monkeypatch):
     import kamiwaza_sdk.services.kaizen as kaizen_mod
+    from kamiwaza_sdk.client import KamiwazaClient
+    from kamiwaza_sdk.exceptions import KamiwazaError, OffHostBaseURLError
 
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
 
-    # The credential guard's refusal is deterministic; retrying it would spend
-    # the whole budget and then report the wrong stage.
+    # A real client resolving a genuinely off-host endpoint, so the guard itself
+    # raises rather than a stand-in: the refusal is deterministic, and retrying
+    # it would spend the whole budget and then report the wrong stage.
+    client = KamiwazaClient(base_url="https://example.test/api")
+    client._extensions = SimpleNamespace(
+        get_extension=lambda name: SimpleNamespace(
+            endpoints=SimpleNamespace(
+                external="https://evil.example/kaizen", public_api_url=None
+            )
+        )
+    )
     attempts = []
+    client.session.request = lambda *a, **k: attempts.append(1)
 
-    def refuse(*_a, **_k):
-        attempts.append(1)
-        raise ValueError("base_url '...' is not on the platform host '...'")
-
-    client = _serving_client(refuse)
-    with pytest.raises(ValueError, match="not on the platform host"):
+    with pytest.raises(OffHostBaseURLError) as caught:
         wait_for_base_url(client, "kaizen", poll_interval_seconds=0)
 
-    assert len(attempts) == 1
+    # _is_serving answers True for any KamiwazaError, so a refusal that landed in
+    # that hierarchy would be read as "the backend answered" and the off-host URL
+    # returned as serving.
+    assert not isinstance(caught.value, KamiwazaError)
+    assert attempts == []
 
 
 @pytest.mark.parametrize("attr", ["external", "api_url", "public_api_url"])
@@ -2361,3 +2372,24 @@ def test_wait_for_base_url_polls_when_endpoint_is_slash(monkeypatch):
 
     with pytest.raises(TimeoutError, match="could not determine the extension's URL"):
         wait_for_base_url(client, "kaizen", timeout_seconds=0)
+
+
+def test_offhost_refusal_stays_outside_the_kamiwaza_hierarchy():
+    from kamiwaza_sdk.exceptions import KamiwazaError, OffHostBaseURLError
+
+    # _is_serving treats every KamiwazaError as "the backend answered", so this
+    # placement is what stops an off-host URL being reported as serving. It stays
+    # a ValueError so existing callers keep working.
+    assert issubclass(OffHostBaseURLError, ValueError)
+    assert not issubclass(OffHostBaseURLError, KamiwazaError)
+
+
+def test_is_serving_would_mistake_a_kamiwaza_scoped_refusal_for_a_live_backend():
+    from kamiwaza_sdk.exceptions import KamiwazaError
+
+    # Pins the reason for the placement above: were the guard's error moved into
+    # the KamiwazaError hierarchy, this is what the readiness probe would answer.
+    def refuse(*_a, **_k):
+        raise KamiwazaError("off-host")
+
+    assert _is_serving(_serving_client(refuse), KAIZEN_URL, workroom_id=None) is True
