@@ -860,15 +860,23 @@ def _reconcile_runtime_dependency_map(
     """Advance controlled packages wherever a package manager can select them."""
     if not isinstance(values, dict):
         return values
-    reconciled = dict(values)
-    for name in _FRONTEND_RUNTIME_DEPENDENCIES:
-        if name in reconciled and name in rendered:
-            current = reconciled[name]
-            if nested_direct and isinstance(current, dict):
-                reconciled[name] = {**current, ".": rendered[name]}
-            else:
-                reconciled[name] = rendered[name]
-    return reconciled
+    return {
+        name: _reconciled_runtime_dependency(
+            name, current, rendered, nested_direct=nested_direct
+        )
+        for name, current in values.items()
+    }
+
+
+def _reconciled_runtime_dependency(
+    name: str, current: object, rendered: dict, *, nested_direct: bool
+) -> object:
+    desired = rendered.get(name)
+    if name not in _FRONTEND_RUNTIME_DEPENDENCIES or desired is None:
+        return current
+    if nested_direct and isinstance(current, dict):
+        return {**current, ".": desired}
+    return desired
 
 
 def _find_runtime_requirement(content: str) -> str | None:
