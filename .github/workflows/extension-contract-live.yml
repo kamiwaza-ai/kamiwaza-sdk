@@ -20,6 +20,9 @@ name: extensions/contract-live
 # Job requires repository secrets:
 #   - KAMIWAZA_BASE_URL    (e.g., https://contract-tests.kamiwaza.dev/api)
 #   - KAMIWAZA_API_KEY     (PAT for an admin persona on that cluster)
+#   - M5_TEST_KUBECTL      (kubectl command, optionally SSH-wrapped, for the
+#                           qualified gate-fixture cluster)
+#   - M5_TEST_NETWORK_POLICY_REQUIRED=1 (enables the required NP probes)
 #
 # If those secrets aren't present (e.g., for fork PRs), the job skips cleanly.
 
@@ -156,7 +159,15 @@ jobs:
           trap 'rm -f "$fixture_log"' EXIT
           uv run python -m tests.integration._gate_fixture provision \
             --kubectl "${M5_TEST_KUBECTL}" | tee "${fixture_log}"
+          # GITHUB_ENV applies only to later steps.  Import the generated
+          # values into this shell too, otherwise conftest's autouse fixture
+          # sees M5_TEST_KUBECTL without the provisioned paths and provisions
+          # the same cluster rig a second time.
           sed -n '/^export /s/^export //' "${fixture_log}" >> "${GITHUB_ENV}"
+          while IFS='=' read -r name value; do
+            [ -n "${name}" ] || continue
+            export "${name}=${value}"
+          done < <(sed -n '/^export /s/^export //' "${fixture_log}")
           uv run pytest tests/integration/gate_packages/ -v --tb=short
 
       - name: Tear down gate-package fixture
