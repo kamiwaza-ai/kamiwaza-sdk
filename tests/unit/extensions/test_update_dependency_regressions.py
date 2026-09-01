@@ -141,6 +141,15 @@ def test_requirements_update_preserves_runtime_extra_and_marker(tmp_path, monkey
     assert result.reason == "requirements-merge"
 
 
+def test_requirements_merge_does_not_treat_url_semicolon_as_marker():
+    existing = "kamiwaza-extensions-lib @ https://example.test/runtime.whl;param\n"
+    rendered = "kamiwaza-extensions-lib>=0.5,<0.6\n"
+
+    merged = upd._merge_requirements(existing, rendered)
+
+    assert merged == rendered
+
+
 def test_dockerignore_merge_preserves_crlf():
     existing = "# author rules\r\ncredentials/**\r\n"
     rendered = "node_modules\n.next\n.env*\n.git\n"

@@ -38,6 +38,7 @@ from importlib import resources as importlib_resources
 from pathlib import Path
 
 import typer
+from packaging.requirements import InvalidRequirement, Requirement
 from rich.console import Console
 from rich.table import Table
 
@@ -837,6 +838,15 @@ def _find_runtime_requirement(content: str) -> str | None:
     return None
 
 
+def _runtime_requirement_marker(requirement: str) -> str | None:
+    """Return a real PEP 508 marker without mistaking URL semicolons for one."""
+    try:
+        marker = Requirement(requirement).marker
+    except InvalidRequirement:
+        return None
+    return str(marker) if marker is not None else None
+
+
 def _preserve_runtime_requirement_constraints(
     desired: str, existing: re.Match[str]
 ) -> str:
@@ -848,9 +858,9 @@ def _preserve_runtime_requirement_constraints(
         name_end = desired_match.end("name")
         merged = f"{desired[:name_end]}{extras}{desired[name_end:]}"
 
-    _, separator, marker = existing.string.partition(";")
-    if separator and ";" not in merged:
-        merged = f"{merged};{marker}"
+    marker = _runtime_requirement_marker(existing.string)
+    if marker and _runtime_requirement_marker(merged) is None:
+        merged = f"{merged}; {marker}"
     return merged
 
 
