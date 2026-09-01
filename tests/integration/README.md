@@ -26,7 +26,8 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_TEST_DIFFUSION_REPO` | Required Hugging Face image model used for DiffusionEngine validation | `dg845/tiny-random-stable-diffusion` |
 | `KAMIWAZA_TEST_DIFFUSION_FAMILY` | Diffusion family passed in the test model config | `sd15` |
 | `KAMIWAZA_TEST_DIFFUSION_BACKEND` | Runtime backend (`auto`, CPU, CUDA/NVIDIA, ROCm/AMD, MLX/MPS, or Intel) | `auto` |
-| `KAMIWAZA_TEST_DIFFUSION_IMAGE` | Optional runtime image override for Linux/Kubernetes fleets | unset |
+| `KAMIWAZA_TEST_DIFFUSION_IMAGE` | Optional cluster-pullable runtime image for container fleets | source-built image |
+| `KAMIWAZA_DIFFUSION_CONFIGURE_CLUSTER` | Temporarily add the image to the trusted cluster catalog | `true` for container validation |
 | `KAMIWAZA_TEST_DIFFUSION_FAKE` | Explicit control-plane-only mode; real inference is the default proof | `false` |
 | `KAMIWAZA_TEST_DIFFUSION_SIZE` | Generated image size | `64x64` |
 | `KAMIWAZA_TEST_DIFFUSION_STEPS` | Denoising steps for the live request | `2` |
@@ -36,9 +37,20 @@ contributor PRs without a live cluster don't see false reds.
 
 For source-based user-space acceptance, source
 `scripts/prepare_diffusion_live.sh` before `pytest -m integration`, or run
-`make test-diffusion-live`. The script prepares the host runtime on macOS and
-builds/pushes the current CPU or NVIDIA engine image on Linux. Fleet-specific
-accelerators can supply a cluster-pullable `KAMIWAZA_TEST_DIFFUSION_IMAGE`.
+`make test-diffusion-live`. The default macOS path prepares the host Metal/MPS
+runtime. Container backends build and push the current CPU or NVIDIA engine
+image on Linux or macOS, using the chainlogin-managed Docker config when
+available. Fleet-specific accelerators can supply a cluster-pullable
+`KAMIWAZA_TEST_DIFFUSION_IMAGE`. Kubernetes deliberately selects images from
+the operator-owned trusted catalog rather than model config, so preparation
+temporarily adds the image to `core-config`, rolls the scheduler, and exposes
+`cleanup_diffusion_live` to restore it. `make test-diffusion-live` always runs
+that cleanup through an exit trap, including after test failure.
+`scripts/run_diffusion_live.sh` is the agent-safe entrypoint. With no arguments
+it runs the targeted proof; with arguments it passes them to pytest, allowing a
+full `-m integration` run to share the same guaranteed cleanup lifecycle.
+Targeted runs write a timestamped JUnit file under `/tmp`; set
+`KAMIWAZA_DIFFUSION_JUNIT` to choose its path.
 
 Unless the explicit shared target is configured, live model tests select vLLM
 for NVIDIA clusters, MLX only when every reported platform is Apple Silicon,
@@ -75,6 +87,12 @@ make test-live
 
 # DiffusionEngine deployment + real OpenAI Images API inference
 make test-diffusion-live
+
+# Manual equivalent; restore the temporary cluster catalog entry afterward
+source scripts/prepare_diffusion_live.sh
+uv run pytest -m "integration and live and diffusion" \
+  tests/integration/test_diffusion_live.py -v --tb=short
+cleanup_diffusion_live
 
 # Full integration suite without diffusion (explicit opt-out only)
 uv run pytest -m integration --skip-diffusion -v --tb=short

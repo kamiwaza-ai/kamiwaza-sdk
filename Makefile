@@ -30,7 +30,7 @@ test-live: sync
 	uv run pytest -m "live"
 
 test-diffusion-live: sync
-	bash -c 'source scripts/prepare_diffusion_live.sh && exec uv run pytest -m "integration and live and diffusion" tests/integration/test_diffusion_live.py -v --tb=short'
+	scripts/run_diffusion_live.sh
 
 # Code quality
 lint: sync

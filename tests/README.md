@@ -49,12 +49,22 @@ explicit operator choice; missing runtime images, host dependencies or model
 access are test failures rather than silent capability skips.
 
 `make test-diffusion-live` first sources `scripts/prepare_diffusion_live.sh`.
-On macOS it creates the checked-out platform's user-space `diffusion-venv` and
-verifies Metal/MPS. On Linux it builds the current CPU or NVIDIA runtime source,
-pushes it to the KZUAT registry, and exports the cluster-pullable image. Set
+On macOS the default `auto`/Metal path creates the checked-out platform's
+user-space `diffusion-venv` and verifies MPS. Explicit CPU or NVIDIA backends on
+macOS, and the default CPU or explicit NVIDIA backend on Linux, build the current
+runtime source, push it to the KZUAT registry, and export the cluster-pullable image. Set
 `KAMIWAZA_PLATFORM_ROOT` when the platform checkout is not the SDK's sibling.
 An explicit `KAMIWAZA_TEST_DIFFUSION_IMAGE` remains available for ROCm, Intel,
-Spark, or fleet-specific images.
+Spark, or fleet-specific images. Container builds automatically use the
+chainlogin-managed Docker config when present; override it with
+`KAMIWAZA_DIFFUSION_DOCKER_CONFIG`. Kubernetes selects images from its trusted
+operator catalog rather than model configuration, so preparation temporarily
+installs the selected image into `core-config` and rolls the scheduler.
+`make test-diffusion-live` restores the prior catalog through an exit trap,
+including after failure. Manual runs must call `cleanup_diffusion_live`.
+Agents can use `scripts/run_diffusion_live.sh` directly; extra arguments replace
+the targeted pytest defaults, so passing `-m integration ...` runs the full
+suite inside the same prepare/cleanup lifecycle.
 
 The inference tests choose one model/engine/quantization target from the live
 cluster inventory. NVIDIA selects vLLM, complete Apple Silicon inventory selects
