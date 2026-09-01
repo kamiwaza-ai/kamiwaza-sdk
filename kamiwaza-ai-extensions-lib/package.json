@@ -54,7 +54,7 @@
         "typecheck": "tsc --noEmit"
     },
     "engines": {
-        "node": ">=18.17"
+        "node": "^18.18.0 || ^19.8.0 || >=20.0.0"
     },
     "peerDependencies": {
         "next": "15.5.24",
