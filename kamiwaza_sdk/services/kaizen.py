@@ -336,15 +336,10 @@ def _endpoint_from_extension(extension, *, public: bool) -> Optional[str]:
         else ("external", "api_url", "public_api_url")
     )
     for attr in order:
-        value = getattr(endpoints, attr, None)
-        if not value:
-            continue
-        # "/" survives the truthiness test and rstrips to "", which downstream
-        # reads as an unusable root rather than an absent one. Treat it as
-        # absent so the caller raises "no published endpoint yet" and keeps
-        # polling, which is what a route published before its path is stamped
-        # needs.
-        root = str(value).rstrip("/")
+        # An endpoint of "/" rstrips to "", which downstream reads as an
+        # unusable root rather than an absent one; a route published before its
+        # path is stamped clears on its own, so it must stay "not published".
+        root = str(getattr(endpoints, attr, None) or "").rstrip("/")
         if root:
             return root
     return None
