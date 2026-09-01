@@ -127,3 +127,56 @@ Always run `teardown`, including after a failed prepare or run. The provider
 records authenticated state before each owned mutation and removes resources
 in reverse order. `state.json`, `evidence.json`, and `cleanup.json` contain
 digests, IDs, and outcomes—not PATs, passwords, or kubeconfig contents.
+
+## External identity fixtures
+
+Use external mode when the realm, client, and persona users are managed by a
+customer or another operator. The provider adopts the identity configuration;
+it never calls the Keycloak admin create, update, or delete APIs for that
+realm. The issuer is a complete HTTPS realm URL and is deliberately supplied
+as configuration rather than derived from the validation run:
+
+```bash
+export KAMIWAZA_SHARED_IDP_EXTERNAL_ISSUER=https://idp.example/realms/shared
+```
+
+The runtime still uses file references. The client ID is read from the file
+named by `shared-idp-external-client-id`; the persona password uses the same
+`shared-idp-persona-password` reference as owned mode:
+
+```json
+{
+  "validation": {
+    "level": "smoke",
+    "fixture_mode": "external",
+    "include": ["sdk.federation.shared-idp/v1"],
+    "exclude": []
+  },
+  "secret_refs": {
+    "shared-idp-external-client-id": "file:///absolute/path/client-id",
+    "shared-idp-persona-password": "file:///absolute/path/persona.password"
+  }
+}
+```
+
+External mode uses a token-only OIDC adapter for ROPC and does not require
+`shared-idp-admin-password` or `KAMIWAZA_SHARED_IDP_ADMIN_URL`. Pairings,
+datasets, brokered-user bindings, and execution-gate changes remain
+run-scoped provider resources and are journaled for cleanup.
+
+## Recovery and ownership checks
+
+The state writer persists an authenticated snapshot before the first mutation
+and after every subsequent mutation. New snapshots carry the provider-neutral
+`kamiwaza.validation/v1` ownership tag at the envelope and edge levels. The
+tag is checked before any destructive API call; a foreign tag produces a
+failed cleanup result and leaves the resource untouched. Legacy snapshots that
+do not contain the tag remain readable because their existing ownership digest
+and MAC still bind them to the run.
+
+Teardown is safe to replay after a process crash or an ambiguous network
+result. Already-deleted resources are reported as `absent`; remaining
+run-owned resources are removed in reverse journal order. Inspect
+`cleanup.json` and rerun the same teardown command until its status is
+`passed`. A `failed` result is intentionally not converted into success: fix
+the reported ownership or connectivity problem before retrying.

@@ -157,6 +157,7 @@ class _Federations:
         self.proxies: dict[str, _FederationProxy] = {}
         self.id_proxies: dict[str, _FederationProxy] = {}
         self.deleted: list[str] = []
+        self.revoked: set[str] = set()
 
     def pair(self, *, name: str, role: str, **kwargs: Any) -> dict[str, str]:
         del kwargs
@@ -227,6 +228,8 @@ class _Datasets:
         del urn, type, config
 
     def delete(self, urn: str) -> None:
+        if urn not in self.created:
+            raise _NotFound("dataset is already absent")
         self.created.remove(urn)
 
 
@@ -241,6 +244,11 @@ class _Client:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         del kwargs
+        if method in {"DELETE", "POST"} and any(
+            old_method == method and old_path == path
+            for old_method, old_path in self.requests
+        ):
+            raise _NotFound("federation is already absent")
         self.requests.append((method, path))
         return {}
 
@@ -272,6 +280,7 @@ class _Admin:
         self.deleted_users: list[str] = []
         self.deleted_clients: list[str] = []
         self.deleted_realms: list[str] = []
+        self.token_client_ids: list[str] = []
 
     def create_owned_realm(self, realm: str, owner_nonce: str) -> dict[str, Any]:
         del owner_nonce
@@ -279,6 +288,8 @@ class _Admin:
 
     def delete_owned_realm(self, realm: str, owner_nonce: str) -> bool:
         del owner_nonce
+        if realm in self.deleted_realms:
+            raise _NotFound("realm is already absent")
         self.deleted_realms.append(realm)
         return True
 
@@ -302,18 +313,23 @@ class _Admin:
 
     def delete_user(self, realm: str, user_id: str) -> bool:
         del realm
+        if user_id in self.deleted_users:
+            raise _NotFound("user is already absent")
         self.deleted_users.append(user_id)
         return True
 
     def delete_client(self, realm: str, client_uuid: str) -> bool:
         del realm
+        if client_uuid in self.deleted_clients:
+            raise _NotFound("client is already absent")
         self.deleted_clients.append(client_uuid)
         return True
 
     def ropc_token(
         self, realm: str, client_id: str, username: str, password: str
     ) -> str:
-        del realm, client_id, password
+        del realm, password
+        self.token_client_ids.append(client_id)
         return _jwt(username)
 
 
