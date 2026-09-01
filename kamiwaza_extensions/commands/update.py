@@ -809,7 +809,8 @@ _FRONTEND_RUNTIME_DEPENDENCIES = (
     "next",
 )
 _PYTHON_RUNTIME_REQUIREMENT_RE = re.compile(
-    r"^\s*kamiwaza[-_]extensions[-_]lib(?:\[[^]]+\])?(?:\s|[<>=!~@;]|$)",
+    r"^\s*(?P<name>kamiwaza[-_]extensions[-_]lib)"
+    r"(?P<extras>\[[^]]+\])?(?=\s|[<>=!~@;]|$)",
     re.IGNORECASE,
 )
 
@@ -836,6 +837,16 @@ def _find_runtime_requirement(content: str) -> str | None:
     return None
 
 
+def _preserve_runtime_requirement_extras(desired: str, existing: re.Match[str]) -> str:
+    """Carry author-selected runtime extras onto the template-controlled pin."""
+    extras = existing.group("extras")
+    desired_match = _PYTHON_RUNTIME_REQUIREMENT_RE.match(desired)
+    if not extras or desired_match is None or desired_match.group("extras"):
+        return desired
+    name_end = desired_match.end("name")
+    return f"{desired[:name_end]}{extras}{desired[name_end:]}"
+
+
 def _merge_requirements(existing_content: str, new_content: str) -> str | None:
     desired = _find_runtime_requirement(new_content)
     if desired is None:
@@ -845,9 +856,12 @@ def _merge_requirements(existing_content: str, new_content: str) -> str | None:
     merged: list[str] = []
     inserted = False
     for line in existing_content.splitlines():
-        if _PYTHON_RUNTIME_REQUIREMENT_RE.match(line):
+        runtime_match = _PYTHON_RUNTIME_REQUIREMENT_RE.match(line)
+        if runtime_match:
             if not inserted:
-                merged.append(desired)
+                merged.append(
+                    _preserve_runtime_requirement_extras(desired, runtime_match)
+                )
                 inserted = True
             continue
         merged.append(line)

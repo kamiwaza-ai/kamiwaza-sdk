@@ -101,6 +101,43 @@ def test_force_replaces_invalid_package_with_backup(tmp_path, monkeypatch):
     assert result.reason == "force (.orig backup)"
 
 
+def test_requirements_update_preserves_runtime_asgi_extra(tmp_path, monkeypatch):
+    """An author-selected ASGI extra must survive the runtime version sweep."""
+    monkeypatch.chdir(tmp_path)
+    with patch("subprocess.run"):
+        scaffold = Scaffolder().create(type_="app", name="my")
+
+    requirements_path = scaffold / "backend" / "requirements.txt"
+    author_requirements = [
+        line
+        for line in requirements_path.read_text().splitlines()
+        if not line.startswith("uvicorn")
+    ]
+    author_requirements = [
+        (
+            "kamiwaza-extensions-lib[asgi]>=0.4,<0.5"
+            if line.startswith("kamiwaza-extensions-lib")
+            else line
+        )
+        for line in author_requirements
+    ]
+    requirements_path.write_text("\n".join(author_requirements) + "\n")
+    monkeypatch.chdir(scaffold)
+
+    summary = upd.run_update(non_interactive=True)
+
+    requirements = requirements_path.read_text().splitlines()
+    assert "kamiwaza-extensions-lib[asgi]>=0.5,<0.6" in requirements
+    assert not any(line.startswith("uvicorn") for line in requirements)
+    result = next(
+        item
+        for item in summary.files
+        if item.relative_path == "backend/requirements.txt"
+    )
+    assert result.action == "updated"
+    assert result.reason == "requirements-merge"
+
+
 def test_dockerignore_merge_preserves_crlf():
     existing = "# author rules\r\ncredentials/**\r\n"
     rendered = "node_modules\n.next\n.env*\n.git\n"
