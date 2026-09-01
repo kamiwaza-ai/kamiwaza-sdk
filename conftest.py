@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from _kamiwaza_pytest_options import add_live_options
+from _kamiwaza_pytest_options import add_live_options, mark_skipped_diffusion_items
 from tests.e2e import _evidence_emitter
 
 # pytester powers the in-process pytest runs in
@@ -25,3 +25,9 @@ def pytest_configure(config: pytest.Config) -> None:
     # Opt-in scenario-evidence.v2 emission (--emit-evidence); no-op without
     # the flag, refuses without a build identity.
     _evidence_emitter.maybe_register(config)
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    mark_skipped_diffusion_items(config, items)

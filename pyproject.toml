@@ -164,6 +164,7 @@ markers = [
     "contract: schema/contract tests with recorded HTTP interactions",
     "integration: tests with local Docker/MinIO dependencies",
     "live: tests that talk to a running Kamiwaza deployment",
+    "diffusion: live tests that deploy a DiffusionEngine and generate images through the OpenAI-compatible SDK client",
     "e2e: full workflow tests",
     "slow: intentionally slow tests",
     "withoutresponses: tests needing real network access",
