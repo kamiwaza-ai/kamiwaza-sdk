@@ -147,11 +147,17 @@ class MeshEdge(ClosedModel):
     initiator: StableId
     receiver: StableId
     identity_mode: StableId
+    capabilities: Annotated[
+        tuple[StableId, ...], Field(json_schema_extra={"uniqueItems": True})
+    ] = ()
 
     @model_validator(mode="after")
     def validate_endpoints(self) -> MeshEdge:
         if self.initiator == self.receiver:
             raise ValueError("mesh edge must connect distinct clusters")
+        _reject_duplicate_values(
+            self.capabilities, "mesh edge capabilities contain a duplicate"
+        )
         return self
 
 

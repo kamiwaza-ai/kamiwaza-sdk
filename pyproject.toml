@@ -82,6 +82,7 @@ kamiwaza-federation = "kamiwaza_sdk.seeding.federation.cli:main"
 kamiwaza-validate-inference = "kamiwaza_sdk.validation.inference_provider:main"
 kamiwaza-validate-federation = "kamiwaza_sdk.validation.federation_provider:main"
 kamiwaza-validate-model-mesh = "kamiwaza_sdk.validation.model_mesh_provider:main"
+kamiwaza-validate-delegated-workload = "kamiwaza_sdk.validation.delegated_workload_provider:main"
 
 # `kamiwaza-extensions-lib` is published as its own PyPI distribution
 # from `kamiwaza_extensions_lib/pyproject.toml`. For local dev / tests we
