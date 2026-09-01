@@ -520,18 +520,16 @@ def test_401_arm_raises_rather_than_replaying_a_streamed_body(
 
 
 # Codes admitted in ENG-10516. The delay column is a representative in-band
-# value, NOT a claim about core's cadence: two of these are computed at
-# runtime rather than literals (embedding_deploying forwards the provisioner's
-# variable warmup window; embedding_runtime_unreachable forwards the upstream
-# runtime's own header), and asserting a number the SDK was just handed pins
-# nothing about core anyway. What is pinned here is that each code is admitted
+# value, NOT a claim about core's cadence: embedding_runtime_unreachable
+# forwards the upstream runtime's own header, and asserting a number the SDK
+# was just handed pins nothing about core anyway. What is pinned here is that
+# each code is admitted
 # and its in-band hint is slept verbatim; the clamps are pinned separately.
 # Values are strictly INSIDE [1, 30). Core sends 30 for the last three, but a
 # row at exactly 30 cannot tell the server's hint from the SDK's own ceiling:
 # with the stub sending 40x the hint those rows still pass, because the clamp
 # produces 30 either way. These are chosen to falsify.
 _ADMITTED_CODES = [
-    ("embedding_deploying", 10),
     ("embedding_runtime_unreachable", 5),
     ("discovery_unavailable", 29),
     ("pinned_discovery_unavailable", 15),
@@ -540,7 +538,11 @@ _ADMITTED_CODES = [
 
 # Deliberately excluded: core emits these from the same responses={503: ...}
 # entries as the admitted codes, so they are the meaningful boundary.
-_EXCLUDED_CODES = ["embedding_unavailable", "embedding_service_error"]
+_EXCLUDED_CODES = [
+    "embedding_deploying",
+    "embedding_unavailable",
+    "embedding_service_error",
+]
 
 
 @pytest.mark.parametrize(("code", "retry_after"), _ADMITTED_CODES)
@@ -586,7 +588,7 @@ def test_does_not_retry_a_real_excluded_core_code(
     """The allowlist boundary, pinned against codes core actually emits.
 
     The synthetic-code test proves the mechanism rejects unknown values; this
-    proves the *membership* is right. These two ship from the same
+    proves the *membership* is right. These ship from the same
     ``responses={503: ...}`` entries as the admitted codes, so a careless
     widening would pick them up.
     """
@@ -610,24 +612,29 @@ def test_does_not_retry_a_real_excluded_core_code(
     assert sleeps == []
 
 
-def test_ceiling_holds_after_jitter_for_an_in_budget_hint(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("retry_after", [30.0001, 45, 60])
+def test_does_not_retry_a_hint_longer_than_the_per_attempt_ceiling(
+    monkeypatch: pytest.MonkeyPatch, retry_after: float
 ) -> None:
-    """Same invariant, for a hint the SDK will actually act on.
+    """Never shorten a server hint just to fit the per-attempt ceiling.
 
-    45s is inside the 60s budget so it is retried, and it exceeds the 30s
-    ceiling so the clamp must bind — at maximum jitter the delay is still
-    exactly 30.0, never 33.0.
+    Retrying before the server's declared unavailable window ends is a
+    guaranteed premature replay. This includes the 60-second provisioner
+    backoff at the total-budget boundary.
     """
     client, sleeps = _make_client_with_sequence(
         monkeypatch,
-        [_authority_fenced_response(retry_after=45), _success_response()],
+        [
+            _authority_fenced_response(retry_after=retry_after),
+            _success_response(),
+        ],
     )
     monkeypatch.setattr("kamiwaza_sdk.client._retry_jitter_unit", lambda: 1.0)
 
-    client.post("workrooms/abc")
+    with pytest.raises(APIError):
+        client.post("workrooms/abc")
 
-    assert sleeps == [30.0]
+    assert sleeps == []
 
 
 def test_does_not_retry_a_hint_longer_than_the_whole_budget(
