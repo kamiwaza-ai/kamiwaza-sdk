@@ -869,14 +869,30 @@ def _reconcile_runtime_dependency_map(
 
 
 def _reconciled_runtime_dependency(
-    name: str, current: object, rendered: dict, *, nested_direct: bool
+    selector: str, current: object, rendered: dict, *, nested_direct: bool
 ) -> object:
+    name = _runtime_dependency_from_selector(selector)
+    if name is None:
+        return current
     desired = rendered.get(name)
-    if name not in _FRONTEND_RUNTIME_DEPENDENCIES or desired is None:
+    if desired is None:
         return current
     if nested_direct and isinstance(current, dict):
         return {**current, ".": desired}
     return desired
+
+
+def _runtime_dependency_from_selector(selector: str) -> str | None:
+    for name in _FRONTEND_RUNTIME_DEPENDENCIES:
+        if _selector_targets_dependency(selector, name):
+            return name
+    return None
+
+
+def _selector_targets_dependency(selector: str, name: str) -> bool:
+    prefix = r"(?:^|[/ >])"
+    version = r"(?:@[^/ >]+)?$"
+    return re.search(f"{prefix}{re.escape(name)}{version}", selector) is not None
 
 
 def _find_runtime_requirement(content: str) -> str | None:
@@ -888,19 +904,29 @@ def _find_runtime_requirement(content: str) -> str | None:
 
 def _runtime_requirement_marker(requirement: str) -> str | None:
     """Return a real PEP 508 marker without mistaking URL semicolons for one."""
+    expression, _comment = _split_requirement_comment(requirement)
     try:
-        marker = Requirement(requirement).marker
+        marker = Requirement(expression).marker
     except InvalidRequirement:
         return None
     return str(marker) if marker is not None else None
 
 
+def _split_requirement_comment(requirement: str) -> tuple[str, str]:
+    """Separate a pip inline comment while retaining URL fragment characters."""
+    comment = re.search(r"\s+#.*$", requirement)
+    if comment is None:
+        return requirement, ""
+    return requirement[: comment.start()], requirement[comment.start() :]
+
+
 def _runtime_requirement_identity(requirement: str) -> tuple[tuple[str, ...], str]:
     """Identify equivalent extras/marker branches after pin reconciliation."""
+    expression, _comment = _split_requirement_comment(requirement)
     try:
-        parsed = Requirement(requirement)
+        parsed = Requirement(expression)
     except InvalidRequirement:
-        return (), requirement.strip()
+        return (), expression.strip()
     marker = str(parsed.marker) if parsed.marker is not None else ""
     return tuple(sorted(parsed.extras)), marker
 
@@ -910,6 +936,7 @@ def _preserve_runtime_requirement_constraints(
 ) -> str:
     """Carry author extras and environment markers onto the controlled pin."""
     merged = desired
+    _expression, comment = _split_requirement_comment(existing.string)
     extras = existing.group("extras")
     desired_match = _PYTHON_RUNTIME_REQUIREMENT_RE.match(desired)
     if extras and desired_match is not None and not desired_match.group("extras"):
@@ -919,7 +946,7 @@ def _preserve_runtime_requirement_constraints(
     marker = _runtime_requirement_marker(existing.string)
     if marker and _runtime_requirement_marker(merged) is None:
         merged = f"{merged}; {marker}"
-    return merged
+    return f"{merged}{comment}"
 
 
 def _merge_requirements(existing_content: str, new_content: str) -> str | None:

@@ -165,6 +165,29 @@ def test_requirements_merge_preserves_distinct_conditional_branches():
     )
 
 
+def test_requirements_merge_preserves_marker_before_inline_comment():
+    existing = "\n".join(
+        (
+            "kamiwaza-extensions-lib[asgi]>=0.4,<0.5; "
+            'python_version < "3.11"  # legacy branch',
+            "httpx @ https://example.test/httpx.whl#sha256=deadbeef",
+            "",
+        )
+    )
+    rendered = "kamiwaza-extensions-lib>=0.5,<0.6\n"
+
+    merged = upd._merge_requirements(existing, rendered)
+
+    assert merged == "\n".join(
+        (
+            "kamiwaza-extensions-lib[asgi]>=0.5,<0.6; "
+            'python_version < "3.11"  # legacy branch',
+            "httpx @ https://example.test/httpx.whl#sha256=deadbeef",
+            "",
+        )
+    )
+
+
 def test_requirements_merge_does_not_treat_url_semicolon_as_marker():
     existing = "kamiwaza-extensions-lib @ https://example.test/runtime.whl;param\n"
     rendered = "kamiwaza-extensions-lib>=0.5,<0.6\n"
@@ -187,11 +210,11 @@ def test_frontend_merge_reconciles_runtime_pins_in_secondary_maps():
         "optionalDependencies": {"@kamiwaza-ai/extensions-lib": "^0.4"},
         "peerDependencies": {"next": "^14"},
         "overrides": {
-            "next": {".": "14.2.0", "sharp": "0.33.5"},
+            "next@^14": {".": "14.2.0", "sharp": "0.33.5"},
             "react": "18.3.1",
         },
-        "resolutions": {"@kamiwaza-ai/extensions-lib": "0.4.9"},
-        "pnpm": {"overrides": {"next": "14.2.0", "react": "18.3.1"}},
+        "resolutions": {"**/@kamiwaza-ai/extensions-lib": "0.4.9"},
+        "pnpm": {"overrides": {"next@*": "14.2.0", "react": "18.3.1"}},
     }
     merged = {**rendered, **existing}
 
@@ -204,12 +227,12 @@ def test_frontend_merge_reconciles_runtime_pins_in_secondary_maps():
     )
     assert package["peerDependencies"]["next"] == "15.5.24"
     assert package["overrides"] == {
-        "next": {".": "15.5.24", "sharp": "0.33.5"},
+        "next@^14": {".": "15.5.24", "sharp": "0.33.5"},
         "react": "18.3.1",
     }
-    assert package["resolutions"]["@kamiwaza-ai/extensions-lib"] == ">=0.5 <0.6"
+    assert package["resolutions"]["**/@kamiwaza-ai/extensions-lib"] == (">=0.5 <0.6")
     assert package["pnpm"]["overrides"] == {
-        "next": "15.5.24",
+        "next@*": "15.5.24",
         "react": "18.3.1",
     }
 
