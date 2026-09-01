@@ -101,8 +101,8 @@ def test_force_replaces_invalid_package_with_backup(tmp_path, monkeypatch):
     assert result.reason == "force (.orig backup)"
 
 
-def test_requirements_update_preserves_runtime_asgi_extra(tmp_path, monkeypatch):
-    """An author-selected ASGI extra must survive the runtime version sweep."""
+def test_requirements_update_preserves_runtime_extra_and_marker(tmp_path, monkeypatch):
+    """Author-selected runtime constraints must survive the version sweep."""
     monkeypatch.chdir(tmp_path)
     with patch("subprocess.run"):
         scaffold = Scaffolder().create(type_="app", name="my")
@@ -115,7 +115,7 @@ def test_requirements_update_preserves_runtime_asgi_extra(tmp_path, monkeypatch)
     ]
     author_requirements = [
         (
-            "kamiwaza-extensions-lib[asgi]>=0.4,<0.5"
+            'kamiwaza-extensions-lib[asgi]>=0.4,<0.5; python_version < "3.13"'
             if line.startswith("kamiwaza-extensions-lib")
             else line
         )
@@ -127,7 +127,10 @@ def test_requirements_update_preserves_runtime_asgi_extra(tmp_path, monkeypatch)
     summary = upd.run_update(non_interactive=True)
 
     requirements = requirements_path.read_text().splitlines()
-    assert "kamiwaza-extensions-lib[asgi]>=0.5,<0.6" in requirements
+    assert (
+        'kamiwaza-extensions-lib[asgi]>=0.5,<0.6; python_version < "3.13"'
+        in requirements
+    )
     assert not any(line.startswith("uvicorn") for line in requirements)
     result = next(
         item

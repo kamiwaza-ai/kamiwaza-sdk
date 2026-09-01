@@ -837,14 +837,21 @@ def _find_runtime_requirement(content: str) -> str | None:
     return None
 
 
-def _preserve_runtime_requirement_extras(desired: str, existing: re.Match[str]) -> str:
-    """Carry author-selected runtime extras onto the template-controlled pin."""
+def _preserve_runtime_requirement_constraints(
+    desired: str, existing: re.Match[str]
+) -> str:
+    """Carry author extras and environment markers onto the controlled pin."""
+    merged = desired
     extras = existing.group("extras")
     desired_match = _PYTHON_RUNTIME_REQUIREMENT_RE.match(desired)
-    if not extras or desired_match is None or desired_match.group("extras"):
-        return desired
-    name_end = desired_match.end("name")
-    return f"{desired[:name_end]}{extras}{desired[name_end:]}"
+    if extras and desired_match is not None and not desired_match.group("extras"):
+        name_end = desired_match.end("name")
+        merged = f"{desired[:name_end]}{extras}{desired[name_end:]}"
+
+    _, separator, marker = existing.string.partition(";")
+    if separator and ";" not in merged:
+        merged = f"{merged};{marker}"
+    return merged
 
 
 def _merge_requirements(existing_content: str, new_content: str) -> str | None:
@@ -860,7 +867,7 @@ def _merge_requirements(existing_content: str, new_content: str) -> str | None:
         if runtime_match:
             if not inserted:
                 merged.append(
-                    _preserve_runtime_requirement_extras(desired, runtime_match)
+                    _preserve_runtime_requirement_constraints(desired, runtime_match)
                 )
                 inserted = True
             continue
