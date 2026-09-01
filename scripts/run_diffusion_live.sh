@@ -17,12 +17,17 @@ _cleanup_diffusion_live_on_exit() {
 trap _cleanup_diffusion_live_on_exit EXIT
 source "${sdk_root}/scripts/prepare_diffusion_live.sh" || exit
 
+run_stamp="$(date +%Y%m%d-%H%M%S)" || exit
+export KAMIWAZA_TEST_DIFFUSION_ARTIFACT_DIR="${KAMIWAZA_TEST_DIFFUSION_ARTIFACT_DIR:-/tmp/kzsdk-diffusion-evidence-${run_stamp}}"
+echo "Diffusion evidence directory: ${KAMIWAZA_TEST_DIFFUSION_ARTIFACT_DIR}"
+
 if [[ $# -eq 0 ]]; then
-    run_stamp="$(date +%Y%m%d-%H%M%S)" || exit
     junit_path="${KAMIWAZA_DIFFUSION_JUNIT:-/tmp/kzsdk-diffusion-live-${run_stamp}.xml}"
     pytest_args=(
         -m "integration and live and diffusion"
         tests/integration/test_diffusion_live.py
+        tests/integration/test_diffusion_qwen_live.py
+        tests/integration/test_diffusion_qwen_split_live.py
         -v
         --tb=short
         --junitxml="$junit_path"

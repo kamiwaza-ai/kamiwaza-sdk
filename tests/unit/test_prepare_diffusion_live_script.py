@@ -4,7 +4,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "prepare_diffusion_live.sh"
 RUNNER = Path(__file__).resolve().parents[2] / "scripts" / "run_diffusion_live.sh"
 
@@ -37,6 +36,13 @@ def _fake_path(tmp_path: Path) -> Path:
         "#!/bin/sh\n"
         'case "$1" in -s) echo "$FAKE_UNAME_S" ;; -m) echo "$FAKE_UNAME_M" ;; esac\n',
     )
+    _executable(
+        commands / "nvidia-smi",
+        "#!/usr/bin/env bash\n"
+        'if [[ "${1:-}" == "-L" ]]; then\n'
+        '  for ((index=0; index < ${FAKE_NVIDIA_COUNT:-0}; index++)); do echo "GPU $index: fake"; done\n'
+        "fi\n",
+    )
     for name in ("curl", "uv"):
         _executable(commands / name, "#!/bin/sh\nexit 0\n")
     _executable(
@@ -51,6 +57,8 @@ def _fake_path(tmp_path: Path) -> Path:
         'printf \'%s\\n\' "$*" >> "$FAKE_KUBECTL_RECORD"\n'
         'if [[ "$*" == *"get configmap core-config"* ]]; then\n'
         '  cat "$FAKE_KUBECTL_STATE"\n'
+        'elif [[ "$*" == *"get gateways.networking.istio.io"* ]]; then\n'
+        "  printf '%s' \"${FAKE_GATEWAY_HOST:-}\"\n"
         'elif [[ "$*" == *"patch configmap core-config"* ]]; then\n'
         '  payload="${!#}"\n'
         '  jq -r \'.data.KAMIWAZA_INFERENCE_IMAGES\' <<<"$payload" > "${FAKE_KUBECTL_STATE}.new"\n'
@@ -93,7 +101,7 @@ def _source(
         [
             "bash",
             "-c",
-            'source "$1"; rc=$?; printf "rc=%s\\nbackend=%s\\nimage=%s\\n" "$rc" "${KAMIWAZA_TEST_DIFFUSION_BACKEND:-}" "${KAMIWAZA_TEST_DIFFUSION_IMAGE:-}"; if [[ "$2" == cleanup ]]; then cleanup_diffusion_live; printf "cleanup_rc=%s\\n" "$?"; fi',
+            'source "$1"; rc=$?; printf "rc=%s\\nbackend=%s\\nimage=%s\\nbase_url=%s\\n" "$rc" "${KAMIWAZA_TEST_DIFFUSION_BACKEND:-}" "${KAMIWAZA_TEST_DIFFUSION_IMAGE:-}" "${KAMIWAZA_BASE_URL:-}"; if [[ "$2" == cleanup ]]; then cleanup_diffusion_live; printf "cleanup_rc=%s\\n" "$?"; fi',
             "prepare-diffusion-test",
             str(SCRIPT),
             "cleanup" if cleanup else "no-cleanup",
@@ -121,8 +129,11 @@ def test_runner_owns_pytest_and_cleanup_lifecycle() -> None:
     assert "trap _cleanup_diffusion_live_on_exit EXIT" in content
     assert 'uv run pytest "${pytest_args[@]}"' in content
     assert "KAMIWAZA_DIFFUSION_JUNIT" in content
+    assert "KAMIWAZA_TEST_DIFFUSION_ARTIFACT_DIR" in content
+    assert "test_diffusion_qwen_live.py" in content
+    assert "test_diffusion_qwen_split_live.py" in content
     assert "cleanup_diffusion_live || cleanup_rc=$?" in content
-    assert "exit \"$cleanup_rc\"" in content
+    assert 'exit "$cleanup_rc"' in content
 
 
 def test_darwin_prepares_host_runtime(tmp_path: Path) -> None:
@@ -131,6 +142,19 @@ def test_darwin_prepares_host_runtime(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "rc=0\nbackend=auto\nimage=\n" in result.stdout
     assert "Prepared host diffusion runtime" in result.stdout
+
+
+def test_preparation_discovers_installed_gateway_host(tmp_path: Path) -> None:
+    result = _source(
+        tmp_path,
+        FAKE_UNAME_S="Darwin",
+        FAKE_UNAME_M="arm64",
+        FAKE_GATEWAY_HOST="cornucopia.local",
+    )
+
+    assert result.returncode == 0
+    assert "Discovered live Kamiwaza URL: https://cornucopia.local/api" in result.stdout
+    assert "base_url=https://cornucopia.local/api" in result.stdout
 
 
 def test_linux_uses_explicit_fleet_image_without_building(tmp_path: Path) -> None:
@@ -168,6 +192,19 @@ def test_linux_builds_commit_addressed_cpu_image(tmp_path: Path) -> None:
     assert (
         "push localhost:5001/kamiwaza-uat/diffusion-engine:cpu-uat-deadbeefcafe-amd64"
     ) in docker_record
+
+
+def test_linux_auto_selects_nvidia_image_when_host_has_gpus(tmp_path: Path) -> None:
+    result = _source(tmp_path, FAKE_NVIDIA_COUNT="2")
+
+    expected = (
+        "host.docker.internal:5001/kamiwaza-uat/"
+        "diffusion-engine:nvidia-uat-deadbeefcafe-amd64"
+    )
+    assert result.returncode == 0
+    assert f"rc=0\nbackend=nvidia\nimage={expected}\n" in result.stdout
+    record = (tmp_path / "build-record").read_text(encoding="utf-8")
+    assert "ARGS=nvidia --platform linux/amd64" in record
 
 
 def test_darwin_can_build_kubernetes_cpu_image(tmp_path: Path) -> None:

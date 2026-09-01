@@ -41,17 +41,20 @@ pytest -m integration --skip-diffusion
 
 Some live integration tests exercise admin-only mutation paths. For those tests, prefer supplying an admin-scoped PAT via `KAMIWAZA_API_KEY` instead of relying on the default session PAT minted from username/password bootstrap.
 
-Diffusion coverage is fail-closed and included in `pytest -m integration` by
-default. It deploys `dg845/tiny-random-stable-diffusion`, performs
-real image inference, validates base64 PNG output and cleans up its deployment
-and config. Use `--skip-diffusion` or `KAMIWAZA_SKIP_DIFFUSION=1` only as an
-explicit operator choice; missing runtime images, host dependencies or model
-access are test failures rather than silent capability skips.
+Diffusion coverage is included in `pytest -m integration` by default. The
+portable fail-closed lane deploys `dg845/tiny-random-stable-diffusion`; the
+accelerated lane deploys Qwen Image and Qwen Image Edit, including a real
+source PNG and mask; and a two-NVIDIA-GPU lane deploys the Qwen DFloat11 target
+and requires an API-observable split device map. Qwen runs on an Apple Silicon
+runner or reported NVIDIA/AMD capacity. The split lane skips with the standard
+capability reason unless the cluster reports at least two NVIDIA GPUs. Use
+`--skip-diffusion` or `KAMIWAZA_SKIP_DIFFUSION=1` only as an explicit operator
+choice.
 
 `make test-diffusion-live` first sources `scripts/prepare_diffusion_live.sh`.
 On macOS the default `auto`/Metal path creates the checked-out platform's
 user-space `diffusion-venv` and verifies MPS. Explicit CPU or NVIDIA backends on
-macOS, and the default CPU or explicit NVIDIA backend on Linux, build the current
+macOS, and the auto-detected NVIDIA or CPU backend on Linux, build the current
 runtime source, push it to the KZUAT registry, and export the cluster-pullable image. Set
 `KAMIWAZA_PLATFORM_ROOT` when the platform checkout is not the SDK's sibling.
 An explicit `KAMIWAZA_TEST_DIFFUSION_IMAGE` remains available for ROCm, Intel,
@@ -64,7 +67,10 @@ installs the selected image into `core-config` and rolls the scheduler.
 including after failure. Manual runs must call `cleanup_diffusion_live`.
 Agents can use `scripts/run_diffusion_live.sh` directly; extra arguments replace
 the targeted pytest defaults, so passing `-m integration ...` runs the full
-suite inside the same prepare/cleanup lifecycle.
+suite inside the same prepare/cleanup lifecycle. Each run advertises a
+timestamped `/tmp/kzsdk-diffusion-evidence-*` directory. It contains generated
+PNGs (plus masked-edit source and mask PNGs) and a redacted JSON manifest with
+model/runtime identity, request controls, dimensions, and SHA-256 hashes.
 
 The inference tests choose one model/engine/quantization target from the live
 cluster inventory. NVIDIA selects vLLM, complete Apple Silicon inventory selects

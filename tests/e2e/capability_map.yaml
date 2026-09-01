@@ -152,6 +152,20 @@
   capability_ids: [models.openai-compatible-inference]
   scenario_name: "Validate diffusion source images through the SDK client"
 
+# Justification: accelerated live targets prove both the Qwen text-to-image
+# pipeline and Qwen Image Edit with an actual source/mask pair. PNGs and the
+# redacted request/response manifest are retained as user-space evidence.
+- pattern: "tests/integration/test_diffusion_qwen_live.py::*"
+  capability_ids: [models.local-deployment, models.openai-compatible-inference]
+  scenario_name: "Generate and mask-edit images with Qwen through the SDK"
+
+# Justification: on a cluster reporting two or more NVIDIA GPUs, this deploys
+# the DFloat11 Qwen artifact with gpu_count=2, generates an image, and requires
+# runtime attestation that the transformer head/tail occupy distinct devices.
+- pattern: "tests/integration/test_diffusion_qwen_split_live.py::*"
+  capability_ids: [models.local-deployment, models.openai-compatible-inference]
+  scenario_name: "Certify Qwen split-tensor inference across two NVIDIA GPUs"
+
 # Justification: ENG-6948 engine matrix — test_deploy_and_infer_llamacpp_gguf /
 # test_deploy_and_infer_vllm_nvidia deploy with explicit engine_name and
 # assert a chat completion via the OpenAI-compatible client

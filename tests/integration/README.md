@@ -33,6 +33,14 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_TEST_DIFFUSION_STEPS` | Denoising steps for the live request | `2` |
 | `KAMIWAZA_TEST_DIFFUSION_GUIDANCE` | Guidance value for the live request | `1.0` |
 | `KAMIWAZA_TEST_DIFFUSION_TIMEOUT` | Deployment and inference timeout in seconds | `900` |
+| `KAMIWAZA_TEST_QWEN_IMAGE_REPO` | Required accelerated text-to-image target | `Qwen/Qwen-Image-2512` |
+| `KAMIWAZA_TEST_QWEN_IMAGE_EDIT_REPO` | Required accelerated masked-edit target | `Qwen/Qwen-Image-Edit-2509` |
+| `KAMIWAZA_TEST_QWEN_IMAGE_SPLIT_REPO` | Two-NVIDIA-GPU split-tensor target | `m9e/Qwen-Image-2512-DF11` |
+| `KAMIWAZA_TEST_QWEN_IMAGE_{SIZE,STEPS,GUIDANCE,TIMEOUT}` | Qwen generation controls | `512x512`, `50`, `4.0`, `3600` |
+| `KAMIWAZA_TEST_QWEN_IMAGE_EDIT_{SIZE,STEPS,GUIDANCE,TIMEOUT}` | Qwen masked-edit controls | `512x512`, `40`, `4.0`, `3600` |
+| `KAMIWAZA_TEST_QWEN_IMAGE_SPLIT_{SIZE,STEPS,GUIDANCE,TIMEOUT}` | Qwen DFloat11 split-lane controls | `512x512`, `30`, `4.0`, `3600` |
+| `KAMIWAZA_TEST_QWEN_IMAGE_SPLIT_GPU_COUNT` | Split-layout GPU allocation (minimum enforced by test) | `2` |
+| `KAMIWAZA_TEST_DIFFUSION_ARTIFACT_DIR` | Generated PNG and JSON evidence directory | timestamped `/tmp/kzsdk-diffusion-evidence-*` |
 | `KAMIWAZA_SKIP_DIFFUSION` | Explicitly opt out of diffusion validation | unset/false |
 
 For source-based user-space acceptance, source
@@ -49,8 +57,21 @@ that cleanup through an exit trap, including after test failure.
 `scripts/run_diffusion_live.sh` is the agent-safe entrypoint. With no arguments
 it runs the targeted proof; with arguments it passes them to pytest, allowing a
 full `-m integration` run to share the same guaranteed cleanup lifecycle.
-Targeted runs write a timestamped JUnit file under `/tmp`; set
-`KAMIWAZA_DIFFUSION_JUNIT` to choose its path.
+Targeted runs write a timestamped JUnit file and evidence directory under
+`/tmp`; set `KAMIWAZA_DIFFUSION_JUNIT` and
+`KAMIWAZA_TEST_DIFFUSION_ARTIFACT_DIR` to choose their paths. Evidence includes
+generated PNGs, masked-edit source/mask PNGs, and a redacted hash-addressed
+manifest. The acceptance prompt is Ethan Mollick's simple image benchmark:
+`otter on a plane using wifi`.
+
+The portable lane always runs. Qwen generation and masked editing run when the
+agent host is Darwin ARM (the host-spawned Metal path) or SDK inventory reports
+NVIDIA/AMD acceleration. The
+DFloat11 split lane uses `gpu_vendor("nvidia")` plus `min_gpu_count(2)` and
+records an explicit skip reason on smaller hosts. A successful generation alone
+does not certify mask or tensor placement: the edit lane requires
+`mask_applied=true`, and the split lane requires a response `device_map` whose
+transformer head and tail are on `cuda:0` and `cuda:1` respectively.
 
 Unless the explicit shared target is configured, live model tests select vLLM
 for NVIDIA clusters, MLX only when every reported platform is Apple Silicon,
@@ -91,7 +112,9 @@ make test-diffusion-live
 # Manual equivalent; restore the temporary cluster catalog entry afterward
 source scripts/prepare_diffusion_live.sh
 uv run pytest -m "integration and live and diffusion" \
-  tests/integration/test_diffusion_live.py -v --tb=short
+  tests/integration/test_diffusion_live.py \
+  tests/integration/test_diffusion_qwen_live.py \
+  tests/integration/test_diffusion_qwen_split_live.py -v --tb=short
 cleanup_diffusion_live
 
 # Full integration suite without diffusion (explicit opt-out only)
@@ -110,7 +133,7 @@ KAMIWAZA_PEER_API_KEY=... \
 | Marker | What it covers | Skip behavior |
 |---|---|---|
 | `live` | Tests that talk to a running Kamiwaza deployment | always selected when running `-m live` |
-| `diffusion` | Deploys DiffusionEngine, checks SDK routing, generates base64 PNGs, and validates the unsupported response-mode error | runs and fails closed by default; skipped only with `--skip-diffusion` or `KAMIWAZA_SKIP_DIFFUSION=1` |
+| `diffusion` | Portable DiffusionEngine contract plus accelerated Qwen generation/masked edit and eligible two-NVIDIA split-layout proof | portable lane fails closed; Qwen/split capability skips are explicit; all lanes can be disabled only with `--skip-diffusion` or `KAMIWAZA_SKIP_DIFFUSION=1` |
 | `requires_embedding_model` | Live tests that need a platform embedding deployment that can generate embeddings | auto-provisioned by `embedding_model_prerequisite`, then probed by `embedding_test_target`; skipped if provisioning or the functional probe fails, and harness-provisioned failed deployments are stopped before skip |
 | `requires_two_clusters` | Live tests that need a federation peer cluster (ENG-5784) | auto-deselected at collection when `KAMIWAZA_PEER_BASE_URL` is unset; skipped at run time with an explicit reason when peer URL is set but `KAMIWAZA_PEER_API_KEY` is missing (partial-creds case) |
 

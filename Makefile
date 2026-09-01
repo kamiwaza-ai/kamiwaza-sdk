@@ -7,7 +7,7 @@ help:
 	@echo "  test       - Run unit tests"
 	@echo "  test-unit  - Run unit tests only"
 	@echo "  test-live  - Run live integration tests"
-	@echo "  test-diffusion-live - Deploy DiffusionEngine and generate images"
+	@echo "  test-diffusion-live - Run portable, Qwen, masked-edit, and eligible split-GPU diffusion proof"
 	@echo "  lint       - Run ruff linter"
 	@echo "  format     - Format code with black and isort"
 	@echo "  type-check - Run mypy type checker"

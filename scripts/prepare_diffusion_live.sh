@@ -52,7 +52,7 @@ cleanup_diffusion_live() {
 }
 
 _prepare_diffusion_live() {
-    local sdk_root platform_root host_os backend
+    local sdk_root platform_root host_os backend nvidia_count gateway_host
     local runtime_dir venv_python
     local image_target host_arch image_arch git_sha image_version push_image
     local push_registry deploy_registry registry_api docker_config
@@ -73,6 +73,19 @@ _prepare_diffusion_live() {
         echo "Kamiwaza diffusion source not found at ${platform_root}." >&2
         echo "Set KAMIWAZA_PLATFORM_ROOT to the current kamiwaza checkout." >&2
         return 1
+    fi
+
+    if [[ -z "${KAMIWAZA_BASE_URL:-}" && -z "${KAMIWAZA_BASE_URI:-}" ]] \
+        && command -v kubectl >/dev/null 2>&1; then
+        gateway_host="$(
+            kubectl -n istio-system get gateways.networking.istio.io \
+                kamiwaza-gateway -o jsonpath='{.spec.servers[0].hosts[0]}' \
+                2>/dev/null
+        )"
+        if [[ -n "$gateway_host" && "$gateway_host" != *"*"* ]]; then
+            export KAMIWAZA_BASE_URL="https://${gateway_host}/api"
+            echo "Discovered live Kamiwaza URL: ${KAMIWAZA_BASE_URL}"
+        fi
     fi
 
     host_os="$(uname -s)"
@@ -101,6 +114,12 @@ _prepare_diffusion_live() {
             return 0
         fi
     elif [[ "$host_os" == "Linux" ]]; then
+        if [[ -z "$backend" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+            nvidia_count="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')"
+            if [[ "$nvidia_count" =~ ^[0-9]+$ ]] && (( nvidia_count > 0 )); then
+                backend="nvidia"
+            fi
+        fi
         backend="${backend:-cpu}"
     else
         echo "Unsupported live diffusion host OS: ${host_os}." >&2
