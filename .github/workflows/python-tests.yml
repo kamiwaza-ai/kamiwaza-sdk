@@ -8,6 +8,7 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - 'tests/**'
+      - 'docs/extensions/runtime-path/routing-vectors.json'
       - '.github/workflows/python-tests.yml'
   push:
     branches: [main, develop]
@@ -16,6 +17,7 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - 'tests/**'
+      - 'docs/extensions/runtime-path/routing-vectors.json'
       - '.github/workflows/python-tests.yml'
 
 permissions:

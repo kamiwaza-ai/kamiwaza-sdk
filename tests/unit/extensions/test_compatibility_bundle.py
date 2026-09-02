@@ -162,10 +162,10 @@ class TestPythonRuntimeLibCheck:
         return DoctorChecker(config_dir=tmp_path / ".kamiwaza")
 
     def test_in_range_version_passes(self, checker, tmp_path):
-        # Runtime-lib 0.4.4 adds the guarded platform transport; its exact
-        # minor window is the canonical fully-supported pin.
+        # Runtime-lib 0.5 adds the relocation contract; its exact minor
+        # window is the canonical fully-supported pin.
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib>=0.4.4,<0.5\nfastapi>=0.100\n")
+        req.write_text("kamiwaza-extensions-lib>=0.5,<0.6\nfastapi>=0.100\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
@@ -224,12 +224,12 @@ class TestPythonRuntimeLibCheck:
         assert "not found" in result.message
 
     def test_pep508_extras_are_handled(self, checker, tmp_path):
-        """`kamiwaza-extensions-lib[fastapi]>=0.4.4,<0.5` parses
+        """`kamiwaza-extensions-lib[fastapi]>=0.5,<0.6` parses
         cleanly via packaging.requirements.Requirement.
-        (The floor is 0.4.4 so the guarded platform transport is present.)
+        (The 0.5 floor ensures the runtime relocation helpers are present.)
         """
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.4.4,<0.5\n")
+        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.5,<0.6\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
@@ -242,59 +242,59 @@ class TestPythonRuntimeLibCheck:
         assert result.status == "warn"
 
     def test_upper_bound_only_below_supported_warns(self, checker, tmp_path):
-        """Round-3 H1 — an upper-bound-only pin like `<0.4` slips past
+        """Round-3 H1 — an upper-bound-only pin like `<0.5` slips past
         the lower-bound probe (no >=/> in the spec) but every allowed
-        version is below the supported floor of `>=0.4.4`. Must warn.
+        version is below the supported floor of `>=0.5`. Must warn.
         """
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib<0.4\n")
+        req.write_text("kamiwaza-extensions-lib<0.5\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn"
 
     @pytest.mark.parametrize(
         "spec",
         [
-            "kamiwaza-extensions-lib>=0.4",  # bare lower, unbounded above
-            "kamiwaza-extensions-lib~=0.4",  # ~=0.4 = >=0.4,<1.0 (admits 0.5+)
-            "kamiwaza-extensions-lib>0.4",  # strict lower, no upper
-            "kamiwaza-extensions-lib>=0.4,<0.6",  # upper above supported's 0.5
+            "kamiwaza-extensions-lib>=0.5",  # bare lower, unbounded above
+            "kamiwaza-extensions-lib~=0.5",  # ~=0.5 = >=0.5,<1.0 (admits 0.6+)
+            "kamiwaza-extensions-lib>0.5",  # strict lower, no upper
+            "kamiwaza-extensions-lib>=0.5,<0.7",  # above supported's 0.6 ceiling
         ],
     )
     def test_open_ended_or_too_wide_specs_warn(self, checker, tmp_path, spec):
         """Round-4 H2 — open-ended specs (no upper bound, or upper above
         supported's ceiling) admit versions outside the supported window.
-        Pip can legally resolve a future 0.5+ release for these declared
+        Pip can legally resolve a future 0.6+ release for these declared
         ranges; the doctor must surface the drift.
-        The 0.4.4 floor also excludes earlier 0.4.x releases.
+        The 0.5 floor also excludes all earlier releases.
         """
         req = tmp_path / "requirements.txt"
         req.write_text(spec + "\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn", (
-            f"declared {spec!r} extends beyond supported `>=0.4.4,<0.5` but "
+            f"declared {spec!r} extends beyond supported `>=0.5,<0.6` but "
             f"the doctor reported {result.status} (false-negative — could "
-            f"resolve a 0.5+ version that's outside the CLI's compat window)"
+            f"resolve a 0.6+ version that's outside the CLI's compat window)"
         )
 
     @pytest.mark.parametrize(
         "spec,expected",
         [
-            ("kamiwaza-extensions-lib~=0.4.0", "warn"),  # admits 0.4.0-0.4.3
-            ("kamiwaza-extensions-lib~=0.4.5", "pass"),  # >=0.4.5,<0.5 ⊂ supported
-            # Below the floor — these ranges lack current runtime guardrails.
+            ("kamiwaza-extensions-lib~=0.5.0", "pass"),  # >=0.5.0,<0.6
+            ("kamiwaza-extensions-lib~=0.5.5", "pass"),  # >=0.5.5,<0.6
+            # Below the 0.5 floor — these ranges lack relocation support.
+            ("kamiwaza-extensions-lib~=0.4.5", "warn"),
             ("kamiwaza-extensions-lib~=0.3.0", "warn"),  # >=0.3.0,<0.4 — below floor
             ("kamiwaza-extensions-lib~=0.2.0", "warn"),  # >=0.2.0,<0.3 — below floor
-            # X.Y form expands to <(X+1), still warns: admits 0.5+.
-            ("kamiwaza-extensions-lib~=0.4", "warn"),  # >=0.4,<1.0 — too wide
+            # X.Y form expands to <(X+1), still warns: admits 0.6+.
+            ("kamiwaza-extensions-lib~=0.5", "warn"),  # >=0.5,<1.0 — too wide
         ],
     )
     def test_tilde_eq_upper_bound_derived(self, checker, tmp_path, spec, expected):
         """Round-5 H2 — ``~=X.Y.Z`` is a *compatible-release* operator with
-        an implied upper bound at ``<X.(Y+1)``. ``~=0.4.0`` (= ``>=0.4.0,<0.5``
-        but now admits releases below the 0.4.4 floor and warns;
-        ``~=0.4.5`` remains fully contained. ``~=0.3.0`` is below the floor,
-        and ``~=X.Y`` form still expands to
-        ``<(X+1)`` so ``~=0.4`` admits 0.5+ and must continue to warn.
+        an implied upper bound at ``<X.(Y+1)``. ``~=0.5.0`` and
+        ``~=0.5.5`` remain fully contained. ``~=0.4.5`` is below the floor,
+        and the ``~=X.Y`` form expands to ``<(X+1)`` so ``~=0.5`` admits
+        0.6+ and must warn.
         """
         req = tmp_path / "requirements.txt"
         req.write_text(spec + "\n")
@@ -343,7 +343,7 @@ class TestTypeScriptRuntimeLibCheck:
         pkg.write_text(
             json.dumps(
                 {
-                    "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.3"},
+                    "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.5.0"},
                 }
             )
         )
@@ -382,15 +382,15 @@ class TestTypeScriptRuntimeLibCheck:
             ),  # caret 0.3 below supported floor (PR #87 round-6 codex P2)
             ("~0.3.0", "warn"),  # tilde 0.3 below supported floor
             (
-                "^0.4.0",
-                "warn",
-            ),  # misses the ENG-9199 envelope additions in 0.4.3
-            ("~0.4.0", "warn"),  # admits pre-0.4.3 proxy versions
+                "^0.5.0",
+                "pass",
+            ),  # caret 0.5.0 = >=0.5.0,<0.6.0
+            ("~0.5.0", "pass"),  # tilde 0.5.0 = >=0.5.0,<0.6.0
             ("0.3.5", "warn"),  # exact pin below supported floor
-            ("0.4.0", "warn"),  # exact pin below the envelope-safe floor
-            ("^0.4.3", "pass"),  # >=0.4.3,<0.5.0 is fully supported
-            ("~0.4.3", "pass"),  # >=0.4.3,<0.5.0 is fully supported
-            ("0.4.3", "pass"),  # exact envelope-safe release
+            ("^0.4.3", "warn"),  # pre-relocation runtime window
+            ("~0.4.3", "warn"),  # pre-relocation runtime window
+            ("0.4.3", "warn"),  # exact pre-relocation release
+            ("0.5.0", "pass"),  # exact pin in window
         ],
     )
     def test_full_containment_check_for_npm_specs(
@@ -399,11 +399,8 @@ class TestTypeScriptRuntimeLibCheck:
         """Round-4 H3 — TS check uses full-containment (was: lower-only
         probe). Open-ended specs (no upper, or upper above the supported
         ceiling) warn. Caret/tilde/exact specs that are fully contained
-        pass. Round-6 (ENG-4318): TS supported window moved to
-        ``>=0.4.3,<0.5`` so the /local-dev-auth subpath is present and the
-        generated proxy preserves the complete signed ForwardAuth envelope.
-        Existing pre-0.4.3 users warn because those versions strip new AuthZ
-        fields before requests reach the backend.
+        pass. The supported window is ``>=0.5,<0.6`` because 0.5 adds the
+        dual-artifact runtime relocation contract required by generated apps.
         """
         pkg = tmp_path / "package.json"
         pkg.write_text(

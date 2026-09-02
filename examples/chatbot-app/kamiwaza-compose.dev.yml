@@ -1,0 +1,17 @@
+services:
+  frontend:
+    # Loaded only by `kz-ext dev local`; cluster builds keep the final
+    # production runner stage with its two prebuilt routing artifacts.
+    build:
+      target: dev
+  backend:
+    command:
+      - python
+      - -m
+      - kamiwaza_extensions_lib.asgi
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload

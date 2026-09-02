@@ -11,7 +11,9 @@ current scaffold context, and applies a per-file strategy:
   to the *previous* template render (i.e. the author hasn't edited it). If
   it's been edited, skip; the unified diff is shown in interactive mode and
   the user can choose ``apply`` (with ``.orig`` backup) or ``keep``.
-* ``merge`` — reserved for future smart-merge; v1 == ``preserve_if_modified``.
+* ``merge`` — structured merge for JSON and requirements files. Author fields
+  and dependencies are preserved except for explicitly template-controlled
+  runtime dependencies.
 
 Modes:
 
@@ -30,16 +32,19 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
 
 import typer
+from packaging.requirements import InvalidRequirement, Requirement
 from rich.console import Console
 from rich.table import Table
 
 from kamiwaza_extensions.exit_codes import ExitCode
 from kamiwaza_extensions.scaffolder import (
+    CLEAN_TRACKED_MERGE_FILES,
     build_render_context,
     hash_text,
     substitute,
@@ -203,9 +208,7 @@ def _load_and_validate_metadata(cwd: Path) -> tuple[Path, dict, str]:
     """
     metadata_path = cwd / "kamiwaza.json"
     if not metadata_path.exists():
-        console.print(
-            "[red]Error:[/red] kamiwaza.json not found in current directory."
-        )
+        console.print("[red]Error:[/red] kamiwaza.json not found in current directory.")
         raise typer.Exit(code=int(ExitCode.VALIDATION))
     try:
         metadata = json.loads(metadata_path.read_text())
@@ -258,9 +261,7 @@ def _bootstrap(
             f"{target_version!r} + template_shape={shape!r} + "
             f"{len(metadata['template_file_hashes'])} file hash(es) into kamiwaza.json."
         )
-        summary.files.append(
-            FileResult("kamiwaza.json", "would-bootstrap", "dry-run")
-        )
+        summary.files.append(FileResult("kamiwaza.json", "would-bootstrap", "dry-run"))
         return summary
     metadata_path.write_text(json.dumps(metadata, indent=4) + "\n", encoding="utf-8")
     console.print(
@@ -278,7 +279,10 @@ def _hash_on_disk_files(target_dir: Path, shape: str) -> dict[str, str]:
 
     Used by ``_bootstrap`` to record the user's current baseline. Skips
     files that don't exist on disk (the manifest is shape-wide; some
-    optional files may be absent from a particular project).
+    optional files may be absent from a particular project). Structured merge
+    files are intentionally excluded: an adopted project's dependency
+    manifests are author content, not evidence that the current template owns
+    the whole file. Their first update must take the merge path.
     """
     manifest = MANIFESTS[shape]  # type: ignore[index]
     hashes: dict[str, str] = {}
@@ -461,9 +465,7 @@ def _stamp_version(
         existing_hashes = dict(on_disk.get("template_file_hashes") or {})
         existing_hashes.update(new_hashes)
         on_disk["template_file_hashes"] = existing_hashes
-    metadata_path.write_text(
-        json.dumps(on_disk, indent=4) + "\n", encoding="utf-8"
-    )
+    metadata_path.write_text(json.dumps(on_disk, indent=4) + "\n", encoding="utf-8")
 
 
 def _template_root(shape: str) -> Path:
@@ -521,14 +523,37 @@ def _reconcile_file(
         return FileResult(rel, "no-change")
     if existing_content is None:
         return _create_missing(rel, target_path, new_content, dry_run=dry_run)
-    if owned.strategy == "merge" and rel.endswith(".json"):
-        return _reconcile_json_merge(
+    recorded_hash = recorded_hashes.get(rel)
+    if (
+        rel in CLEAN_TRACKED_MERGE_FILES
+        and recorded_hash is not None
+        and hash_text(existing_content) == recorded_hash
+    ):
+        # A pristine dependency file receives the complete new template. Only
+        # author-edited files need the narrow merge that preserves their
+        # dependency choices.
+        return _apply_preserve_if_modified(
+            rel,
+            target_path,
+            existing_content,
+            new_content,
+            recorded_hash=recorded_hash,
+            dry_run=dry_run,
+            force=force,
+            non_interactive=non_interactive,
+        )
+    if owned.strategy == "merge":
+        merged = _reconcile_structured_merge(
             rel=rel,
             target_path=target_path,
             existing_content=existing_content,
             new_content=new_content,
             dry_run=dry_run,
+            force=force,
+            non_interactive=non_interactive,
         )
+        if merged is not None:
+            return merged
     if owned.strategy == "overwrite":
         return _apply_overwrite(
             rel, target_path, existing_content, new_content, dry_run=dry_run
@@ -574,9 +599,11 @@ def _reconcile_binary(
     if existing == new_bytes:
         return FileResult(rel, "no-change")
     if dry_run:
-        reason = "binary (.orig backup)" if (
-            strategy == "overwrite" and existing
-        ) else "binary"
+        reason = (
+            "binary (.orig backup)"
+            if (strategy == "overwrite" and existing)
+            else "binary"
+        )
         return FileResult(rel, "would-update", reason)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if strategy == "overwrite" and existing:
@@ -599,11 +626,19 @@ def _create_missing(
     strategies are tolerated since the consume-side only reads
     preserve-strategy files via ``_apply_preserve_if_modified``).
     """
+    adds_env_exclusion = rel == "frontend/.dockerignore" and ".env*" in {
+        line.strip()
+        for line in new_content.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    warning = "new .env* exclusion; review build-time env inputs"
+    reason = f"creating ({warning})" if adds_env_exclusion else "creating"
     if dry_run:
-        return FileResult(rel, "would-update", "creating")
+        return FileResult(rel, "would-update", reason)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(new_content, encoding="utf-8")
-    return FileResult(rel, "updated", "created", new_hash=hash_text(new_content))
+    reason = f"created ({warning})" if adds_env_exclusion else "created"
+    return FileResult(rel, "updated", reason, new_hash=hash_text(new_content))
 
 
 def _apply_overwrite(
@@ -640,7 +675,7 @@ def _apply_preserve_if_modified(
     force: bool,
     non_interactive: bool,
 ) -> FileResult:
-    """``preserve_if_modified`` (and v1 ``merge`` for non-JSON files).
+    """``preserve_if_modified`` (and merge files without a structured handler).
 
     PR-86 C4 / option (b): if the on-disk content matches the recorded
     hash from ``kamiwaza.json.template_file_hashes`` (i.e. unchanged
@@ -673,7 +708,9 @@ def _apply_preserve_if_modified(
         _backup(target_path, existing_content)
         target_path.write_text(new_content, encoding="utf-8")
         return FileResult(
-            rel, "applied", "force (.orig backup)",
+            rel,
+            "applied",
+            "force (.orig backup)",
             new_hash=hash_text(new_content),
         )
     if non_interactive:
@@ -695,35 +732,41 @@ def _reconcile_json_merge(
     existing_content: str,
     new_content: str,
     dry_run: bool,
+    force: bool,
+    non_interactive: bool,
 ) -> FileResult:
-    """Field-level merge for JSON files (kamiwaza.json today).
+    """Field-level merge for JSON files.
 
     Author-set fields win; template-controlled fields (template_version,
     template_shape) get stamped to the manifest's current values. New
     fields the template added since the scaffold was rendered are
     inherited from the rendered template.
     """
-    try:
-        existing = json.loads(existing_content)
-        rendered = json.loads(new_content)
-    except json.JSONDecodeError:
-        # Malformed JSON on disk — fall back to preserve_if_modified.
-        return FileResult(rel, "skipped", "malformed-json")
+    rendered, error = _parse_json_object(new_content)
+    if error is not None:
+        raise ValueError(f"rendered template {rel} is {error}")
 
-    if not (isinstance(existing, dict) and isinstance(rendered, dict)):
-        return FileResult(rel, "skipped", "non-object-json")
+    existing, error = _parse_json_object(existing_content)
+    if error is not None:
+        # An invalid author manifest cannot be merged safely. Route it through
+        # the ordinary conflict machinery so non-interactive updates fail
+        # before writing or stamping a new template version, interactive runs
+        # ask before replacing it, and --force retains a recoverable backup.
+        return _apply_preserve_if_modified(
+            rel,
+            target_path,
+            existing_content,
+            new_content,
+            recorded_hash=None,
+            dry_run=dry_run,
+            force=force,
+            non_interactive=non_interactive,
+        )
 
     merged = {**rendered, **existing}
-    # Manifest-controlled fields are always reset to the current values.
-    if "template_version" in existing or "template_version" in rendered:
-        merged["template_version"] = current_template_version()
-    if "template_shape" in existing or "template_shape" in rendered:
-        # Use the existing value if present (the file's been classified
-        # before); otherwise infer from the rendered template's "type" field
-        # which is shape-equivalent.
-        merged["template_shape"] = existing.get(
-            "template_shape", rendered.get("type", existing.get("type"))
-        )
+    if rel == "frontend/package.json":
+        merged = _merge_frontend_package(rendered, existing, merged)
+    merged = _stamp_manifest_json_fields(merged, existing, rendered)
 
     new_text = json.dumps(merged, indent=4) + "\n"
     if new_text == existing_content:
@@ -732,6 +775,372 @@ def _reconcile_json_merge(
         return FileResult(rel, "would-update", "json-merge")
     target_path.write_text(new_text, encoding="utf-8")
     return FileResult(rel, "updated", "json-merge")
+
+
+def _parse_json_object(content: str) -> tuple[dict, str | None]:
+    try:
+        value = json.loads(content)
+    except json.JSONDecodeError:
+        return {}, "malformed-json"
+    if not isinstance(value, dict):
+        return {}, "non-object-json"
+    return value, None
+
+
+def _stamp_manifest_json_fields(merged: dict, existing: dict, rendered: dict) -> dict:
+    stamped = dict(merged)
+    # Manifest-controlled fields are always reset to the current values.
+    if "template_version" in existing or "template_version" in rendered:
+        stamped["template_version"] = current_template_version()
+    if "template_shape" in existing or "template_shape" in rendered:
+        # Use the existing value if present (the file's been classified
+        # before); otherwise infer from the rendered template's "type" field
+        # which is shape-equivalent.
+        stamped["template_shape"] = existing.get(
+            "template_shape", rendered.get("type", existing.get("type"))
+        )
+    return stamped
+
+
+# Template-controlled packages that must advance with the Docker/runtime
+# contract. Register every future co-published frontend runtime package here;
+# otherwise structured updates will preserve a legacy author pin.
+_FRONTEND_RUNTIME_DEPENDENCIES = (
+    "@kamiwaza-ai/extensions-lib",
+    "next",
+)
+_FRONTEND_DEPENDENCY_SELECTOR_MAPS = (
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+    "resolutions",
+)
+_PYTHON_RUNTIME_REQUIREMENT_RE = re.compile(
+    r"^\s*(?P<name>kamiwaza[-_]extensions[-_]lib)"
+    r"(?P<extras>\[[^]]+\])?(?=\s|[<>=!~@;]|$)",
+    re.IGNORECASE,
+)
+
+
+def _merge_frontend_package(rendered: dict, existing: dict, merged: dict) -> dict:
+    """Preserve author package edits while upgrading the coupled runtime pair."""
+    rendered_dependencies = rendered.get("dependencies")
+    existing_dependencies = existing.get("dependencies")
+    if not isinstance(rendered_dependencies, dict):
+        return merged
+    if not isinstance(existing_dependencies, dict):
+        existing_dependencies = {}
+    dependencies = {**rendered_dependencies, **existing_dependencies}
+    for name in _FRONTEND_RUNTIME_DEPENDENCIES:
+        if name in rendered_dependencies:
+            dependencies[name] = rendered_dependencies[name]
+    return _reconcile_frontend_selectors(
+        {**merged, "dependencies": dependencies}, rendered_dependencies
+    )
+
+
+def _reconcile_frontend_selectors(merged: dict, rendered: dict) -> dict:
+    reconciled = dict(merged)
+    for field in _FRONTEND_DEPENDENCY_SELECTOR_MAPS:
+        if field in reconciled:
+            reconciled[field] = _reconcile_runtime_dependency_map(
+                reconciled[field],
+                rendered,
+            )
+    if "overrides" in reconciled:
+        reconciled["overrides"] = _reconcile_npm_overrides(
+            reconciled["overrides"], rendered
+        )
+    pnpm = reconciled.get("pnpm")
+    if isinstance(pnpm, dict) and "overrides" in pnpm:
+        reconciled["pnpm"] = {
+            **pnpm,
+            "overrides": _reconcile_runtime_dependency_map(pnpm["overrides"], rendered),
+        }
+    return reconciled
+
+
+def _reconcile_runtime_dependency_map(values: object, rendered: dict) -> object:
+    """Advance controlled packages wherever a package manager can select them."""
+    if not isinstance(values, dict):
+        return values
+    return {
+        name: _reconciled_runtime_dependency(name, current, rendered)
+        for name, current in values.items()
+    }
+
+
+def _reconciled_runtime_dependency(
+    selector: str, current: object, rendered: dict
+) -> object:
+    name = _runtime_dependency_from_selector(selector)
+    if name is None:
+        return current
+    desired = rendered.get(name)
+    if desired is None:
+        return current
+    return desired
+
+
+def _reconcile_npm_overrides(values: object, rendered: dict) -> object:
+    if not isinstance(values, dict):
+        return values
+    return _reconcile_npm_override_map(values, rendered)
+
+
+def _reconcile_npm_override_map(values: dict, rendered: dict) -> dict:
+    return {
+        selector: _reconciled_npm_override(selector, current, rendered)
+        for selector, current in values.items()
+    }
+
+
+def _reconciled_npm_override(selector: str, current: object, rendered: dict) -> object:
+    name = _runtime_dependency_from_selector(selector)
+    if name is None:
+        return _reconcile_npm_overrides(current, rendered)
+    desired = rendered.get(name)
+    if desired is None:
+        return _reconcile_npm_overrides(current, rendered)
+    return _replace_npm_override_value(current, desired, rendered)
+
+
+def _replace_npm_override_value(
+    current: object, desired: object, rendered: dict
+) -> object:
+    if not isinstance(current, dict):
+        return desired
+    children = _reconcile_npm_override_map(current, rendered)
+    return {**children, ".": desired}
+
+
+def _runtime_dependency_from_selector(selector: str) -> str | None:
+    target = _selector_target_package(selector)
+    for name in _FRONTEND_RUNTIME_DEPENDENCIES:
+        if target == name:
+            return name
+    return None
+
+
+def _selector_target_package(selector: str) -> str:
+    """Extract the selected package from npm, Yarn, or pnpm selector syntax."""
+    descendant = selector.rsplit(">", maxsplit=1)[-1]
+    segments = descendant.split("/")
+    if len(segments) >= 2 and segments[-2].startswith("@"):
+        return _strip_selector_version("/".join(segments[-2:]))
+    return _strip_selector_version(segments[-1])
+
+
+def _strip_selector_version(package: str) -> str:
+    separator = package.rfind("@")
+    if separator <= 0:
+        return package
+    return package[:separator]
+
+
+def _find_runtime_requirement(content: str) -> str | None:
+    for line in content.splitlines():
+        if _PYTHON_RUNTIME_REQUIREMENT_RE.match(line):
+            return line
+    return None
+
+
+def _runtime_requirement_marker(requirement: str) -> str | None:
+    """Return a real PEP 508 marker without mistaking URL semicolons for one."""
+    expression, _comment = _split_requirement_comment(requirement)
+    try:
+        marker = Requirement(expression).marker
+    except InvalidRequirement:
+        return None
+    return str(marker) if marker is not None else None
+
+
+def _split_requirement_comment(requirement: str) -> tuple[str, str]:
+    """Separate a pip inline comment while retaining URL fragment characters."""
+    comment = re.search(r"\s+#.*$", requirement)
+    if comment is None:
+        return requirement, ""
+    return requirement[: comment.start()], requirement[comment.start() :]
+
+
+def _runtime_requirement_identity(requirement: str) -> tuple[tuple[str, ...], str]:
+    """Identify equivalent extras/marker branches after pin reconciliation."""
+    expression, _comment = _split_requirement_comment(requirement)
+    try:
+        parsed = Requirement(expression)
+    except InvalidRequirement:
+        return (), expression.strip()
+    marker = str(parsed.marker) if parsed.marker is not None else ""
+    return tuple(sorted(parsed.extras)), marker
+
+
+def _preserve_runtime_requirement_constraints(
+    desired: str, existing: re.Match[str]
+) -> str:
+    """Carry author extras and environment markers onto the controlled pin."""
+    merged = desired
+    _expression, comment = _split_requirement_comment(existing.string)
+    extras = existing.group("extras")
+    desired_match = _PYTHON_RUNTIME_REQUIREMENT_RE.match(desired)
+    if extras and desired_match is not None and not desired_match.group("extras"):
+        name_end = desired_match.end("name")
+        merged = f"{desired[:name_end]}{extras}{desired[name_end:]}"
+
+    marker = _runtime_requirement_marker(existing.string)
+    if marker and _runtime_requirement_marker(merged) is None:
+        merged = f"{merged}; {marker}"
+    return f"{merged}{comment}"
+
+
+def _merge_requirements(existing_content: str, new_content: str) -> str | None:
+    desired = _find_runtime_requirement(new_content)
+    if desired is None:
+        return None
+    newline = "\r\n" if "\r\n" in existing_content else "\n"
+    had_final_newline = existing_content.endswith(("\n", "\r"))
+    merged: list[str] = []
+    inserted = False
+    runtime_branches: set[tuple[tuple[str, ...], str]] = set()
+    for line in existing_content.splitlines():
+        runtime_match = _PYTHON_RUNTIME_REQUIREMENT_RE.match(line)
+        if runtime_match:
+            requirement = _preserve_runtime_requirement_constraints(
+                desired, runtime_match
+            )
+            branch = _runtime_requirement_identity(requirement)
+            if branch not in runtime_branches:
+                merged.append(requirement)
+                runtime_branches.add(branch)
+            inserted = True
+            continue
+        merged.append(line)
+    if not inserted:
+        merged.append(desired)
+    return newline.join(merged) + (newline if had_final_newline else "")
+
+
+def _reconcile_requirements_merge(
+    *,
+    rel: str,
+    target_path: Path,
+    existing_content: str,
+    new_content: str,
+    dry_run: bool,
+) -> FileResult | None:
+    merged = _merge_requirements(existing_content, new_content)
+    if merged is None:
+        return None
+    if merged == existing_content:
+        return FileResult(rel, "no-change")
+    if dry_run:
+        return FileResult(rel, "would-update", "requirements-merge")
+    target_path.write_text(merged, encoding="utf-8")
+    return FileResult(rel, "updated", "requirements-merge")
+
+
+def _merge_dockerignore(existing_content: str, new_content: str) -> str:
+    """Add template ignore rules without discarding author exclusions.
+
+    Docker ignore order is significant, so retain the existing file byte-for-byte
+    and append only missing template rules. Replay the complete ordered author
+    rules afterward so Docker's last-match-wins semantics remain unchanged.
+    """
+    author_rules = _dockerignore_rules(existing_content)
+    existing_rules = set(author_rules)
+    additions = [
+        rule for rule in _dockerignore_rules(new_content) if rule not in existing_rules
+    ]
+    if not additions:
+        return existing_content
+    newline = "\r\n" if "\r\n" in existing_content else "\n"
+    separator = "" if existing_content.endswith(("\n", "\r")) else newline
+    suffix = additions + author_rules
+    return existing_content + separator + newline.join(suffix) + newline
+
+
+def _dockerignore_rules(content: str) -> list[str]:
+    return [
+        line.strip()
+        for line in content.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def _dockerignore_adds_env_exclusion(existing_content: str, new_content: str) -> bool:
+    """Whether this merge newly makes the template's broad ``.env*`` rule active."""
+    existing_rules = set(_dockerignore_rules(existing_content))
+    new_rules = set(_dockerignore_rules(new_content))
+    return ".env*" in new_rules and ".env*" not in existing_rules
+
+
+def _reconcile_dockerignore_merge(
+    *,
+    rel: str,
+    target_path: Path,
+    existing_content: str,
+    new_content: str,
+    dry_run: bool,
+) -> FileResult:
+    merged = _merge_dockerignore(existing_content, new_content)
+    if merged == existing_content:
+        return FileResult(rel, "no-change")
+    adds_env_exclusion = _dockerignore_adds_env_exclusion(existing_content, new_content)
+    warning = "new .env* exclusion; review build-time env inputs"
+    if dry_run:
+        reason = (
+            f"dockerignore-merge ({warning}; would back up)"
+            if adds_env_exclusion
+            else "dockerignore-merge"
+        )
+        return FileResult(rel, "would-update", reason)
+    if adds_env_exclusion:
+        _backup(target_path, existing_content)
+    target_path.write_text(merged, encoding="utf-8")
+    reason = (
+        f"dockerignore-merge ({warning}; .orig backup)"
+        if adds_env_exclusion
+        else "dockerignore-merge"
+    )
+    return FileResult(rel, "updated", reason)
+
+
+def _reconcile_structured_merge(
+    *,
+    rel: str,
+    target_path: Path,
+    existing_content: str,
+    new_content: str,
+    dry_run: bool,
+    force: bool,
+    non_interactive: bool,
+) -> FileResult | None:
+    if rel.endswith(".json"):
+        return _reconcile_json_merge(
+            rel=rel,
+            target_path=target_path,
+            existing_content=existing_content,
+            new_content=new_content,
+            dry_run=dry_run,
+            force=force,
+            non_interactive=non_interactive,
+        )
+    if rel == "backend/requirements.txt":
+        return _reconcile_requirements_merge(
+            rel=rel,
+            target_path=target_path,
+            existing_content=existing_content,
+            new_content=new_content,
+            dry_run=dry_run,
+        )
+    if rel == "frontend/.dockerignore":
+        return _reconcile_dockerignore_merge(
+            rel=rel,
+            target_path=target_path,
+            existing_content=existing_content,
+            new_content=new_content,
+            dry_run=dry_run,
+        )
+    return None
 
 
 def _prompt_conflict(
@@ -753,9 +1162,11 @@ def _prompt_conflict(
     # PR-86 M7: print the diff with markup disabled so a file containing
     # literal `[red]`-shaped substrings doesn't get rendered as Rich markup.
     console.print(diff or "(no textual diff)", markup=False)
-    choice = typer.prompt(
-        "[a]pply / [k]eep / [s]kip", default="k", show_default=True
-    ).strip().lower()
+    choice = (
+        typer.prompt("[a]pply / [k]eep / [s]kip", default="k", show_default=True)
+        .strip()
+        .lower()
+    )
     if choice in ("a", "apply"):
         _backup(target_path, existing_content)
         target_path.write_text(new_content, encoding="utf-8")
@@ -768,7 +1179,9 @@ def _prompt_conflict(
         # ``_create_missing``) all set ``new_hash`` — interactive apply was
         # the lone gap.
         return FileResult(
-            rel, "applied", "interactive (.orig backup)",
+            rel,
+            "applied",
+            "interactive (.orig backup)",
             new_hash=hash_text(new_content),
         )
     if choice in ("s", "skip"):
@@ -812,6 +1225,14 @@ def _print_summary(summary: UpdateSummary, *, dry_run: bool) -> None:
     for fr in summary.files:
         table.add_row(fr.relative_path, fr.action, fr.reason or "—")
     console.print(table)
+    if any("new .env* exclusion" in fr.reason for fr in summary.files):
+        console.print(
+            "[yellow]Warning:[/yellow] frontend/.dockerignore now excludes "
+            "[bold].env*[/bold]. Review any NEXT_PUBLIC_* or other build-time "
+            "values previously supplied through env files before rebuilding; "
+            "an existing file is preserved as .dockerignore.orig when the rule "
+            "is merged."
+        )
     if summary.migrations:
         console.print("[bold]Migrations:[/bold]")
         for m in summary.migrations:

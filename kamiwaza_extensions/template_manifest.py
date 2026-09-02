@@ -26,16 +26,15 @@ fails CI loudly — by design, the contract has to be explicit.
   template-rendered content (i.e. the author modified it).
 * ``preserve_if_modified`` — replace if and only if the on-disk copy is
   unchanged from the prior template; otherwise skip with a warning.
-* ``merge`` — field-level merge for JSON files; falls back to
-  ``preserve_if_modified`` semantics for everything else. v1 implements
-  this for ``kamiwaza.json`` only: rendered keys (the template's field
-  set) seed the result, the on-disk file's values win for collisions,
-  and CLI-controlled fields (``template_version``,
-  ``template_shape``) are reset on every successful update. See
-  ``commands/update._reconcile_json_merge`` for the implementation and
-  ``docs/extensions/cli-reference/update.md`` for the author-facing
-  contract. Non-JSON ``merge`` files behave identically to
-  ``preserve_if_modified`` until a strategy-specific path is added.
+* ``merge`` — structured merge for JSON, selected requirements files, and
+  template-owned ignore rules.
+  Author fields and dependencies win except for explicitly
+  template-controlled runtime dependencies; ``template_version`` and
+  ``template_shape`` are likewise reset on every successful update. See
+  ``commands/update._reconcile_structured_merge`` for the implementation
+  and ``docs/extensions/cli-reference/update.md`` for the author-facing
+  contract. Other non-JSON merge files retain ``preserve_if_modified``
+  behavior until a strategy-specific merge is added.
 """
 
 from __future__ import annotations
@@ -96,8 +95,12 @@ class TemplateManifest:
 _M2_VERSION = "0.1.0"
 
 
-def _owned(path: str, strategy: FileStrategy = "preserve_if_modified") -> TemplateOwnedFile:
-    return TemplateOwnedFile(relative_path=path, strategy=strategy, since_version=_M2_VERSION)
+def _owned(
+    path: str, strategy: FileStrategy = "preserve_if_modified"
+) -> TemplateOwnedFile:
+    return TemplateOwnedFile(
+        relative_path=path, strategy=strategy, since_version=_M2_VERSION
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +117,10 @@ _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     _owned("kamiwaza.json", strategy="merge"),
     _owned(".gitignore", strategy="overwrite"),
     _owned("docker-compose.yml"),
+    # Deliberately not docker-compose.override.yml: that Compose-standard
+    # filename belongs to the developer and is loaded after this CLI-owned
+    # local-dev overlay by DevLocalRunner.
+    _owned("kamiwaza-compose.dev.yml"),
     _owned("README.md"),
     _owned("AGENTS.md"),
     _owned("CLAUDE.md"),
@@ -122,14 +129,20 @@ _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     # template-owned because the scaffolded structure (FastAPI app object,
     # required routes) is part of the contract.
     _owned("backend/Dockerfile", strategy="overwrite"),
-    _owned("backend/requirements.txt"),
+    # Smart-merge the runtime dependency pin while preserving author-added
+    # requirements; the paired Dockerfile is overwritten and requires the
+    # current launcher contract.
+    _owned("backend/requirements.txt", strategy="merge"),
     _owned("backend/app/main.py"),
-    # Frontend infrastructure — pure scaffold, overwriting is fine.
+    # Preserve author-added exclusions (especially secrets) while ensuring
+    # the template's build-output exclusions remain present.
+    _owned("frontend/.dockerignore", strategy="merge"),
     _owned("frontend/Dockerfile", strategy="overwrite"),
     _owned("frontend/next.config.js", strategy="overwrite"),
-    _owned("frontend/package.json"),
+    # Smart-merge author scripts/dependencies, but keep the template-owned
+    # Next/runtime pair compatible with the overwritten Dockerfile.
+    _owned("frontend/package.json", strategy="merge"),
     _owned("frontend/postcss.config.js", strategy="overwrite"),
-    _owned("frontend/start.mjs", strategy="overwrite"),
     _owned("frontend/tailwind.config.ts", strategy="overwrite"),
     _owned("frontend/tsconfig.json", strategy="overwrite"),
     _owned("frontend/public/kmza-icon.png", strategy="overwrite"),
@@ -151,6 +164,11 @@ _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     # headers when KZ_EXT_DEV_LOCAL_AUTH=1 (set by `kz-ext dev local
     # --auth`). See ENG-4318.
     _owned("frontend/src/middleware.ts"),
+    # Runtime-path contract routes — the lazy deployment-config endpoint
+    # and the frontend liveness route the container health check probes.
+    # Pure scaffold; overwriting is fine.
+    _owned("frontend/src/app/kamiwaza/runtime.json/route.ts", strategy="overwrite"),
+    _owned("frontend/src/app/health/route.ts", strategy="overwrite"),
     # Author-owned in spirit — the home page and global stylesheet are
     # where authors will spend most of their time. They're listed in
     # AUTHOR_OWNED_DENYLIST below.

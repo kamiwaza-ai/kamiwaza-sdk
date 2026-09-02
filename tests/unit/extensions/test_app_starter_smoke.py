@@ -7,8 +7,8 @@ import json
 import shutil
 import subprocess
 import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -34,6 +34,8 @@ SYNC_FILES = [
     Path("backend/app/main.py"),
     Path("backend/requirements.txt"),
     Path("docker-compose.yml"),
+    Path("kamiwaza-compose.dev.yml"),
+    Path("frontend/.dockerignore"),
     Path("frontend/Dockerfile"),
     Path("frontend/next.config.js"),
     Path("frontend/package.json"),
@@ -55,7 +57,11 @@ SYNC_FILES = [
     # review caught the example shipping the env passthrough but not
     # the middleware to consume it.
     Path("frontend/src/middleware.ts"),
-    Path("frontend/start.mjs"),
+    # Runtime-path contract: lazy runtime config + frontend liveness routes;
+    # start.mjs (the spawn-time `next build`) is gone — the dual-artifact
+    # Dockerfile's boot entrypoint replaced it.
+    Path("frontend/src/app/kamiwaza/runtime.json/route.ts"),
+    Path("frontend/src/app/health/route.ts"),
     Path("frontend/tailwind.config.ts"),
     Path("frontend/tsconfig.json"),
 ]
@@ -387,12 +393,12 @@ def test_template_chat_endpoint_preserves_backend_path_prefix(tmp_path, monkeypa
     )
 
     # Path prefix must survive the re-host: gateway/foo/runtime/...
-    assert "/foo/runtime/models/dep-1/v1" in rehosted, (
-        f"path prefix dropped from re-host: {rehosted!r}"
-    )
-    assert rehosted.startswith("https://gateway.example.com/foo/"), (
-        f"unexpected scheme/host: {rehosted!r}"
-    )
+    assert (
+        "/foo/runtime/models/dep-1/v1" in rehosted
+    ), f"path prefix dropped from re-host: {rehosted!r}"
+    assert rehosted.startswith(
+        "https://gateway.example.com/foo/"
+    ), f"unexpected scheme/host: {rehosted!r}"
 
     sys.modules.pop("scaffolded_path_prefix", None)
 
@@ -442,9 +448,9 @@ def test_template_chat_endpoint_keeps_gateway_url_in_cluster(tmp_path, monkeypat
         endpoint="https://kamiwaza.test/runtime/models/dep-1/v1",
         access_path="/runtime/models/dep-1",
     )
-    assert both == "https://kamiwaza.test/runtime/models/dep-1/v1", (
-        f"access_path branch shadowed the canonical endpoint: {both!r}"
-    )
+    assert (
+        both == "https://kamiwaza.test/runtime/models/dep-1/v1"
+    ), f"access_path branch shadowed the canonical endpoint: {both!r}"
 
     # ENG-8766 re-review Medium #1 — an access_path-only payload (no
     # endpoint) must build on the gateway base, not KAMIWAZA_API_URL
@@ -453,9 +459,9 @@ def test_template_chat_endpoint_keeps_gateway_url_in_cluster(tmp_path, monkeypat
         endpoint="",
         access_path="/runtime/models/dep-1",
     )
-    assert path_only == "https://kamiwaza.test/runtime/models/dep-1/v1", (
-        f"access_path-only built on the wrong base: {path_only!r}"
-    )
+    assert (
+        path_only == "https://kamiwaza.test/runtime/models/dep-1/v1"
+    ), f"access_path-only built on the wrong base: {path_only!r}"
 
     sys.modules.pop("scaffolded_in_cluster", None)
 
@@ -523,12 +529,12 @@ def test_template_chat_endpoint_does_not_double_prefix_already_prefixed_endpoint
         access_path="",
     )
 
-    assert "/foo/foo/" not in rehosted, (
-        f"path prefix duplicated in re-host: {rehosted!r}"
-    )
-    assert rehosted == "https://gateway.example.com/foo/runtime/models/dep-1/v1", (
-        f"unexpected re-host shape: {rehosted!r}"
-    )
+    assert (
+        "/foo/foo/" not in rehosted
+    ), f"path prefix duplicated in re-host: {rehosted!r}"
+    assert (
+        rehosted == "https://gateway.example.com/foo/runtime/models/dep-1/v1"
+    ), f"unexpected re-host shape: {rehosted!r}"
 
     # Sanity: when endpoint *doesn't* carry the prefix, it still gets prepended
     # (round-9 fix still works for the original "browser URL re-host" case).

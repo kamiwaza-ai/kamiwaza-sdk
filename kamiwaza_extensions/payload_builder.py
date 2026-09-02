@@ -322,7 +322,7 @@ class PayloadBuilder:
             resources = self._parse_resources(svc)
 
             is_primary = svc_name == primary_name
-            self._append_platform_env(env, is_primary, app_path, verify_ssl)
+            self._append_platform_env(env, app_path, verify_ssl)
             health_check = (
                 _metadata_service_field(metadata, svc_name, "healthCheck")
                 or _service_extension_field(svc, "healthCheck")
@@ -392,21 +392,37 @@ class PayloadBuilder:
     @staticmethod
     def _append_platform_env(
         env: List[Dict[str, str]],
-        is_primary: bool,
         app_path: str,
         verify_ssl: bool,
     ) -> None:
-        if is_primary and app_path:
-            env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
-        if verify_ssl:
-            return
-        # Explicit env wins over ConfigMap envFrom. Emit both Python and Node
-        # conventions so every extension runtime receives one TLS policy.
+        platform_values = {
+            "KAMIWAZA_ROUTING_MODE": "path" if app_path else "port",
+        }
+        if app_path:
+            platform_values["KAMIWAZA_APP_PATH"] = app_path
+        # Explicit env shadows ConfigMap envFrom in both modes. Without an
+        # explicit port value, a stale KAMIWAZA_APP_PATH can trigger legacy
+        # path-mode inference and make an otherwise valid deployment 404.
+        if not verify_ssl:
+            # Explicit env wins over ConfigMap envFrom. Emit both Python and
+            # Node conventions so every extension runtime receives one TLS
+            # policy.
+            platform_values.update(
+                {
+                    "KAMIWAZA_VERIFY_SSL": "false",
+                    "KAMIWAZA_TLS_REJECT_UNAUTHORIZED": "0",
+                }
+            )
+        platform_owned_names = set(platform_values)
+        # Port mode must also remove an author-supplied path. The explicit mode
+        # makes it inert at runtime, but emitting both values is contradictory
+        # and leaves duplicate platform configuration in the generated CR.
+        platform_owned_names.add("KAMIWAZA_APP_PATH")
+        env[:] = [
+            entry for entry in env if entry.get("name") not in platform_owned_names
+        ]
         env.extend(
-            [
-                {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"},
-                {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"},
-            ]
+            {"name": name, "value": value} for name, value in platform_values.items()
         )
 
     @staticmethod
@@ -554,7 +570,8 @@ class PayloadBuilder:
         Path-selection rules (ENG-3901 / F-013):
 
         - Frontend (Next.js) services use a node-based exec probe that
-          resolves the basePath env var dynamically.
+          resolves the runtime deployment path dynamically and calls the
+          scaffolded health route.
         - Backend services in app-type extensions probe ``/health`` —
           the scaffolded FastAPI backend ships an explicit /health route.
         - Primary services in **service** and **tool** extensions probe
@@ -578,15 +595,20 @@ class PayloadBuilder:
         port = ports[0].container_port
 
         if _should_use_node_frontend_probe(svc_name, svc):
-            # Frontend: use node to resolve basePath env vars reliably
+            # Frontend: use node to resolve runtime path env vars reliably
             # (shell-based wget probes fail with nested ${} on Alpine)
             probe_script = (
                 "const v=s=>(s&&!s.includes('${'))?s:'';"
-                "const base=(v(process.env.NEXT_PUBLIC_APP_BASE_PATH)"
-                "||v(process.env.KAMIWAZA_APP_PATH)||'').replace(/\\/$/,'')||'/';"
-                f"require('http').get({{host:'127.0.0.1',port:{port},path:base}},"
-                "(res)=>process.exit(res.statusCode===200?0:1))"
+                "const mode=v(process.env.KAMIWAZA_ROUTING_MODE);"
+                "const appPath=v(process.env.KAMIWAZA_APP_PATH).replace(/\\/+$/,'');"
+                "const base=mode==='port'?'':appPath;"
+                "const http=require('http');"
+                "const fallback=base||'/';"
+                f"const probe=(path,retry)=>http.get({{host:'127.0.0.1',port:{port},path}},"
+                "res=>{res.resume();if(res.statusCode===200)return process.exit(0);"
+                "if(res.statusCode===404&&retry)return probe(retry,'');process.exit(1)})"
                 ".on('error',()=>process.exit(1));"
+                "probe((base||'')+'/health',fallback);"
             )
             return {
                 "exec": {

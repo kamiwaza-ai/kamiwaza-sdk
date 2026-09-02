@@ -33,6 +33,9 @@ The frontend runs on http://localhost:3000 and the backend on http://localhost:8
 - The chat transcript is in-memory only and resets on refresh.
 - The frontend intentionally routes chat requests through the backend so model
   auth, endpoint selection, and error handling stay in one place.
+- The production frontend image contains native port and sentinel-path Next.js
+  artifacts. Startup byte-relocates the indexed path artifact to
+  `KAMIWAZA_APP_PATH`; it does not compile the app during deployment startup.
 - Request-bound platform API calls should use `platform_request()` from
   `kamiwaza_extensions_lib`, with the exact canonical route:
 

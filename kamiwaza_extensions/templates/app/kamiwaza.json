@@ -10,5 +10,6 @@
     "kz_ext_version": "{{kz_ext_version}}",
     "tags": [],
     "env_defaults": {},
-    "required_env_vars": []
+    "required_env_vars": [],
+    "strip_path_prefix": false
 }

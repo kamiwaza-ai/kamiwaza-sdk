@@ -89,6 +89,12 @@ _TS_NPM_INSTALL_PATTERN = re.compile(
     r"^\s*RUN\s+.*\bnpm\s+(install|ci)\b", re.IGNORECASE
 )
 
+_FROM_PATTERN = re.compile(
+    r"^\s*FROM(?:\s+--platform=\S+)?\s+(?P<source>\S+)"
+    r"(?:\s+AS\s+(?P<alias>[A-Za-z0-9_.-]+))?\s*$",
+    re.IGNORECASE,
+)
+
 # Rewrites ``RUN ... npm ci ...`` to ``RUN ... npm install ...`` line-by-line.
 # Required because the TS pre-install strip mutates ``package.json`` while
 # leaving ``package-lock.json`` unchanged. ``npm ci`` enforces strict
@@ -378,9 +384,11 @@ def _splice_overlay_steps(content: str, overlay: BuildOverride) -> str:
 
     Insertion strategy (in priority order):
 
-    1. If ``overlay.insert_before_build`` is True, insert before the
-       first matching build line (TS overlays, where the SDK lib must
-       be installed before ``npm run build`` / ``next build``).
+    1. If ``overlay.insert_before_build`` is True, install immediately
+       after the first TypeScript dependency-install instruction when
+       available. This puts the local SDK package in a shared ``deps``
+       stage before sibling build variants fork. Otherwise, fall back
+       to the first matching build line.
     2. Otherwise, for multi-stage Dockerfiles, insert before the LAST
        ``FROM`` (i.e., at the end of the build stage). The runtime
        stage of a Chainguard distroless extension has no ``/bin/sh``,
@@ -395,6 +403,8 @@ def _splice_overlay_steps(content: str, overlay: BuildOverride) -> str:
     insert_idx: Optional[int] = None
 
     if overlay.insert_before_build:
+        insert_idx = _shared_typescript_install_index(lines, overlay)
+    if overlay.insert_before_build and insert_idx is None:
         for i, line in enumerate(lines):
             if _TS_BUILD_PATTERNS.match(line):
                 insert_idx = i
@@ -452,6 +462,68 @@ def _runtime_copies_python_environment(runtime_lines: List[str]) -> bool:
     return any(
         marker in line for line in copy_lines for marker in _PYTHON_ENV_COPY_MARKERS
     )
+
+
+def _shared_typescript_install_index(
+    lines: List[str], overlay: BuildOverride
+) -> Optional[int]:
+    """Return the install boundary for an inherited dependency stage.
+
+    Installing the local package in the dependency stage makes it available
+    to every later stage based on that stage, including the scaffold's
+    independent port and path builds. A classic single-stage Dockerfile must
+    instead fall through to the build-line/end-of-stage anchor: placing the
+    overlay after ``npm install`` but before its later ``COPY . .`` lets a host
+    ``node_modules`` silently overwrite the local SDK.
+    """
+    if overlay.language != "typescript":
+        return None
+    for index, line in enumerate(lines):
+        if not _TS_NPM_INSTALL_PATTERN.match(line):
+            continue
+        boundary = _inherited_stage_install_boundary(lines, index)
+        if boundary is not None:
+            return boundary
+    return None
+
+
+def _inherited_stage_install_boundary(
+    lines: List[str], install_index: int
+) -> Optional[int]:
+    """Return the install boundary when a later stage inherits this stage."""
+    stage_alias = _docker_stage_alias(lines, install_index)
+    if stage_alias is None:
+        return None
+    boundary = _line_after_instruction(lines, install_index)
+    inherited_sources = map(_docker_from_source, lines[boundary:])
+    if stage_alias.casefold() in inherited_sources:
+        return boundary
+    return None
+
+
+def _docker_from_source(line: str) -> Optional[str]:
+    """Return a normalized Docker ``FROM`` source, if ``line`` is one."""
+    match = _FROM_PATTERN.match(line)
+    if match is None:
+        return None
+    return match.group("source").casefold()
+
+
+def _docker_stage_alias(lines: List[str], before: int) -> Optional[str]:
+    """Return the alias of the Docker stage containing ``before``."""
+    for line in reversed(lines[: before + 1]):
+        match = _FROM_PATTERN.match(line)
+        if match:
+            return match.group("alias")
+    return None
+
+
+def _line_after_instruction(lines: List[str], start: int) -> int:
+    """Return the first line after a possibly continued Docker instruction."""
+    index = start
+    while index < len(lines) and lines[index].rstrip().endswith("\\"):
+        index += 1
+    return min(index + 1, len(lines))
 
 
 def _insert_before_install_pattern(

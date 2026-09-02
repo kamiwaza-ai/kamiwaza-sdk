@@ -73,6 +73,18 @@ npm run build
 
 This catches template and runtime-library mismatches before you deploy.
 
+### Production Routing Runtime
+
+The frontend production image contains two prebuilt Next.js artifacts: one
+for port routing and one indexed with a reserved path sentinel. Container
+startup selects the port artifact or relocates the indexed bytes to the
+deployment's `KAMIWAZA_APP_PATH` under `/tmp`; it never runs `next build`.
+
+Keep `withKamiwazaAppGarden()` in `frontend/next.config.js`, retain the exact
+scaffolded Next.js version, and do not add `basePath`, `assetPrefix`, or
+`NEXT_PUBLIC_APP_BASE_PATH`. Those values are owned by the runtime contract.
+Use `kz-ext update` when a newer SDK scaffold changes that contract.
+
 ## Customization
 
 ### Frontend

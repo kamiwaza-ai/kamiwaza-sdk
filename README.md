@@ -600,7 +600,7 @@ kz-ext publish --stage prod
 | Command | Description |
 |---------|-------------|
 | `kz-ext login [url]` | Authenticate with a Kamiwaza instance (default: `https://kamiwaza.test/api`). Supports `--api-key`, `--name`, `--list`, `--use`, `--no-verify-ssl`. |
-| `kz-ext create --type <type> --name <name>` | Scaffold a new extension in the current (empty) directory. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
+| `kz-ext create --type <type> --name <name>` | Scaffold into the current empty directory, or create `./<name>/` from a non-empty workspace. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
 | `kz-ext validate [path]` | Validate `kamiwaza.json`, `docker-compose.yml`, and clear platform-runtime incompatibilities such as privileged ports or root-only web containers. Use `--json` for machine-readable output. |
 | `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. Auto-detects port conflicts and remaps to available ports. Supports `--sdk-repo`, `--detach`, and `--auth` (bridges the developer's identity from `kz-ext login` and routes loopback Kamiwaza URLs through the host gateway — see [docs/extensions/cli-reference/dev-local.md](docs/extensions/cli-reference/dev-local.md)). |
 | `kz-ext dev` | Build, push, and deploy to a Kamiwaza cluster. Uses zero-downtime PATCH updates for existing extensions. Supports `--no-build`, `--no-push`, `--service`, `--revision`, `--sdk-repo`. |
@@ -650,8 +650,18 @@ Optionally uses `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`) for AI-powered convers
 
 - **App** (`--type app`): Full-stack extension with Next.js frontend and FastAPI backend, pre-wired with `@kamiwaza-ai/extensions-lib` and `kamiwaza-extensions-lib`.
 - The app starter includes a working authenticated chat flow so developers can customize a real extension instead of starting from a status dashboard.
+- Production app images contain native port and relocatable path artifacts.
+  Container startup selects or byte-relocates a prebuilt artifact; it never
+  runs `next build`.
 - **Tool** (`--type tool`): MCP tool server using FastMCP with `kamiwaza-extensions-lib`.
 - **Service** (`--type service`): Minimal containerized service.
+
+Extension authoring references:
+
+- [Developer guide](docs/extensions/developer-guide.md)
+- [Path routing and dual-artifact runtime](docs/extensions/runtime-path/path-based-routing-cheatsheet.md)
+- [Auth integration](docs/extensions/auth-integration-guide.md)
+- [Legacy auth/runtime import map](docs/extensions/auth-runtime-migration.md)
 
 ### Local SDK Development (`--sdk-repo`)
 

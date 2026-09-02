@@ -1,12 +1,14 @@
 """Tests for Scaffolder."""
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
-from kamiwaza_extensions.scaffolder import Scaffolder
+from kamiwaza_extensions.scaffolder import Scaffolder, _runtime_lib_pins
 
 
 @pytest.mark.unit
@@ -20,6 +22,60 @@ class TestScaffolder:
         d = tmp_path / name
         d.mkdir()
         return d
+
+    def test_runtime_pin_fallback_preserves_relocation_contract(self):
+        """A corrupt compatibility bundle must not regress a new scaffold
+        to the pre-relocation 0.4 runtime series."""
+
+        class MissingBundle:
+            def __truediv__(self, _name):
+                return self
+
+            def read_text(self, **_kwargs):
+                raise FileNotFoundError
+
+        with patch(
+            "kamiwaza_extensions.scaffolder.importlib_resources.files",
+            return_value=MissingBundle(),
+        ):
+            _runtime_lib_pins.cache_clear()
+            assert _runtime_lib_pins() == (">=0.5,<0.6", ">=0.5 <0.6")
+
+    def test_next_pin_matches_runtime_and_canary(self):
+        """The scaffold pin cannot move without moving the validated gate."""
+        repo_root = Path(__file__).resolve().parents[3]
+
+        def package(path: str) -> dict:
+            return json.loads((repo_root / path).read_text())
+
+        scaffold_next = package(
+            "kamiwaza_extensions/templates/app/frontend/package.json"
+        )["dependencies"]["next"]
+        runtime_next = package("kamiwaza-ai-extensions-lib/package.json")[
+            "devDependencies"
+        ]["next"]
+        canary_next = package("tests/next-runtime-canary/frontend/package.json")[
+            "dependencies"
+        ]["next"]
+        wrapper = (
+            repo_root
+            / "kamiwaza-ai-extensions-lib"
+            / "src"
+            / "next-config"
+            / "index.ts"
+        ).read_text()
+        supported = re.search(
+            r"SUPPORTED_NEXT_VERSIONS[^=]*=\s*\[\"([^\"]+)\"\]",
+            wrapper,
+        )
+
+        assert supported is not None
+        assert {
+            scaffold_next,
+            runtime_next,
+            canary_next,
+            supported.group(1),
+        } == {"15.5.24"}
 
     def test_create_app(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)
@@ -43,7 +99,9 @@ class TestScaffolder:
         assert meta["type"] == "app"
         assert meta["version"] == "0.1.0"
 
-    def test_binary_template_assets_are_copied_without_rendering(self, tmp_path, monkeypatch, scaffolder):
+    def test_binary_template_assets_are_copied_without_rendering(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
         d = self._empty_dir(tmp_path)
         monkeypatch.chdir(d)
         with patch("subprocess.run"):
@@ -108,9 +166,7 @@ class TestScaffolder:
         # The pre-existing file in the workspace root is untouched.
         assert (d / "existing-file.txt").read_text() == "hello"
 
-    def test_non_empty_target_subdir_errors(
-        self, tmp_path, monkeypatch, scaffolder
-    ):
+    def test_non_empty_target_subdir_errors(self, tmp_path, monkeypatch, scaffolder):
         # Pre-existing target subdir with content must not be silently
         # overwritten — error early.
         d = self._empty_dir(tmp_path)
@@ -189,17 +245,47 @@ class TestScaffolder:
         assert "AGENTS.md" in readme
         assert "CLAUDE.md" in readme
 
-    def test_app_template_uses_standalone_frontend_runtime(self, tmp_path, monkeypatch, scaffolder):
+    def test_app_template_uses_standalone_frontend_runtime(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
+        """The frontend ships the dual-artifact runtime contract: no
+        spawn-time `next build` (start.mjs is gone), a Dockerfile that
+        builds both variants and indexes the path artifact, and the
+        wrapper-owned next.config."""
         d = self._empty_dir(tmp_path)
         monkeypatch.chdir(d)
         with patch("subprocess.run"):
             scaffolder.create(type_="app", name="test-app")
 
-        start_mjs = (d / "frontend" / "start.mjs").read_text()
-        assert "const STANDALONE_SERVER = path.join(STANDALONE_DIR, \"server.js\");" in start_mjs
-        assert "await prepareStandaloneRuntime();" in start_mjs
-        assert "startExitCode = await runNodeArgs(" in start_mjs
-        assert 'HOSTNAME: "0.0.0.0"' in start_mjs
+        assert not (d / "frontend" / "start.mjs").exists()
+        dockerfile = (d / "frontend" / "Dockerfile").read_text()
+        dockerignore = (d / "frontend" / ".dockerignore").read_text().splitlines()
+        assert "node_modules" in dockerignore
+        assert ".next" in dockerignore
+        assert ".env*" in dockerignore
+        assert ".git" in dockerignore
+        backend_requirements = (d / "backend" / "requirements.txt").read_text()
+        assert "fastapi>=0.115.0" in backend_requirements
+        assert "uvicorn[standard]>=0.30.0" in backend_requirements
+        assert "KZ_NEXT_BUILD_VARIANT=port" in dockerfile
+        assert "KZ_NEXT_BUILD_VARIANT=path" in dockerfile
+        assert "index-next-runtime.mjs" in dockerfile
+        assert "start-next-runtime.mjs" in dockerfile
+        assert "start-next-runtime.mjs --validate-only" in dockerfile
+        assert "resolveRoutingMode" in dockerfile
+        assert "--chown=1001:1001 /app/runtime" not in dockerfile
+        assert "replace(/\\/+$/" not in dockerfile
+        assert (
+            "npm run build" not in dockerfile.split("FROM node:20-alpine AS runner")[1]
+        )
+        next_config = (d / "frontend" / "next.config.js").read_text()
+        assert "withKamiwazaAppGarden" in next_config
+        manifest = json.loads((d / "kamiwaza.json").read_text())
+        assert manifest["strip_path_prefix"] is False
+        local_override = yaml.safe_load((d / "kamiwaza-compose.dev.yml").read_text())
+        assert local_override["services"]["frontend"]["build"]["target"] == "dev"
+        assert local_override["services"]["backend"]["command"][-1] == "--reload"
+        assert not (d / "docker-compose.override.yml").exists()
 
     def test_git_init_called(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

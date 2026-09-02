@@ -28,7 +28,9 @@ from kamiwaza_extensions.scaffolder import Scaffolder
 from kamiwaza_extensions.template_manifest import current_template_version
 
 
-def _make_scaffold(tmp_path: Path, monkeypatch, type_: str = "tool", name: str = "my") -> Path:
+def _make_scaffold(
+    tmp_path: Path, monkeypatch, type_: str = "tool", name: str = "my"
+) -> Path:
     """Render a fresh scaffold rooted at ``tmp_path``; return its directory."""
     monkeypatch.chdir(tmp_path)
     scaffolder = Scaffolder()
@@ -43,7 +45,9 @@ def _make_scaffold(tmp_path: Path, monkeypatch, type_: str = "tool", name: str =
 
 
 @pytest.mark.parametrize("shape", ["app", "tool", "service"])
-def test_dry_run_on_fresh_scaffold_reports_no_changes(shape: str, tmp_path, monkeypatch):
+def test_dry_run_on_fresh_scaffold_reports_no_changes(
+    shape: str, tmp_path, monkeypatch
+):
     """TS-M2-1, TS-M2-2, TS-M2-3 — dry-run on each shape."""
     scaffold = _make_scaffold(tmp_path, monkeypatch, type_=shape)
     monkeypatch.chdir(scaffold)
@@ -121,7 +125,9 @@ def test_default_interactive_prompts_on_conflict(tmp_path, monkeypatch):
     # We answered "keep" → file remains modified.
     assert target.read_text() == "# my edits\n"
     # And `update` records that the conflict was kept rather than applied.
-    server_result = next(fr for fr in summary.files if fr.relative_path == "src/server.py")
+    server_result = next(
+        fr for fr in summary.files if fr.relative_path == "src/server.py"
+    )
     assert server_result.action == "kept"
 
 
@@ -150,7 +156,9 @@ def test_interactive_apply_persists_new_hash(tmp_path, monkeypatch):
     with patch("typer.prompt", return_value="a"):
         first = run_update()
 
-    server_result = next(fr for fr in first.files if fr.relative_path == "src/server.py")
+    server_result = next(
+        fr for fr in first.files if fr.relative_path == "src/server.py"
+    )
     assert server_result.action == "applied"
     # File is now back to template content (the prompt's "apply" semantics).
     assert target.read_text() == template_content
@@ -159,6 +167,7 @@ def test_interactive_apply_persists_new_hash(tmp_path, monkeypatch):
     metadata = json.loads((scaffold / "kamiwaza.json").read_text())
     recorded = metadata.get("template_file_hashes", {}).get("src/server.py")
     from kamiwaza_extensions.scaffolder import hash_text
+
     assert recorded == hash_text(template_content), (
         "after interactive apply, template_file_hashes must point at the "
         "newly-applied content; otherwise the next update re-prompts on "
@@ -169,9 +178,9 @@ def test_interactive_apply_persists_new_hash(tmp_path, monkeypatch):
     # the recorded hash matches → no prompt should fire, no conflict.
     with patch("typer.prompt") as mock_prompt:
         second = run_update()
-    assert mock_prompt.call_count == 0, (
-        "second update on an interactively-applied file must NOT re-prompt"
-    )
+    assert (
+        mock_prompt.call_count == 0
+    ), "second update on an interactively-applied file must NOT re-prompt"
     second_result = next(
         fr for fr in second.files if fr.relative_path == "src/server.py"
     )
@@ -194,7 +203,9 @@ def test_force_overwrites_with_orig_backup(tmp_path, monkeypatch):
     assert target.read_text() == original
     backup = target.with_suffix(target.suffix + ".orig")
     assert backup.exists() and backup.read_text() == "# my custom server\n"
-    server_result = next(fr for fr in summary.files if fr.relative_path == "src/server.py")
+    server_result = next(
+        fr for fr in summary.files if fr.relative_path == "src/server.py"
+    )
     assert server_result.action == "applied"
 
 
@@ -222,6 +233,194 @@ def test_non_interactive_succeeds_when_no_conflicts(tmp_path, monkeypatch):
     monkeypatch.chdir(scaffold)
     summary = run_update(non_interactive=True)
     assert summary.conflicts == 0
+
+
+def test_app_update_adds_cli_dev_overlay_without_claiming_user_override(
+    tmp_path, monkeypatch
+):
+    """A pre-runtime-path app may already use Compose's reserved developer
+    override filename. Updating adds the CLI-owned hot-reload overlay under a
+    distinct name and leaves the developer file byte-for-byte untouched."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    cli_overlay = scaffold / "kamiwaza-compose.dev.yml"
+    cli_overlay.unlink()
+    developer_override = scaffold / "docker-compose.override.yml"
+    developer_content = "services:\n  backend:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n"
+    developer_override.write_text(developer_content)
+    monkeypatch.chdir(scaffold)
+
+    summary = run_update(non_interactive=True)
+
+    assert summary.conflicts == 0
+    assert cli_overlay.is_file()
+    assert "target: dev" in cli_overlay.read_text()
+    assert developer_override.read_text() == developer_content
+
+
+def test_app_update_merges_dockerignore_without_losing_author_exclusions(
+    tmp_path, monkeypatch, capsys
+):
+    """A newly template-owned Docker ignore file must not expose secrets."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    dockerignore = scaffold / "frontend" / ".dockerignore"
+    author_content = "# author security rules\n.env\ncredentials/**\n!.env.production\n"
+    dockerignore.write_text(author_content)
+    monkeypatch.chdir(scaffold)
+
+    summary = run_update(non_interactive=True)
+
+    result = next(
+        fr for fr in summary.files if fr.relative_path == "frontend/.dockerignore"
+    )
+    assert result.action == "updated"
+    assert "new .env* exclusion" in result.reason
+    merged = dockerignore.read_text()
+    assert merged.startswith(author_content)
+    assert ".env" in merged.splitlines()
+    assert "credentials/**" in merged.splitlines()
+    assert "node_modules" in merged.splitlines()
+    assert ".next" in merged.splitlines()
+    assert ".env*" in merged.splitlines()
+    assert ".git" in merged.splitlines()
+    assert merged.splitlines()[-1] == "!.env.production"
+    assert dockerignore.with_name(".dockerignore.orig").read_text() == author_content
+    assert "frontend/.dockerignore now excludes" in capsys.readouterr().err
+
+    second = run_update(non_interactive=True)
+    second_result = next(
+        fr for fr in second.files if fr.relative_path == "frontend/.dockerignore"
+    )
+    assert second_result.action == "no-change"
+    assert dockerignore.read_text().splitlines().count("node_modules") == 1
+    assert dockerignore.read_text().splitlines().count(".next") == 1
+    assert dockerignore.read_text().splitlines().count(".env*") == 1
+    assert dockerignore.read_text().splitlines().count(".git") == 1
+
+
+def test_app_update_warns_when_creating_missing_dockerignore(
+    tmp_path, monkeypatch, capsys
+):
+    """Legacy apps lack the newly owned file, but adding .env* is observable."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    dockerignore = scaffold / "frontend" / ".dockerignore"
+    dockerignore.unlink()
+    monkeypatch.chdir(scaffold)
+
+    summary = run_update(non_interactive=True)
+
+    result = next(
+        fr for fr in summary.files if fr.relative_path == "frontend/.dockerignore"
+    )
+    assert result.action == "updated"
+    assert "new .env* exclusion" in result.reason
+    assert ".env*" in dockerignore.read_text().splitlines()
+    assert not dockerignore.with_name(".dockerignore.orig").exists()
+    assert "frontend/.dockerignore now excludes" in capsys.readouterr().err
+
+
+def test_app_update_upgrades_runtime_dependencies_without_losing_author_edits(
+    tmp_path, monkeypatch
+):
+    """The overwritten 0.5 Dockerfiles and preserved dependency manifests
+    must advance as one contract during ``kz-ext update``."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    package_path = scaffold / "frontend" / "package.json"
+    package = json.loads(package_path.read_text())
+    expected_runtime = package["dependencies"]["@kamiwaza-ai/extensions-lib"]
+    expected_next = package["dependencies"]["next"]
+    package["dependencies"]["@kamiwaza-ai/extensions-lib"] = ">=0.4.3 <0.5"
+    package["dependencies"]["next"] = "^15.0.0"
+    package["dependencies"]["author-package"] = "^2.3.4"
+    package["scripts"]["author-task"] = "node author-task.mjs"
+    package_path.write_text(json.dumps(package, indent=4) + "\n")
+
+    requirements_path = scaffold / "backend" / "requirements.txt"
+    expected_requirement = next(
+        line
+        for line in requirements_path.read_text().splitlines()
+        if line.startswith("kamiwaza-extensions-lib")
+    )
+    requirements_path.write_text(
+        "fastapi>=0.100.0\n"
+        "author-package==2.3.4\n"
+        "kamiwaza-extensions-lib>=0.4.4,<0.5\n"
+        "kamiwaza_extensions_lib==0.4.9\n"
+    )
+
+    monkeypatch.chdir(scaffold)
+    summary = run_update(non_interactive=True)
+
+    updated_package = json.loads(package_path.read_text())
+    assert (
+        updated_package["dependencies"]["@kamiwaza-ai/extensions-lib"]
+        == expected_runtime
+    )
+    assert updated_package["dependencies"]["next"] == expected_next
+    assert updated_package["dependencies"]["author-package"] == "^2.3.4"
+    assert updated_package["scripts"]["author-task"] == "node author-task.mjs"
+
+    updated_requirements = requirements_path.read_text().splitlines()
+    assert expected_requirement in updated_requirements
+    assert "author-package==2.3.4" in updated_requirements
+    assert (
+        sum("extensions-lib" in line.replace("_", "-") for line in updated_requirements)
+        == 1
+    )
+    assert summary.conflicts == 0
+
+
+def test_app_update_sweeps_pristine_requirements_to_complete_template(
+    tmp_path, monkeypatch
+):
+    """A clean merge file still receives non-runtime dependency bumps."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    requirements_path = scaffold / "backend" / "requirements.txt"
+    metadata = json.loads((scaffold / "kamiwaza.json").read_text())
+    assert "backend/requirements.txt" in metadata["template_file_hashes"]
+    monkeypatch.chdir(scaffold)
+
+    from kamiwaza_extensions.commands import update as upd
+
+    real_render = upd._render
+
+    def render_with_new_fastapi_floor(template_path, context):
+        text = real_render(template_path, context)
+        if str(template_path).endswith("backend/requirements.txt"):
+            return text.replace("fastapi>=0.115.0", "fastapi>=9.9.9")
+        return text
+
+    monkeypatch.setattr(upd, "_render", render_with_new_fastapi_floor)
+
+    summary = upd.run_update(non_interactive=True)
+
+    result = next(
+        fr for fr in summary.files if fr.relative_path == "backend/requirements.txt"
+    )
+    assert result.action == "updated"
+    assert "clean" in result.reason
+    assert "fastapi>=9.9.9" in requirements_path.read_text()
+
+
+def test_requirements_merge_preserves_crlf_for_author_edited_file():
+    from kamiwaza_extensions.commands.update import _merge_requirements
+
+    existing = (
+        "fastapi>=0.100.0\r\n"
+        "author-package==2.3.4\r\n"
+        "kamiwaza-extensions-lib>=0.4.4,<0.5\r\n"
+    )
+    rendered = (
+        "fastapi>=0.115.0\n"
+        "uvicorn[standard]>=0.30.0\n"
+        "kamiwaza-extensions-lib>=0.5.0,<0.6\n"
+    )
+
+    merged = _merge_requirements(existing, rendered)
+
+    assert merged is not None
+    assert "\n" not in merged.replace("\r\n", "")
+    assert "author-package==2.3.4\r\n" in merged
+    assert "kamiwaza-extensions-lib>=0.5.0,<0.6\r\n" in merged
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +453,9 @@ def test_bootstrap_stamps_version_without_overwriting(tmp_path, monkeypatch):
     assert any(fr.action == "bootstrap" for fr in summary.files)
 
 
-def test_missing_version_without_bootstrap_errors_with_validation_exit(tmp_path, monkeypatch):
+def test_missing_version_without_bootstrap_errors_with_validation_exit(
+    tmp_path, monkeypatch
+):
     """TS-M2-8 — without --bootstrap the missing-version error is exit 2."""
     scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
     meta_path = scaffold / "kamiwaza.json"
@@ -274,7 +475,9 @@ def test_missing_version_without_bootstrap_errors_with_validation_exit(tmp_path,
 # ---------------------------------------------------------------------------
 
 
-def test_migrations_apply_in_version_order_regardless_of_tuple_order(tmp_path, monkeypatch):
+def test_migrations_apply_in_version_order_regardless_of_tuple_order(
+    tmp_path, monkeypatch
+):
     """Round-3 H3: migrations are sorted by since_version even if the
     manifest tuple lists them out of order. Without the sort, a manifest
     where the v0.2 migration is declared before the v0.1 migration would
@@ -311,15 +514,11 @@ def test_migrations_apply_in_version_order_regardless_of_tuple_order(tmp_path, m
     assert (scaffold / "src" / "b_renamed.py").exists()
     # Order in summary.migrations reflects sorted (semver) order:
     # a_v01.py (since 0.1) before b_v02.py (since 0.2).
-    a_idx = next(
-        i for i, m in enumerate(summary.migrations) if "a_v01.py" in m
-    )
-    b_idx = next(
-        i for i, m in enumerate(summary.migrations) if "b_v02.py" in m
-    )
-    assert a_idx < b_idx, (
-        f"migrations applied in tuple order, not version order: {summary.migrations}"
-    )
+    a_idx = next(i for i, m in enumerate(summary.migrations) if "a_v01.py" in m)
+    b_idx = next(i for i, m in enumerate(summary.migrations) if "b_v02.py" in m)
+    assert (
+        a_idx < b_idx
+    ), f"migrations applied in tuple order, not version order: {summary.migrations}"
 
 
 def test_migrations_apply_before_diff(tmp_path, monkeypatch):
@@ -353,7 +552,9 @@ def test_migrations_apply_before_diff(tmp_path, monkeypatch):
     new = scaffold / "src" / "new_server.py"
     assert new.exists() and new.read_text() == "# legacy\n"
     assert not legacy.exists()
-    assert any("old_server.py" in m and "new_server.py" in m for m in summary.migrations)
+    assert any(
+        "old_server.py" in m and "new_server.py" in m for m in summary.migrations
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +630,7 @@ def test_clean_file_auto_updates_on_template_change(tmp_path, monkeypatch):
     refreshed_meta = json.loads((scaffold / "kamiwaza.json").read_text())
     new_recorded = refreshed_meta["template_file_hashes"]["src/server.py"]
     import hashlib
+
     expected = "sha256:" + hashlib.sha256(target.read_text().encode()).hexdigest()
     assert new_recorded == expected
 
@@ -496,9 +698,9 @@ def test_non_interactive_failure_does_not_partially_write(tmp_path, monkeypatch)
     # Post-failure invariants:
     # 1. kamiwaza.json's template_version is unchanged (NOT 9.9.9-test).
     refreshed_meta = json.loads(meta_path.read_text())
-    assert refreshed_meta["template_version"] == pre_version, (
-        "non-interactive failure must not have bumped template_version"
-    )
+    assert (
+        refreshed_meta["template_version"] == pre_version
+    ), "non-interactive failure must not have bumped template_version"
     # 2. README.md (would-be-clean) was NOT rewritten.
     assert readme.read_text() == readme_pre_text, (
         "non-interactive failure must not write any files, including "
@@ -530,11 +732,65 @@ def test_bootstrap_records_hashes_from_on_disk_content(tmp_path, monkeypatch):
     refreshed = json.loads(meta_path.read_text())
     hashes = refreshed["template_file_hashes"]
     import hashlib
+
     expected = "sha256:" + hashlib.sha256(b"# bespoke\n").hexdigest()
     assert hashes["src/server.py"] == expected, (
         "bootstrap must hash on-disk content (the user's actual baseline), "
         "not a freshly-rendered template"
     )
+
+
+def test_bootstrap_then_update_merges_author_dependency_manifests(
+    tmp_path, monkeypatch
+):
+    """Adoption must not mark author dependencies as template-pristine."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
+    metadata_path = scaffold / "kamiwaza.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata.pop("template_version", None)
+    metadata.pop("template_shape", None)
+    metadata.pop("template_file_hashes", None)
+    metadata_path.write_text(json.dumps(metadata, indent=4) + "\n")
+
+    package_path = scaffold / "frontend" / "package.json"
+    package = json.loads(package_path.read_text())
+    expected_runtime = package["dependencies"]["@kamiwaza-ai/extensions-lib"]
+    package["dependencies"]["@kamiwaza-ai/extensions-lib"] = ">=0.4,<0.5"
+    package["dependencies"]["author-package"] = "^2.3.4"
+    package["scripts"]["author-task"] = "node author-task.mjs"
+    package_path.write_text(json.dumps(package, indent=4) + "\n")
+
+    requirements_path = scaffold / "backend" / "requirements.txt"
+    expected_requirement = next(
+        line
+        for line in requirements_path.read_text().splitlines()
+        if line.startswith("kamiwaza-extensions-lib")
+    )
+    requirements_path.write_text(
+        "author-package==2.3.4\n" "kamiwaza-extensions-lib>=0.4,<0.5\n"
+    )
+
+    monkeypatch.chdir(scaffold)
+    run_update(bootstrap=True)
+
+    bootstrapped = json.loads(metadata_path.read_text())
+    hashes = bootstrapped["template_file_hashes"]
+    assert "frontend/package.json" not in hashes
+    assert "backend/requirements.txt" not in hashes
+
+    summary = run_update(non_interactive=True)
+
+    updated_package = json.loads(package_path.read_text())
+    assert (
+        updated_package["dependencies"]["@kamiwaza-ai/extensions-lib"]
+        == expected_runtime
+    )
+    assert updated_package["dependencies"]["author-package"] == "^2.3.4"
+    assert updated_package["scripts"]["author-task"] == "node author-task.mjs"
+    updated_requirements = requirements_path.read_text().splitlines()
+    assert expected_requirement in updated_requirements
+    assert "author-package==2.3.4" in updated_requirements
+    assert summary.conflicts == 0
 
 
 def test_update_renders_with_project_version_and_description(tmp_path, monkeypatch):
@@ -579,12 +835,12 @@ def test_update_renders_with_project_version_and_description(tmp_path, monkeypat
     # version (or, if it doesn't have a version reference, just verify
     # the project's recorded version IS preserved post-update).
     refreshed = json.loads(meta_path.read_text())
-    assert refreshed["version"] == "2.5.0", (
-        "kz-ext update must NOT clobber the project's version field"
-    )
-    assert refreshed["description"] == "tool-my does X for Y", (
-        "kz-ext update must NOT clobber the project's description field"
-    )
+    assert (
+        refreshed["version"] == "2.5.0"
+    ), "kz-ext update must NOT clobber the project's version field"
+    assert (
+        refreshed["description"] == "tool-my does X for Y"
+    ), "kz-ext update must NOT clobber the project's description field"
 
 
 def test_stamp_version_preserves_merge_added_kamiwaza_fields(tmp_path, monkeypatch):
@@ -610,7 +866,16 @@ def test_stamp_version_preserves_merge_added_kamiwaza_fields(tmp_path, monkeypat
 
     real_merge = upd._reconcile_json_merge
 
-    def merge_with_field(*, rel, target_path, existing_content, new_content, dry_run):
+    def merge_with_field(
+        *,
+        rel,
+        target_path,
+        existing_content,
+        new_content,
+        dry_run,
+        force,
+        non_interactive,
+    ):
         if rel == "kamiwaza.json" and not dry_run:
             existing = json.loads(existing_content)
             existing["new_template_field"] = "from-merge"
@@ -622,6 +887,8 @@ def test_stamp_version_preserves_merge_added_kamiwaza_fields(tmp_path, monkeypat
             existing_content=existing_content,
             new_content=new_content,
             dry_run=dry_run,
+            force=force,
+            non_interactive=non_interactive,
         )
 
     monkeypatch.setattr(upd, "_reconcile_json_merge", merge_with_field)
@@ -641,9 +908,9 @@ def test_stamp_version_preserves_merge_added_kamiwaza_fields(tmp_path, monkeypat
     upd.run_update(non_interactive=True)
 
     refreshed = json.loads(meta_path.read_text())
-    assert refreshed.get("new_template_field") == "from-merge", (
-        "merge-added field was clobbered by _stamp_version (PR-86 C1 regression)"
-    )
+    assert (
+        refreshed.get("new_template_field") == "from-merge"
+    ), "merge-added field was clobbered by _stamp_version (PR-86 C1 regression)"
     assert refreshed.get("template_version") == "9.9.9-test"
 
 
@@ -683,7 +950,8 @@ def test_overwrite_strategy_binary_writes_orig_backup(tmp_path, monkeypatch):
     assert backup.read_bytes() == custom_bytes
     # Summary surface mirrors text-overwrite reason for grep-ability.
     icon_result = next(
-        fr for fr in summary.files
+        fr
+        for fr in summary.files
         if fr.relative_path == "frontend/public/kmza-icon.png"
     )
     assert icon_result.action in ("applied", "updated")
@@ -703,13 +971,14 @@ def test_overwrite_strategy_binary_dry_run_announces_backup(tmp_path, monkeypatc
     summary = run_update(dry_run=True, force=True)
 
     icon_result = next(
-        fr for fr in summary.files
+        fr
+        for fr in summary.files
         if fr.relative_path == "frontend/public/kmza-icon.png"
     )
     assert icon_result.action == "would-update"
-    assert ".orig" in (icon_result.reason or ""), (
-        f"dry-run reason {icon_result.reason!r} should mention .orig backup"
-    )
+    assert ".orig" in (
+        icon_result.reason or ""
+    ), f"dry-run reason {icon_result.reason!r} should mention .orig backup"
 
 
 def test_update_rewrites_template_version_after_success(tmp_path, monkeypatch):

@@ -110,6 +110,95 @@ class TestBuild:
         assert len(fe.ports) == 1
         assert fe.ports[0].container_port == 3000
 
+    def test_routing_env_injected_into_every_service(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        """The runtime-path contract needs KAMIWAZA_APP_PATH and
+        KAMIWAZA_ROUTING_MODE on ALL extension-owned services (the backend
+        derives root_path/cookie scope from them), not just the primary."""
+        payload = builder.build(
+            metadata, transformed_compose, connection, "my-app-dev-1"
+        )
+        for service in payload.services:
+            env = {e["name"]: e["value"] for e in (service.env or [])}
+            assert env.get("KAMIWAZA_APP_PATH") == "/runtime/apps/my-app-dev-1", (
+                service.name,
+                env,
+            )
+            assert env.get("KAMIWAZA_ROUTING_MODE") == "path", (service.name, env)
+
+    @pytest.mark.parametrize(
+        ("extension_type", "expected_path"),
+        [
+            ("tool", "/runtime/tools/non-app-dev-1"),
+            ("service", "/runtime/services/non-app-dev-1"),
+        ],
+    )
+    def test_non_app_deployments_are_explicitly_path_routed(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
+        extension_type,
+        expected_path,
+    ):
+        metadata = {**metadata, "template_type": extension_type}
+
+        payload = builder.build(
+            metadata, transformed_compose, connection, "non-app-dev-1"
+        )
+
+        assert payload.type == extension_type
+        for service in payload.services:
+            env = {entry["name"]: entry["value"] for entry in (service.env or [])}
+            assert env["KAMIWAZA_ROUTING_MODE"] == "path"
+            assert env["KAMIWAZA_APP_PATH"] == expected_path
+
+    def test_port_routing_explicitly_shadows_stale_configmap_path(self, builder):
+        env = []
+        builder._append_platform_env(env, app_path="", verify_ssl=True)
+
+        assert env == [{"name": "KAMIWAZA_ROUTING_MODE", "value": "port"}]
+
+    def test_platform_env_replaces_author_duplicates(self, builder):
+        env = [
+            {"name": "KAMIWAZA_APP_PATH", "value": "/author/path"},
+            {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
+            {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"},
+            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"},
+            {"name": "AUTHOR_VALUE", "value": "kept"},
+        ]
+
+        builder._append_platform_env(
+            env,
+            app_path="/runtime/apps/deployed",
+            verify_ssl=False,
+        )
+
+        by_name = {entry["name"]: entry["value"] for entry in env}
+        assert len(env) == len(by_name)
+        assert by_name == {
+            "AUTHOR_VALUE": "kept",
+            "KAMIWAZA_APP_PATH": "/runtime/apps/deployed",
+            "KAMIWAZA_ROUTING_MODE": "path",
+            "KAMIWAZA_VERIFY_SSL": "false",
+            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED": "0",
+        }
+
+    def test_port_mode_removes_author_app_path(self, builder):
+        env = [
+            {"name": "KAMIWAZA_APP_PATH", "value": "/author/path"},
+            {"name": "AUTHOR_VALUE", "value": "kept"},
+        ]
+
+        builder._append_platform_env(env, app_path="", verify_ssl=True)
+
+        assert env == [
+            {"name": "AUTHOR_VALUE", "value": "kept"},
+            {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
+        ]
+
     def test_kamiwaza_integration(
         self, builder, metadata, transformed_compose, connection
     ):
@@ -1294,7 +1383,15 @@ class TestHealthChecks:
         frontend = next(s for s in payload.services if s.name == "frontend")
 
         health_check = frontend.model_dump()["healthCheck"]
-        assert health_check["exec"]["command"][0] == "node"
+        command = health_check["exec"]["command"]
+        assert command[0] == "node"
+        assert "KAMIWAZA_ROUTING_MODE" in command[2]
+        assert "KAMIWAZA_APP_PATH" in command[2]
+        assert "NEXT_PUBLIC_APP_BASE_PATH" not in command[2]
+        assert "'/health'" in command[2]
+        assert "res.statusCode===404" in command[2]
+        assert "const fallback=base||'/'" in command[2]
+        assert "return probe(retry,'')" in command[2]
 
     def test_generic_frontend_without_node_hints_uses_root_http_probe(
         self, builder, metadata, connection
@@ -1400,9 +1497,7 @@ class TestHealthChecks:
         assert health_check["httpGet"] == {
             "path": "/",
             "port": 8000,
-        }, (
-            f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
-        )
+        }, f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
 
     def test_tool_type_primary_probes_sse(self, builder, connection):
         """ENG-3901 / F-013 (final): tool primary probes ``/sse`` — the

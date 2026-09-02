@@ -61,7 +61,9 @@ def build_render_context(
     major = __version__.split(".")[0]
     next_major = str(int(major) + 1)
     py_pin, ts_pin = _runtime_lib_pins()
-    effective_description = description if description else f"A Kamiwaza {type_} extension"
+    effective_description = (
+        description if description else f"A Kamiwaza {type_} extension"
+    )
     return {
         "{{name}}": name,
         "{{version}}": version,
@@ -85,21 +87,19 @@ def _runtime_lib_pins() -> tuple[str, str]:
     M4: fallback ranges aligned to the current bundle so a corrupt-bundle
     fallback doesn't render stricter pins than ``kz-ext doctor`` enforces.
     """
-    # Floor at 0.4.4 so the corrupt-bundle path still resolves to a lib
-    # with the safe, no-redirect ``platform_request`` helper documented by
-    # the app starter. Older 0.4.x releases lack that platform-call guardrail.
-    fallback_py = ">=0.4.4,<0.5"
+    # Runtime-path relocation is a 0.5 contract. Falling back to an older
+    # series would render a scaffold whose Dockerfile expects APIs and
+    # packaged runtime scripts that the resolved library does not provide.
+    fallback_py = ">=0.5,<0.6"
     # npm semver uses whitespace (not comma) for AND between bounds. Rendered
     # directly into a scaffolded ``frontend/package.json``; a comma here makes
     # ``npm install`` fail to parse the spec (round-5 ultrareview C1).
-    # Floor at 0.4.3 so the corrupt-bundle path still resolves to a lib with
-    # both the ``/local-dev-auth`` subpath and the complete signed ForwardAuth
-    # envelope used by the generated Next.js proxy.
-    fallback_ts = ">=0.4.3 <0.5"
+    fallback_ts = ">=0.5 <0.6"
     try:
         bundle = json.loads(
-            (importlib_resources.files("kamiwaza_extensions") / "compatibility.json")
-            .read_text(encoding="utf-8")
+            (
+                importlib_resources.files("kamiwaza_extensions") / "compatibility.json"
+            ).read_text(encoding="utf-8")
         )
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return (fallback_py, fallback_ts)
@@ -133,13 +133,23 @@ def hash_text(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+CLEAN_TRACKED_MERGE_FILES = frozenset(
+    {
+        "backend/requirements.txt",
+        "frontend/package.json",
+    }
+)
+
+
 def compute_rendered_hashes(shape: str, context: Dict[str, str]) -> Dict[str, str]:
-    """Hash every ``preserve_if_modified`` file in the shape's manifest,
-    rendered with the given context.
+    """Hash every clean-tracked text file in the shape's manifest.
 
     Keys are manifest ``relative_path`` strings; values are
     ``sha256:<hex>``. Binary template files are skipped (no
     preserve-if-modified semantics — they have no diff/merge concept).
+    Dependency merge files are also tracked so a pristine file can receive the
+    complete next template before edited files fall back to the
+    dependency-preserving merge.
 
     Used by ``Scaffolder.create()`` to seed
     ``kamiwaza.json.template_file_hashes`` so that the *next* ``kz-ext
@@ -152,7 +162,10 @@ def compute_rendered_hashes(shape: str, context: Dict[str, str]) -> Dict[str, st
     )
     hashes: Dict[str, str] = {}
     for owned in manifest.files:
-        if owned.strategy != "preserve_if_modified":
+        if (
+            owned.strategy != "preserve_if_modified"
+            and owned.relative_path not in CLEAN_TRACKED_MERGE_FILES
+        ):
             continue
         path = template_root / owned.relative_path
         if not path.exists():
@@ -171,7 +184,9 @@ class Scaffolder:
 
     def create(self, *, type_: str, name: str) -> Path:
         if type_ not in VALID_TYPES:
-            raise ValueError(f"Invalid type '{type_}'. Must be one of: {', '.join(VALID_TYPES)}")
+            raise ValueError(
+                f"Invalid type '{type_}'. Must be one of: {', '.join(VALID_TYPES)}"
+            )
 
         name = self._validate_name(name, type_)
         cwd = Path.cwd()
@@ -248,9 +263,7 @@ class Scaffolder:
         data["template_shape"] = shape
         # Build the same context the scaffolder used so the hashes match
         # what's actually on disk byte-for-byte.
-        context = build_render_context(
-            name=data.get("name", "extension"), type_=shape
-        )
+        context = build_render_context(name=data.get("name", "extension"), type_=shape)
         data["template_file_hashes"] = compute_rendered_hashes(shape, context)
         meta_path.write_text(
             json.dumps(data, indent=4) + "\n",
@@ -266,12 +279,18 @@ class Scaffolder:
             )
 
         # Auto-apply convention prefix if missing
-        if type_ == "tool" and not (name.startswith("tool-") or name.startswith("mcp-")):
+        if type_ == "tool" and not (
+            name.startswith("tool-") or name.startswith("mcp-")
+        ):
             name = f"tool-{name}"
-            console.print(f"[dim]Auto-prefixed name to '{name}' per tool naming convention[/dim]")
+            console.print(
+                f"[dim]Auto-prefixed name to '{name}' per tool naming convention[/dim]"
+            )
         elif type_ == "service" and not name.startswith("service-"):
             name = f"service-{name}"
-            console.print(f"[dim]Auto-prefixed name to '{name}' per service naming convention[/dim]")
+            console.print(
+                f"[dim]Auto-prefixed name to '{name}' per service naming convention[/dim]"
+            )
 
         return name
 
@@ -286,7 +305,9 @@ class Scaffolder:
         # importlib_resources returns a Traversable; convert to Path
         return Path(str(pkg))
 
-    def _render_template(self, template_dir: Path, target: Path, context: Dict[str, str]) -> None:
+    def _render_template(
+        self, template_dir: Path, target: Path, context: Dict[str, str]
+    ) -> None:
         if not template_dir.exists():
             raise FileNotFoundError(f"Template directory not found: {template_dir}")
 

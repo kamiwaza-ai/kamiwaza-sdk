@@ -1,6 +1,6 @@
 {
     "name": "@kamiwaza-ai/extensions-lib",
-    "version": "0.4.4",
+    "version": "0.5.0",
     "description": "TypeScript runtime library for Kamiwaza extensions — SessionProvider, AuthGuard, identity extraction, proxy utilities, local-dev auth bridge",
     "type": "module",
     "main": "./dist/index.js",
@@ -20,10 +20,30 @@
             "types": "./dist/local-dev-auth/index.d.ts",
             "import": "./dist/local-dev-auth/index.js",
             "require": "./dist/local-dev-auth/index.cjs"
+        },
+        "./next-config": {
+            "types": "./dist/next-config/index.d.ts",
+            "import": "./dist/next-config/index.js",
+            "require": "./dist/next-config/index.cjs"
+        },
+        "./runtime": {
+            "types": "./dist/runtime/index.d.ts",
+            "import": "./dist/runtime/index.js",
+            "require": "./dist/runtime/index.cjs"
+        },
+        "./runtime/server": {
+            "types": "./dist/runtime/server-index.d.ts",
+            "import": "./dist/runtime/server-index.js",
+            "require": "./dist/runtime/server-index.cjs"
         }
+    },
+    "bin": {
+        "kz-next-index": "./scripts/index-next-runtime.mjs",
+        "kz-next-start": "./scripts/start-next-runtime.mjs"
     },
     "files": [
         "dist/**/*",
+        "scripts/*.mjs",
         "LICENSE",
         "README.md"
     ],
@@ -33,8 +53,11 @@
         "test:watch": "vitest",
         "typecheck": "tsc --noEmit"
     },
+    "engines": {
+        "node": "^18.18.0 || ^19.8.0 || >=20.0.0"
+    },
     "peerDependencies": {
-        "next": ">=14.0.0",
+        "next": "15.5.24",
         "react": ">=18.0.0"
     },
     "peerDependenciesMeta": {
@@ -47,7 +70,7 @@
         "@types/node": "^20.0.0",
         "@types/react": "^18.0.0",
         "jsdom": "^24.0.0",
-        "next": "^15.5.24",
+        "next": "15.5.24",
         "react": "^18.0.0",
         "react-dom": "^18.0.0",
         "tsup": "^8.0.0",

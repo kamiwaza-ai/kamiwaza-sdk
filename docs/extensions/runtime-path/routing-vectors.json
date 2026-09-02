@@ -1,0 +1,599 @@
+{
+  "$comment": "Canonical routing vectors for the App Garden runtime-path contract. Consumed by tests/unit/extensions_lib/test_runtime.py (Python) and kamiwaza-ai-extensions-lib/tests/runtime-parity.test.ts (TypeScript). Keys are snake_case; TS projects to camelCase. Keep both consumers passing when editing.",
+  "normalize": [
+    {
+      "name": "empty",
+      "value": "",
+      "expect": ""
+    },
+    {
+      "name": "null",
+      "value": null,
+      "expect": ""
+    },
+    {
+      "name": "bare_root",
+      "value": "/",
+      "expect": ""
+    },
+    {
+      "name": "whitespace",
+      "value": "  ",
+      "expect": ""
+    },
+    {
+      "name": "unicode_next_line_is_not_trimmed",
+      "value": "\u0085/runtime/apps/x",
+      "expect_error": true
+    },
+    {
+      "name": "unicode_bom_is_not_trimmed",
+      "value": "\ufeff/runtime/apps/x",
+      "expect_error": true
+    },
+    {
+      "name": "uuid_path",
+      "value": "/runtime/apps/550e8400-e29b-41d4-a716-446655440000",
+      "expect": "/runtime/apps/550e8400-e29b-41d4-a716-446655440000"
+    },
+    {
+      "name": "trailing_slash",
+      "value": "/runtime/apps/x/",
+      "expect": "/runtime/apps/x"
+    },
+    {
+      "name": "multi_trailing",
+      "value": "/runtime/apps/x///",
+      "expect": "/runtime/apps/x"
+    },
+    {
+      "name": "missing_leading",
+      "value": "runtime/apps/x",
+      "expect": "/runtime/apps/x"
+    },
+    {
+      "name": "regex_metacharacter_dot_fails",
+      "value": "/runtime/apps/a.b",
+      "expect_error": true
+    },
+    {
+      "name": "non_platform_tilde_fails",
+      "value": "/runtime/apps/a~b",
+      "expect_error": true
+    },
+    {
+      "name": "sentinel",
+      "value": "/__KZ_RUNTIME_BASE_7F3A91C2__",
+      "expect": "/__KZ_RUNTIME_BASE_7F3A91C2__"
+    },
+    {
+      "name": "empty_segment",
+      "value": "/runtime//apps",
+      "expect_error": true
+    },
+    {
+      "name": "dot_segment",
+      "value": "/runtime/./x",
+      "expect_error": true
+    },
+    {
+      "name": "dotdot_segment",
+      "value": "/runtime/../x",
+      "expect_error": true
+    },
+    {
+      "name": "percent",
+      "value": "/runtime/%2e%2e/x",
+      "expect_error": true
+    },
+    {
+      "name": "query",
+      "value": "/runtime/apps/x?y=1",
+      "expect_error": true
+    },
+    {
+      "name": "fragment",
+      "value": "/runtime/apps/x#f",
+      "expect_error": true
+    },
+    {
+      "name": "backslash",
+      "value": "/runtime\\apps",
+      "expect_error": true
+    },
+    {
+      "name": "space",
+      "value": "/runtime/app s",
+      "expect_error": true
+    },
+    {
+      "name": "control_char",
+      "value": "/runtime/apps/x\u0007",
+      "expect_error": true
+    },
+    {
+      "name": "control_char_trailing_newline",
+      "value": "/runtime/apps/x\n",
+      "expect_error": true
+    },
+    {
+      "name": "control_char_leading_tab",
+      "value": "\t/runtime/apps/x",
+      "expect_error": true
+    },
+    {
+      "name": "exceeds_max_length",
+      "value": "/a/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expect_error": true
+    }
+  ],
+  "with_app_path": [
+    {
+      "name": "prefixes_root_relative",
+      "path": "/api/things",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "/runtime/apps/550e8400/api/things"
+    },
+    {
+      "name": "idempotent",
+      "path": "/runtime/apps/550e8400/api/things",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "/runtime/apps/550e8400/api/things"
+    },
+    {
+      "name": "exact_prefix",
+      "path": "/runtime/apps/550e8400",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "/runtime/apps/550e8400"
+    },
+    {
+      "name": "segment_boundary",
+      "path": "/runtime/apps/550e8400beef/api",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "/runtime/apps/550e8400/runtime/apps/550e8400beef/api"
+    },
+    {
+      "name": "bare_root_maps_to_prefix",
+      "path": "/",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "/runtime/apps/550e8400"
+    },
+    {
+      "name": "empty_prefix_no_op",
+      "path": "/api/things",
+      "app_path": "",
+      "expect": "/api/things"
+    },
+    {
+      "name": "absolute_https_untouched",
+      "path": "https://example.com/api",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "https://example.com/api"
+    },
+    {
+      "name": "protocol_relative_untouched",
+      "path": "//example.com/api",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "//example.com/api"
+    },
+    {
+      "name": "relative_untouched",
+      "path": "api/things",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "api/things"
+    },
+    {
+      "name": "empty_path_untouched",
+      "path": "",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": ""
+    },
+    {
+      "name": "query_and_fragment_preserved",
+      "path": "/api/things?limit=1#top",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "/runtime/apps/550e8400/api/things?limit=1#top"
+    },
+    {
+      "name": "prefix_normalized_before_join",
+      "path": "/api/things",
+      "app_path": "/runtime/apps/550e8400/",
+      "expect": "/runtime/apps/550e8400/api/things"
+    },
+    {
+      "name": "exact_prefix_with_query",
+      "path": "/runtime/apps/550e8400?x=1",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "/runtime/apps/550e8400?x=1"
+    },
+    {
+      "name": "exact_prefix_with_fragment",
+      "path": "/runtime/apps/550e8400#frag",
+      "app_path": "/runtime/apps/550e8400",
+      "expect": "/runtime/apps/550e8400#frag"
+    }
+  ],
+  "routing": [
+    {
+      "name": "path_mode_full_env",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400/",
+        "KAMIWAZA_APP_PATH_URL": "https://host.example/runtime/apps/550e8400/",
+        "KAMIWAZA_APP_URL": "https://host.example:8443/",
+        "KAMIWAZA_DEPLOYMENT_ID": "550e8400",
+        "KAMIWAZA_APP_PORT": "3000"
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400",
+        "app_path_url": "https://host.example/runtime/apps/550e8400",
+        "app_url": "https://host.example/runtime/apps/550e8400",
+        "deployment_id": "550e8400",
+        "app_port": "3000"
+      }
+    },
+    {
+      "name": "path_mode_app_url_fallback",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://host.example:8443/"
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400",
+        "app_path_url": "",
+        "app_url": "https://host.example:8443/runtime/apps/550e8400",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "path_mode_app_url_normalizes_origin",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://user:pass@EXAMPLE.com:443/legacy/path"
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400",
+        "app_path_url": "",
+        "app_url": "https://example.com/runtime/apps/550e8400",
+        "deployment_id": "",
+        "app_port": "",
+        "root_path": "/runtime/apps/550e8400",
+        "cookie_path": "/runtime/apps/550e8400"
+      }
+    },
+    {
+      "name": "path_mode_app_url_trims_whatwg_outer_space",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "  https://EXAMPLE.com:443/legacy/path  "
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400",
+        "app_path_url": "",
+        "app_url": "https://example.com/runtime/apps/550e8400",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "path_mode_app_url_normalizes_idn_host",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://Éxample.com/legacy/path"
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400",
+        "app_path_url": "",
+        "app_url": "https://xn--xample-9ua.com/runtime/apps/550e8400",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "path_mode_app_url_uses_whatwg_nontransitional_idna",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://faß.de/legacy/path"
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400",
+        "app_path_url": "",
+        "app_url": "https://xn--fa-hia.de/runtime/apps/550e8400",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "path_mode_app_url_decodes_percent_encoded_host",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://%65XAMPLE.com/legacy/path"
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400",
+        "app_path_url": "",
+        "app_url": "https://example.com/runtime/apps/550e8400",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "path_mode_origin_fallback",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_ORIGIN": "https://origin.example"
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/550e8400",
+        "app_path_url": "",
+        "app_url": "https://origin.example/runtime/apps/550e8400",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "path_mode_ftp_app_url_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "ftp://host.example"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_mode_app_url_rejects_disallowed_idna_joiner",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://‌example.com"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_mode_app_url_rejects_backslash_userinfo_ambiguity",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://example.com\\@evil.com"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_mode_app_url_rejects_malformed_percent_host",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://%zz.example"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_mode_app_url_without_scheme_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "host.example"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_mode_app_url_without_host_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_URL": "https://"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_mode_app_path_url_wrong_path_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_PATH_URL": "https://host.example/runtime/apps/other"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_mode_app_path_url_with_userinfo_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_PATH_URL": "https://user:pass@host.example/runtime/apps/550e8400"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_mode_app_path_url_with_empty_userinfo_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_PATH_URL": "\thttps://@host.example/runtime/apps/550e8400"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_mode_app_path_url_with_query_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_PATH_URL": "https://host.example/runtime/apps/550e8400?from=legacy"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_mode_app_path_url_with_fragment_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/550e8400",
+        "KAMIWAZA_APP_PATH_URL": "https://host.example/runtime/apps/550e8400#legacy"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "port_mode_ignores_stale_path",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "port",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/stale",
+        "KAMIWAZA_APP_URL": "https://host.example:8443/"
+      },
+      "expect": {
+        "routing_mode": "port",
+        "app_path": "",
+        "app_path_url": "",
+        "app_url": "https://host.example:8443",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "unset_mode_infers_path",
+      "env": {
+        "KAMIWAZA_APP_PATH": "/runtime/apps/x"
+      },
+      "expect": {
+        "routing_mode": "path",
+        "app_path": "/runtime/apps/x",
+        "app_path_url": "",
+        "app_url": "",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "unset_mode_infers_port",
+      "env": {},
+      "expect": {
+        "routing_mode": "port",
+        "app_path": "",
+        "app_path_url": "",
+        "app_url": "",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "unset_mode_root_path_infers_port",
+      "env": {
+        "KAMIWAZA_APP_PATH": "/"
+      },
+      "expect": {
+        "routing_mode": "port",
+        "app_path": "",
+        "app_path_url": "",
+        "app_url": "",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "unset_mode_slashes_infer_port",
+      "env": {
+        "KAMIWAZA_APP_PATH": " /// "
+      },
+      "expect": {
+        "routing_mode": "port",
+        "app_path": "",
+        "app_path_url": "",
+        "app_url": "",
+        "deployment_id": "",
+        "app_port": ""
+      }
+    },
+    {
+      "name": "explicit_path_mode_without_path_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "invalid_path_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/../etc"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "unknown_mode_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "porta",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/x"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "mixed_case_mode_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "Path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/x"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "mode_whitespace_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path ",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/x"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_trailing_newline_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/runtime/apps/x\n"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_leading_tab_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "\t/runtime/apps/x"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_unicode_next_line_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "\u0085/runtime/apps/x"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "path_unicode_bom_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "\ufeff/runtime/apps/x"
+      },
+      "expect_error": true
+    },
+    {
+      "name": "reserved_sentinel_path_fails",
+      "env": {
+        "KAMIWAZA_ROUTING_MODE": "path",
+        "KAMIWAZA_APP_PATH": "/__KZ_RUNTIME_BASE_7F3A91C2__"
+      },
+      "expect_error": true
+    }
+  ]
+}

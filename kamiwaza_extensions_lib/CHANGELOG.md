@@ -6,6 +6,32 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
+## [0.5.0] — 2026-07-28
+
+### Added
+
+* `RuntimeRouting`, `normalize_app_path()`, and `with_app_path()` provide the
+  Python half of the shared port/path routing contract.
+* `python -m kamiwaza_extensions_lib.asgi` starts scaffolded FastAPI backends
+  with the correct `root_path` for unstripped App Garden prefixes.
+
+### Changed
+
+* Generated apps now require the 0.5 minor line so the frontend relocation
+  runtime and backend routing behavior are upgraded together.
+* FastAPI now requires 0.136.3 or newer and Starlette 1.3.1 or newer, preserving
+  the patched floors inherited from 0.4.4 while supporting `root_path` routing.
+  Uvicorn remains optional for pure library/SDK clients and is available via
+  the `asgi` extra; generated backends declare `uvicorn[standard]` directly.
+* Path-mode public URLs are derived from the configured origin plus the
+  deployment prefix when `KAMIWAZA_APP_PATH_URL` is absent. Runtime path
+  segments now use the regex-safe platform alphabet `[A-Za-z0-9_-]+`.
+* `kz-ext update` adds `frontend/.dockerignore` rules for `.env*`, build output,
+  and VCS metadata. Existing author negations remain authoritative for backward
+  compatibility. When the update newly adds `.env*`, it warns and saves the old
+  file as `.dockerignore.orig`; review any intentional `.env` inclusion before
+  rebuilding, and prefer explicit build arguments for required public values.
+
 ## [0.4.4] — 2026-07-27 (ENG-9199)
 
 ### Added
