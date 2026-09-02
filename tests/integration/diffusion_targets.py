@@ -11,6 +11,10 @@ DEFAULT_DIFFUSION_REPO: Final = "dg845/tiny-random-stable-diffusion"
 DEFAULT_QWEN_IMAGE_REPO: Final = "Qwen/Qwen-Image-2512"
 DEFAULT_QWEN_IMAGE_EDIT_REPO: Final = "Qwen/Qwen-Image-Edit-2509"
 DEFAULT_QWEN_IMAGE_SPLIT_REPO: Final = "m9e/Qwen-Image-2512-DF11"
+# Qwen Image is materially larger than the portable SD smoke.  Keep the
+# accelerated lane fail-closed on cards whose inventory reports less than the
+# 16 GiB floor used by the rest of the integration capability markers.
+MIN_QWEN_GPU_MEM_GB: Final = 16.0
 SUPPORTED_BACKENDS: Final = frozenset(
     {
         "auto",
@@ -49,7 +53,7 @@ class DiffusionTarget:
 
 
 def qwen_acceleration_available(snapshot: Any) -> bool:
-    """Recognize host-spawned Metal plus inventory-reported GPU runtimes."""
+    """Recognize Metal or an accelerator with enough reported memory for Qwen."""
     if platform.system() == "Darwin" and platform.machine().lower() in {
         "arm64",
         "aarch64",
@@ -59,7 +63,15 @@ def qwen_acceleration_available(snapshot: Any) -> bool:
         return False
     if snapshot.is_apple_silicon:
         return True
-    return bool(snapshot.gpu_count and snapshot.gpu_vendors & {"nvidia", "amd"})
+    if not (snapshot.gpu_count and snapshot.gpu_vendors & {"nvidia", "amd"}):
+        return False
+    # Unknown memory is an unmet capability, not permission to launch a model
+    # that can fail after a long download/deploy cycle.  This mirrors
+    # capability_markers' fail-closed min_gpu_mem behavior.
+    return bool(
+        snapshot.gpu_mem_gb
+        and max(snapshot.gpu_mem_gb) >= MIN_QWEN_GPU_MEM_GB
+    )
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
