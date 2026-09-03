@@ -766,3 +766,96 @@ def test_does_not_fall_back_to_the_retry_after_header(
         client.put("ontologies/abc/model-bindings")
 
     assert sleeps == [], "the header is not a retry signal; only the mirror is"
+
+
+def _greymatter_route_transient(text: str = "no healthy upstream") -> _StubResponse:
+    return _StubResponse(
+        status_code=503,
+        text=text,
+        content_type="text/plain",
+    )
+
+
+def test_greymatter_route_transient_retries_read_until_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [
+            _greymatter_route_transient(),
+            _greymatter_route_transient("  NO HEALTHY UPSTREAM\n"),
+            _success_response(),
+        ],
+    )
+
+    assert client.get("models") == {"deleted": True}
+    assert sleeps == [1.0, 2.0]
+
+
+def test_greymatter_route_transient_exhausts_with_original_api_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schedule = client_module._GREYMATTER_ROUTE_RETRY_SCHEDULE_SECONDS
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_greymatter_route_transient() for _ in range(len(schedule) + 1)],
+    )
+
+    with pytest.raises(APIError, match="no healthy upstream") as exc_info:
+        client.get("models")
+
+    assert exc_info.value.status_code == 503
+    assert sleeps == list(schedule)
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+def test_greymatter_route_transient_does_not_replay_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_greymatter_route_transient(), _success_response()],
+    )
+
+    with pytest.raises(APIError, match="no healthy upstream"):
+        client._request(method, "extensions", json={"name": "test"})
+
+    assert sleeps == []
+
+
+def test_greymatter_route_transient_does_not_replay_a_streamed_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_greymatter_route_transient(), _success_response()],
+    )
+
+    with pytest.raises(APIError, match="no healthy upstream"):
+        client.get("models", data=io.BytesIO(b"one-shot"))
+
+    assert sleeps == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _StubResponse(status_code=502, text="no healthy upstream"),
+        _greymatter_route_transient("upstream connect error"),
+        _greymatter_route_transient("no healthy upstream: core-api"),
+    ],
+)
+def test_greymatter_route_retry_requires_exact_response(
+    monkeypatch: pytest.MonkeyPatch,
+    response: _StubResponse,
+) -> None:
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [response, _success_response()],
+    )
+
+    with pytest.raises(APIError):
+        client.get("models")
+
+    assert sleeps == []
