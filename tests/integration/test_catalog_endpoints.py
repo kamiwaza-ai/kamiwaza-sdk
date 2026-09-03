@@ -161,9 +161,11 @@ def test_catalog_container_endpoints_allow_non_admin_user(live_server_available,
     )
 
     try:
-        containers = client.get("/catalog/containers/")
+        client.authenticator.authenticate(client.session)
     except AuthenticationError:
         pytest.xfail("Non-admin test user testuser/testpass not configured")
+
+    containers = client.get("/catalog/containers/")
     assert isinstance(containers, list)
 
 
