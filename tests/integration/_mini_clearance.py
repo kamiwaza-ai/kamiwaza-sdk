@@ -384,7 +384,7 @@ def mesh_retrieve_through_gate(
     job = persona_client._request(
         "POST",
         f"/mesh/{fed_name}/api/retrieval/jobs",
-        json={"dataset_urn": dataset_urn},
+        json={"dataset_urn": dataset_urn, "transport": "sse"},
         **({"headers": credential_headers} if credential_headers else {}),
     )
     if isinstance(job, dict):
