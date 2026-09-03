@@ -2,6 +2,7 @@
 
 from collections import OrderedDict
 import logging
+import math
 import os
 import random
 import time
@@ -245,7 +246,7 @@ def _retry_after_seconds(response: Any) -> Optional[float]:
     safe to re-issue (``_RETRYABLE_503_CODES``), and the delay must be
     usable. Status code is part of the match so a stray hint on a 4xx -- a
     terminal conflict, say -- cannot turn a permanent failure into a retry
-    loop. Non-numeric and non-positive delays are rejected: they carry no
+    loop. Non-numeric, non-finite and non-positive delays are rejected: they carry no
     usable wait, and treating them as zero would spin.
     """
     if response.status_code != 503:
@@ -258,12 +259,20 @@ def _retry_after_seconds(response: Any) -> Optional[float]:
         return None
     if body.get("code") not in _RETRYABLE_503_CODES:
         return None
-    value = body.get("retry_after_seconds")
+    return _positive_finite_delay(body.get("retry_after_seconds"))
+
+
+def _positive_finite_delay(value: Any) -> Optional[float]:
+    """Reject unusable server-controlled delays without leaking conversion errors."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    if value <= 0:
+    try:
+        delay = float(value)
+    except OverflowError:
         return None
-    return float(value)
+    if not math.isfinite(delay) or delay <= 0:
+        return None
+    return delay
 
 
 def _contains_consumable_stream(value: Any) -> bool:
