@@ -81,10 +81,12 @@ def _build_patch_service_specs(
     ``CreateExtension`` payload, forwarding the new ``x-kamiwaza``
     per-service overrides via ``extra="allow"``.
 
-    When ``--service`` is active, only that service is included. The
+    When ``--service`` is active, only that service's image is included. The
     transformer assigns the new revision to every build-context service, but
     only the selected image is built and pushed; PATCHing the siblings would
-    roll them to nonexistent tags and produce ``ImagePullBackOff``.
+    roll them to nonexistent tags and produce ``ImagePullBackOff``. Siblings
+    receive only their primary flag, so ingress changes remain atomic without
+    changing their images, environment, or other runtime configuration.
 
     The PATCH carries the full ``(registry, repository, tag)`` triple
     from the canonical image ref. The operator reconstructs the CR's
@@ -96,10 +98,18 @@ def _build_patch_service_specs(
     ``ImagePullBackOff`` on the next pull.
     """
     return [
-        _build_patch_service_spec(service)
+        _filtered_patch_service_spec(service, service_filter)
         for service in payload.services
-        if service_filter is None or service.name == service_filter
     ]
+
+
+def _filtered_patch_service_spec(service: Any, service_filter: Optional[str]) -> Any:
+    """Keep primary selection atomic while updating only the selected image."""
+    from kamiwaza_sdk.schemas.extensions import PatchServiceSpec
+
+    if service_filter is not None and service.name != service_filter:
+        return PatchServiceSpec(name=service.name, primary=service.primary)
+    return _build_patch_service_spec(service)
 
 
 def _validate_service_filter(

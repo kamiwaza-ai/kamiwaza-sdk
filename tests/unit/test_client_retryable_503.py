@@ -289,10 +289,14 @@ def test_still_replays_ordinary_json_bodies(
     assert sleeps == [10.0]
 
 
-def test_rejects_a_zero_hint_rather_than_hot_spinning(
+@pytest.mark.parametrize(
+    "delay", [0, -1, float("nan"), float("inf"), float("-inf"), 10**400]
+)
+def test_rejects_an_unusable_hint_rather_than_retrying(
     monkeypatch: pytest.MonkeyPatch,
+    delay: int | float,
 ) -> None:
-    """``retry_after_seconds: 0`` carries no usable delay and must not retry."""
+    """Invalid delays preserve APIError and never reach sleep or replay."""
     client, sleeps = _make_client_with_sequence(
         monkeypatch,
         [
@@ -300,7 +304,7 @@ def test_rejects_a_zero_hint_rather_than_hot_spinning(
                 status_code=503,
                 json_data={
                     "code": "workroom_authority_unavailable",
-                    "retry_after_seconds": 0,
+                    "retry_after_seconds": delay,
                 },
             )
         ],

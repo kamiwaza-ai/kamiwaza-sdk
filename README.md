@@ -607,6 +607,10 @@ kz-ext publish --stage prod
 | `kz-ext config publish-profile` | Create, list, show, or delete named publish profiles. Supports `--list`, `--show`, `--delete`, `--repo-level`. |
 | `kz-ext doctor` | Check your development environment (Python, Docker, Compose, kubectl, connection health, runtime libs). |
 
+With `kz-ext dev --service NAME`, only the selected service receives a new image
+and runtime configuration. Primary-service flags are updated together across the
+declared services, so changing `x-kamiwaza.primary` cannot leave two primaries.
+
 ### Development Workflow
 
 The typical edit-deploy-test cycle:
