@@ -193,16 +193,15 @@
 # endpoints, and secret endpoints — the catalog registry API surface
 # (test_catalog_dataset_schema_endpoints, test_catalog_dataset_variant_endpoints,
 # test_catalog_container_by_urn_and_path_endpoints, ...).
-# Excluded: test_catalog_metadata_and_health reads service health,
-# test_catalog_container_endpoints_require_admin_user asserts an authz
-# rejection, and the two secret tests manipulate only catalog secrets —
-# none of them registers or reads a dataset or container.
+# Excluded: test_catalog_metadata_and_health reads service health, and the two
+# secret tests manipulate only catalog secrets — none of them registers or
+# reads a dataset or container. The non-admin container-list test now provides
+# positive evidence for this capability.
 - pattern: "tests/integration/test_catalog_endpoints.py::*"
   capability_ids: [catalog.dataset-registry]
   scenario_name: "Catalog dataset and container endpoint surface"
   exclude:
     - "*::test_catalog_metadata_and_health"
-    - "*::test_catalog_container_endpoints_require_admin_user"
     - "*::test_catalog_secret_list"
     - "*::test_catalog_secret_endpoints"
 
