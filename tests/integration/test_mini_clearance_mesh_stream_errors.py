@@ -24,7 +24,7 @@ class _PersonaClient:
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, str]:
         assert method == "POST"
         assert path == "/mesh/peer/api/retrieval/jobs"
-        assert kwargs == {"json": {"dataset_urn": "urn:test"}}
+        assert kwargs == {"json": {"dataset_urn": "urn:test", "transport": "sse"}}
         return {"job_id": "job-1"}
 
 

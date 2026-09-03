@@ -15,6 +15,7 @@ from kamiwaza_sdk.validation import (
     ValidationProfile,
     model_digest,
 )
+from kamiwaza_sdk.validation import federation_cases as case_module
 from kamiwaza_sdk.validation.federation_fixture import (
     GATE_CLASSPATH,
     KNOWN,
@@ -84,6 +85,58 @@ def test_provider_records_match_the_canonical_integration_fixture() -> None:
     )
 
     assert list(records()) == json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
+def test_provider_mesh_retrieval_explicitly_requests_sse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    class Persona:
+        session = SimpleNamespace(verify=True)
+
+        def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, str]:
+            calls.append((method, path, kwargs))
+            return {"job_id": "job-1"}
+
+    class Response:
+        closed = False
+
+        def iter_lines(self, *, decode_unicode: bool) -> list[str]:
+            assert decode_unicode is True
+            return []
+
+        def close(self) -> None:
+            self.closed = True
+
+    response = Response()
+    monkeypatch.setattr(
+        case_module,
+        "federation_credential_headers",
+        lambda _federation_name: {"X-Kamiwaza-Federation-Credential": "test"},
+    )
+    monkeypatch.setattr(case_module, "_retrieval_stream", lambda _request: response)
+
+    assert case_module._mesh_retrieve(
+        case_module.RetrievalRequest(
+            persona=Persona(),
+            base_url="https://edge-a.test/api",
+            token="token",
+            federation_name="peer",
+            dataset_urn="urn:test",
+        )
+    ) == ([], [])
+    assert calls == [
+        (
+            "POST",
+            "/mesh/peer/api/retrieval/jobs",
+            {
+                "json": {"dataset_urn": "urn:test", "transport": "sse"},
+                "headers": {"X-Kamiwaza-Federation-Credential": "test"},
+            },
+        )
+    ]
+    assert response.closed
 
 
 def _runtime(tmp_path: Path) -> RuntimeContext:

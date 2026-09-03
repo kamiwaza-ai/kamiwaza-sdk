@@ -303,7 +303,9 @@ def retrieve_through_gate(
     """
     from kamiwaza_sdk.schemas.retrieval import RetrievalRequest
 
-    job = client.retrieval.create_job(RetrievalRequest(dataset_urn=dataset_urn))
+    job = client.retrieval.create_job(
+        RetrievalRequest(dataset_urn=dataset_urn, transport="sse")
+    )
     rows: list[dict] = []
     gate_audits: list[dict] = []
     for event in client.retrieval.stream_events(job.job_id):
@@ -368,11 +370,11 @@ def mesh_retrieve_through_gate(
     """Create a retrieval job over the mesh, then drain its gated SSE stream over
     the mesh — the L3 (two-cluster) analogue of ``retrieve_through_gate``.
 
-    ``POST /mesh/{fed}/api/retrieval/jobs`` returns an async job handle, so the
-    gated ``records`` + ``gate_audit`` footer only arrive on
-    ``GET /mesh/{fed}/api/retrieval/jobs/{id}/stream`` (SSE). The mesh proxy
-    forwards both verbatim (StreamingResponse over ``aiter_raw``). The create goes
-    through the SDK client so a 401/403/404 raises APIError for
+    The POST explicitly requests SSE so it returns an async job handle and the
+    gated ``records`` + ``gate_audit`` footer arrive on
+    ``GET /mesh/{fed}/api/retrieval/jobs/{id}/stream``. The mesh proxy forwards
+    both verbatim (StreamingResponse over ``aiter_raw``). The create goes through
+    the SDK client so a 401/403/404 raises APIError for
     ``_mesh_call_or_skip`` to classify; the stream is a raw SSE GET (the SDK only
     streams local retrieval paths). Returns every actual footer in stream order;
     ``gate_audit`` is absorbed as either the inline single-dict footer or the
@@ -384,7 +386,7 @@ def mesh_retrieve_through_gate(
     job = persona_client._request(
         "POST",
         f"/mesh/{fed_name}/api/retrieval/jobs",
-        json={"dataset_urn": dataset_urn},
+        json={"dataset_urn": dataset_urn, "transport": "sse"},
         **({"headers": credential_headers} if credential_headers else {}),
     )
     if isinstance(job, dict):
