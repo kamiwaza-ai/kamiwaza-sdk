@@ -138,8 +138,8 @@ def test_catalog_metadata_and_health(live_kamiwaza_client) -> None:
     assert health.get("status") == "ok"
 
 
-def test_catalog_container_endpoints_require_admin_user(live_server_available, tmp_path) -> None:
-    """Ensure catalog container endpoints are admin-protected.
+def test_catalog_container_endpoints_allow_non_admin_user(live_server_available, tmp_path) -> None:
+    """Ensure non-admin readers can list workroom-scoped containers.
 
     Uses a conventional non-admin credential pair (testuser/testpass). If the
     user is not configured in the environment, this test xfails.
@@ -161,13 +161,10 @@ def test_catalog_container_endpoints_require_admin_user(live_server_available, t
     )
 
     try:
-        client.get("/catalog/containers/")
+        containers = client.get("/catalog/containers/")
     except AuthenticationError:
         pytest.xfail("Non-admin test user testuser/testpass not configured")
-    except APIError as exc:
-        assert exc.status_code in (401, 403)
-    else:  # pragma: no cover - indicates test user is unexpectedly privileged
-        pytest.fail("Non-admin user unexpectedly accessed /catalog/containers/")
+    assert isinstance(containers, list)
 
 
 def test_catalog_dataset_schema_endpoints(live_kamiwaza_client) -> None:
