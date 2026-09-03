@@ -279,7 +279,7 @@ def _mesh_retrieve(
     job = request.persona._request(
         "POST",
         f"/mesh/{quote(request.federation_name, safe='')}/api/retrieval/jobs",
-        json={"dataset_urn": request.dataset_urn},
+        json={"dataset_urn": request.dataset_urn, "transport": "sse"},
         **({"headers": credential_headers} if credential_headers else {}),
     )
     job_id = _retrieval_job_id(job)

@@ -66,6 +66,7 @@ class _LocalHTTPClient:
 
     def post(self, path: str, *, json: dict[str, Any]) -> dict[str, Any]:
         assert path == "/retrieval/jobs"
+        assert json == {"dataset_urn": "urn:test", "transport": "sse"}
         return {
             "job_id": "job-1",
             "transport": "sse",
