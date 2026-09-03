@@ -255,8 +255,28 @@ class TestBuildPatchServiceSpecs:
         payload = _make_payload()
         specs = _build_patch_service_specs(payload, service_filter="frontend")
 
-        assert [spec.name for spec in specs] == ["frontend"]
-        assert specs[0].image.repository == "myapp-frontend"
+        by_name = {spec.name: spec for spec in specs}
+        assert by_name["backend"].model_dump(exclude_none=True) == {
+            "name": "backend", "primary": True
+        }
+        assert by_name["frontend"].image.repository == "myapp-frontend"
+
+    @pytest.mark.parametrize("service_filter", ["backend", "frontend"])
+    def test_filtered_deploy_moves_primary_without_changing_sibling_image(self, service_filter):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        payload = _make_payload()
+        payload.services[0].primary = False
+        payload.services[1].primary = True
+        specs = _build_patch_service_specs(payload, service_filter=service_filter)
+        deployed_primary = {"backend": True, "frontend": False}
+        for spec in specs:
+            deployed_primary[spec.name] = spec.primary
+            if spec.name != service_filter:
+                assert spec.model_dump(exclude_none=True) == {
+                    "name": spec.name, "primary": spec.primary
+                }
+        assert deployed_primary == {"backend": False, "frontend": True}
 
 
 class TestServiceFilterValidation:
