@@ -886,15 +886,33 @@ def _rewrite_env_list_entry(
     env: List[Any], idx: int, entry: Any, per_key: Dict[str, Dict[str, str]]
 ) -> None:
     """Apply one list entry's rewrite: ``KEY=from`` string or name/value dict."""
-    if isinstance(entry, str) and "=" in entry:
-        key, _, value = entry.partition("=")
-        rule = per_key.get(key)
-        if rule is not None and value == rule["from"]:
-            env[idx] = f"{key}={rule['to']}"
-    elif isinstance(entry, dict) and entry.get("name") in per_key:
-        rule = per_key[entry["name"]]
-        if str(entry.get("value")) == rule["from"]:
-            entry["value"] = rule["to"]
+    if isinstance(entry, str):
+        _rewrite_env_list_string_entry(env, idx, entry, per_key)
+    elif isinstance(entry, dict):
+        _rewrite_env_list_dict_entry(entry, per_key)
+
+
+def _rewrite_env_list_string_entry(
+    env: List[Any], idx: int, entry: str, per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Rewrite a ``KEY=value`` string entry in place when the value matches."""
+    if "=" not in entry:
+        return
+    key, _, value = entry.partition("=")
+    rule = per_key.get(key)
+    if rule is not None and value == rule["from"]:
+        env[idx] = f"{key}={rule['to']}"
+
+
+def _rewrite_env_list_dict_entry(
+    entry: Dict[str, Any], per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Rewrite a name/value dict entry in place when the value matches."""
+    rule = per_key.get(entry.get("name"))
+    if rule is None:
+        return
+    if str(entry.get("value")) == rule["from"]:
+        entry["value"] = rule["to"]
 
 
 def _iter_env_entries(env: Any) -> List[Tuple[str, str]]:
