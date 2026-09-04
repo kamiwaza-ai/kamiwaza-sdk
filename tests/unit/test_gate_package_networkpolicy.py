@@ -20,7 +20,7 @@ def test_gate_package_client_uses_canonical_live_session_fixture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Gate-package tests must not require a second raw-token auth channel."""
-    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
+    monkeypatch.setattr(lifecycle, "_VERIFY_SSL_POLICY_AT_COLLECTION", "true")
     session_client = object()
 
     class Request:
@@ -35,7 +35,7 @@ def test_gate_package_client_fails_when_canonical_auth_would_skip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A qualified gate-package lane must fail closed on unusable auth."""
-    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
+    monkeypatch.setattr(lifecycle, "_VERIFY_SSL_POLICY_AT_COLLECTION", "true")
 
     class Request:
         def getfixturevalue(self, name: str) -> object:
@@ -51,8 +51,9 @@ def test_gate_package_client_fails_when_canonical_auth_would_skip(
 def test_gate_package_client_requires_explicit_tls_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Qualified callers must explicitly choose strict TLS or a dev opt-out."""
-    monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+    """A fixture-side default must not masquerade as caller TLS intent."""
+    monkeypatch.setattr(lifecycle, "_VERIFY_SSL_POLICY_AT_COLLECTION", None)
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
 
     class Request:
         def getfixturevalue(self, name: str) -> object:

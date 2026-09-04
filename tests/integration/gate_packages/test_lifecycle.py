@@ -47,6 +47,11 @@ import pytest
 
 logger = logging.getLogger(__name__)
 
+# Snapshot caller intent while pytest imports test modules, before any live
+# fixture can install its optional development default as an environment side
+# effect. Reading os.environ later in kz would make this ordering-dependent.
+_VERIFY_SSL_POLICY_AT_COLLECTION = os.environ.get("KAMIWAZA_VERIFY_SSL")
+
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
@@ -174,7 +179,7 @@ def kz(request: pytest.FixtureRequest):
     gate-package module is a qualified lane, so convert that optional skip to
     a hard failure instead of allowing all eight checks to disappear green.
     """
-    if os.environ.get("KAMIWAZA_VERIFY_SSL") is None:
+    if not _VERIFY_SSL_POLICY_AT_COLLECTION:
         pytest.fail(
             "Gate-package qualification requires an explicit "
             "KAMIWAZA_VERIFY_SSL policy",
