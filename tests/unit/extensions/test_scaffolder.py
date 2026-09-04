@@ -1,6 +1,7 @@
 """Tests for Scaffolder."""
 
 import json
+import os
 import re
 from pathlib import Path
 from unittest.mock import patch
@@ -119,6 +120,56 @@ class TestScaffolder:
         scaffolded_logo = d / "frontend" / "public" / "kmza-icon.png"
 
         assert scaffolded_logo.read_bytes() == source_logo.read_bytes()
+
+    def test_create_pins_shareable_modes_regardless_of_host_umask(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
+        """Scaffolded files must be readable by the image's non-root runtime.
+
+        ``write_text``/``write_bytes`` honor the process umask, so on hardened
+        hosts (umask 077) every scaffolded file would land 0600. Those files
+        are a Docker build context: ``COPY`` preserves the mode, the Next.js
+        standalone runtime runs as uid 1001, and the boot-time relocation
+        dies with ``EACCES`` opening a root-owned ``package.json`` through a
+        staging symlink. The scaffold must stay deterministic and
+        umask-independent instead.
+        """
+        d = self._empty_dir(tmp_path)
+        monkeypatch.chdir(d)
+        old_umask = os.umask(0o077)
+        try:
+            with patch("subprocess.run"):
+                scaffolder.create(type_="app", name="umask-app")
+        finally:
+            os.umask(old_umask)
+
+        regular_files = [
+            d / "kamiwaza.json",
+            d / "docker-compose.yml",
+            d / "frontend" / "Dockerfile",
+            d / "frontend" / "package.json",
+            d / "backend" / "Dockerfile",
+            d / "frontend" / "public" / "kmza-icon.png",
+        ]
+        for path in regular_files:
+            assert path.exists(), path
+            assert path.stat().st_mode & 0o777 == 0o644, (
+                f"{path} should be 0644 regardless of umask, "
+                f"got {oct(path.stat().st_mode & 0o777)}"
+            )
+
+        directories = [
+            d,
+            d / "frontend",
+            d / "frontend" / "public",
+            d / "backend",
+        ]
+        for path in directories:
+            assert path.is_dir(), path
+            assert path.stat().st_mode & 0o777 == 0o755, (
+                f"{path} should be 0755 regardless of umask, "
+                f"got {oct(path.stat().st_mode & 0o777)}"
+            )
 
     def test_create_tool_auto_prefix(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)
