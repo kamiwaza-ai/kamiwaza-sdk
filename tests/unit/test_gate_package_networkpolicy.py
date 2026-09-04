@@ -16,8 +16,11 @@ _LIVE_WORKFLOW = (
 )
 
 
-def test_gate_package_client_uses_canonical_live_session_fixture() -> None:
+def test_gate_package_client_uses_canonical_live_session_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Gate-package tests must not require a second raw-token auth channel."""
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
     session_client = object()
 
     class Request:
@@ -28,8 +31,11 @@ def test_gate_package_client_uses_canonical_live_session_fixture() -> None:
     assert lifecycle.kz.__wrapped__(Request()) is session_client
 
 
-def test_gate_package_client_fails_when_canonical_auth_would_skip() -> None:
+def test_gate_package_client_fails_when_canonical_auth_would_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A qualified gate-package lane must fail closed on unusable auth."""
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
 
     class Request:
         def getfixturevalue(self, name: str) -> object:
@@ -39,6 +45,20 @@ def test_gate_package_client_fails_when_canonical_auth_would_skip() -> None:
     with pytest.raises(
         pytest.fail.Exception, match="requires authenticated live access"
     ):
+        lifecycle.kz.__wrapped__(Request())
+
+
+def test_gate_package_client_requires_explicit_tls_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Qualified callers must explicitly choose strict TLS or a dev opt-out."""
+    monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+
+    class Request:
+        def getfixturevalue(self, name: str) -> object:
+            pytest.fail(f"unexpected fixture lookup: {name}")
+
+    with pytest.raises(pytest.fail.Exception, match="explicit KAMIWAZA_VERIFY_SSL"):
         lifecycle.kz.__wrapped__(Request())
 
 
