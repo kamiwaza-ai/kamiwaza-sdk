@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from tests.integration.gate_packages import test_lifecycle as lifecycle
 
 pytestmark = pytest.mark.unit
+_LIVE_WORKFLOW = (
+    Path(__file__).resolve().parents[2]
+    / ".github/workflows/extension-contract-live.yml"
+)
 
 
 def test_gate_package_client_uses_canonical_live_session_fixture() -> None:
@@ -16,6 +21,14 @@ def test_gate_package_client_uses_canonical_live_session_fixture() -> None:
     session_client = object()
 
     assert lifecycle.kz.__wrapped__(session_client) is session_client
+
+
+def test_live_workflow_uses_canonical_api_key_channel() -> None:
+    """The qualified live lane must authenticate the canonical fixture."""
+    workflow = _LIVE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "KAMIWAZA_API_KEY: ${{ secrets.KAMIWAZA_API_KEY }}" in workflow
+    assert "KAMIWAZA_ADMIN_TOKEN:" not in workflow
 
 
 def _completed(

@@ -139,7 +139,7 @@ jobs:
         if: steps.probe.outputs.available == 'true'
         env:
           KAMIWAZA_BASE_URL: ${{ secrets.KAMIWAZA_BASE_URL }}
-          KAMIWAZA_ADMIN_TOKEN: ${{ secrets.KAMIWAZA_API_KEY }}
+          KAMIWAZA_API_KEY: ${{ secrets.KAMIWAZA_API_KEY }}
         run: |
           set -euo pipefail
           # The provisioner creates all three exact wheel versions, publishes
