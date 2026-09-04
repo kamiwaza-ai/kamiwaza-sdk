@@ -776,17 +776,32 @@ _URL_HOST_RE = re.compile(
     r"(?P<scheme>https?://)(?P<host>[A-Za-z][A-Za-z0-9_-]*)(?=[:/?#]|$)"
 )
 
+# Bare ``<host>:<port>`` endpoint references (``etcd:2379``) — the other
+# shape Compose's per-service DNS alias makes resolvable. The lookbehind
+# rejects hosts embedded in longer tokens (``myetcd:2379``) and hosts
+# already rewritten by ``_URL_HOST_RE`` (``...-etcd:2379``); the port must
+# be digits so ``name:value`` pairs that merely look like endpoints are
+# left alone. KZUAT live evidence: the milvus extension's
+# ``ETCD_ENDPOINTS=etcd:2379`` / ``MINIO_ADDRESS=seaweedfs:9000`` deploy
+# verbatim through the native direct runtime and crash the workload with
+# DNS resolution failures.
+_BARE_ENDPOINT_RE = re.compile(
+    r"(?<![\w.:-])(?P<host>[A-Za-z][A-Za-z0-9_-]*):(?P<port>[0-9]+)(?![0-9])"
+)
+
 
 def detect_service_url_rewrites(
     transformed_services: Dict[str, Any],
     dev_name: str,
 ) -> Dict[str, Dict[str, Dict[str, str]]]:
-    """Detect cross-service URL references in env values.
+    """Detect cross-service endpoint references in env values.
 
-    Compose-style cross-service URLs (``http://backend:8000``) work in
-    docker-compose because compose creates a DNS alias for each service
-    short name. In Kubernetes the operator prefixes service names with
-    the deployment ID (``my-app-dev-abc-backend``), so the bare alias
+    Compose-style cross-service references work in docker-compose because
+    compose creates a DNS alias for each service short name. Both shapes
+    are detected: URLs with a scheme (``http://backend:8000``) and bare
+    ``host:port`` endpoints (``etcd:2379``, including comma-separated
+    endpoint lists). In Kubernetes the operator prefixes service names
+    with the deployment ID (``my-app-dev-abc-backend``), so the bare alias
     doesn't resolve.
 
     This function walks each transformed service's env and finds values
@@ -824,6 +839,80 @@ def detect_service_url_rewrites(
                 "to": new_value,
             }
     return rewrites
+
+
+def apply_service_ref_rewrites(
+    transformed_services: Dict[str, Any],
+    rewrites: Dict[str, Dict[str, Dict[str, str]]],
+) -> None:
+    """Apply a ``detect_service_url_rewrites`` map to the transformed
+    services' env, in place.
+
+    The map is applied EXACTLY (``value == from`` -> ``to``), never
+    re-derived: the payload must carry precisely the values the operator
+    would apply from the annotation. The native direct runtime applies
+    ``service.env`` verbatim and has no annotation consumer, so
+    ``PayloadBuilder`` bakes these rewrites into the payload env directly;
+    the annotation remains the transport for the compose-adapter path.
+    Both shapes of Compose ``environment`` (mapping and list) are handled.
+    """
+    for svc_name, per_key in rewrites.items():
+        svc = transformed_services.get(svc_name)
+        if svc is None:
+            continue
+        env = svc.get("environment")
+        if isinstance(env, dict):
+            _rewrite_env_mapping(env, per_key)
+        elif isinstance(env, list):
+            _rewrite_env_list(env, per_key)
+
+
+def _rewrite_env_mapping(
+    env: Dict[str, Any], per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Apply EXACT rewrites to a mapping-shaped ``environment`` in place."""
+    for key, rule in per_key.items():
+        if key in env and str(env[key]) == rule["from"]:
+            env[key] = rule["to"]
+
+
+def _rewrite_env_list(env: List[Any], per_key: Dict[str, Dict[str, str]]) -> None:
+    """Apply EXACT rewrites to a list-shaped ``environment`` in place."""
+    for idx, entry in enumerate(env):
+        _rewrite_env_list_entry(env, idx, entry, per_key)
+
+
+def _rewrite_env_list_entry(
+    env: List[Any], idx: int, entry: Any, per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Apply one list entry's rewrite: ``KEY=from`` string or name/value dict."""
+    if isinstance(entry, str):
+        _rewrite_env_list_string_entry(env, idx, entry, per_key)
+    elif isinstance(entry, dict):
+        _rewrite_env_list_dict_entry(entry, per_key)
+
+
+def _rewrite_env_list_string_entry(
+    env: List[Any], idx: int, entry: str, per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Rewrite a ``KEY=value`` string entry in place when the value matches."""
+    if "=" not in entry:
+        return
+    key, _, value = entry.partition("=")
+    rule = per_key.get(key)
+    if rule is not None and value == rule["from"]:
+        env[idx] = f"{key}={rule['to']}"
+
+
+def _rewrite_env_list_dict_entry(
+    entry: Dict[str, Any], per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Rewrite a name/value dict entry in place when the value matches."""
+    rule = per_key.get(entry.get("name"))
+    if rule is None:
+        return
+    if str(entry.get("value")) == rule["from"]:
+        entry["value"] = rule["to"]
 
 
 def _iter_env_entries(env: Any) -> List[Tuple[str, str]]:
@@ -867,9 +956,10 @@ def _rewrite_url_hosts(
     self_name: str,
     dev_name: str,
 ) -> Optional[str]:
-    """Rewrite each ``http(s)://<sibling>`` host in *value* to the
-    deployment-prefixed K8s service name. Returns the rewritten value
-    or None when there's nothing to rewrite."""
+    """Rewrite each ``http(s)://<sibling>`` host and each bare
+    ``<sibling>:<port>`` endpoint in *value* to the deployment-prefixed
+    K8s service name. Returns the rewritten value or None when there's
+    nothing to rewrite."""
 
     def _sub(match: re.Match) -> str:
         host = match.group("host")
@@ -878,6 +968,17 @@ def _rewrite_url_hosts(
         return f"{match.group('scheme')}{dev_name}-{host}"
 
     new_value = _URL_HOST_RE.sub(_sub, value)
+
+    def _sub_bare(match: re.Match) -> str:
+        host = match.group("host")
+        if host == self_name or host not in sibling_names:
+            return match.group(0)
+        return f"{dev_name}-{host}:{match.group('port')}"
+
+    # Runs AFTER the URL pass: its lookbehind keeps it off hosts the URL
+    # pass already prefixed (``...-<host>:<port>``), so the two passes are
+    # order-safe on mixed values (``http://etcd:2379,backup:2379``).
+    new_value = _BARE_ENDPOINT_RE.sub(_sub_bare, new_value)
     return new_value if new_value != value else None
 
 

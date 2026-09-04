@@ -1082,6 +1082,134 @@ class TestDetectServiceUrlRewrites:
             }
         }
 
+    def test_rewrites_bare_sibling_endpoint(self):
+        """KZUAT live evidence: the milvus extension's bare
+        ``ETCD_ENDPOINTS=etcd:2379`` / ``MINIO_ADDRESS=seaweedfs:9000``
+        crashed its standalone workload under the native direct runtime
+        (env applied verbatim, bare compose alias unresolvable in K8s
+        DNS). Bare ``<sibling>:<port>`` must be detected like URLs are."""
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "standalone": {
+                "environment": {
+                    "ETCD_ENDPOINTS": "etcd:2379",
+                    "MINIO_ADDRESS": "seaweedfs:9000",
+                },
+            },
+            "etcd": {"environment": {}},
+            "seaweedfs": {"environment": {}},
+        }
+        rewrites = detect_service_url_rewrites(services, "service-milvus-dev-3da53c")
+        assert rewrites == {
+            "standalone": {
+                "ETCD_ENDPOINTS": {
+                    "from": "etcd:2379",
+                    "to": "service-milvus-dev-3da53c-etcd:2379",
+                },
+                "MINIO_ADDRESS": {
+                    "from": "seaweedfs:9000",
+                    "to": "service-milvus-dev-3da53c-seaweedfs:9000",
+                },
+            }
+        }
+
+    def test_bare_endpoint_detection_boundaries(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "app": {
+                "environment": {
+                    # Comma-separated endpoint lists translate per host.
+                    "LIST": "etcd:2379,backup:2380",
+                    # Hosts embedded in longer tokens are NOT sibling refs.
+                    "PREFIXED": "myetcd:2379",
+                    # Non-numeric suffixes are not endpoints.
+                    "FORMAT": "etcd:debug",
+                    # Self-references stay untouched (documented contract).
+                    "SELF": "app:8000",
+                    # Unknown hosts stay untouched.
+                    "OTHER": "db:5432",
+                },
+            },
+            "etcd": {"environment": {}},
+            "backup": {"environment": {}},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        assert rewrites == {
+            "app": {
+                "LIST": {
+                    "from": "etcd:2379,backup:2380",
+                    "to": "ext-etcd:2379,ext-backup:2380",
+                }
+            }
+        }
+
+    def test_url_and_bare_endpoints_rewrite_in_one_value(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "app": {"environment": {"MIXED": "http://etcd:2379,backup:2379"}},
+            "etcd": {"environment": {}},
+            "backup": {"environment": {}},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        assert rewrites["app"]["MIXED"]["to"] == "http://ext-etcd:2379,ext-backup:2379"
+
+
+class TestApplyServiceRefRewrites:
+    """The native direct runtime applies ``service.env`` verbatim with no
+    annotation consumer, so ``PayloadBuilder`` bakes the rewrite map into
+    the payload env. The map is applied EXACTLY (from -> to), never
+    re-derived, for both Compose environment shapes."""
+
+    def test_applies_to_mapping_and_list_env(self):
+        from kamiwaza_extensions.compose_transformer import (
+            apply_service_ref_rewrites,
+            detect_service_url_rewrites,
+        )
+
+        services = {
+            "standalone": {
+                "environment": ["ETCD_ENDPOINTS=etcd:2379", "MINIO_ADDRESS=seaweedfs:9000"],
+            },
+            "proxy": {
+                "environment": {"UPSTREAM": "http://standalone:19530"},
+            },
+            "etcd": {"environment": []},
+            "seaweedfs": {"environment": []},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        apply_service_ref_rewrites(services, rewrites)
+        assert services["standalone"]["environment"] == [
+            "ETCD_ENDPOINTS=ext-etcd:2379",
+            "MINIO_ADDRESS=ext-seaweedfs:9000",
+        ]
+        assert services["proxy"]["environment"] == {
+            "UPSTREAM": "http://ext-standalone:19530"
+        }
+
+    def test_exact_match_only(self):
+        from kamiwaza_extensions.compose_transformer import (
+            apply_service_ref_rewrites,
+        )
+
+        services = {
+            "app": {"environment": {"URL": "http://backend:9000"}},
+        }
+        apply_service_ref_rewrites(
+            services,
+            {
+                "app": {
+                    "URL": {"from": "http://backend:8000", "to": "http://ext-backend:8000"},
+                    "GONE": {"from": "x", "to": "y"},
+                }
+            },
+        )
+        # The value drifted from the recorded map -> left verbatim, never
+        # guessed; missing keys and missing services are no-ops.
+        assert services == {"app": {"environment": {"URL": "http://backend:9000"}}}
+
     def test_handles_https_and_path(self):
         from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
 

@@ -572,7 +572,86 @@ class TestServiceRefRewritesAnnotation:
     K8s DNS — bare ``backend`` only works in docker-compose. The
     operator reads ``extensions.kamiwaza.io/service-ref-rewrites`` to
     swap the env value to the deployment-prefixed K8s service name at
-    deploy time."""
+    deploy time. The native direct runtime applies ``service.env``
+    verbatim with no annotation consumer, so the payload env ALSO
+    carries the baked-in rewrite."""
+
+    def test_bare_endpoints_baked_into_payload_env(
+        self,
+        builder,
+        metadata,
+        connection,
+    ):
+        """KZUAT live evidence: the milvus extension's bare
+        ``ETCD_ENDPOINTS=etcd:2379`` deployed verbatim and crashed its
+        standalone workload; the payload env must carry the translated
+        value AND the annotation must still ship for the operator path."""
+        import json
+
+        transformed = {
+            "services": {
+                "standalone": {
+                    "image": "reg/service-milvus:2.4.5",
+                    "ports": ["19530"],
+                    "environment": ["ETCD_ENDPOINTS=etcd:2379"],
+                },
+                "etcd": {
+                    "image": "reg/etcd:3.6",
+                    "ports": ["2379"],
+                },
+            },
+        }
+        payload = builder.build(
+            metadata, transformed, connection, "service-milvus-dev-3da53c"
+        )
+
+        # The payload service env is translated for the direct runtime.
+        standalone = next(s for s in payload.services if s.name == "standalone")
+        standalone_env = {
+            entry["name"]: entry.get("value") for entry in (standalone.env or [])
+        }
+        assert (
+            standalone_env["ETCD_ENDPOINTS"]
+            == "service-milvus-dev-3da53c-etcd:2379"
+        )
+
+        # The annotation still ships the exact from/to for the operator path.
+        annotations = (payload.model_extra or {}).get("annotations") or {}
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {
+            "standalone": {
+                "ETCD_ENDPOINTS": {
+                    "from": "etcd:2379",
+                    "to": "service-milvus-dev-3da53c-etcd:2379",
+                }
+            }
+        }
+
+    def test_urls_still_baked_and_annotated(
+        self,
+        builder,
+        metadata,
+        connection,
+    ):
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "reg/my-app-frontend:dev",
+                    "ports": ["3000"],
+                    "environment": {"BACKEND_URL": "http://backend:8000"},
+                },
+                "backend": {
+                    "image": "reg/my-app-backend:dev",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        frontend_env = {
+            entry["name"]: entry.get("value") for entry in (frontend.env or [])
+        }
+        assert frontend_env["BACKEND_URL"] == "http://my-app-dev-abc-backend:8000"
 
     def test_emitted_when_compose_has_cross_service_url(
         self,
@@ -673,7 +752,12 @@ class TestServiceRefRewritesAnnotation:
         )
         assert backend_url == {
             "name": "BACKEND_URL",
-            "value": "http://backend:8000/cost$value",
+            # Intentional contract change (direct-runtime rewrite baking):
+            # the payload env now carries the deployment-prefixed value —
+            # the native direct runtime applies service.env verbatim and
+            # has no annotation consumer. The annotation below still
+            # records the exact from/to for the operator path.
+            "value": "http://my-app-dev-abc-backend:8000/cost$value",
         }
         annotations = (payload.model_extra or {}).get("annotations") or {}
         rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])

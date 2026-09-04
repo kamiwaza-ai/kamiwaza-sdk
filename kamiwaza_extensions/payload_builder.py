@@ -15,6 +15,7 @@ from kamiwaza_extensions.compose_ports import (
     extract_container_port,
 )
 from kamiwaza_extensions.compose_transformer import (
+    apply_service_ref_rewrites,
     detect_service_url_rewrites,
     resolve_compose_value,
 )
@@ -151,6 +152,25 @@ class PayloadBuilder:
         # ``tlsRejectUnauthorized`` spec field so the deployed
         # extension's in-cluster callbacks match the developer's intent.
         verify_ssl = connection.effective_verify_ssl()
+        # Cross-service endpoint rewrites: scan each service's env for
+        # references to sibling services by compose short name — URLs
+        # (``http://backend:8000``) and bare endpoints (``etcd:2379``) —
+        # and bake the deployment-prefixed K8s service names into the
+        # payload env BEFORE serialization. The native direct runtime
+        # applies ``service.env`` verbatim and has no annotation consumer
+        # (KZUAT live evidence: the milvus extension's bare
+        # ``ETCD_ENDPOINTS=etcd:2379`` crashed its standalone workload
+        # with DNS resolution failures), so the payload itself must carry
+        # the translated values. The ``service-ref-rewrites`` annotation
+        # is still emitted for the operator/compose-adapter path and
+        # ships only when at least one rewrite is needed.
+        rewrites = detect_service_url_rewrites(
+            transformed_compose.get("services") or {}, dev_name
+        )
+        if rewrites:
+            apply_service_ref_rewrites(
+                transformed_compose.get("services") or {}, rewrites
+            )
         services = self._build_services(
             transformed_compose,
             app_path=app_path,
@@ -189,14 +209,6 @@ class PayloadBuilder:
 
         annotations = self.build_annotations(deployer=deployer, revision=revision)
 
-        # Cross-service URL rewrites: scan each service's env for
-        # references to sibling services by short name and emit the
-        # operator-consumed ``service-ref-rewrites`` annotation. Ships
-        # only when at least one rewrite is needed (no annotation when
-        # there are no cross-service URLs).
-        rewrites = detect_service_url_rewrites(
-            transformed_compose.get("services") or {}, dev_name
-        )
         if rewrites:
             annotations[ANNOTATION_SERVICE_REF_REWRITES] = json.dumps(
                 rewrites, sort_keys=True, separators=(",", ":")
