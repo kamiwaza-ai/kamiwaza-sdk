@@ -7,14 +7,12 @@ manages cluster-to-cluster federation pairings and cross-cluster access from the
 SDK. Access it as `client.federations`. It covers the federation lifecycle
 (pair, list, get, probe, disconnect), a per-federation proxy for sub-resources,
 and brokered-user allowlisting. Cross-cluster **identity trust** is governed by
-each federation's identity mode (`peer_kc` or `shared_idp` in Kamiwaza 1.2.0);
+each federation's identity mode (`peer_kc`, `shared_idp`, or `receiver_realm`);
 see the platform
 [Identity Trust Modes](https://docs.kamiwaza.ai/federation/identity-trust-modes)
-guide for the trust model. The `receiver_realm` value and the SDK's guest helper
-symbols are reserved for a future receiver-owned identity workflow. The 1.2.0
-SDK still accepts `realm_scope` for forward compatibility, but Core 1.2.0
-ignores that unknown request field: it does not select `receiver_realm` or
-return `identity_mode_unsupported`.
+guide for the trust model. Supplying `realm_scope="per_federation"` selects the
+receiver-owned `receiver_realm` workflow; the receiver provisions a dedicated
+realm and mints each guest's durable offline credential.
 
 ## Methods
 
@@ -28,8 +26,9 @@ Create a federation pairing. `role` is the side being set up (`initiator` or
 
 - supplying `shared_issuer_url` (with `shared_jwks_url` / `shared_ca_pem`) creates
   a **receiver-controlled `shared_idp`** federation;
-- do not supply `realm_scope` on Kamiwaza 1.2.0. Core ignores it, so it is not a
-  mode selector or a fail-closed security signal;
+- supplying `realm_scope="per_federation"` creates a **receiver-owned
+  `receiver_realm`** federation. The receiver must be paired with the same
+  `realm_scope` value on the initiator row;
 - without `shared_issuer_url`, Core follows the legacy source-trusted
   **`peer_kc`** path. It creates the federation only when
   `ALLOW_UNTRUSTED_FEDERATION` permits that path; otherwise it fails with
@@ -66,7 +65,10 @@ objects; invalid IDs raise `ValueError` before any request is made.
 
 ```python
 receiver = client.federations.by_id(receiver_federation_id)
-receiver.users.add(external_id="carol@src-uuid")
+# `users.add` is for peer_kc/shared_idp allowlists.  A receiver_realm
+# federation mints the identity through the guest endpoint instead:
+guest = receiver.guests.enroll(external_id="carol@src-uuid")
+# Persist guest.offline_token out of band; it is returned once.
 ```
 
 For a mesh probe, prefer the name-keyed proxy below. If the caller already has
@@ -104,48 +106,86 @@ Disconnect (unpair) the federation (`POST /cluster/federations/{id}/disconnect`)
 Allowlist a brokered remote user on this (receiver) cluster
 (`POST /cluster/federations/{id}/users`). `external_id` identifies the remote
 subject; `initial_tuples` seeds the ReBAC grants the user should have on this
-cluster.
+cluster. This operation is valid for `peer_kc` and `shared_idp`; Core rejects it
+on the receiver-owned side of a `receiver_realm` federation because that mode
+uses receiver-minted guest identities.
 
-### Reserved guest helpers
+### Guest helpers
 
-`FederationProxy.guests.enroll(...)` and `.revoke(...)` are forward-looking SDK
-symbols for the unavailable `receiver_realm` workflow. They are not part of the
-supported Kamiwaza 1.2.0 server contract and must not be used against a 1.2.0
-cluster.
+`FederationProxy.guests.enroll(...)` mints a receiver-owned guest credential and
+returns its `offline_token` exactly once. Persist that opaque value out of band;
+the SDK and trace harness never decode or log it. Use
+`FederationProxy.guests.revoke(external_id)` to disable the guest at the
+receiver; subsequent mesh calls fail closed.
 
 ## Trust lifecycle (`client.cluster`)
 
 Rotating the pre-shared key, replacing a rotated peer CA, and undoing a
 disconnect are per-federation-id operations and hang off `client.cluster`
-(`ClusterAPI`), not the name-keyed `FederationProxy`. All four are admin +
-native-realm.
+(`ClusterAPI`), not the name-keyed `FederationProxy`. These operations are
+admin + native-realm. The peer-proven rotation protocol requires a Core build
+containing ENG-10082; it is not part of the Core 1.2.0 contract described above.
 
 ### `client.cluster.rotate_preshared_key(federation_id) -> dict`
 
-Open a rotation window (`POST /cluster/federations/{id}/rotate-preshared-key`).
-**Additive** — the outgoing key keeps verifying until the window is closed, so
-this cannot sever the mesh and takes no acknowledgement. The plaintext key comes
-back on `preshared_key` and is **not retrievable afterwards**; carry it to the
-peer's operator out of band. Refuses `rotation_already_in_flight` (409) while a
-window is open — opening twice would overwrite the outgoing key and strand a
-peer still signing with the original.
+Stage K2 while K1 remains the active signer
+(`POST /cluster/federations/{id}/rotate-preshared-key`). The response returns
+the plaintext K2 exactly once, with its `fingerprint` and `generation`. Carry K2
+and the fingerprint to the peer operator through an approved out-of-band secret
+channel; never log either key. If that one-time response is lost, inspect status
+and abort the identified STAGED generation before retrying.
 
-### `client.cluster.complete_key_rotation(federation_id, *, acknowledged) -> dict`
+### `client.cluster.get_key_rotation_status(federation_id) -> dict`
 
-Close the window, retiring the outgoing key
-(`POST /cluster/federations/{id}/complete-key-rotation`). **Subtractive** — a
-peer still signing with the old key stops working the moment this returns.
-`acknowledged` must be `True` and is not a check: the cluster cannot observe
-whether the peer adopted the new key, which is exactly why the operator has to
-assert it. Refuses `rotation_acknowledgement_required` (400) and
-`no_rotation_in_flight` (409).
+Read the current phase, generation, and active/alternate fingerprints without
+returning key material
+(`GET /cluster/federations/{id}/key-rotation-status`). This is the recovery
+surface for lost operator responses.
+
+### `client.cluster.adopt_preshared_key_rotation(federation_id, *, preshared_key, fingerprint) -> dict`
+
+Stage the initiator's exact K2 on the peer without changing its active signer
+(`POST /cluster/federations/{id}/adopt-preshared-key-rotation`). Repeating the
+same adoption is idempotent; a different open generation is refused rather than
+overwritten.
+
+### `client.cluster.activate_key_rotation(federation_id, *, fingerprint) -> dict`
+
+Ask Core to activate K2
+(`POST /cluster/federations/{id}/activate-key-rotation`). Core first proves to
+the peer, using K2, that both sides hold the same staged key; only then does it
+switch the local signer. A caller acknowledgement is not accepted as evidence.
+
+### `client.cluster.complete_key_rotation(federation_id, *, fingerprint) -> dict`
+
+Retire K1
+(`POST /cluster/federations/{id}/complete-key-rotation`). Core closes the peer's
+K1 acceptance window first using a current-K2 proof, then closes the local
+window. Repeating the same completion is idempotent.
+
+### `client.cluster.abort_key_rotation(federation_id, *, fingerprint, generation) -> dict`
+
+Discard exactly one STAGED K2 generation without changing K1
+(`POST /cluster/federations/{id}/abort-key-rotation`). Abort is recovery for an
+unactivated generation only; it is not a rollback after activation.
 
 ```python
-fed_id = client.federations.get(...).id
-opened = client.cluster.rotate_preshared_key(fed_id)
-print(opened["preshared_key"])                 # save now — shown once
-# ... deliver it to the peer's operator, and only then:
-client.cluster.complete_key_rotation(fed_id, acknowledged=True)
+initiator_id = initiator.federations.get(...).id
+receiver_id = receiver.federations.get(...).id
+staged = initiator.cluster.rotate_preshared_key(initiator_id)
+
+# Transfer these two values through the approved out-of-band secret channel.
+receiver.cluster.adopt_preshared_key_rotation(
+    receiver_id,
+    preshared_key=staged["preshared_key"],
+    fingerprint=staged["fingerprint"],
+)
+initiator.cluster.activate_key_rotation(
+    initiator_id, fingerprint=staged["fingerprint"]
+)
+initiator.cluster.complete_key_rotation(
+    initiator_id, fingerprint=staged["fingerprint"]
+)
 ```
 
 ### `client.cluster.refresh_peer_ca(federation_id, *, ca_pem, acknowledged_fingerprint) -> dict`
@@ -168,13 +208,12 @@ local disconnect, where the realm, key and truststore entry were all preserved;
 re-pairing is the general flow. Returns the count of users `restored` plus the
 best-effort Keycloak outcomes.
 
-### Reserved source-side credential resolution
+### Receiver-realm credential resolution
 
-The SDK retains forward-looking configuration symbols for a future
-`receiver_realm` credential. Kamiwaza 1.2.0 does not issue that credential or
-accept `receiver_realm` federations, so do not configure these symbols for a
-1.2.0 deployment. `peer_kc` and `shared_idp` calls continue to use their
-documented identity paths without this header.
+The source side carries the receiver-issued offline credential through the
+federation-credential header. It is intentionally opaque: do not decode it,
+place it in logs, or include it in diagnostic trace files. `peer_kc` and
+`shared_idp` calls continue to use their documented identity paths.
 
 ## The `kamiwaza-federation` CLI
 

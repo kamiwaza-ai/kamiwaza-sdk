@@ -1,7 +1,8 @@
 """ENG-10050: Offline contract for the required shared-IDP smoke edge."""
 
-from pathlib import Path
+import ast
 import stat
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
@@ -106,6 +107,22 @@ def test_required_edge_collection_guard_requires_all_nine_cases() -> None:
 
     with pytest.raises(pytest.UsageError, match="missing contract cases"):
         required_edge.assert_required_cases(items[:-1])
+
+
+def test_required_edge_operator_guidance_names_all_nine_cases() -> None:
+    options = (PROJECT_ROOT / "_kamiwaza_pytest_options.py").read_text()
+    matrix = (
+        PROJECT_ROOT / "tests/integration/federation_1_2_uat_coverage_matrix.md"
+    ).read_text()
+
+    option_literals = {
+        node.value
+        for node in ast.walk(ast.parse(options))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert any("all nine contract cases" in value for value in option_literals)
+    assert "nine-case shared-IDP edge" in matrix
+    assert "six-case shared-IDP edge" not in matrix
 
 
 def test_required_edge_collection_guard_inspects_live_parametrization(

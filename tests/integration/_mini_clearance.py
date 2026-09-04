@@ -175,7 +175,10 @@ def grant_dataset_viewer(kz: Any, username: str, dataset_urn: str) -> None:
     """Grant the subject a viewer ReBAC tuple on the dataset (else retrieval 404s
     at the seam before the gate runs)."""
     kz.subjects.grants(username).create(
-        object_namespace="dataset", object_id=dataset_urn, relation="viewer"
+        object_namespace="dataset",
+        object_id=dataset_urn,
+        relation="viewer",
+        attested=True,
     )
 
 
