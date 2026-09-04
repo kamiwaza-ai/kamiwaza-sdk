@@ -20,7 +20,26 @@ def test_gate_package_client_uses_canonical_live_session_fixture() -> None:
     """Gate-package tests must not require a second raw-token auth channel."""
     session_client = object()
 
-    assert lifecycle.kz.__wrapped__(session_client) is session_client
+    class Request:
+        def getfixturevalue(self, name: str) -> object:
+            assert name == "live_kamiwaza_session_client"
+            return session_client
+
+    assert lifecycle.kz.__wrapped__(Request()) is session_client
+
+
+def test_gate_package_client_fails_when_canonical_auth_would_skip() -> None:
+    """A qualified gate-package lane must fail closed on unusable auth."""
+
+    class Request:
+        def getfixturevalue(self, name: str) -> object:
+            assert name == "live_kamiwaza_session_client"
+            pytest.skip("Unable to build authenticated live client")
+
+    with pytest.raises(
+        pytest.fail.Exception, match="requires authenticated live access"
+    ):
+        lifecycle.kz.__wrapped__(Request())
 
 
 def test_live_workflow_uses_canonical_api_key_channel() -> None:
@@ -28,6 +47,7 @@ def test_live_workflow_uses_canonical_api_key_channel() -> None:
     workflow = _LIVE_WORKFLOW.read_text(encoding="utf-8")
 
     assert "KAMIWAZA_API_KEY: ${{ secrets.KAMIWAZA_API_KEY }}" in workflow
+    assert 'KAMIWAZA_VERIFY_SSL: "true"' in workflow
     assert "KAMIWAZA_ADMIN_TOKEN:" not in workflow
 
 

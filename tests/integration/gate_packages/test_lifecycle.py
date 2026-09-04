@@ -163,9 +163,22 @@ def _env(name: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def kz(live_kamiwaza_session_client):
-    """Reuse the live suite's session-scoped authenticated client."""
-    return live_kamiwaza_session_client
+def kz(request: pytest.FixtureRequest):
+    """Require the live suite's session-scoped authenticated client.
+
+    The shared live-auth fixtures are optional for the broad SDK suite and
+    therefore skip when credentials cannot produce a working session.  This
+    gate-package module is a qualified lane, so convert that optional skip to
+    a hard failure instead of allowing all eight checks to disappear green.
+    """
+    try:
+        return request.getfixturevalue("live_kamiwaza_session_client")
+    except pytest.skip.Exception as exc:
+        pytest.fail(
+            "Gate-package qualification requires authenticated live access; "
+            f"canonical live authentication skipped: {exc}",
+            pytrace=False,
+        )
 
 
 @pytest.fixture(scope="module")
