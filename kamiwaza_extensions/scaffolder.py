@@ -315,28 +315,45 @@ class Scaffolder:
         for src in sorted(template_dir.rglob("*")):
             if src.is_dir():
                 continue
+            self._render_template_file(src, template_dir, target, context)
 
-            rel = src.relative_to(template_dir)
-            dest = target / substitute(str(rel), context)
+        self._normalize_directory_modes(target)
 
-            dest.parent.mkdir(parents=True, exist_ok=True)
+    def _render_template_file(
+        self, src: Path, template_dir: Path, target: Path, context: Dict[str, str]
+    ) -> None:
+        """Render one template file into the target and pin its shareable mode.
 
-            # Render templated text files and preserve binary assets byte-for-byte.
-            try:
-                content = src.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                dest.write_bytes(src.read_bytes())
-                self._normalize_mode(src, dest)
-                continue
+        Templated text files get variable substitution; binary assets are
+        preserved byte-for-byte. Either way the file's mode is normalized so
+        the output is umask-independent (see ``_normalize_mode``).
+        """
+        rel = src.relative_to(template_dir)
+        dest = target / substitute(str(rel), context)
 
-            dest.write_text(substitute(content, context), encoding="utf-8")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        # Render templated text files and preserve binary assets byte-for-byte.
+        try:
+            content = src.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            dest.write_bytes(src.read_bytes())
             self._normalize_mode(src, dest)
+            return
 
-        # mkdir() is umask-masked too: on umask 077 hosts every scaffolded
-        # directory lands 0700, ``COPY`` preserves it, and the non-root
-        # Next.js runtime cannot even scandir the image's ``public`` dir
-        # (proven live). Normalize the directory tree so scaffold output
-        # matches a default-umask host byte-for-byte.
+        dest.write_text(substitute(content, context), encoding="utf-8")
+        self._normalize_mode(src, dest)
+
+    @staticmethod
+    def _normalize_directory_modes(target: Path) -> None:
+        """Pin the scaffolded directory tree to 0755 regardless of host umask.
+
+        ``mkdir()`` is umask-masked too: on umask 077 hosts every scaffolded
+        directory lands 0700, ``COPY`` preserves it, and the non-root
+        Next.js runtime cannot even scandir the image's ``public`` dir
+        (proven live). Normalize the directory tree so scaffold output
+        matches a default-umask host byte-for-byte.
+        """
         for directory in sorted(target.rglob("*"), reverse=True):
             if directory.is_dir():
                 directory.chmod(0o755)
