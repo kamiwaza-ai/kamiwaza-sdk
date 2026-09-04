@@ -169,7 +169,7 @@ _TS_OVERLAY = (
     "COPY --from=sdk kamiwaza-ai-extensions-lib /tmp/kamiwaza-ai-extensions-lib\n"
     "RUN TARBALL=$(cd /tmp/kamiwaza-ai-extensions-lib"
     " && npm pack --ignore-scripts --pack-destination /tmp 2>/dev/null | tail -1)"
-    ' && cd /app && npm install --ignore-scripts "/tmp/$TARBALL"'
+    ' && cd /app && npm install --ignore-scripts --no-audit --no-fund "/tmp/$TARBALL"'
     " && rm -rf /tmp/kamiwaza-ai-extensions-lib*\n"
     "{restore_user_block}"
 )
