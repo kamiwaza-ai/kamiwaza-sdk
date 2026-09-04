@@ -268,7 +268,7 @@ def _pat_jti(pat_token: str) -> str:
 def test_cli_login_and_pat_flow(
     live_server_available: str,
     live_username: str,
-    live_password: str,
+    live_password_required: str,
     tmp_path: Path,
 ) -> None:
     """CLI login + PAT creation/caching (no model deployment required)."""
@@ -283,7 +283,7 @@ def test_cli_login_and_pat_flow(
         base_args,
         env,
         live_username,
-        live_password,
+        live_password_required,
         token_path,
         pat_prefix="cli-m1",
         pat_scope="openid",
@@ -295,7 +295,7 @@ def test_cli_login_and_pat_flow(
 def test_cli_serve_deploy(
     live_server_available: str,
     live_username: str,
-    live_password: str,
+    live_password_required: str,
     client_factory,
     ensure_deployable_model_ready,
     deployable_model_target: InferenceTarget,
@@ -318,7 +318,7 @@ def test_cli_serve_deploy(
         base_args,
         env,
         live_username,
-        live_password,
+        live_password_required,
         token_path,
         pat_prefix="cli-deploy",
         pat_scope="admin",

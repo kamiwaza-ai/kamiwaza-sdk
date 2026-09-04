@@ -898,8 +898,17 @@ def _resolve_kz_login_password() -> str | None:
     ]
     kamiwaza_root = os.environ.get("KAMIWAZA_ROOT")
     if kamiwaza_root:
-        candidates.append(
-            Path(kamiwaza_root).expanduser() / "deploy" / "scripts" / "kz-login"
+        # KAMIWAZA_ROOT can be either the parent of the deploy checkout
+        # (standard kz layout: ~/code/kz with KAMIWAZA_ROOT=~/code/kz) or the
+        # deploy repo root itself (KAMIWAZA_ROOT=.../deploy, as documented in
+        # the harness .env.local). Cover both shapes instead of silently
+        # failing password resolution on the second one.
+        root = Path(kamiwaza_root).expanduser()
+        candidates.extend(
+            [
+                root / "deploy" / "scripts" / "kz-login",
+                root / "scripts" / "kz-login",
+            ]
         )
 
     for script in candidates:
@@ -2154,6 +2163,52 @@ def live_write_client(
 def live_password(resolved_live_password: str) -> str:
     """Override base fixture so integration tests get resolved/fallback password."""
     return resolved_live_password
+
+
+def _require_resolved_live_password(resolved: str, error: str | None) -> str:
+    """Password gate for tests that consume the password itself.
+
+    ``resolved_live_password`` deliberately yields ``""`` for PAT-only
+    sessions (fixtures that only need *some* credential keep working via the
+    API key). But tests that pass the password into a real password grant
+    cannot tolerate that: an empty value reaches the wire as ``password=``
+    and the platform rejects the request with 422 ``Field required`` — a
+    confusing failure that hides the real cause (unresolved password auth;
+    proven live in reset-2). Consumers that already guard on
+    ``bool(live_password)`` (peer/conditional flows) must keep using
+    ``live_password``.
+    """
+    if resolved.strip():
+        return resolved
+    pytest.skip(
+        "Password-required live tests need resolvable password auth, but no "
+        "password could be resolved (kz-login fallback and configured "
+        "password both unavailable). A configured API key/PAT alone is not "
+        f"sufficient for these tests. Details: {error}"
+    )
+
+
+@pytest.fixture(scope="session")
+def live_password_required(
+    live_server_available: str,
+    live_username: str,
+    resolved_live_password: str,
+    pytestconfig: pytest.Config,
+) -> str:
+    """Password auth for tests that consume the password itself (CLI login,
+    password grants). Skips instead of yielding an empty string.
+    """
+    if resolved_live_password.strip():
+        return resolved_live_password
+
+    # Cached resolution: no extra grants — this returns the recorded redacted
+    # error from the session's single resolution attempt.
+    _, error = _resolve_live_password_once(
+        live_server_available=live_server_available,
+        live_username=live_username,
+        configured_password=str(pytestconfig.getoption("live_password")),
+    )
+    return _require_resolved_live_password(resolved_live_password, error)
 
 
 def _target_files_for_quantization(model: Any, quantization: str) -> list[Any]:

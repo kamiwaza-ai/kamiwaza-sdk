@@ -17,10 +17,10 @@ def test_password_authentication_allows_whoami(
     client_factory,
     live_server_available: str,
     live_username: str,
-    live_password: str,
+    live_password_required: str,
 ):
     client: KamiwazaClient = client_factory(base_url=live_server_available)
-    client.authenticator = UserPasswordAuthenticator(live_username, live_password, client.auth)
+    client.authenticator = UserPasswordAuthenticator(live_username, live_password_required, client.auth)
 
     whoami = client.get("/whoami")
     assert whoami is not None
@@ -32,10 +32,10 @@ def test_pat_lifecycle_supports_api_key_auth(
     client_factory,
     live_server_available: str,
     live_username: str,
-    live_password: str,
+    live_password_required: str,
 ):
     admin_client: KamiwazaClient = client_factory(base_url=live_server_available)
-    admin_client.authenticator = UserPasswordAuthenticator(live_username, live_password, admin_client.auth)
+    admin_client.authenticator = UserPasswordAuthenticator(live_username, live_password_required, admin_client.auth)
 
     baseline_user = admin_client.auth.get_current_user()
     expected_sub = baseline_user.sub
