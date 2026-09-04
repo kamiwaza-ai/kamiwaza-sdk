@@ -8,13 +8,15 @@ AC11).
 Skipped by default (marker: ``integration``). Requires:
 
 - ``KAMIWAZA_BASE_URL`` (e.g., ``https://kamiwaza.test/api``)
-- ``KAMIWAZA_ADMIN_TOKEN`` (admin Keycloak token)
+- Canonical live-suite authentication (for example ``KAMIWAZA_USERNAME`` and
+  ``KAMIWAZA_PASSWORD``, or ``KAMIWAZA_API_KEY``)
 - A live cluster with the WS-M5 chart applied (gate-packages PVC +
   bind-mounts + GatePackageAPI registered + cluster_gate_packages
   table)
-- Set ``M5_TEST_KUBECTL`` to the kubectl command for the target cluster. The
-  integration session builds and publishes the exact SDK-owned ``acme_gates``
-  1.0.0, 1.0.1, and 1.1.0 wheels plus the simple index after rollout.
+- The exact SDK-owned ``acme_gates`` 1.0.0, 1.0.1, and 1.1.0 wheels plus the
+  simple index provisioned after rollout. Set ``M5_TEST_KUBECTL`` to let the
+  integration session provision them, or invoke ``_gate_fixture.py provision``
+  beforehand and forward its emitted environment (the Kajiya smoke path).
 - ``M5_TEST_WHEEL_DIR`` and ``M5_TEST_INDEX_URL`` set by that provisioner
   (the live rig uses a receiver-local ``file://`` index)
 - ``M5_TEST_NETWORK_POLICY_REQUIRED=1`` to select the required security lane;
@@ -161,28 +163,9 @@ def _env(name: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def kz():
-    """Authenticated KamiwazaClient against the live cluster.
-
-    TLS verification defaults to on. For dev clusters with self-signed certs,
-    either install the CA into the local trust store, or set
-    ``KAMIWAZA_VERIFY_SSL=0`` (opt-out, logs a warning).
-    """
-    base_url = _env("KAMIWAZA_BASE_URL")
-    token = _env("KAMIWAZA_ADMIN_TOKEN")
-    verify_flag = os.getenv("KAMIWAZA_VERIFY_SSL", "1").strip().lower()
-    verify_ssl = verify_flag not in {"0", "false", "no", "off"}
-    if not verify_ssl:
-        # Use logger.warning so the message surfaces in pytest's captured
-        # output reliably; UserWarning is often hidden unless -W error.
-        logger.warning(
-            "TLS verification disabled via KAMIWAZA_VERIFY_SSL=0; only use this "
-            "for dev clusters with self-signed certs. Production envs should "
-            "install the CA into the trust store or use a properly-issued cert."
-        )
-    from kamiwaza_sdk import KamiwazaClient
-
-    return KamiwazaClient(base_url=base_url, api_key=token, verify=verify_ssl)
+def kz(live_kamiwaza_session_client):
+    """Reuse the live suite's session-scoped authenticated client."""
+    return live_kamiwaza_session_client
 
 
 @pytest.fixture(scope="module")

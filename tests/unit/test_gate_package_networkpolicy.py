@@ -11,6 +11,13 @@ from tests.integration.gate_packages import test_lifecycle as lifecycle
 pytestmark = pytest.mark.unit
 
 
+def test_gate_package_client_uses_canonical_live_session_fixture() -> None:
+    """Gate-package tests must not require a second raw-token auth channel."""
+    session_client = object()
+
+    assert lifecycle.kz.__wrapped__(session_client) is session_client
+
+
 def _completed(
     stdout: str = "curl_rc=0 http_code=200\n",
 ) -> subprocess.CompletedProcess:
