@@ -3,12 +3,73 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from tests.integration.gate_packages import test_lifecycle as lifecycle
 
 pytestmark = pytest.mark.unit
+_LIVE_WORKFLOW = (
+    Path(__file__).resolve().parents[2]
+    / ".github/workflows/extension-contract-live.yml"
+)
+
+
+def test_gate_package_client_uses_canonical_live_session_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gate-package tests must not require a second raw-token auth channel."""
+    monkeypatch.setattr(lifecycle, "_VERIFY_SSL_POLICY_AT_COLLECTION", "true")
+    session_client = object()
+
+    class Request:
+        def getfixturevalue(self, name: str) -> object:
+            assert name == "live_kamiwaza_session_client"
+            return session_client
+
+    assert lifecycle.kz.__wrapped__(Request()) is session_client
+
+
+def test_gate_package_client_fails_when_canonical_auth_would_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A qualified gate-package lane must fail closed on unusable auth."""
+    monkeypatch.setattr(lifecycle, "_VERIFY_SSL_POLICY_AT_COLLECTION", "true")
+
+    class Request:
+        def getfixturevalue(self, name: str) -> object:
+            assert name == "live_kamiwaza_session_client"
+            pytest.skip("Unable to build authenticated live client")
+
+    with pytest.raises(
+        pytest.fail.Exception, match="requires authenticated live access"
+    ):
+        lifecycle.kz.__wrapped__(Request())
+
+
+def test_gate_package_client_requires_explicit_tls_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fixture-side default must not masquerade as caller TLS intent."""
+    monkeypatch.setattr(lifecycle, "_VERIFY_SSL_POLICY_AT_COLLECTION", None)
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+
+    class Request:
+        def getfixturevalue(self, name: str) -> object:
+            pytest.fail(f"unexpected fixture lookup: {name}")
+
+    with pytest.raises(pytest.fail.Exception, match="explicit KAMIWAZA_VERIFY_SSL"):
+        lifecycle.kz.__wrapped__(Request())
+
+
+def test_live_workflow_uses_canonical_api_key_channel() -> None:
+    """The qualified live lane must authenticate the canonical fixture."""
+    workflow = _LIVE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "KAMIWAZA_API_KEY: ${{ secrets.KAMIWAZA_API_KEY }}" in workflow
+    assert 'KAMIWAZA_VERIFY_SSL: "true"' in workflow
+    assert "KAMIWAZA_ADMIN_TOKEN:" not in workflow
 
 
 def _completed(

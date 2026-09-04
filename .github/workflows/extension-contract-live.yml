@@ -139,7 +139,11 @@ jobs:
         if: steps.probe.outputs.available == 'true'
         env:
           KAMIWAZA_BASE_URL: ${{ secrets.KAMIWAZA_BASE_URL }}
-          KAMIWAZA_ADMIN_TOKEN: ${{ secrets.KAMIWAZA_API_KEY }}
+          KAMIWAZA_API_KEY: ${{ secrets.KAMIWAZA_API_KEY }}
+          # This externally hosted qualification target must retain the
+          # gate-package lane's fail-closed TLS default. Kajiya's ephemeral
+          # self-signed clusters opt out explicitly in their own harness.
+          KAMIWAZA_VERIFY_SSL: "true"
         run: |
           set -euo pipefail
           # The provisioner creates all three exact wheel versions, publishes
