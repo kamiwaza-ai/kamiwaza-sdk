@@ -862,20 +862,39 @@ def apply_service_ref_rewrites(
             continue
         env = svc.get("environment")
         if isinstance(env, dict):
-            for key, rule in per_key.items():
-                if key in env and str(env[key]) == rule["from"]:
-                    env[key] = rule["to"]
+            _rewrite_env_mapping(env, per_key)
         elif isinstance(env, list):
-            for idx, entry in enumerate(env):
-                if isinstance(entry, str) and "=" in entry:
-                    key, _, value = entry.partition("=")
-                    rule = per_key.get(key)
-                    if rule is not None and value == rule["from"]:
-                        env[idx] = f"{key}={rule['to']}"
-                elif isinstance(entry, dict) and entry.get("name") in per_key:
-                    rule = per_key[entry["name"]]
-                    if str(entry.get("value")) == rule["from"]:
-                        entry["value"] = rule["to"]
+            _rewrite_env_list(env, per_key)
+
+
+def _rewrite_env_mapping(
+    env: Dict[str, Any], per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Apply EXACT rewrites to a mapping-shaped ``environment`` in place."""
+    for key, rule in per_key.items():
+        if key in env and str(env[key]) == rule["from"]:
+            env[key] = rule["to"]
+
+
+def _rewrite_env_list(env: List[Any], per_key: Dict[str, Dict[str, str]]) -> None:
+    """Apply EXACT rewrites to a list-shaped ``environment`` in place."""
+    for idx, entry in enumerate(env):
+        _rewrite_env_list_entry(env, idx, entry, per_key)
+
+
+def _rewrite_env_list_entry(
+    env: List[Any], idx: int, entry: Any, per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Apply one list entry's rewrite: ``KEY=from`` string or name/value dict."""
+    if isinstance(entry, str) and "=" in entry:
+        key, _, value = entry.partition("=")
+        rule = per_key.get(key)
+        if rule is not None and value == rule["from"]:
+            env[idx] = f"{key}={rule['to']}"
+    elif isinstance(entry, dict) and entry.get("name") in per_key:
+        rule = per_key[entry["name"]]
+        if str(entry.get("value")) == rule["from"]:
+            entry["value"] = rule["to"]
 
 
 def _iter_env_entries(env: Any) -> List[Tuple[str, str]]:
