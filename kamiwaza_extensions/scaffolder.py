@@ -85,10 +85,10 @@ def _runtime_lib_pins() -> tuple[str, str]:
     M4: fallback ranges aligned to the current bundle so a corrupt-bundle
     fallback doesn't render stricter pins than ``kz-ext doctor`` enforces.
     """
-    # Floor at 0.4.4 so the corrupt-bundle path still resolves to a lib
-    # with the safe, no-redirect ``platform_request`` helper documented by
-    # the app starter. Older 0.4.x releases lack that platform-call guardrail.
-    fallback_py = ">=0.4.4,<0.5"
+    # Floor at 0.4.5 so the corrupt-bundle path still resolves to a lib
+    # with both the safe ``platform_request`` helper and the patched
+    # Starlette dependency floor.
+    fallback_py = ">=0.4.5,<0.5"
     # npm semver uses whitespace (not comma) for AND between bounds. Rendered
     # directly into a scaffolded ``frontend/package.json``; a comma here makes
     # ``npm install`` fail to parse the spec (round-5 ultrareview C1).

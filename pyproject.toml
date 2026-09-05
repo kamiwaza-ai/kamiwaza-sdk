@@ -22,17 +22,30 @@ classifiers = [
 ]
 dependencies = [
     "requests",
+    # Transitive dep of requests; floor pinned to enforce the GHSA-mf9v-mfxr-j63j /
+    # GHSA-qccp-gfcp-xxvc fix in published package metadata, not just uv.lock
+    # (a lockfile-only bump doesn't reach consumers who install the wheel directly).
+    "urllib3>=2.7.0",
     "pydantic[email]>=2.11",
     "httpx",
     "filelock>=3.20",
     "openai>=1.0",
     "huggingface_hub>=0.23",
     "typer>=0.9.0",
+    # click is pulled in transitively via typer; pin a security floor so the
+    # fix for PYSEC-2026-2132 (command injection in click.edit()) reaches SDK
+    # consumers (ENG-10102, 1.2.1 vuln remediation).
+    "click>=8.3.3",
     "pyyaml>=6.0",
     "packaging>=23.0",
     "fastapi>=0.100.0",
+    # Security floor for CVE-2026-54283 / GHSA-wqp7-x3pw-xc5r.
+    "starlette>=1.3.1,<2",
     "rich>=13.0",
-    "kamiwaza-extensions-lib>=0.4.4,<0.5",
+    # Security floor for the ENG-11024 advisory set. Keep this in published
+    # metadata so SDK consumers cannot resolve an older transitive wheel.
+    "cryptography>=50.0.1,<51.0.0",
+    "kamiwaza-extensions-lib>=0.4.5,<0.5",
 ]
 
 [project.optional-dependencies]
@@ -121,7 +134,7 @@ dev = [
     "numpy>=1.26",
     "pandas>=2.2",
     "pyarrow>=17.0",
-    "black>=23.0",
+    "black>=26.3.1",  # GHSA-3936-cmfr-pm3m / PYSEC-2026-2120 / PYSEC-2026-2121 (ENG-10102, 1.2.1 vuln remediation)
     "isort>=5.12",
     "ruff>=0.1",
     "mypy>=1.0",
