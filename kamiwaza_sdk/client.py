@@ -144,23 +144,10 @@ _RETRYABLE_503_CODES = frozenset(
         # Authority fence briefly held by another operation; the workroom is
         # untouched in this state. (ENG-10506)
         "workroom_authority_unavailable",
-        # NOT "the request never ran" -- it did. auto_provisioner._provision()
-        # reaps stranded seed rows and calls serving_service.deploy_model()
-        # *before* raising this on the on_demand path, and
-        # _handle_provision_failure raises it after a deploy attempt too. What
-        # makes the replay safe is that provisioning is gated and convergent:
-        # the provisioner holds _PROVISIONER_LOCK and consults _LAST_ATTEMPT,
-        # so a re-issued call inside the warmup window observes the in-flight
-        # attempt instead of starting a second one, and the freshly created
-        # row is non-terminal so the reaper will not take it.
-        #
-        # Caveat worth knowing: those gates are module-level process-local
-        # globals, so the window is shared within a core replica, not across
-        # them. A retry landing on a replica whose _LAST_ATTEMPT is unset can
-        # re-enter _provision(); the deploy pre-check is then the only thing
-        # standing between that and a duplicate deployment. Not demonstrated,
-        # but it is where this admission's safety actually rests. (ENG-10527)
-        "embedding_deploying",
+        # NOT "embedding_deploying": core starts deploy_model() before that
+        # 503, while its in-flight gate is process-local. A replay routed to a
+        # different replica is therefore not proven duplicate-safe. Keep it
+        # excluded until Core has a shared convergence gate. (ENG-10527)
         # Transport failure reaching the embedding runtime. Raised from
         # httpx.RequestError, which includes read timeouts, so the backend may
         # in principle have seen the request. Every route that can raise it is
@@ -885,13 +872,11 @@ class KamiwazaClient:
         retry_after = _retry_after_seconds(response)
         if retry_after is None:
             return False
-        if retry_after > _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS:
-            # Core asked for longer than we are willing to wait in total, so
-            # any retry we make is premature by construction and lands inside
-            # the window it was told to sit out. auto_provisioner's
-            # _BACKOFF_SCHEDULE reaches 60/300/900; clamping those to 30 buys
-            # exactly one guaranteed-to-fail replay and ~31.5s of latency on a
-            # call that used to fail fast. Surface the hint instead.
+        if retry_after > _RETRYABLE_503_MAX_SLEEP_SECONDS:
+            # Never shorten the server's declared unavailable window to fit
+            # our per-attempt ceiling. Core's provisioner reaches 60/300/900;
+            # clamping those to 30 would guarantee a premature replay. Surface
+            # the original 503 instead.
             return False
         if not _request_body_is_replayable(kwargs):
             return False

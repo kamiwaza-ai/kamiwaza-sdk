@@ -304,6 +304,17 @@ _COMPOSE_UNBRACED_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 _COMPOSE_BRACE_RE = re.compile(r"[{}]")
 _MAX_COMPOSE_SUBSTITUTION_DEPTH = 100
 
+# General Compose interpolation used by process fields. The release branch's
+# legacy environment-only resolver above deliberately remains unchanged; SDK
+# #329 needs the full operator set for entrypoint/command values.
+_COMPOSE_SUB_RE = re.compile(
+    r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?+])(.*))?\}$",
+    re.DOTALL,
+)
+_COMPOSE_UNBRACED_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+_COMPOSE_BRACE_RE = re.compile(r"[{}]")
+_MAX_COMPOSE_SUBSTITUTION_DEPTH = 100
+
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
 # ``env`` entry in the deployment would shadow it). Compose dev defaults

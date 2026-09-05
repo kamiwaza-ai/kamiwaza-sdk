@@ -21,7 +21,10 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    # Direct security floors keep loose installers from resolving vulnerable transitives.
+    # Direct security floors keep loose installers from resolving vulnerable
+    # transitives. urllib3 enforces the GHSA-mf9v-mfxr-j63j / GHSA-qccp-gfcp-xxvc
+    # fix in published package metadata, not just uv.lock (a lockfile-only bump
+    # doesn't reach consumers who install the wheel directly).
     "requests>=2.33.0,<3.0.0",
     "urllib3>=2.7.0,<3.0.0",
     "idna>=3.15,<4.0.0",
@@ -31,13 +34,20 @@ dependencies = [
     "openai>=1.0",
     "huggingface_hub>=0.23",
     "typer>=0.24.1,<1.0.0",
+    # click is pulled in transitively via typer; pin a security floor so the
+    # fix for PYSEC-2026-2132 (command injection in click.edit()) reaches SDK
+    # consumers (ENG-10102, 1.2.1 vuln remediation).
     "click>=8.3.3,<9.0.0",
     "pyyaml>=6.0",
     "packaging>=23.0",
     "fastapi>=0.136.3,<1.0.0",
+    # Security floor for CVE-2026-54283 / GHSA-wqp7-x3pw-xc5r.
     "starlette>=1.3.1,<2.0.0",
     "rich>=13.0",
     "pygments>=2.20.0,<3.0.0",
+    # Security floor for the ENG-11024 advisory set. Keep this in published
+    # metadata so SDK consumers cannot resolve an older transitive wheel.
+    "cryptography>=50.0.1,<51.0.0",
     "kamiwaza-extensions-lib>=0.5,<0.6",
     "PyJWT[crypto]>=2.8",
 ]
@@ -134,8 +144,10 @@ dev = [
     "numpy>=1.26",
     "pandas>=2.2",
     "pyarrow>=17.0",
-    "black>=26.5.1",
-    "cryptography>=48.0.1,<49.0.0",
+    "black>=26.5.1",  # GHSA-3936-cmfr-pm3m / PYSEC-2026-2120 / PYSEC-2026-2121 (ENG-10102, 1.2.1 vuln remediation)
+    # Kept in step with the [project.dependencies] floor (ENG-11024). A
+    # dev-group pin below that floor would make the workspace unresolvable.
+    "cryptography>=50.0.1,<51.0.0",
     "isort>=5.12",
     "ruff>=0.1",
     "mypy>=1.0",
