@@ -63,6 +63,7 @@ class ReadinessDiagnosticCode(str, Enum):
     RESOURCE_REGISTRATION_UNAVAILABLE = "resource_registration_unavailable"
     V1_FAMILY_MISSING = "v1_family_missing"
     ROLLOUT_DISABLED = "rollout_disabled"
+    PLATFORM_OPERATION_UNAVAILABLE = "platform_operation_unavailable"
 
 
 class ComponentReadiness(DelegatedResponse):
@@ -78,6 +79,12 @@ class CapabilityDiscoveryDocument(DelegatedResponse):
     resource_registrations: Mapping[str, ComponentReadiness]
     capabilities: tuple[str, ...]
     components: Mapping[str, ComponentReadiness]
+    #: Platform operations the attested caller's roles hold, as Core observed
+    #: them. Absent on a Core older than the admission-aware discovery, which
+    #: is why it defaults rather than being required: an old server cannot
+    #: answer the question, and the evaluator must not read that silence as a
+    #: grant of everything.
+    permitted_platform_operations: tuple[str, ...] = ()
     checked_at: datetime
     valid_until: datetime
     ready: bool
@@ -243,7 +250,30 @@ def _check_components(
     if ComponentStatus.INCOMPATIBLE in statuses:
         diagnostics.append(ReadinessDiagnosticCode.INCOMPATIBLE_VERSION)
     elif statuses - {ComponentStatus.READY}:
-        diagnostics.append(ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE)
+        diagnostics.append(_unready_reason(document))
+
+
+def _unready_reason(
+    document: CapabilityDiscoveryDocument,
+) -> ReadinessDiagnosticCode:
+    """Say whether a closed family is the platform's problem or the caller's.
+
+    Both close the gate, but they call for opposite responses: a dependency
+    outage clears on its own and is worth waiting out, while a capability the
+    caller's roles do not permit will read closed forever until someone grants
+    the operation. Collapsing them into DEPENDENCY_UNAVAILABLE leaves the
+    consumer retrying an outcome that cannot change — the failure this
+    diagnostic exists to name.
+    """
+
+    denied = any(
+        ReadinessDiagnosticCode.PLATFORM_OPERATION_UNAVAILABLE in item.reason_codes
+        for item in document.components.values()
+        if item.status is not ComponentStatus.READY
+    )
+    if denied:
+        return ReadinessDiagnosticCode.PLATFORM_OPERATION_UNAVAILABLE
+    return ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE
 
 
 def _select_profiles(

@@ -35,6 +35,7 @@ pytestmark = pytest.mark.contract
 
 ERROR_RULES = (
     ("invalid_request", 422, "never"),
+    ("internal_error", 500, "never"),
     ("readiness_unavailable", 503, "bounded_backoff"),
     ("incompatible_contract", 409, "never"),
     ("registration_rejected", 403, "never"),

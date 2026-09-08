@@ -247,3 +247,57 @@ def test_workload_and_descriptor_revision_changes_fence_the_cache() -> None:
     client.check(changed_resource)
 
     assert len(transport.requests) == 3
+
+
+OPERATION_DENIED = ComponentReadiness(
+    status=ComponentStatus.UNAVAILABLE,
+    reason_codes=(ReadinessDiagnosticCode.PLATFORM_OPERATION_UNAVAILABLE,),
+)
+
+
+def _document_denying(*families: str) -> CapabilityDiscoveryDocument:
+    document = _document()
+    components = dict(document.components)
+    for family in families:
+        components[family] = OPERATION_DENIED
+    return document.model_copy(
+        update={
+            "components": components,
+            "ready": False,
+            "permitted_platform_operations": ("intent:create", "intent:read"),
+        }
+    )
+
+
+def test_a_capability_the_caller_may_not_invoke_is_named_as_such() -> None:
+    """Otherwise the consumer waits out an outage that is not happening.
+
+    A dependency outage clears on its own; a capability the caller's roles do
+    not permit stays closed until someone grants the operation. The two need
+    different responses, so they need different diagnostics.
+    """
+
+    result = _evaluate(
+        _document_denying("run_capabilities", "run_lifecycle", "atomic_queue_claims")
+    )
+
+    assert result.ready is False
+    assert ReadinessDiagnosticCode.PLATFORM_OPERATION_UNAVAILABLE in result.diagnostics
+    assert (
+        ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE not in result.diagnostics
+    )
+
+
+def test_a_real_dependency_outage_still_reports_as_a_dependency_outage() -> None:
+    document = _document()
+    components = dict(document.components)
+    components["run_lifecycle"] = UNAVAILABLE
+    result = _evaluate(document.model_copy(update={"components": components, "ready": False}))
+
+    assert result.diagnostics == (ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE,)
+
+
+def test_permitted_operations_default_empty_on_a_core_that_cannot_answer() -> None:
+    """An older Core omits the field; silence must not read as a full grant."""
+
+    assert _document().permitted_platform_operations == ()

@@ -101,6 +101,7 @@ from kamiwaza_sdk.delegated_workloads.errors import (
 )
 from kamiwaza_sdk.delegated_workloads.errors import FencedClaim as FencedClaim
 from kamiwaza_sdk.delegated_workloads.errors import GrantInactive as GrantInactive
+from kamiwaza_sdk.delegated_workloads.errors import InternalError as InternalError
 from kamiwaza_sdk.delegated_workloads.errors import (
     IncompatibleContract as IncompatibleContract,
 )
@@ -382,6 +383,7 @@ __all__ = (
     "FencedClaim",
     "GrantInactive",
     "IncompatibleContract",
+    "InternalError",
     "InvalidRequest",
     "IntentLifecycleStatus",
     "IntentStatus",
