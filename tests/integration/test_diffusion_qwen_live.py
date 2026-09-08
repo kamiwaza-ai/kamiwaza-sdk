@@ -18,6 +18,7 @@ from tests.integration.diffusion_live_support import (
     unmasked_pixel_change_fraction,
 )
 from tests.integration.diffusion_targets import (
+    MIN_QWEN_GPU_MEM_GB,
     load_qwen_image_edit_target,
     load_qwen_image_target,
     qwen_acceleration_available,
@@ -39,9 +40,11 @@ def _require_qwen_acceleration(
     if snapshot is None:
         pytest.skip("Qwen diffusion requires a readable hardware inventory")
     pytest.skip(
-        "Qwen diffusion requires Apple Silicon MPS or an NVIDIA/AMD accelerator; "
+        "Qwen diffusion requires Apple Silicon MPS or an NVIDIA/AMD accelerator "
+        f"with at least {MIN_QWEN_GPU_MEM_GB:g} GiB on one GPU; "
         f"cluster reports {snapshot.gpu_count} GPU(s) and "
-        f"vendors={sorted(snapshot.gpu_vendors)}"
+        f"vendors={sorted(snapshot.gpu_vendors)}, "
+        f"memory_gb={list(snapshot.gpu_mem_gb) if snapshot.gpu_mem_gb else 'unknown'}"
     )
 
 

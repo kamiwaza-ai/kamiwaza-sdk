@@ -136,6 +136,37 @@ def test_qwen_acceleration_recognizes_host_spawned_apple_metal(monkeypatch) -> N
     assert qwen_acceleration_available(linux_lima_inventory) is True
 
 
+def test_qwen_acceleration_requires_sufficient_nvidia_vram(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tests.integration.diffusion_targets.platform.system", lambda: "Linux"
+    )
+    t4_inventory = ClusterCapabilitySnapshot(
+        gpu_count=1,
+        gpu_mem_gb=(15.0,),
+        gpu_vendors=frozenset({"nvidia"}),
+    )
+    a10_inventory = ClusterCapabilitySnapshot(
+        gpu_count=1,
+        gpu_mem_gb=(24.0,),
+        gpu_vendors=frozenset({"nvidia"}),
+    )
+
+    assert qwen_acceleration_available(t4_inventory) is False
+    assert qwen_acceleration_available(a10_inventory) is True
+
+
+def test_qwen_acceleration_fails_closed_when_gpu_memory_is_unknown(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tests.integration.diffusion_targets.platform.system", lambda: "Linux"
+    )
+    inventory = ClusterCapabilitySnapshot(
+        gpu_count=1,
+        gpu_vendors=frozenset({"nvidia"}),
+    )
+
+    assert qwen_acceleration_available(inventory) is False
+
+
 @pytest.mark.parametrize(
     ("name", "value", "message"),
     [
