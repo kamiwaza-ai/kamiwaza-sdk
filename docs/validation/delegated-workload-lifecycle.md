@@ -1,7 +1,7 @@
 # Delegated-workload scenario provider
 
 `kamiwaza-validate-delegated-workload` is the SDK-owned provider for the
-strict delegated RayJob boundary.  It uses the same JSON-file lifecycle as the
+strict delegated native Ray boundary.  It uses the same JSON-file lifecycle as the
 shared-IdP federation provider (`describe`, `resolve`, `prepare`, `run`, and
 `teardown`) and delegates pairing, the shared realm, and ownership-guarded
 cleanup to that provider's lifecycle implementation.
@@ -25,7 +25,10 @@ least two packages, and carries no repository URL or credential into the
 plan.  The receiver's approved package catalog remains the source of truth.
 The run case first proves that the base image does not already contain every
 exact fixture, then submits a delegated job and verifies imports, versions,
-the gate audit, and receiver provenance.
+the gate audit, and receiver provenance. The job also calls
+`JobRuntimeClient.datasets.list_granted()` through its private credential agent
+and must receive exactly the granted dataset. Successful imports without that
+agent evidence fail the provider case.
 
 For a direct invocation, use the standard provider protocol:
 
@@ -40,3 +43,12 @@ kamiwaza-validate-delegated-workload teardown --runtime runtime.json --state sta
 The command is intentionally usable outside Kajiya; Kajiya's provider registry
 adds it to the composed federation/inference lane, while topology capability
 facts decide whether it resolves.
+
+For native execution qualification, install matching Core and Deploy
+`native-ray-v1` revisions and explicitly include
+`sdk.federation.delegated-workload/v1`. Use a fixture SDK version that includes
+`JobRuntimeClient`; do not substitute a skipped edge or a pairing-only pass.
+This provider proves the package/result/agent path. Kubernetes resource cleanup,
+hostile process isolation, cancellation, and federation revocation need the
+additional live evidence required by the execution design. Native Linux and
+GreyMatter qualification are not implied by the provider's local contract tests.

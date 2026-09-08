@@ -92,10 +92,13 @@ def _run_approved_package_case(context: RunContext) -> None:
                 target=target,
                 delegated_access=delegated_access,
                 packages=packages,
-                script=_delegated_script(imports, expected_versions, delegated_marker),
+                script=_delegated_script(
+                    imports, expected_versions, delegated_marker, dataset
+                ),
             ),
         )
         _assert_delegated(result, delegated_marker, imports, expected_versions)
+        _assert_agent_dataset(result, dataset)
         _assert_provenance(persona, target, result, context)
     finally:
         close_client(persona)
@@ -149,18 +152,22 @@ def _baseline_script(expected_versions: Mapping[str, str], marker: str) -> str:
 
 
 def _delegated_script(
-    imports: list[str], expected_versions: Mapping[str, str], marker: str
+    imports: list[str], expected_versions: Mapping[str, str], marker: str, dataset: str
 ) -> str:
     names = tuple(expected_versions)
     return (
         "import importlib, importlib.metadata, json\n"
+        "from kamiwaza_sdk.job_runtime import JobRuntimeClient\n"
         f"names = {tuple(imports)!r}\n"
         f"packages = {names!r}\n"
         "modules = [importlib.import_module(name).__name__ for name in names]\n"
         "versions = {name: importlib.metadata.version(name) for name in packages}\n"
+        "with JobRuntimeClient.from_environment(timeout_seconds=30) as runtime:\n"
+        "    granted = [item.dataset_id for item in runtime.datasets.list_granted()]\n"
+        f"assert granted == [{dataset!r}], 'private agent returned an unexpected grant'\n"
         f"payload = [{{'classification': {_CLASSIFICATION!r}, "
         f"'probe': {marker!r}, "
-        "'package_imports': modules, 'package_versions': versions}]\n"
+        "'package_imports': modules, 'package_versions': versions, 'granted_datasets': granted}]\n"
         "print('KZ_MESH_RUN_ON_JSON::' + json.dumps(payload))\n"
     )
 
@@ -191,6 +198,13 @@ def _assert_delegated(
         raise AssertionError("delegated job imported an unexpected package set")
     if record.get("package_versions") != dict(expected_versions):
         raise AssertionError("delegated job installed unexpected package versions")
+
+
+def _assert_agent_dataset(result: Any, dataset: str) -> None:
+    if _result_record(result).get("granted_datasets") != [dataset]:
+        raise AssertionError(
+            "delegated job did not prove exact private-agent dataset access"
+        )
 
 
 def _result_record(result: Any) -> Mapping[str, Any]:
