@@ -3,7 +3,9 @@
 WS-M3.2 test migration (T7.15 / ENG-5049). Covers the §4.2.18 declared
 vocabulary surface on ``kamiwaza_sdk.services.cluster_federation.ClusterAPI``:
 
-    kz.cluster.declare_attribute(name, *, type, sensitive, authority, schema_version)
+    kz.cluster.declare_attribute(
+        name, *, type, values, ordered, confirm_narrowing, schema_version
+    )
         -> AttributeSchema  (PUT /api/cluster/attribute-schema/{name})
     kz.cluster.list_attributes(*, include_deprecated)
         -> list[AttributeSchema]  (GET /api/cluster/attribute-schema)
@@ -28,14 +30,17 @@ def _attribute_schema_payload(
     name: str,
     type_: str = "string",
     state: str = "declared",
-    sensitive: bool = False,
+    values: list[str] | None = None,
+    ordered: bool = False,
 ) -> dict:
     return {
         "name": name,
         "type": type_,
+        "values": values,
+        "ordered": ordered,
         "state": state,
         "authority": "local_admin",
-        "sensitive": sensitive,
+        "sensitive": False,
         "schema_version": "1.0",
         "declared_at": datetime(2026, 5, 12, tzinfo=timezone.utc).isoformat(),
     }
@@ -59,50 +64,67 @@ def test_declare_attribute_puts_to_cluster_endpoint(mock_client) -> None:
     assert schema.name == "clearance"
     assert schema.type == "string"
     assert schema.state == "declared"
-    assert schema.authority == "local_admin"
-    assert schema.sensitive is False
+    assert schema.values is None
+    assert schema.ordered is False
 
     method, path, kwargs = mock_client.calls[0]
     assert method == "PUT"
     assert path == "/cluster/attribute-schema/clearance"
     assert kwargs.get("json") == {
         "type": "string",
-        "sensitive": False,
-        "authority": "local_admin",
+        "values": None,
+        "ordered": False,
         "schema_version": "1.0",
     }
 
 
-def test_declare_attribute_forwards_governance_fields(mock_client) -> None:
+def test_declare_attribute_forwards_value_order_fields(mock_client) -> None:
     from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
     mock_client.expect(
         "PUT",
-        "/cluster/attribute-schema/ssn_last4",
+        "/cluster/attribute-schema/clearance",
         {
-            **_attribute_schema_payload("ssn_last4", sensitive=True),
-            "authority": "mesh_peer",
+            **_attribute_schema_payload(
+                "clearance", values=["U", "S", "TS"], ordered=True
+            ),
             "schema_version": "2.0",
         },
     )
 
     schema = ClusterAPI(client=mock_client).declare_attribute(
-        "ssn_last4",
+        "clearance",
         type="string",
-        sensitive=True,
-        authority="mesh_peer",
+        values=["U", "S", "TS"],
+        ordered=True,
+        confirm_narrowing=True,
         schema_version="2.0",
     )
 
-    assert schema.sensitive is True
-    assert schema.authority == "mesh_peer"
+    assert schema.values == ["U", "S", "TS"]
+    assert schema.ordered is True
     assert schema.schema_version == "2.0"
 
     _method, _path, kwargs = mock_client.calls[0]
     body = kwargs.get("json", {})
-    assert body["sensitive"] is True
-    assert body["authority"] == "mesh_peer"
+    assert body["values"] == ["U", "S", "TS"]
+    assert body["ordered"] is True
+    assert body["confirm_narrowing"] is True
     assert body["schema_version"] == "2.0"
+
+
+def test_declare_attribute_rejects_removed_governance_arguments(mock_client) -> None:
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
+
+    with pytest.raises(TypeError):
+        ClusterAPI(client=mock_client).declare_attribute(
+            "clearance", type="string", sensitive=True
+        )
+
+    with pytest.raises(TypeError):
+        ClusterAPI(client=mock_client).declare_attribute(
+            "clearance", type="string", authority="mesh_peer"
+        )
 
 
 def test_declare_attribute_multivalued(mock_client) -> None:

@@ -6,13 +6,39 @@ import logging
 import os
 import uuid
 from collections.abc import Callable
-from typing import Any
+from contextlib import contextmanager
+from functools import partial
+from typing import Any, Iterator
 
 import pytest
 
 from . import _mini_clearance as mc
 
 logger = logging.getLogger(__name__)
+
+_CLEARANCE_SCHEMA_PATH = "/cluster/attribute-schema/clearance"
+
+
+class _CleanupReport:
+    """Attempt every owned cleanup action, then fail on any incomplete phase."""
+
+    def __init__(self) -> None:
+        self._failures: list[tuple[str, Exception]] = []
+
+    def attempt(self, label: str, action: Callable[[], Any]) -> None:
+        try:
+            action()
+        except Exception as exc:  # pragma: no cover - live teardown failure
+            self._failures.append((label, exc))
+            logger.warning("ENG-10096 cleanup failed for %s", label, exc_info=True)
+
+    def raise_if_failed(self) -> None:
+        if not self._failures:
+            return
+        labels = ", ".join(label for label, _error in self._failures)
+        raise AssertionError(f"ENG-10096 cleanup failed for: {labels}") from (
+            self._failures[0][1]
+        )
 
 
 def provision_gated_dataset(state: dict[str, Any]) -> None:
@@ -41,8 +67,10 @@ def provision_gated_dataset(state: dict[str, Any]) -> None:
     state["installed_gate_package"] = not mc._already_installed(receiver)
     mc.declare_clearance_attribute(receiver)
     mc.install_gate_package(receiver, wheel[0], wheel[1])
+    dataset_name = f"eng10096-dataset-{uuid.uuid4().hex[:10]}"
+    state["dataset_name"] = dataset_name
     urn = receiver.datasets.create(
-        name=f"eng10096-dataset-{uuid.uuid4().hex[:10]}",
+        name=dataset_name,
         platform="file",
         properties={"path": dataset_path},
     )
@@ -50,40 +78,107 @@ def provision_gated_dataset(state: dict[str, Any]) -> None:
     receiver.datasets.set_gate(urn, type=mc.GATE_CLASSPATH, config={})
 
 
-def _best_effort(label: str, action: Callable[[], Any]) -> None:
-    try:
-        action()
-    except Exception as exc:  # pragma: no cover - teardown best-effort
-        logger.warning("ENG-10096 cleanup failed for %s: %s", label, exc)
-
-
-def _recover_guest_sub(state: dict[str, Any]) -> None:
-    """Find an approval-created guest when claim failed before exposing its sub."""
-    if state.get("guest_sub") or not state.get("external_id"):
+def _reconcile_dataset_urn(state: dict[str, Any]) -> None:
+    """Recover a catalog URN when creation committed before its response."""
+    if state.get("dataset_urn") or not state.get("dataset_name"):
         return
-    try:
-        body = state["receiver"]._request(
-            "GET", f"/cluster/federations/{state['receiver_id']}/users"
-        )
-        rows = body if isinstance(body, list) else (body or {}).get("items", [])
-        match = next(
-            row
-            for row in rows
-            if row.get("linked_external_user") == state["external_id"]
-        )
-        state["guest_sub"] = str(match["external_id"])
-    except Exception as exc:  # pragma: no cover - teardown best-effort
-        logger.warning("ENG-10096 could not recover guest for cleanup: %s", exc)
+    datasets = state["receiver"].catalog.list_datasets(query=str(state["dataset_name"]))
+    matches = [
+        str(getattr(dataset, "urn", ""))
+        for dataset in datasets or []
+        if getattr(dataset, "name", None) == state["dataset_name"]
+        and getattr(dataset, "urn", None)
+    ]
+    if len(matches) == 1:
+        state["dataset_urn"] = matches[0]
+        return
+    if not matches:
+        raise AssertionError("timed-out dataset creation could not be reconciled")
+    raise AssertionError("timed-out dataset name matched multiple catalog rows")
 
 
-def _remove_federation(client: Any, federation_id: str, side: str) -> None:
-    _best_effort(
+def _response_rows(body: Any) -> list[dict[str, Any]]:
+    if isinstance(body, list):
+        rows = body
+    elif isinstance(body, dict):
+        rows = body.get("items", [])
+    else:
+        rows = []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _reconcile_federation_id(client: Any, state: dict[str, Any], side: str) -> None:
+    """Recover a federation id when pair creation committed before timeout."""
+    key = f"{side}_id"
+    if state.get(key) or not state.get("name"):
+        return
+    rows = _response_rows(client._request("GET", "/cluster/federations"))
+    matches = [
+        str(row["id"])
+        for row in rows
+        if row.get("id") and row.get("remote_cluster_name") == state.get("name")
+    ]
+    if len(matches) == 1:
+        state[key] = matches[0]
+    elif len(matches) > 1:
+        raise AssertionError(f"timed-out {side} federation matched multiple rows")
+
+
+def _reconcile_federations(state: dict[str, Any]) -> None:
+    for side in ("receiver", "initiator"):
+        _reconcile_federation_id(state[side], state, side)
+
+
+def _recover_external_ids_from_queue(state: dict[str, Any]) -> set[str]:
+    markers = {str(item) for item in state.get("onboarding_request_markers", [])}
+    if not markers or not state.get("receiver_id"):
+        return set()
+    body = state["receiver"]._request(
+        "GET", f"/cluster/federations/{state['receiver_id']}/onboarding"
+    )
+    return {
+        str(row["external_id"])
+        for row in _response_rows(body)
+        if row.get("justification") in markers and row.get("external_id")
+    }
+
+
+def _recover_guest_subs(state: dict[str, Any]) -> None:
+    """Find guests even when an onboarding mutation timed out after commit."""
+    external_ids = set(state.get("onboarding_external_ids", []))
+    if state.get("external_id"):
+        external_ids.add(str(state["external_id"]))
+    external_ids.update(_recover_external_ids_from_queue(state))
+    if not external_ids:
+        return
+    body = state["receiver"]._request(
+        "GET", f"/cluster/federations/{state['receiver_id']}/users"
+    )
+    rows = _response_rows(body)
+    guest_subs = state.setdefault("dataset_guest_subs", [])
+    known_subs = set(guest_subs)
+    for row in rows:
+        if row.get("linked_external_user") not in external_ids:
+            continue
+        guest_sub = str(row["external_id"])
+        if guest_sub not in known_subs:
+            guest_subs.append(guest_sub)
+            known_subs.add(guest_sub)
+
+
+def _remove_federation(
+    client: Any,
+    federation_id: str,
+    side: str,
+    report: _CleanupReport,
+) -> None:
+    report.attempt(
         f"{side} federation disconnect",
         lambda: client._request(
             "POST", f"/cluster/federations/{federation_id}/disconnect"
         ),
     )
-    _best_effort(
+    report.attempt(
         f"{side} federation delete",
         lambda: client._request("DELETE", f"/cluster/federations/{federation_id}"),
     )
@@ -93,57 +188,170 @@ def _restore_clearance_schema(state: dict[str, Any], receiver: Any) -> None:
     if "clearance_prior_state" not in state:
         return
     prior_state = state.get("clearance_prior_state")
-    if prior_state != "declared":
-        _best_effort(
-            "clearance deprecate",
-            lambda: receiver.cluster.deprecate_attribute("clearance"),
+    if prior_state == "declared":
+        _assert_clearance_schema_state(receiver, prior_state)
+        return
+    response, expected_response_state = _restore_clearance_transition(
+        receiver, prior_state
+    )
+    if not isinstance(response, dict):
+        raise AssertionError("clearance schema cleanup returned a non-object response")
+    if response.get("state") != expected_response_state:
+        raise AssertionError(
+            "clearance schema cleanup returned an unexpected transition state"
         )
-    if prior_state not in {"declared", "deprecated"}:
-        _best_effort(
-            "clearance withdraw",
-            lambda: receiver.cluster.withdraw_attribute("clearance"),
-        )
+    _assert_clearance_schema_state(receiver, prior_state)
 
 
-def _remove_federations(state: dict[str, Any], initiator: Any, receiver: Any) -> None:
+def _restore_clearance_transition(receiver: Any, prior_state: Any) -> tuple[Any, str]:
+    if prior_state == "deprecated":
+        return receiver._request("DELETE", _CLEARANCE_SCHEMA_PATH), "deprecated"
+    if prior_state is None:
+        # The fixture never writes ``clearance`` to native-realm subjects;
+        # receiver guest values live in the federation-scoped realm instead.
+        # The Core audit count for this native schema transition is exactly 0.
+        return (
+            receiver._request(
+                "DELETE",
+                _CLEARANCE_SCHEMA_PATH,
+                params={"force": "true", "subjects_holding_value": 0},
+            ),
+            "withdrawn",
+        )
+    raise AssertionError("clearance schema had an unsupported prior state")
+
+
+def _assert_clearance_schema_state(receiver: Any, expected: Any) -> None:
+    current = next(
+        (
+            item.state
+            for item in receiver.cluster.list_attributes()
+            if item.name == "clearance"
+        ),
+        None,
+    )
+    if current != expected:
+        raise AssertionError("clearance schema cleanup did not restore its prior state")
+
+
+def _remove_federations(
+    state: dict[str, Any],
+    initiator: Any,
+    receiver: Any,
+    report: _CleanupReport,
+) -> None:
     for side, client in (("initiator", initiator), ("receiver", receiver)):
         fed_id = state.get(f"{side}_id")
         if fed_id:
-            _remove_federation(client, str(fed_id), side)
+            _remove_federation(client, str(fed_id), side, report)
+
+
+def _remove_dataset_grants(
+    state: dict[str, Any], receiver: Any, report: _CleanupReport
+) -> None:
+    dataset_urn = state.get("dataset_urn")
+    if not dataset_urn:
+        return
+    guest_subs = list(state.get("dataset_guest_subs", []))
+    if state.get("guest_sub"):
+        guest_subs.append(str(state["guest_sub"]))
+    for guest_sub in dict.fromkeys(guest_subs):
+        report.attempt(
+            f"dataset viewer grant for {guest_sub}",
+            partial(
+                receiver._request,
+                "DELETE",
+                "/authz/resources/dataset/grants",
+                params={
+                    "object_id": dataset_urn,
+                    "subject_namespace": "user",
+                    "subject_id": guest_sub,
+                    "relation": "viewer",
+                },
+            ),
+        )
+
+
+def _remove_dataset(
+    state: dict[str, Any], receiver: Any, report: _CleanupReport
+) -> None:
+    dataset_urn = state.get("dataset_urn")
+    if not dataset_urn:
+        return
+    report.attempt("dataset gate", lambda: receiver.datasets.clear_gate(dataset_urn))
+    report.attempt("dataset", lambda: receiver.datasets.delete(dataset_urn))
+
+
+def _remove_requesters(
+    state: dict[str, Any], initiator: Any, report: _CleanupReport
+) -> None:
+    for requester in state.get("requester_clients", []):
+        report.attempt("requester client", requester.close)
+    requester_usernames = list(state.get("requester_usernames", []))
+    if state.get("requester_created") and state.get("username"):
+        requester_usernames.append(str(state["username"]))
+    for username in dict.fromkeys(requester_usernames):
+        report.attempt(
+            f"requester {username}",
+            partial(
+                initiator.subjects.delete,
+                username,
+                cascade_grants=True,
+            ),
+        )
+
+
+def _remove_gate_package(
+    state: dict[str, Any], receiver: Any, report: _CleanupReport
+) -> None:
+    if state.get("installed_gate_package"):
+        report.attempt(
+            "gate package", lambda: receiver.gates.packages.uninstall("acme-gates")
+        )
 
 
 def cleanup(state: dict[str, Any]) -> None:
     """Remove exact grants/bindings/resources, then disconnect and delete the pair."""
     receiver = state["receiver"]
     initiator = state["initiator"]
-    _recover_guest_sub(state)
-    if state.get("guest_sub") and state.get("dataset_urn"):
-        _best_effort(
-            "dataset viewer grant",
-            lambda: receiver._request(
-                "DELETE",
-                "/authz/resources/dataset/grants",
-                params={
-                    "object_id": state["dataset_urn"],
-                    "subject_namespace": "user",
-                    "subject_id": state["guest_sub"],
-                    "relation": "viewer",
-                },
-            ),
-        )
-    if state.get("dataset_urn"):
-        _best_effort(
-            "dataset gate", lambda: receiver.datasets.clear_gate(state["dataset_urn"])
-        )
-        _best_effort("dataset", lambda: receiver.datasets.delete(state["dataset_urn"]))
-    if state.get("requester_created"):
-        _best_effort(
-            "requester",
-            lambda: initiator.subjects.delete(state["username"], cascade_grants=True),
-        )
-    if state.get("installed_gate_package"):
-        _best_effort(
-            "gate package", lambda: receiver.gates.packages.uninstall("acme-gates")
-        )
-    _restore_clearance_schema(state, receiver)
-    _remove_federations(state, initiator, receiver)
+    report = _CleanupReport()
+    phases = (
+        ("federation reconciliation", partial(_reconcile_federations, state)),
+        ("dataset reconciliation", partial(_reconcile_dataset_urn, state)),
+        ("guest recovery", partial(_recover_guest_subs, state)),
+        (
+            "dataset grants",
+            partial(_remove_dataset_grants, state, receiver, report),
+        ),
+        ("dataset", partial(_remove_dataset, state, receiver, report)),
+        ("requesters", partial(_remove_requesters, state, initiator, report)),
+        ("gate package", partial(_remove_gate_package, state, receiver, report)),
+        ("clearance schema", partial(_restore_clearance_schema, state, receiver)),
+        (
+            "federations",
+            partial(_remove_federations, state, initiator, receiver, report),
+        ),
+    )
+    for label, action in phases:
+        report.attempt(label, action)
+    report.raise_if_failed()
+
+
+@contextmanager
+def cleanup_preserving_primary(state: dict[str, Any]) -> Iterator[None]:
+    """Fail on teardown alone without replacing an active test/setup failure."""
+    primary_error: BaseException | None = None
+    try:
+        yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        try:
+            cleanup(state)
+        except Exception:
+            if primary_error is None:
+                raise
+            logger.exception(
+                "ENG-10096 cleanup failed while preserving the primary failure"
+            )

@@ -43,7 +43,7 @@ Per OQ-17, three PSK trust modes:
 from __future__ import annotations
 
 import uuid
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from ..schemas.federation import (
@@ -350,6 +350,11 @@ class FederationProxy:
         return FederationUsersAPI(proxy=self)
 
     @property
+    def onboarding(self) -> "FederationOnboardingAPI":
+        """Per-user request/approve/claim onboarding operations."""
+        return FederationOnboardingAPI(proxy=self)
+
+    @property
     def guests(self) -> "FederationGuestsAPI":
         """Receiver_realm guest management (ENG-8213 Alt D). Only meaningful for
         federations created with ``realm_scope`` — the receiver mints guest
@@ -457,6 +462,103 @@ class FederationUsersAPI:
             json=body,
         )
         return BrokeredUser.model_validate(result)
+
+
+class FederationOnboardingAPI:
+    """Per-user federation onboarding workflow (ENG-9807).
+
+    Request/claim are self-scoped by the server; approve/deny and queue listing
+    are receiver-admin operations. Responses remain dictionaries because the
+    server adds mode-specific fields (for example shared_idp admission state)
+    and the SDK must preserve those fields for forward compatibility.
+    """
+
+    def __init__(self, *, proxy: FederationProxy) -> None:
+        self._proxy = proxy
+        self._client = proxy._client
+
+    def request(
+        self,
+        *,
+        justification: str,
+        email: Optional[str] = None,
+        external_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Request onboarding for the caller (or a delegated local user)."""
+        body: Dict[str, Any] = {"justification": justification}
+        if email is not None:
+            body["email"] = email
+        if external_id is not None:
+            body["external_id"] = external_id
+        return self._client._request(
+            "POST",
+            f"/cluster/federations/{self._proxy._id()}/onboarding/request",
+            json=body,
+        )
+
+    def list(self) -> List[Dict[str, Any]]:
+        """List the receiver's onboarding queue (admin-only)."""
+        result = self._client._request(
+            "GET", f"/cluster/federations/{self._proxy._id()}/onboarding"
+        )
+        return result if isinstance(result, list) else []
+
+    def me(self) -> Dict[str, Any]:
+        """Read the caller's onboarding state."""
+        return self._client._request(
+            "GET", f"/cluster/federations/{self._proxy._id()}/onboarding/me"
+        )
+
+    def approve(
+        self,
+        request_id: Any,
+        *,
+        attributes: Optional[Dict[str, Any]] = None,
+        relations: Optional[List[Dict[str, Any]]] = None,
+        admitted_without_access: bool = False,
+    ) -> Dict[str, Any]:
+        """Approve a request with receiver-owned attributes and relations."""
+        body: Dict[str, Any] = {
+            "attributes": attributes or {},
+            "relations": relations or [],
+            "admitted_without_access": admitted_without_access,
+        }
+        return self._client._request(
+            "POST",
+            f"/cluster/federations/{self._proxy._id()}/onboarding/{request_id}/approve",
+            json=body,
+        )
+
+    def deny(self, request_id: Any, *, reason: Optional[str] = None) -> Dict[str, Any]:
+        """Deny a request, optionally recording a requester-visible reason."""
+        body = {"reason": reason} if reason is not None else {}
+        return self._client._request(
+            "POST",
+            f"/cluster/federations/{self._proxy._id()}/onboarding/{request_id}/deny",
+            json=body,
+        )
+
+    def claim(self, claim_token: str) -> Dict[str, Any]:
+        """Spend a one-time claim token and return the claim result."""
+        return self._client._request(
+            "POST",
+            f"/cluster/federations/{self._proxy._id()}/onboarding/claim",
+            json={"claim_token": claim_token},
+        )
+
+    def claim_status(self, attempt_id: Any) -> Dict[str, Any]:
+        """Read durable claim-attempt status for recovery/polling."""
+        return self._client._request(
+            "GET",
+            f"/cluster/federations/{self._proxy._id()}/onboarding/claims/{attempt_id}",
+        )
+
+    def recover_claim(self, attempt_id: Any) -> Dict[str, Any]:
+        """Retry recovery of a durable claim attempt."""
+        return self._client._request(
+            "POST",
+            f"/cluster/federations/{self._proxy._id()}/onboarding/claims/{attempt_id}/recover",
+        )
 
 
 class FederationGuestsAPI:

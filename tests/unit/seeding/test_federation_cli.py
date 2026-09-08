@@ -37,8 +37,16 @@ def test_access_grant_splits_object_on_first_colon():
     mc = MagicMock()
     urn = "urn:li:dataset:(urn:li:dataPlatform:file,mini,PROD)"
     rc, out = _run(
-        ["access", "grant", "--subject", "alice", "--relation", "viewer",
-         "--object", f"dataset:{urn}"],
+        [
+            "access",
+            "grant",
+            "--subject",
+            "alice",
+            "--relation",
+            "viewer",
+            "--object",
+            f"dataset:{urn}",
+        ],
         client=mc,
     )
     assert rc == 0
@@ -49,11 +57,44 @@ def test_access_grant_splits_object_on_first_colon():
     assert out["granted"]["object"] == f"dataset:{urn}"
 
 
+def test_access_grant_forwards_dataset_attestation():
+    mc = MagicMock()
+    rc, _ = _run(
+        [
+            "access",
+            "grant",
+            "--subject",
+            "alice",
+            "--relation",
+            "viewer",
+            "--object",
+            "dataset:d1",
+            "--attested",
+        ],
+        client=mc,
+    )
+    assert rc == 0
+    mc.subjects.grants.return_value.create.assert_called_once_with(
+        object_namespace="dataset",
+        object_id="d1",
+        relation="viewer",
+        attested=True,
+    )
+
+
 def test_access_revoke_calls_delete():
     mc = MagicMock()
     rc, _ = _run(
-        ["access", "revoke", "--subject", "bob", "--relation", "editor",
-         "--object", "dataset:d1"],
+        [
+            "access",
+            "revoke",
+            "--subject",
+            "bob",
+            "--relation",
+            "editor",
+            "--object",
+            "dataset:d1",
+        ],
         client=mc,
     )
     assert rc == 0
@@ -75,8 +116,19 @@ def test_access_list_returns_grants():
 
 def test_access_bad_object_errors():
     with pytest.raises(SystemExit):
-        _run(["access", "grant", "--subject", "a", "--relation", "viewer",
-              "--object", "no-colon"], client=MagicMock())
+        _run(
+            [
+                "access",
+                "grant",
+                "--subject",
+                "a",
+                "--relation",
+                "viewer",
+                "--object",
+                "no-colon",
+            ],
+            client=MagicMock(),
+        )
 
 
 # --- fed ------------------------------------------------------------------
@@ -87,8 +139,18 @@ def test_fed_pair_derives_jwks_from_issuer():
     mc.federations.pair.return_value.model_dump.return_value = {"id": "fed-1"}
     issuer = "https://kc.example/realms/federated"
     rc, out = _run(
-        ["fed", "pair", "--name", "f1", "--role", "initiator",
-         "--remote-url", "https://peer/api", "--shared-issuer", issuer + "/"],
+        [
+            "fed",
+            "pair",
+            "--name",
+            "f1",
+            "--role",
+            "initiator",
+            "--remote-url",
+            "https://peer/api",
+            "--shared-issuer",
+            issuer + "/",
+        ],
         client=mc,
     )
     assert rc == 0
@@ -105,8 +167,18 @@ def test_fed_pair_receiver_uses_shared_psk_and_omits_remote_url(monkeypatch):
     monkeypatch.setenv("PSK", "shared-psk-123")
     issuer = "https://kc.example/realms/federated"
     rc, out = _run(
-        ["fed", "pair", "--name", "f1", "--role", "receiver",
-         "--shared-issuer", issuer, "--preshared-key-env", "PSK"],
+        [
+            "fed",
+            "pair",
+            "--name",
+            "f1",
+            "--role",
+            "receiver",
+            "--shared-issuer",
+            issuer,
+            "--preshared-key-env",
+            "PSK",
+        ],
         client=mc,
     )
     assert rc == 0
@@ -122,8 +194,16 @@ def test_fed_allow_user_builds_initial_tuples():
     mc = MagicMock()
     urn = "dataset:urn:li:dataset:(urn:li:dataPlatform:file,mini,PROD)"
     rc, out = _run(
-        ["fed", "allow-user", "--federation", "fed-1",
-         "--external-id", "sub@cluster", "--seed", f"{urn}:viewer"],
+        [
+            "fed",
+            "allow-user",
+            "--federation",
+            "fed-1",
+            "--external-id",
+            "sub@cluster",
+            "--seed",
+            f"{urn}:viewer",
+        ],
         client=mc,
     )
     assert rc == 0
@@ -140,7 +220,9 @@ def test_fed_status_lists():
     mc = MagicMock()
     f = MagicMock()
     f.model_dump.return_value = {
-        "id": "fed-1", "remote_cluster_name": "peer", "identity_mode": "shared_idp"
+        "id": "fed-1",
+        "remote_cluster_name": "peer",
+        "identity_mode": "shared_idp",
     }
     mc.federations.list.return_value = [f]
     rc, out = _run(["fed", "status"], client=mc)
@@ -156,8 +238,16 @@ def test_dataset_gated_binds_gate_via_set_gate():
     mc = MagicMock()
     mc.datasets.create.return_value = "urn:li:dataset:(x)"
     rc, out = _run(
-        ["dataset", "gated", "--name", "d", "--path", "/data/x.csv",
-         "--gate", "acme_gates.mini.MiniClearanceGate"],
+        [
+            "dataset",
+            "gated",
+            "--name",
+            "d",
+            "--path",
+            "/data/x.csv",
+            "--gate",
+            "acme_gates.mini.MiniClearanceGate",
+        ],
         client=mc,
     )
     assert rc == 0
@@ -173,7 +263,9 @@ def test_dataset_gated_binds_gate_via_set_gate():
 
 def test_gate_install_wraps_packages():
     mc = MagicMock()
-    mc.gates.packages.install.return_value.model_dump.return_value = {"name": "acme-gates"}
+    mc.gates.packages.install.return_value.model_dump.return_value = {
+        "name": "acme-gates"
+    }
     rc, out = _run(
         ["gate", "install", "--spec", "acme-gates==1.1.0", "--hash", "sha256:abc"],
         client=mc,
@@ -201,12 +293,24 @@ def test_idp_bootstrap_ensures_realm_client_mapper(monkeypatch):
     kc.issuer_url.return_value = "https://kc/realms/federated"
     monkeypatch.setattr(cli, "build_kc_admin", lambda args: kc)
     rc, out = _run(
-        ["idp", "bootstrap", "--realm", "federated", "--ropc-client", "fed-mesh-cli",
-         "--kc-url", "https://kc", "--kc-admin-pw-env", "KCPW"],
+        [
+            "idp",
+            "bootstrap",
+            "--realm",
+            "federated",
+            "--ropc-client",
+            "fed-mesh-cli",
+            "--kc-url",
+            "https://kc",
+            "--kc-admin-pw-env",
+            "KCPW",
+        ],
     )
     assert rc == 0
     kc.set_unmanaged_attributes.assert_called_once_with("federated")
-    kc.ensure_attribute_mapper.assert_called_once_with("federated", "uuid", attribute="clearance")
+    kc.ensure_attribute_mapper.assert_called_once_with(
+        "federated", "uuid", attribute="clearance"
+    )
     assert out["shared_issuer_url"] == "https://kc/realms/federated"
 
 
@@ -216,9 +320,22 @@ def test_idp_persona_parses_attrs(monkeypatch):
     monkeypatch.setattr(cli, "build_kc_admin", lambda args: kc)
     monkeypatch.setenv("PPW", "secret")
     rc, out = _run(
-        ["idp", "persona", "--realm", "federated", "--user", "fed-clr-u",
-         "--attr", "clearance=U", "--pw-env", "PPW",
-         "--kc-url", "https://kc", "--kc-admin-pw-env", "KCPW"],
+        [
+            "idp",
+            "persona",
+            "--realm",
+            "federated",
+            "--user",
+            "fed-clr-u",
+            "--attr",
+            "clearance=U",
+            "--pw-env",
+            "PPW",
+            "--kc-url",
+            "https://kc",
+            "--kc-admin-pw-env",
+            "KCPW",
+        ],
     )
     assert rc == 0
     assert kc.ensure_user.call_args.kwargs["attributes"] == {"clearance": "U"}
@@ -232,8 +349,21 @@ def test_idp_token_raw(monkeypatch, capsys):
     monkeypatch.setenv("PPW", "secret")
     monkeypatch.setattr(cli, "KeycloakAdmin", lambda *a, **k: kc)
     rc = cli.main(
-        ["idp", "token", "--realm", "federated", "--client", "fed-mesh-cli",
-         "--user", "fed-clr-u", "--pw-env", "PPW", "--raw", "--kc-url", "https://kc"],
+        [
+            "idp",
+            "token",
+            "--realm",
+            "federated",
+            "--client",
+            "fed-mesh-cli",
+            "--user",
+            "fed-clr-u",
+            "--pw-env",
+            "PPW",
+            "--raw",
+            "--kc-url",
+            "https://kc",
+        ],
     )
     assert rc == 0
     assert capsys.readouterr().out.strip() == "TOK123"

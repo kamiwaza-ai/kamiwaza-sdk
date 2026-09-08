@@ -66,9 +66,14 @@ def build_kc_admin(args: argparse.Namespace) -> KeycloakAdmin:
 
 def cmd_access_grant(args: argparse.Namespace, *, client: Any) -> dict:
     ns, oid = _split_object(args.object)
-    client.subjects.grants(args.subject).create(
-        object_namespace=ns, object_id=oid, relation=args.relation
-    )
+    kwargs: dict[str, Any] = {
+        "object_namespace": ns,
+        "object_id": oid,
+        "relation": args.relation,
+    }
+    if getattr(args, "attested", False):
+        kwargs["attested"] = True
+    client.subjects.grants(args.subject).create(**kwargs)
     return {
         "granted": {
             "subject": args.subject,
@@ -96,9 +101,7 @@ def cmd_access_list(args: argparse.Namespace, *, client: Any) -> dict:
     grants = client.subjects.grants(args.subject).list()
     return {
         "subject": args.subject,
-        "grants": [
-            g.model_dump() if hasattr(g, "model_dump") else g for g in grants
-        ],
+        "grants": [g.model_dump() if hasattr(g, "model_dump") else g for g in grants],
     }
 
 
@@ -248,9 +251,7 @@ def cmd_idp_persona(args: argparse.Namespace, *, client: Any = None) -> dict:
         if not sep:
             raise SystemExit(f"--attr must be 'name=value', got {pair!r}")
         attributes[k] = v
-    result = kc.ensure_user(
-        args.realm, args.user, password=pw, attributes=attributes
-    )
+    result = kc.ensure_user(args.realm, args.user, password=pw, attributes=attributes)
     return {"persona": result, "attributes": attributes}
 
 
@@ -313,7 +314,15 @@ def build_parser() -> argparse.ArgumentParser:
         p = g.add_parser(verb, help=f"{verb} a relation on a resource")
         p.add_argument("--subject", required=True, help="e.g. a username / subject id")
         p.add_argument("--relation", required=True, help="e.g. viewer / editor / owner")
-        p.add_argument("--object", required=True, help="'<namespace>:<id>', e.g. dataset:<urn>")
+        p.add_argument(
+            "--object", required=True, help="'<namespace>:<id>', e.g. dataset:<urn>"
+        )
+        if verb == "grant":
+            p.add_argument(
+                "--attested",
+                action="store_true",
+                help="confirm need-to-know before granting dataset access",
+            )
         p.set_defaults(func=fn, needs_kc=False)
     p = g.add_parser("list", help="list a subject's grants")
     p.add_argument("--subject", required=True)
@@ -333,7 +342,9 @@ def build_parser() -> argparse.ArgumentParser:
         "omit for --role receiver — the receiver row is created without it)",
     )
     p.add_argument("--shared-issuer", required=True, help="shared realm issuer URL")
-    p.add_argument("--shared-ca-file", default=None, help="PEM CA for the shared issuer's TLS")
+    p.add_argument(
+        "--shared-ca-file", default=None, help="PEM CA for the shared issuer's TLS"
+    )
     p.add_argument(
         "--preshared-key-env",
         default=None,
@@ -374,7 +385,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = g.add_parser("gated", help="create a file dataset bound to a gate")
     p.add_argument("--name", required=True)
     p.add_argument("--path", required=True, help="on-cluster file path")
-    p.add_argument("--gate", required=True, help="gate classpath, e.g. acme_gates...MiniClearanceGate")
+    p.add_argument(
+        "--gate",
+        required=True,
+        help="gate classpath, e.g. acme_gates...MiniClearanceGate",
+    )
     p.add_argument("--gate-config", default=None, help="JSON gate config (default {})")
     p.add_argument("--description", default=None)
     p.set_defaults(func=cmd_dataset_gated, needs_kc=False)
@@ -406,15 +421,21 @@ def build_parser() -> argparse.ArgumentParser:
     ).add_subparsers(dest="command")
     p = g.add_parser("bootstrap", help="ensure realm + ROPC client + attribute mapper")
     p.add_argument("--realm", required=True, help="shared realm, e.g. federated")
-    p.add_argument("--ropc-client", required=True, help="public ROPC client id, e.g. fed-mesh-cli")
-    p.add_argument("--attr", action="append", help="attribute mapper(s); default clearance")
+    p.add_argument(
+        "--ropc-client", required=True, help="public ROPC client id, e.g. fed-mesh-cli"
+    )
+    p.add_argument(
+        "--attr", action="append", help="attribute mapper(s); default clearance"
+    )
     _add_kc_args(p)
     p.set_defaults(func=cmd_idp_bootstrap)
     p = g.add_parser("persona", help="ensure a persona user with attributes")
     p.add_argument("--realm", required=True)
     p.add_argument("--user", required=True)
     p.add_argument("--attr", action="append", help="'name=value', e.g. clearance=U")
-    p.add_argument("--pw-env", required=True, help="env var holding the persona password")
+    p.add_argument(
+        "--pw-env", required=True, help="env var holding the persona password"
+    )
     _add_kc_args(p)
     p.set_defaults(func=cmd_idp_persona)
     p = g.add_parser("token", help="mint a persona ROPC token (test helper)")

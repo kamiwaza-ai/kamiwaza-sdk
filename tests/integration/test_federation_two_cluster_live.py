@@ -38,6 +38,7 @@ from tests.integration import mesh_outcome
 from tests.integration.mesh_outcome import MeshPolicy
 
 from kamiwaza_sdk import KamiwazaClient
+from kamiwaza_sdk.exceptions import APIError
 
 logger = logging.getLogger(__name__)
 
@@ -53,18 +54,17 @@ pytestmark = [
 _WALKTHROUGH_POLICY = MeshPolicy(
     identity_arranged=False,
     admission_is_the_assertion=False,
-    context="ENG-5784 two-cluster walkthrough (pairs, enrolls no guest)",
+    context="ENG-5784 two-cluster walkthrough (receiver_realm guest path)",
 )
 
 
 def _mesh_call_or_skip(call):
     """Run a mesh data-plane call and classify the outcome.
 
-    * ``AuthenticationError`` (401) -> ``pytest.skip``. Under the
-      receiver-controlled mode this module now pairs in, a user-identity mesh
-      call needs a receiver-minted guest credential resolved on the initiator,
-      and this walkthrough enrolls no guest — so 401 is the designed answer, not
-      a fault. See below on what that costs.
+    * ``AuthenticationError`` (401) -> ``pytest.skip`` for calls whose
+      precondition intentionally does not arrange a receiver-minted guest
+      credential.  Receiver-realm calls that arrange a credential (such as the
+      audit-actor job below) remain armed and must not take this path.
     * ``APIError`` status 403 -> ``pytest.skip``: mesh auth PASSED; the caller
       hit a downstream gate (brokered-user allowlist or a missing execution
       gate). The op-specific assertion needs that precondition.
@@ -74,12 +74,10 @@ def _mesh_call_or_skip(call):
     A 401 used to hard-fail as "the receiver stripped the ``x-kz-mesh-*`` HMAC
     headers before ext-authz". Under ``peer_kc`` that inference was sound,
     because the source's signed identity was the whole of mesh auth. It is not
-    sound under ``receiver_realm``: a missing guest credential produces the
-    identical 401, and the client cannot tell the two apart. Keeping the old
-    hard-fail would have made this file report an HMAC regression on every run
-    and send whoever triaged it hunting a bug that isn't there — a false
-    diagnosis is worse than a stated gap. Mesh transport under receiver_realm is
-    covered by ``test_federation_receiver_realm_live.py``.
+    sound for an intentionally credential-less ``receiver_realm`` probe: a
+    missing guest credential produces the identical 401. The dedicated
+    receiver-realm suite and the credential-arranged audit test keep the
+    positive path armed.
 
     ENG-9664: the classification itself now lives in ``mesh_outcome`` so all
     three live suites share one decision point and one set of unit-pinned rules.
@@ -312,6 +310,41 @@ def unpaired_federation(
                 )
 
 
+@pytest.fixture
+def receiver_allow_all_execution_gate(
+    receiver_client: KamiwazaClient,
+) -> Iterator[None]:
+    """Temporarily enable the built-in execution gate for the job proof.
+
+    The walkthrough is otherwise valid on a default install, where the
+    receiver intentionally has no mesh execution gate and ordinary job probes
+    are classified as a downstream 403.  The audit-actor test is the positive
+    job proof, so it owns its gate precondition and restores the operator's
+    prior binding even when the assertion or the API call fails.
+    """
+    execution_gate_type = (
+        "kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate"
+    )
+    try:
+        previous = receiver_client.cluster.get_execution_gate()
+    except APIError as exc:
+        if exc.status_code != 404:
+            raise
+        previous = None
+
+    receiver_client.cluster.set_execution_gate(type=execution_gate_type, config={})
+    try:
+        yield
+    finally:
+        if previous is None:
+            receiver_client.cluster.clear_execution_gate()
+        else:
+            receiver_client.cluster.set_execution_gate(
+                type=previous.type,
+                config=previous.config,
+            )
+
+
 class TestFederationTwoClusterWalkthrough:
     """Live two-cluster federation walkthrough — counterpart to the mocked
     ``test_federation_skeleton_walkthrough.py`` flow.
@@ -359,8 +392,8 @@ class TestFederationTwoClusterWalkthrough:
         * 403 brokered-user (``APIError``, status 403) → SKIP: mesh auth
           PASSED (not the ENG-7203 401), but this caller is not yet on the
           peer's federation allowlist, so the capability assertion below
-          cannot run. ``test_brokered_user_allowlist_round_trip`` (which runs
-          after this) establishes the allowlist; skipping avoids a false
+          cannot run. ``test_receiver_guest_enrollment_round_trip`` (which runs
+          after this) establishes a receiver guest; skipping avoids a false
           negative in a fixed-but-not-yet-allowlisted environment.
         * 200 ``ClusterCapabilities`` → assert the schema contract.
 
@@ -371,9 +404,9 @@ class TestFederationTwoClusterWalkthrough:
         # local_node_id is the schema-declared cluster-identity field
         # (R5 H4 added the declaration). Pin the schema contract — no
         # fallback chain, no extra="allow" passthrough gymnastics.
-        assert (
-            capabilities.local_node_id
-        ), f"peer capabilities missing local_node_id: {capabilities!r}"
+        assert capabilities.local_node_id, (
+            f"peer capabilities missing local_node_id: {capabilities!r}"
+        )
 
     def test_federated_catalog_list_via_mesh(
         self,
@@ -444,43 +477,51 @@ class TestFederationTwoClusterWalkthrough:
         )
         assert isinstance(resp, dict)
 
-    def test_brokered_user_allowlist_round_trip(
+    def test_receiver_guest_enrollment_round_trip(
         self,
         paired_federation: dict[str, str],
-        initiator_client: KamiwazaClient,
         initiator_cluster_uuid: str,
         receiver_client: KamiwazaClient,
     ) -> None:
-        """FR-51 / FR-80 — receiver allowlists a brokered user from the
-        initiator. Auto-provisioning happens on first mesh request; we
-        validate only that the allowlist write succeeds and the record
-        is queryable.
+        """ENG-8213 — receiver mints a guest credential for the initiator.
+
+        This walkthrough deliberately pairs in ``receiver_realm`` mode.  In
+        that posture ``POST /users`` is rejected by Core because an
+        operator-supplied allowlist row can never match the receiver-minted
+        guest subject.  The supported operation is ``POST /guests``; exercise
+        it through the typed, id-bound SDK proxy so the test follows the
+        mode-specific contract.
 
         Uses the receiver-side federation ID (not the operator-supplied
         name) because the pair handshake overwrites the receiver's
         ``remote_cluster_name`` with the initiator's cluster name —
         ``federations[name]`` lookup-by-name fails on the receiver
-        post-pair. POST the user record directly against the
-        receiver-side ID, mirroring how setup.py / cmd_m3 drives this.
+        post-pair.
         """
         external_id = (
             f"eng5784-brokered-{uuid.uuid4().hex[:6]}@{initiator_cluster_uuid}"
         )
-        brokered = receiver_client._request(
-            "POST",
-            f"/cluster/federations/{paired_federation['receiver_id']}/users",
-            json={"external_id": external_id},
-        )
-        assert isinstance(brokered, dict)
-        assert brokered["external_id"] == external_id
-        # auto_provisioned starts False — flips True on the user's first
-        # mesh-origin request. We don't drive that here; the cmd_m3 smoke
-        # script does that end-to-end.
+        guest = receiver_client.federations.by_id(
+            paired_federation["receiver_id"]
+        ).guests.enroll(external_id)
+        # ``external_id`` in the response is the receiver-realm subject UUID,
+        # not the source identifier supplied at enrollment.  The source value
+        # is retained as the Keycloak username/allowlist correlation key; the
+        # generated subject is the durable key used by revoke/attribute APIs.
+        assert guest.external_id
+        assert guest.external_id != external_id
+        assert guest.realm == f"federation-{paired_federation['receiver_id']}"
+        # The credential is returned exactly once; never print or decode it.
+        assert guest.offline_token
 
     def test_federated_job_audit_actor_round_trip(
         self,
         paired_federation: dict[str, str],
         initiator_client: KamiwazaClient,
+        receiver_client: KamiwazaClient,
+        initiator_cluster_uuid: str,
+        monkeypatch: pytest.MonkeyPatch,
+        receiver_allow_all_execution_gate: None,
     ) -> None:
         """The WS-M1 demo-gate signal: a federated job runs as the
         originating user, not as a system principal. Audit-actor round-trip
@@ -496,19 +537,47 @@ class TestFederationTwoClusterWalkthrough:
             named identity attributes pass even when the audit-actor
             wiring is broken.
         """
+        # Receiver-controlled realms require a receiver-issued guest
+        # credential on every mesh call.  Enroll a dedicated guest here rather
+        # than relying on the preceding enrollment smoke test's one-time token;
+        # that keeps this test order-independent and exercises the actual
+        # credential forwarding path.
+        external_id = f"eng5784-audit-{uuid.uuid4().hex[:6]}@{initiator_cluster_uuid}"
+        guest = receiver_client.federations.by_id(
+            paired_federation["receiver_id"]
+        ).guests.enroll(
+            external_id,
+            initial_tuples=[{"relation": "executor", "object": "cluster_jobs:__all__"}],
+        )
+        # Set one receiver-owned custom claim before the first mesh request.
+        # The receiver's guest realm projects this attribute into the refreshed
+        # access token; the mesh ingress then forwards it as the authoritative
+        # ``KAMIWAZA_USER_ATTRS`` bundle.  This keeps the proof independent of
+        # an optional local OBO client while still asserting the identity that
+        # the receiver chose for this guest.
+        receiver_client._request(
+            "PUT",
+            f"/cluster/federations/{paired_federation['receiver_id']}/guests/"
+            f"{guest.external_id}/attributes",
+            json={"attributes": {"audit_actor": external_id}},
+        )
+        monkeypatch.setenv(
+            "KAMIWAZA_FEDERATION_CREDENTIAL_"
+            + paired_federation["name"].upper().replace("-", "_"),
+            guest.offline_token,
+        )
+
         # The job's audit actor is proven by the job SELF-REPORTING the
-        # platform-injected originating identity in a KZ_MESH_RUN_ON_JSON::
-        # marker, which /result returns (a bare ``print()`` leaves /result with
-        # no marker → 410). The identity lives in KAMIWAZA_USER_ATTRS /
-        # *_USER_TOKEN, injected by the receiver's OBO wiring — which a default
-        # install does NOT provide. So we assert the job SUCCEEDED + the marker
-        # round-trips, and skip (precondition unmet) when no identity was
-        # injected, rather than hard-failing.
+        # receiver-owned identity in a KZ_MESH_RUN_ON_JSON:: marker, which
+        # /result returns (a bare ``print()`` leaves /result with no marker →
+        # 410). The marker reads the server-derived KAMIWAZA_USER_ATTRS bundle;
+        # client-supplied runtime_env identity values are scrubbed by Core.
         audit_script = (
             "import os, json\n"
             'raw = os.environ.get("KAMIWAZA_USER_ATTRS") or ""\n'
             'attrs = json.loads(raw) if raw.strip().startswith("{") else {}\n'
-            'actor = (attrs.get("sub") or attrs.get("user_id") or attrs.get("email")\n'
+            'actor = (attrs.get("audit_actor") or attrs.get("sub")\n'
+            '         or attrs.get("user_id") or attrs.get("email")\n'
             '         or attrs.get("preferred_username")\n'
             '         or os.environ.get("KAMIWAZA_USER_ID") or "")\n'
             'print("KZ_MESH_RUN_ON_JSON::" + json.dumps({"audit_actor": actor, "probe": "eng7284"}))\n'
@@ -521,9 +590,9 @@ class TestFederationTwoClusterWalkthrough:
                 recoverable=True,
             )
         )
-        assert (
-            result.status == "SUCCEEDED"
-        ), f"federated job did not succeed: status={result.status} result={result}"
+        assert result.status == "SUCCEEDED", (
+            f"federated job did not succeed: status={result.status} result={result}"
+        )
         # Guard against a /result parse regression masquerading as an unmet
         # precondition: our marker payload carried probe="eng7284", so it MUST
         # round-trip through /result -> JobResult before we trust an empty
@@ -535,13 +604,10 @@ class TestFederationTwoClusterWalkthrough:
             "result marker did not round-trip (possible /result parse regression): "
             f"{result}"
         )
-        if not result.audit_actor:
-            pytest.skip(
-                "audit-actor demo-gate precondition unmet: the receiver did not "
-                "inject an originating identity (KAMIWAZA_USER_ATTRS) into the job "
-                "runtime — a separate tier needing cluster-side OBO/identity "
-                "config. The marker round-trip + SUCCEEDED status are verified."
-            )
+        assert result.audit_actor == external_id, (
+            "receiver-owned guest identity did not reach the job audit actor: "
+            f"expected={external_id!r} got={result.audit_actor!r}"
+        )
 
     def test_retrieval_surface_reachable_on_both_clusters(
         self,

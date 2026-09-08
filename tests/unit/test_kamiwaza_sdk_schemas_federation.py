@@ -248,6 +248,8 @@ def test_attribute_schema_full_shape() -> None:
     schema = AttributeSchema(
         name="clearance",
         type="string",
+        values=["U", "S", "TS"],
+        ordered=True,
         state="declared",
         authority="local_admin",
         sensitive=False,
@@ -256,6 +258,8 @@ def test_attribute_schema_full_shape() -> None:
     )
     assert schema.name == "clearance"
     assert schema.type == "string"
+    assert schema.values == ["U", "S", "TS"]
+    assert schema.ordered is True
     assert schema.state == "declared"
     assert schema.authority == "local_admin"
     assert schema.sensitive is False

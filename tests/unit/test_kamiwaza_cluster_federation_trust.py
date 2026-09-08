@@ -1,23 +1,18 @@
-"""ENG-9807 — federation trust-lifecycle methods on the canonical surface.
+"""ENG-9807 — adjacent federation trust methods on the canonical surface.
 
-Covers the four platform endpoints the SDK could not previously reach, on
+Covers the stage, peer-CA, and reconnect methods on
 ``kamiwaza_sdk.services.cluster_federation.ClusterAPI``:
 
     kz.cluster.rotate_preshared_key(id)
         -> dict  (POST /cluster/federations/{id}/rotate-preshared-key)
-    kz.cluster.complete_key_rotation(id, *, acknowledged)
-        -> dict  (POST /cluster/federations/{id}/complete-key-rotation)
     kz.cluster.refresh_peer_ca(id, *, ca_pem, acknowledged_fingerprint)
         -> dict  (POST /cluster/federations/{id}/refresh-peer-ca)
     kz.cluster.reconnect_federation(id)
         -> dict  (POST /cluster/federations/{id}/reconnect)
 
-The assertions that carry this file are the **body** ones. Two of these
-endpoints are governed by an operator acknowledgement the server cannot verify
-— ``acknowledged`` on the rotation close, ``acknowledged_fingerprint`` on the CA
-refresh — so a client that silently dropped either field would still look like
-it worked from the response shape. Asserting the request body is the only place
-that catches it in a unit test.
+The peer-proven activation/completion protocol has its own contract file. The
+body assertion here protects the CA acknowledgement from being silently
+dropped by the SDK.
 """
 
 from __future__ import annotations
@@ -38,8 +33,10 @@ def _api(mock_client):
 def test_rotate_preshared_key_posts_and_returns_the_new_key(mock_client) -> None:
     payload = {
         "federation_id": FEDERATION_ID,
-        "reason": "rotation_opened",
+        "reason": "rotation_staged",
         "rotated_at": 1785000000,
+        "generation": "2026-08-22T12:34:56+00:00",
+        "fingerprint": "ab" * 32,
         "preshared_key": "kzfed-abc123",
     }
     mock_client.expect(
@@ -65,60 +62,13 @@ def test_rotate_preshared_key_accepts_a_uuid_object(mock_client) -> None:
     mock_client.expect(
         "POST",
         f"/cluster/federations/{FEDERATION_ID}/rotate-preshared-key",
-        {"reason": "rotation_opened"},
+        {"reason": "rotation_staged"},
     )
 
     _api(mock_client).rotate_preshared_key(federation_id)
 
     _method, path, _kwargs = mock_client.calls[0]
     assert path == f"/cluster/federations/{FEDERATION_ID}/rotate-preshared-key"
-
-
-def test_complete_key_rotation_sends_the_acknowledgement(mock_client) -> None:
-    """THE assertion for the close: ``acknowledged`` must reach the wire.
-
-    The server reads ``bool(body.get("acknowledged"))``, so a dropped field is
-    indistinguishable from an explicit refusal to acknowledge — the call fails
-    400 and the operator is told to confirm something they already confirmed.
-    """
-    mock_client.expect(
-        "POST",
-        f"/cluster/federations/{FEDERATION_ID}/complete-key-rotation",
-        {"federation_id": FEDERATION_ID, "reason": "rotation_closed"},
-    )
-
-    result = _api(mock_client).complete_key_rotation(FEDERATION_ID, acknowledged=True)
-
-    assert result["reason"] == "rotation_closed"
-    _method, _path, kwargs = mock_client.calls[0]
-    assert kwargs.get("json") == {"acknowledged": True}
-
-
-def test_complete_key_rotation_forwards_a_refusal_to_acknowledge(mock_client) -> None:
-    """``acknowledged=False`` is forwarded verbatim rather than corrected.
-
-    The refusal belongs to the server: it is the one place that knows a window
-    is open at all, and its 400 is what the operator needs to see.
-    """
-    mock_client.expect(
-        "POST",
-        f"/cluster/federations/{FEDERATION_ID}/complete-key-rotation",
-        {"federation_id": FEDERATION_ID},
-    )
-
-    _api(mock_client).complete_key_rotation(FEDERATION_ID, acknowledged=False)
-
-    _method, _path, kwargs = mock_client.calls[0]
-    assert kwargs.get("json") == {"acknowledged": False}
-
-
-def test_complete_key_rotation_requires_the_acknowledgement_keyword() -> None:
-    """No default. Retiring the outgoing key breaks any peer still using it, so
-    the caller has to say so at the call site."""
-    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
-
-    with pytest.raises(TypeError):
-        ClusterAPI(client=None).complete_key_rotation(FEDERATION_ID)  # type: ignore[call-arg]
 
 
 def test_refresh_peer_ca_sends_both_halves(mock_client) -> None:
@@ -197,7 +147,7 @@ def test_reconnect_federation_posts_to_the_reconnect_route(mock_client) -> None:
     [
         pytest.param(lambda api: api.rotate_preshared_key(FEDERATION_ID), id="rotate"),
         pytest.param(
-            lambda api: api.complete_key_rotation(FEDERATION_ID, acknowledged=True),
+            lambda api: api.complete_key_rotation(FEDERATION_ID, fingerprint="ef" * 32),
             id="complete",
         ),
         pytest.param(
