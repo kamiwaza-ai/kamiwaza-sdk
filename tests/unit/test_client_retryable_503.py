@@ -612,6 +612,22 @@ def test_does_not_retry_a_real_excluded_core_code(
     assert sleeps == []
 
 
+@pytest.mark.parametrize("retry_after", [29, 30])
+def test_ceiling_holds_after_jitter_for_an_admitted_hint(
+    monkeypatch: pytest.MonkeyPatch, retry_after: float
+) -> None:
+    """Apply jitter before clamping an admitted hint to the 30-second ceiling."""
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(retry_after=retry_after), _success_response()],
+    )
+    monkeypatch.setattr("kamiwaza_sdk.client._retry_jitter_unit", lambda: 1.0)
+
+    client.post("workrooms/abc")
+
+    assert sleeps == [30.0]
+
+
 @pytest.mark.parametrize("retry_after", [30.0001, 45, 60])
 def test_does_not_retry_a_hint_longer_than_the_per_attempt_ceiling(
     monkeypatch: pytest.MonkeyPatch, retry_after: float
