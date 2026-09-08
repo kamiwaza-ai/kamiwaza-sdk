@@ -100,6 +100,16 @@ def test_asgi_launcher_declares_uvicorn_optional_dependency():
     ), "the standalone runtime must preserve the patched Starlette floor"
 
 
+def test_runtime_lib_dependency_enforces_starlette_floor():
+    # ENG-11047 lock, carried forward from release/1.2.1: the independently
+    # published runtime wheel must keep the patched Starlette floor so
+    # standalone extension installs cannot resolve a vulnerable release.
+    with LIB_PYPROJECT_PATH.open("rb") as f:
+        pyproject = tomllib.load(f)
+
+    assert "starlette>=1.3.1,<2.0.0" in pyproject["project"]["dependencies"]
+
+
 def test_release_publishes_required_npm_runtime_before_sdk():
     script = RELEASE_SCRIPT_PATH.read_text()
 

@@ -32,6 +32,14 @@ follow semver. The library is published to PyPI as a standalone package
   file as `.dockerignore.orig`; review any intentional `.env` inclusion before
   rebuilding, and prefer explicit build arguments for required public values.
 
+## [0.4.5] — 2026-08-27 (ENG-11047)
+
+### Security
+
+* Require `starlette>=1.3.1,<2` in the independently published runtime
+  wheel so standalone extension installations cannot resolve vulnerable
+  Starlette releases.
+
 ## [0.4.4] — 2026-07-27 (ENG-9199)
 
 ### Added
