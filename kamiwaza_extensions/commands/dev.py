@@ -241,7 +241,19 @@ def _build_patch_service_spec(service: Any) -> Any:
             tag=tag,
             registry=registry,
             repository=repository,
-            digest=digest if separator else None,
+            # An undigested ref clears the pin rather than omitting the field.
+            # ``patch_extension`` dumps with ``exclude_none=True``, so ``None``
+            # drops the key, and the platform reads an absent digest on an
+            # already-pinned service as "keep the pin" and rejects the request
+            # — honouring it would strand the CR on the previous deploy's image
+            # while the tag moved underneath it. Deploying a freshly built tag
+            # makes the old pin obsolete by definition, and an unset digest is
+            # also exactly what a CREATE of this same ref would persist, so
+            # clearing keeps the two deploy paths convergent. Re-pinning here
+            # instead is not an option: services the run never builds (a
+            # declared third-party image such as ``postgres``) have no pushed
+            # digest for the CLI to resolve.
+            digest=digest if separator else "",
         ),
         primary=service.primary,
         env=service.env or None,
