@@ -79,7 +79,7 @@ underscores.
 
 Creating and pairing a federation stores its peer label in the local
 `remote_cluster_name` field. A later peer rename does not update that cached
-value, and `probe()` or ping does not refresh it. Until the federation is
+value, and `probe()` does not refresh it. Until the federation is
 re-paired, use the cached old name or the federation UUID; the peer's new
 display name does not resolve from this cluster. Re-pairing adopts the new
 name.

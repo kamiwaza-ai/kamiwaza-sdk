@@ -397,8 +397,14 @@ def test_catalog_container_v2_endpoints(live_kamiwaza_client) -> None:
 def test_catalog_container_global_recreate_is_idempotent(live_kamiwaza_client) -> None:
     """ENG-7792: retrying a global container create must not return a 409.
 
+    The original cross-workroom guard failed only for an existing same-URN
+    record: a federation retry raised CrossWorkroomCreateError for an authorized
+    global writer. Creating the same container twice exercises that path on one
+    node; the unique-name, single-create tests above do not reach it.
+
     Pin the global workroom explicitly so selected-session state cannot turn
     this into a same-workroom test. The live credential must be a global writer.
+    A missing writer privilege must fail this regression, not skip its assertion.
     """
     global_workroom_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
     with live_kamiwaza_client.workroom_scope(global_workroom_id) as client:
