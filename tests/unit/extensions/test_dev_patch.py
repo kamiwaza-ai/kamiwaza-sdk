@@ -232,6 +232,40 @@ class TestBuildPatchServiceSpecs:
         assert img.tag == "develop"
         assert img.digest == digest
 
+    def test_undigested_ref_clears_the_pin_explicitly(self):
+        """A ref with no ``@sha256`` must send ``digest=""``, never omit it.
+
+        ``patch_extension`` serializes with ``exclude_none=True``, so a
+        ``None`` digest drops the key entirely. The platform reads an absent
+        digest on an already-pinned service as "keep the pin" and refuses the
+        patch, because honouring it would strand the CR on the previous
+        deploy's image while the tag moved underneath it. An empty string is
+        the sanctioned way to say the pin is obsolete.
+        """
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        img = _build_patch_service_specs(self._payload("registry.test/app:v2"))[0].image
+
+        assert img.digest == ""
+        assert img.model_dump(exclude_none=True)["digest"] == ""
+
+    def test_cleared_pin_survives_the_request_serialization(self):
+        """The cleared pin must reach the wire, not just the model.
+
+        ``patch_extension`` dumps the whole ``PatchExtension`` with
+        ``exclude_none=True``; asserting on the leaf model alone would pass
+        even if a nested container dropped the key.
+        """
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        patch = PatchExtension(
+            services=_build_patch_service_specs(self._payload("registry.test/app:v2"))
+        )
+
+        body = patch.model_dump(exclude_none=True)
+
+        assert body["services"][0]["image"]["digest"] == ""
+
     def test_persistence_override_flows_through_patch(self):
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
 
