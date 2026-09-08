@@ -13,6 +13,8 @@ from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from kamiwaza_sdk.validation.diagnostics import emit_callback_diagnostic
+
 from kamiwaza_sdk.validation.models import (
     CleanupEvidence,
     FixtureState,
@@ -74,7 +76,7 @@ def provider_main(provider: ScenarioProvider, argv: Sequence[str] | None = None)
 def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
     if args.command == "describe":
         catalog = validate_provider_output(
-            _provider_callback(lambda: tuple(provider.describe())), ScenarioCatalog
+            _provider_callback(lambda: tuple(provider.describe()), "describe"), ScenarioCatalog
         )
         validate_descriptor_registry(catalog.root)
         payload = catalog.model_dump(mode="json", by_alias=True)
@@ -90,11 +92,11 @@ def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
     if args.command == "resolve":
         profile = _read_model(args.profile, ValidationProfile)
         catalog = validate_provider_output(
-            _provider_callback(lambda: tuple(provider.describe())), ScenarioCatalog
+            _provider_callback(lambda: tuple(provider.describe()), "describe"), ScenarioCatalog
         )
         validate_descriptor_registry(catalog.root)
         plan = validate_provider_output(
-            _provider_callback(lambda: provider.resolve(profile)), ScenarioPlan
+            _provider_callback(lambda: provider.resolve(profile), "resolve"), ScenarioPlan
         )
         validate_plan_registry(catalog.root, plan)
         validate_plan_identity(profile, plan)
@@ -107,7 +109,7 @@ def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
         validate_plan_runtime_identity(plan, runtime)
         writer = _FixtureStateFileWriter(args.state, plan, runtime)
         state = validate_provider_output(
-            _provider_callback(lambda: provider.prepare(plan, runtime, writer)),
+            _provider_callback(lambda: provider.prepare(plan, runtime, writer), "prepare"),
             FixtureState,
         )
         writer.require_valid()
@@ -120,7 +122,7 @@ def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
         validate_plan_runtime_identity(plan, runtime)
         validate_state_identity(plan, runtime, state)
         evidence = validate_provider_output(
-            _provider_callback(lambda: provider.run(plan, runtime, state)),
+            _provider_callback(lambda: provider.run(plan, runtime, state), "run"),
             ScenarioEvidence,
         )
         validate_evidence_identity(plan, state, evidence)
@@ -130,7 +132,7 @@ def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
         return
     validate_state_runtime_identity(runtime, state)
     cleanup = validate_provider_output(
-        _provider_callback(lambda: provider.teardown(runtime, state)), CleanupEvidence
+        _provider_callback(lambda: provider.teardown(runtime, state), "teardown"), CleanupEvidence
     )
     validate_cleanup_identity(runtime, state, cleanup)
     _write_model(args.evidence, cleanup)
@@ -141,15 +143,16 @@ def _read_model(path: Path, model_type: type[ModelT]) -> ModelT:
     return model_type.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def _provider_callback(callback: Callable[[], CallbackT]) -> CallbackT:
+def _provider_callback(callback: Callable[[], CallbackT], phase: str) -> CallbackT:
     try:
         return callback()
     except _AdapterContractError:
         raise
-    except ValidationError:
-        raise ProviderContractError("provider callback failed") from None
-    except ProviderContractError:
-        raise ProviderContractError("provider callback failed") from None
+    except Exception as error:
+        emit_callback_diagnostic(error, phase)
+        if isinstance(error, (ValidationError, ProviderContractError)):
+            raise ProviderContractError("provider callback failed") from None
+        raise
 
 
 def _write_model(path: Path, model: BaseModel, *, private: bool = False) -> None:
