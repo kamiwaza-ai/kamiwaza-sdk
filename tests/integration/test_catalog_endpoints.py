@@ -394,6 +394,25 @@ def test_catalog_container_v2_endpoints(live_kamiwaza_client) -> None:
         _delete_dataset(client, dataset_urn)
 
 
+def test_catalog_container_global_recreate_is_idempotent(live_kamiwaza_client) -> None:
+    """ENG-7792: retrying a global container create must not return a 409.
+
+    Pin the global workroom explicitly so selected-session state cannot turn
+    this into a same-workroom test. The live credential must be a global writer.
+    """
+    global_workroom_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    with live_kamiwaza_client.workroom_scope(global_workroom_id) as client:
+        name = _unique("sdk-container-recreate")
+        first_urn = _create_container(client, name)
+        try:
+            second_urn = _create_container(client, name)
+            assert second_urn == first_urn
+            fetched = client.get("/catalog/containers/by-urn", params={"urn": first_urn})
+            assert fetched.get("urn") == first_urn
+        finally:
+            client.delete("/catalog/containers/by-urn", params={"urn": first_urn})
+
+
 def test_catalog_secret_list(live_kamiwaza_client) -> None:
     client = live_kamiwaza_client
 
