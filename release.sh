@@ -220,6 +220,29 @@ if [[ $NPM_READY -eq 0 ]]; then
     SDK_GATED=1
 fi
 
+# Floor guard: the versions this SDK points consumers at must actually be
+# published. The two guards above check that *we* uploaded the artifacts this
+# run; neither looks at the declared floors, which can have been raised in an
+# earlier commit and never published. The CI gate is advisory on develop
+# precisely to allow that staging window, so a release can reach this point
+# carrying a floor no consumer can resolve — this is the last place to catch it.
+# Prompted rather than fatal: a registry index can lag a fresh upload by seconds.
+if [[ $SDK_GATED -eq 0 ]]; then
+    echo
+    echo "Verifying declared runtime-lib floors resolve against the registries..."
+    if ! uv run --no-project --with packaging python scripts/check_runtime_lib_floors.py; then
+        echo
+        echo "One or more declared floors are not published. Uploading kamiwaza-sdk"
+        echo "  now would publish a release that cannot be installed."
+        read -r -p "Upload kamiwaza-sdk anyway? (y/n) " REPLY || REPLY=n
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Skipping kamiwaza-sdk upload."
+            SDK_GATED=1
+        fi
+    fi
+fi
+
 if [[ $SDK_GATED -eq 0 ]]; then
     read -r -p "Upload kamiwaza-sdk to PyPI? (y/n) " REPLY || REPLY=n
     echo

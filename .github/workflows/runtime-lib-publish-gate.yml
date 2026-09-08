@@ -1,0 +1,93 @@
+# Guards against declaring a runtime-lib floor that no consumer can resolve.
+#
+# Bumping `kamiwaza-extensions-lib` (or its npm counterpart) in-repo is not the
+# same as publishing it. A floor that runs ahead of the registry is invisible to
+# anyone developing with `uv` — the workspace source shadows the registry — but
+# it makes `pip install kamiwaza-sdk` unresolvable for external consumers, and
+# it makes every `kz-ext create` scaffold unbuildable, because the scaffolder
+# renders the compatibility bundle's pins straight into the generated
+# requirements.txt / package.json.
+#
+# Severity depends on where the floor is, because the same state means two
+# different things:
+#
+#   * On `main` / `release/**` it means a broken release is about to ship, and
+#     nothing downstream will catch it — `release.sh` guards the SDK-vs-lib
+#     coupling at upload time, but not a floor that outran the registry. Error.
+#   * On `develop` and PRs into it, it is the ordinary staging window between
+#     bumping a runtime lib and the release that publishes it. Reporting it as a
+#     hard failure there would leave a required check red for the length of that
+#     window, which trains people to ignore it. Warning.
+#
+# The daily sweep exists so the staging window cannot be forgotten. It targets
+# `develop` explicitly: scheduled workflows only ever run on the default branch
+# (`main`), whose floors are by construction already published, so a default
+# checkout would report green and nag about nothing.
+#
+# Companion to extensions-lib-version-guard.yml: that one asks "is this version
+# free to publish?", this one asks "is the version we point consumers at
+# actually published yet?".
+name: Runtime Lib Publish Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'pyproject.toml'
+      - 'kamiwaza_extensions/compatibility.json'
+      - 'scripts/check_runtime_lib_floors.py'
+      - '.github/workflows/runtime-lib-publish-gate.yml'
+  push:
+    branches: [develop, main, 'release/**']
+    paths:
+      - 'pyproject.toml'
+      - 'kamiwaza_extensions/compatibility.json'
+      - 'scripts/check_runtime_lib_floors.py'
+      - '.github/workflows/runtime-lib-publish-gate.yml'
+  schedule:
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-gate:
+    name: Declared floors must be published
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The daily sweep watches the staging branch, not the default branch.
+          # Note the split: the workflow definition comes from the default
+          # branch (that is where schedules fire from), the script from develop.
+          ref: ${{ github.event_name == 'schedule' && 'develop' || github.ref }}
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Check declared floors against PyPI and npm
+        env:
+          # On a PR the branch that matters is the one being merged INTO.
+          TARGET_REF: ${{ github.event_name == 'pull_request' && github.base_ref || github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            # The sweep is a reminder about the staging window, never a gate.
+            MODE=advisory
+          else
+            case "$TARGET_REF" in
+              main|release/*) MODE=blocking ;;
+              *)             MODE=advisory ;;
+            esac
+          fi
+          echo "Target ref '$TARGET_REF' (event: $EVENT_NAME) -> $MODE"
+          if [ "$MODE" = blocking ]; then
+            uv run --no-project --with packaging python scripts/check_runtime_lib_floors.py
+          else
+            uv run --no-project --with packaging python scripts/check_runtime_lib_floors.py --warn-only
+          fi
