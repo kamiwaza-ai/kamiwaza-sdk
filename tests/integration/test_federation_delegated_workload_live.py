@@ -115,7 +115,7 @@ def _require_gated_result_record(result: Any) -> dict[str, Any]:
 
 
 def _await_delegated_result(persona: Any, result: Any, target_cluster: str) -> Any:
-    """Wait briefly for KubeRay's submitter log to expose the result marker."""
+    """Wait briefly for the receiver's job logs to expose the result marker."""
     deadline = time.monotonic() + _RESULT_MARKER_WAIT_SECONDS
     while result.result is None:
         if time.monotonic() >= deadline:
@@ -134,7 +134,7 @@ def _await_delegated_result(persona: Any, result: Any, target_cluster: str) -> A
 def test_shared_idp_delegated_job_installs_approved_package(
     request: pytest.FixtureRequest,
 ) -> None:
-    """Route one delegated RayJob and import an operator-approved dependency."""
+    """Route one delegated native Ray job and import an operator-approved dependency."""
     wiring: dict[str, Any] = request.getfixturevalue("shared_idp_gated_pair")
     persona, _token = _active_persona_session(wiring["personas"]["U"])
     coordinates, import_names, expected_versions = _delegated_package_config()

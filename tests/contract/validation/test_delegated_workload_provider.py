@@ -192,6 +192,11 @@ def test_explicit_scenario_without_capability_fails_at_resolution() -> None:
         (None, '["humanize"]', "package fixture is not configured"),
         ('["humanize>=4.0"]', '["humanize"]', "exact"),
         (
+            '["humanize==4.13.0", "packaging==25.0"]',
+            '["humanize", "packaging"]',
+            "kamiwaza-sdk version providing JobRuntimeClient",
+        ),
+        (
             '["humanize==4.13.0", "kamiwaza-sdk==1.1.0"]',
             '["bad-name!", "kamiwaza_sdk"]',
             "import name",
@@ -280,8 +285,42 @@ def _run_context(persona: _Persona) -> RunContext:
     )
 
 
-def test_case_runs_baseline_and_delegated_exact_package_inventory(
+@pytest.mark.parametrize(
+    "agent_evidence,expected_status",
+    [
+        (
+            {
+                "granted_datasets": [
+                    "urn:li:dataset:(urn:li:dataPlatform:file,/tmp/data,PROD)"
+                ]
+            },
+            "passed",
+        ),
+        ({}, "failed"),
+        ({"granted_datasets": []}, "failed"),
+        ({"granted_datasets": ["another-dataset"]}, "failed"),
+        (
+            {
+                "granted_datasets": [
+                    "urn:li:dataset:(urn:li:dataPlatform:file,/tmp/data,PROD)",
+                    "another-dataset",
+                ]
+            },
+            "failed",
+        ),
+    ],
+    ids=[
+        "exact-grant",
+        "missing-evidence",
+        "empty-grant",
+        "wrong-grant",
+        "extra-grant",
+    ],
+)
+def test_case_runs_baseline_and_requires_exact_package_and_agent_inventory(
     monkeypatch: pytest.MonkeyPatch,
+    agent_evidence,
+    expected_status,
 ) -> None:
     baseline = {
         "data": [
@@ -298,6 +337,7 @@ def test_case_runs_baseline_and_delegated_exact_package_inventory(
             {
                 "classification": "U",
                 "probe": "kz-delegated-delegated",
+                **agent_evidence,
                 "package_imports": ["humanize", "kamiwaza_sdk"],
                 "package_versions": {"humanize": "4.13.0", "kamiwaza-sdk": "1.1.0"},
             }
@@ -322,5 +362,59 @@ def test_case_runs_baseline_and_delegated_exact_package_inventory(
     results = run_edge(_run_context(persona))
 
     assert [result.case_id for result in results] == list(DELEGATED_CASE_IDS)
-    assert [result.status for result in results] == ["passed"]
-    assert persona.requests == [("GET", "/mesh/fed-edge/api/cluster/jobs/job-1/status")]
+    assert [result.status for result in results] == [expected_status]
+    if expected_status == "passed":
+        assert persona.requests == [
+            ("GET", "/mesh/fed-edge/api/cluster/jobs/job-1/status")
+        ]
+    else:
+        assert results[0].detail == "AssertionError: validation assertion failed"
+        assert persona.requests == []
+
+
+def test_package_execution_script_requires_private_agent_dataset_access() -> None:
+    from kamiwaza_sdk.validation.delegated_workload_cases import _delegated_script
+
+    script = _delegated_script(
+        ["kamiwaza_sdk"], {"kamiwaza-sdk": "1.1.0"}, "probe", "dataset-one"
+    )
+    compile(script, "<delegated-job>", "exec")
+    assert "runtime.datasets.list_granted()" in script
+    assert "assert granted == ['dataset-one']" in script
+    assert "'granted_datasets': granted" in script
+
+
+def test_package_import_success_cannot_substitute_for_agent_evidence() -> None:
+    from kamiwaza_sdk.validation.delegated_workload_cases import _assert_agent_dataset
+
+    result = SimpleNamespace(
+        status="SUCCEEDED",
+        result={
+            "data": [{"classification": "U", "granted_datasets": ["another-dataset"]}],
+            "metadata": {"gate_audit": [{}]},
+        },
+    )
+    with pytest.raises(AssertionError, match="private-agent dataset access"):
+        _assert_agent_dataset(result, "dataset-one")
+
+
+def test_generated_job_executes_the_typed_agent_operation(monkeypatch, capsys) -> None:
+    from kamiwaza_sdk.job_runtime import JobRuntimeClient, JobDatasets
+    from kamiwaza_sdk.schemas.delegated_jobs import GrantedDataset
+    from kamiwaza_sdk.validation.delegated_workload_cases import _delegated_script
+    from unittest.mock import MagicMock
+
+    agent = MagicMock(spec_set=JobRuntimeClient.from_environment())
+    agent.__enter__.return_value = agent
+    agent.datasets = MagicMock(spec_set=JobDatasets)
+    agent.datasets.list_granted.return_value = [
+        GrantedDataset(dataset_id="dataset-one", name="Granted dataset")
+    ]
+    monkeypatch.setattr(JobRuntimeClient, "from_environment", lambda **kwargs: agent)
+    monkeypatch.setattr("importlib.metadata.version", lambda name: "1.1.0")
+    script = _delegated_script(
+        ["kamiwaza_sdk"], {"kamiwaza-sdk": "1.1.0"}, "probe", "dataset-one"
+    )
+    exec(compile(script, "<delegated-job>", "exec"), {})
+    agent.datasets.list_granted.assert_called_once_with()
+    assert '"granted_datasets": ["dataset-one"]' in capsys.readouterr().out

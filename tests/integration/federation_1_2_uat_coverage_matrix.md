@@ -6,7 +6,7 @@ SDK-side companion to
 engineering documentation repository.
 
 The required shared-IDP edge remains the fast compatibility gate. The
-delegated-workload edge is separate because it requires the default-off RayJob
+delegated-workload edge is separate because it requires the default-off native Ray
 boundary, receiver-owned capability authority, and private package repository.
 
 | UAT behavior | Durable coverage | Classification |
@@ -18,7 +18,7 @@ boundary, receiver-owned capability authority, and private package repository.
 | Unonboarded-user denial | `test_unonboarded_shared_idp_user_rejected_by_receiver_allowlist` | Required SDK live edge |
 | Receiver execution and mesh provenance | `test_required_mesh_job_reaches_receiver_and_returns_marker` | Required SDK live edge |
 | Exact model discovery and chat | ENG-10429 immutable-image provider-parity UAT | Manual until the owned lane provisions a chat model |
-| Isolated delegated RayJob with approved exact Python package versions | `test_shared_idp_delegated_job_installs_approved_package` | Required delegated-workload SDK edge |
+| Isolated delegated native Ray job with approved exact Python package versions | `test_shared_idp_delegated_job_installs_approved_package` | Required delegated-workload SDK edge |
 | Private PyPI-compatible repository and arbitrary-internet denial | Internal playbook network probes; Deploy package-boundary contracts; `gate_packages/test_lifecycle.py` documents the manual probes | Manual live UAT plus automated Deploy contract |
 | Job cancellation and durable grant revocation | ENG-10429 cancellation UAT and Core delegated-job lifecycle tests | Manual live UAT plus automated Core contract |
 | Mid-job dataset, model, onboarding, user, and federation revocation | ENG-10429 lifecycle matrix and Core authority tests | Manual live UAT plus automated Core contract |
