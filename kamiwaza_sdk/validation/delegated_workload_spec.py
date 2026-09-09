@@ -168,6 +168,10 @@ def _build_package_config(
 ) -> DelegatedPackageConfig:
     coordinates = _normalized_packages(packages)
     _require_minimum_packages(coordinates)
+    if not any(value.startswith("kamiwaza-sdk==") for value in coordinates):
+        raise ProviderContractError(
+            "delegated fixture must include a kamiwaza-sdk version providing JobRuntimeClient"
+        )
     _require_matching_fixture_lengths(coordinates, imports)
     import_names = tuple(_validated_import_name(value) for value in imports)
     return DelegatedPackageConfig(

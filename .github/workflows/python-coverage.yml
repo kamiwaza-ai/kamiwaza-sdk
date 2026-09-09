@@ -59,11 +59,8 @@ jobs:
 
       - name: Run tests with coverage
         if: steps.changed-files.outputs.has_changes == 'true'
-        # Threshold temporarily lowered from 80% to 65% to absorb the Phase 3
-        # reconciliation merge (ENG-4994 / PR #111). The release/0.13.0 branch
-        # carried code without proportional unit-test coverage, dropping total
-        # coverage to 67.96%. ENG-5324 tracks restoring the 80% threshold by
-        # adding targeted unit tests for the merged extensions modules.
+        # Restore the 80% gate tracked by ENG-5324; the normal offline suite
+        # measures 85% coverage with the validation-provider contracts included.
         # Match make test's offline suite: contract tests own coverage for
         # validation providers and other SDK boundaries (ENG-11687).
         run: |
@@ -71,7 +68,7 @@ jobs:
             --cov=kamiwaza_sdk \
             --cov-report=term-missing \
             --cov-report=json \
-            --cov-fail-under=65 \
+            --cov-fail-under=80 \
             -q
 
       - name: Upload coverage report

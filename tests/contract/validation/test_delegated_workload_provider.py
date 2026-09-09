@@ -192,6 +192,11 @@ def test_explicit_scenario_without_capability_fails_at_resolution() -> None:
         (None, '["humanize"]', "package fixture is not configured"),
         ('["humanize>=4.0"]', '["humanize"]', "exact"),
         (
+            '["humanize==4.13.0", "packaging==25.0"]',
+            '["humanize", "packaging"]',
+            "kamiwaza-sdk version providing JobRuntimeClient",
+        ),
+        (
             '["humanize==4.13.0", "kamiwaza-sdk==1.1.0"]',
             '["bad-name!", "kamiwaza_sdk"]',
             "import name",
