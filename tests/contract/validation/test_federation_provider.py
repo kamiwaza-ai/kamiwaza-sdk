@@ -91,6 +91,7 @@ def test_provider_mesh_retrieval_explicitly_requests_sse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str, dict[str, Any]]] = []
+    diagnostic_calls: list[tuple] = []
 
     class Persona:
         session = SimpleNamespace(verify=True)
@@ -101,6 +102,7 @@ def test_provider_mesh_retrieval_explicitly_requests_sse(
 
     class Response:
         closed = False
+        status_code = 200
 
         def iter_lines(self, *, decode_unicode: bool) -> list[str]:
             assert decode_unicode is True
@@ -116,6 +118,11 @@ def test_provider_mesh_retrieval_explicitly_requests_sse(
         lambda _federation_name: {"X-Kamiwaza-Federation-Credential": "test"},
     )
     monkeypatch.setattr(case_module, "_retrieval_stream", lambda _request: response)
+    monkeypatch.setattr(
+        case_module,
+        "log_missing_audit_job_state",
+        lambda *args: diagnostic_calls.append(args),
+    )
 
     assert case_module._mesh_retrieve(
         case_module.RetrievalRequest(
@@ -134,6 +141,17 @@ def test_provider_mesh_retrieval_explicitly_requests_sse(
                 "json": {"dataset_urn": "urn:test", "transport": "sse"},
                 "headers": {"X-Kamiwaza-Federation-Credential": "test"},
             },
+        ),
+    ]
+    assert diagnostic_calls == [
+        (
+            "https://edge-a.test/api/mesh/peer/api/retrieval/jobs/job-1",
+            {
+                "Authorization": "Bearer token",
+                "X-Kamiwaza-Federation-Credential": "test",
+            },
+            True,
+            [],
         )
     ]
     assert response.closed

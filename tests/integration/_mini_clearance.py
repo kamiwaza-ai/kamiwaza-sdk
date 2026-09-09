@@ -37,6 +37,10 @@ from kamiwaza_sdk.validation.federation_fixture import (
     KNOWN as SDK_KNOWN,
     records as sdk_records,
 )
+from kamiwaza_sdk.validation.retrieval_diagnostics import (
+    diagnostic_lines,
+    log_missing_audit_job_state,
+)
 
 WHEEL_NAME = "acme_gates-1.1.0-py3-none-any.whl"
 PACKAGE_SPEC = GATE_PACKAGE_SPEC
@@ -421,7 +425,7 @@ def mesh_retrieve_through_gate(
         sr.raise_for_status()
         event: Optional[str] = None
         data_lines: list[str] = []
-        for raw in sr.iter_lines(decode_unicode=True):
+        for raw in diagnostic_lines(sr):
             if raw is None:
                 continue
             if raw == "":  # SSE event terminator (blank line)
@@ -443,6 +447,9 @@ def mesh_retrieve_through_gate(
             elif raw.startswith("data:"):
                 data_lines.append(raw[len("data:") :].lstrip())
 
+    log_missing_audit_job_state(
+        url.removesuffix("/stream"), headers, verify, gate_audits
+    )
     return rows, gate_audits
 
 
