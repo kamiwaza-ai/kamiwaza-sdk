@@ -108,8 +108,14 @@ class CapabilityDiscoveryDocument(DelegatedResponse):
     #: each — an outage that clears itself, an assertion a fresh one would fix,
     #: or a grant to go and ask an operator for. Typed as a plain string, not
     #: an enum, so a value added later cannot make the document unparseable
-    #: here. Defaults to "observed" for a Core that predates the field.
-    role_resolution: str = "observed"
+    #: here.
+    #:
+    #: Defaults to "unreported", which is what a Core predating this field
+    #: leaves behind. Defaulting to "observed" instead would have made silence
+    #: indistinguishable from a caller who genuinely holds nothing — and since
+    #: `permitted_platform_operations` is empty in both cases, a consumer would
+    #: refuse all work against an older Core with nothing saying why.
+    role_resolution: str = "unreported"
     checked_at: datetime
     valid_until: datetime
     ready: bool
@@ -332,10 +338,25 @@ def _resource_fence(item: ResourceReadinessRequirement) -> dict[str, object]:
     }
 
 
+def admission_reported(document: CapabilityDiscoveryDocument) -> bool:
+    """Whether this Core answers admission at all.
+
+    False against a Core predating ENG-11695, whose document carries no
+    admission fields. Distinguishing that from a real denial is the whole
+    point: both leave the permitted set empty.
+    """
+
+    return document.role_resolution != "unreported"
+
+
 def gated_families(
     document: CapabilityDiscoveryDocument,
-) -> tuple[str, ...]:
+) -> tuple[str, ...] | None:
     """Families this caller's roles do not hold the operations for.
+
+    Returns None when this Core does not report admission at all — see
+    `admission_reported`. A consumer must handle that case explicitly rather
+    than treating it as either extreme.
 
     Derived rather than read off a reason code on purpose. ``reason_codes`` is
     a closed enum in every released client, so Core cannot introduce a value
@@ -345,6 +366,12 @@ def gated_families(
     is a new *field*, which older clients ignore harmlessly, so the precise
     answer travels there and is resolved against the published family map here.
     """
+
+    if not admission_reported(document):
+        # Unknown, and neither guess is safe: every family gated is a false red
+        # that refuses all work, and none gated is the false green this whole
+        # contract exists to remove. The caller has to decide.
+        return None
 
     served = document.family_platform_operations
     families = served if served else FAMILY_PLATFORM_OPERATIONS
@@ -358,6 +385,7 @@ def gated_families(
 
 __all__ = (
     "FAMILY_PLATFORM_OPERATIONS",
+    "admission_reported",
     "MANDATORY_V1_CAPABILITY_FAMILIES",
     "MAX_READINESS_CACHE_SECONDS",
     "CapabilityDiscoveryDocument",

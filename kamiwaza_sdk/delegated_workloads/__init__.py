@@ -102,6 +102,15 @@ from kamiwaza_sdk.delegated_workloads.errors import (
 from kamiwaza_sdk.delegated_workloads.errors import FencedClaim as FencedClaim
 from kamiwaza_sdk.delegated_workloads.errors import GrantInactive as GrantInactive
 from kamiwaza_sdk.delegated_workloads.errors import InternalError as InternalError
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    FAMILY_PLATFORM_OPERATIONS as FAMILY_PLATFORM_OPERATIONS,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    admission_reported as admission_reported,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    gated_families as gated_families,
+)
 from kamiwaza_sdk.delegated_workloads.errors import (
     IncompatibleContract as IncompatibleContract,
 )
@@ -382,6 +391,7 @@ __all__ = (
     "EffectResourceRef",
     "FencedClaim",
     "GrantInactive",
+    "FAMILY_PLATFORM_OPERATIONS",
     "IncompatibleContract",
     "InternalError",
     "InvalidRequest",
@@ -413,6 +423,8 @@ __all__ = (
     "ResourceRegistrationAdapter",
     "ResourceRegistrationRejected",
     "ResourceReadinessRequirement",
+    "admission_reported",
+    "gated_families",
     "RetryClassification",
     "RevisionMismatch",
     "RunClaimStatus",

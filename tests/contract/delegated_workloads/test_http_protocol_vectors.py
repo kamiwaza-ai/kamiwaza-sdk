@@ -23,6 +23,10 @@ _CLOSED_RETRY_CLASSES = {
     "bounded_backoff",
     "idempotent_read_only",
 }
+#: Restated deliberately: this module checks the published fixture without
+#: importing the SDK, so a third-party implementer can run it against their own
+#: client. The drift risk that leaves — fixture and SDK enum diverging — is
+#: covered by test_models_and_errors.py, which does import the SDK.
 _ERROR_CODES = {
     "ambiguous_effect_outcome",
     "approval_required",
@@ -36,6 +40,7 @@ _ERROR_CODES = {
     "fenced_claim",
     "grant_inactive",
     "incompatible_contract",
+    "internal_error",
     "invalid_request",
     "occurrence_digest_conflict",
     "proof_mismatch",

@@ -17,6 +17,7 @@ from kamiwaza_sdk.delegated_workloads.readiness import (
     ReadinessEvaluator,
     ReadinessRequirements,
     ResourceReadinessRequirement,
+    admission_reported,
     gated_families,
 )
 from kamiwaza_sdk.delegated_workloads.proof import WorkloadAssertion
@@ -262,7 +263,7 @@ def test_workload_and_descriptor_revision_changes_fence_the_cache() -> None:
     assert len(transport.requests) == 3
 
 
-def _document_denying(*families: str) -> CapabilityDiscoveryDocument:
+def _document_denying() -> CapabilityDiscoveryDocument:
     """A caller holding no operations at all, on a healthy platform.
 
     Core reports platform health in `components` for every caller, so a denied
@@ -270,8 +271,12 @@ def _document_denying(*families: str) -> CapabilityDiscoveryDocument:
     is the whole point of carrying admission there.
     """
 
-    del families
-    return _document().model_copy(update={"permitted_platform_operations": ()})
+    return _document().model_copy(
+        update={
+            "permitted_platform_operations": (),
+            "role_resolution": "observed",
+        }
+    )
 
 
 def test_a_platform_healthy_document_still_reports_ready_for_a_denied_caller() -> None:
@@ -295,9 +300,7 @@ def test_a_capability_the_caller_may_not_invoke_is_derived_from_the_field() -> N
     would refuse.
     """
 
-    document = _document_denying(
-        "run_capabilities", "run_lifecycle", "atomic_queue_claims"
-    )
+    document = _document_denying()
 
     assert gated_families(document) == (
         "atomic_queue_claims",
@@ -319,7 +322,8 @@ def test_a_caller_holding_every_operation_has_no_gated_family() -> None:
                 sorted(
                     {op for ops in FAMILY_PLATFORM_OPERATIONS.values() for op in ops}
                 )
-            )
+            ),
+            "role_resolution": "observed",
         }
     )
 
@@ -378,6 +382,7 @@ def test_the_served_family_map_wins_over_the_local_fallback() -> None:
         update={
             "permitted_platform_operations": ("run:reserve",),
             "family_platform_operations": {"run_capabilities": ("run:reserve",)},
+            "role_resolution": "observed",
         }
     )
 
@@ -386,7 +391,10 @@ def test_the_served_family_map_wins_over_the_local_fallback() -> None:
 
 def test_a_core_without_the_served_map_falls_back_locally() -> None:
     document = _document().model_copy(
-        update={"permitted_platform_operations": ("run:reserve",)}
+        update={
+            "permitted_platform_operations": ("run:reserve",),
+            "role_resolution": "observed",
+        }
     )
 
     assert document.family_platform_operations == {}
@@ -401,9 +409,38 @@ def test_an_empty_permitted_set_carries_the_reason_it_is_empty() -> None:
     send a caller after the wrong remedy in two cases out of three.
     """
 
-    document = _document()
+    document = _document().model_copy(update={"role_resolution": "observed"})
 
     assert document.role_resolution == "observed"
     for resolution in ("registry_unavailable", "role_inactive", "something_new"):
         updated = document.model_copy(update={"role_resolution": resolution})
         assert updated.role_resolution == resolution
+
+
+def test_a_core_that_does_not_report_admission_is_not_read_as_a_denial() -> None:
+    """Silence is not the same as "you hold nothing".
+
+    A Core predating this contract sends no admission fields, leaving the
+    permitted set empty for a reason that has nothing to do with the caller's
+    grants. Defaulting that to "observed" would make a consumer gate refuse
+    every family against an older server, with no field saying why — the false
+    red that mirrors the false green this work removes.
+    """
+
+    legacy = _document()
+
+    assert legacy.role_resolution == "unreported"
+    assert admission_reported(legacy) is False
+    assert gated_families(legacy) is None
+
+
+def test_a_core_that_does_report_admission_answers_concretely() -> None:
+    current = _document().model_copy(
+        update={
+            "role_resolution": "observed",
+            "permitted_platform_operations": ("intent:create", "intent:read"),
+        }
+    )
+
+    assert admission_reported(current) is True
+    assert "run_capabilities" in (gated_families(current) or ())
