@@ -246,7 +246,13 @@ def derive_status(steps: list[StepResult]) -> str:
       steps — caveats a human should review) → ``"passed_with_notes"``.
 
     An empty step list is ``"failed"`` defensively: a run that executed
-    nothing is not evidence of anything.
+    nothing is not evidence of anything. A run whose steps are *all*
+    ``pending`` executed nothing either -- ``pending`` means no handler was
+    registered, so the driver is unimplemented -- and is ``"failed"`` for the
+    same reason (ENG-11717). ``skipped`` is deliberately not covered by that
+    rule: a skip is a handler that ran and declined, which
+    :attr:`ScenarioResult.passed` already counts as non-failing while
+    excluding ``pending``.
     """
     if not steps:
         return "failed"
@@ -254,6 +260,10 @@ def derive_status(steps: list[StepResult]) -> str:
         return "failed"
     if all(s.status == "passed" for s in steps):
         return "passed"
+    if not any(s.status == "passed" for s in steps) and any(
+        s.status == "pending" for s in steps
+    ):
+        return "failed"
     return "passed_with_notes"
 
 

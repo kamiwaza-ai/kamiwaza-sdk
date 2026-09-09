@@ -318,12 +318,44 @@ class TestStatusDerivation:
     def test_derive_status_empty_steps_is_failed(self):
         assert derive_status([]) == "failed"
 
+    def test_derive_status_all_pending_is_failed(self):
+        """A run whose every step is `pending` executed nothing (ENG-11717).
+
+        `pending` means no handler was registered, so the scenario driver is
+        unimplemented. `derive_status`'s own docstring already states the rule
+        -- "a run that executed nothing is not evidence of anything" -- but it
+        guarded only the empty-step-list case, so an all-pending run was
+        reported as passing and joined the corpus as `characterized` evidence.
+        """
+        step = lambda st: StepResult(name="x", status=st, duration_s=0.0)  # noqa: E731
+        assert derive_status([step("pending")]) == "failed"
+        assert derive_status([step("pending"), step("pending")]) == "failed"
+
+    def test_derive_status_all_skipped_stays_passed_with_notes(self):
+        """`skipped` is a handler that ran and declined -- not an absent one.
+
+        harness.ScenarioResult.passed draws exactly this line, counting
+        `skipped` as non-failing while excluding `pending`. Pinned so the
+        ENG-11717 fix cannot widen into skips.
+        """
+        step = lambda st: StepResult(name="x", status=st, duration_s=0.0)  # noqa: E731
+        assert derive_status([step("skipped")]) == "passed_with_notes"
+
+    def test_derive_status_mixed_passed_and_pending_is_passed_with_notes(self):
+        """A partially implemented driver still demonstrated something."""
+        step = lambda st: StepResult(name="x", status=st, duration_s=0.0)  # noqa: E731
+        assert derive_status([step("passed"), step("pending")]) == "passed_with_notes"
+
     def test_derive_status_direct_vocabulary(self):
         step = lambda st: StepResult(name="x", status=st, duration_s=0.0)  # noqa: E731
         assert derive_status([step("passed")]) == "passed"
         assert derive_status([step("passed"), step("failed")]) == "failed"
         assert derive_status([step("passed"), step("skipped")]) == "passed_with_notes"
-        assert derive_status([step("pending")]) == "passed_with_notes"
+        # ENG-11717: an all-pending run executed nothing, so it is not
+        # evidence. Previously "passed_with_notes"; see
+        # test_derive_status_all_pending_is_failed for the rationale. A
+        # *mixed* passed+pending run is still "passed_with_notes".
+        assert derive_status([step("pending")]) == "failed"
 
 
 @pytest.mark.unit
