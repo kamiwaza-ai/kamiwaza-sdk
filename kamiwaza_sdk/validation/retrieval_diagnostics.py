@@ -64,8 +64,12 @@ def _observe_line(raw: str, summary: dict, events: dict[str, int]) -> None:
         events[event if event in _EVENTS else "other"] += 1
 
 
-def log_retrieval_job_state(client: Any, path: str, headers: Mapping[str, str]) -> None:
+def log_missing_audit_job_state(
+    client: Any, path: str, headers: Mapping[str, str], audits: list
+) -> None:
     """Best-effort read after missing audit evidence; never replace its failure."""
+    if audits:
+        return
     try:
         job = client._request("GET", path, headers=dict(headers), timeout=10)
     except Exception:

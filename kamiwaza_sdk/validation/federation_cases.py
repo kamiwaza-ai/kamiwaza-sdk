@@ -31,7 +31,7 @@ from kamiwaza_sdk.validation.models import CaseResult, ResolvedScenario
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.retrieval_diagnostics import (
     diagnostic_lines,
-    log_retrieval_job_state,
+    log_missing_audit_job_state,
 )
 
 
@@ -304,13 +304,13 @@ def _mesh_retrieve(
         result = _collect_retrieval_stream(response)
     finally:
         response.close()
-    if not result[1]:
-        log_retrieval_job_state(
-            request.persona,
-            f"/mesh/{quote(request.federation_name, safe='')}/api/retrieval/jobs/"
-            f"{quote(str(job_id), safe='')}",
-            credential_headers,
-        )
+    log_missing_audit_job_state(
+        request.persona,
+        f"/mesh/{quote(request.federation_name, safe='')}/api/retrieval/jobs/"
+        f"{quote(str(job_id), safe='')}",
+        credential_headers,
+        result[1],
+    )
     return result
 
 

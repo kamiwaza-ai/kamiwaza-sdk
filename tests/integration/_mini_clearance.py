@@ -39,7 +39,7 @@ from kamiwaza_sdk.validation.federation_fixture import (
 )
 from kamiwaza_sdk.validation.retrieval_diagnostics import (
     diagnostic_lines,
-    log_retrieval_job_state,
+    log_missing_audit_job_state,
 )
 
 WHEEL_NAME = "acme_gates-1.1.0-py3-none-any.whl"
@@ -447,12 +447,12 @@ def mesh_retrieve_through_gate(
             elif raw.startswith("data:"):
                 data_lines.append(raw[len("data:") :].lstrip())
 
-    if not gate_audits:
-        log_retrieval_job_state(
-            persona_client,
-            f"/mesh/{fed_name}/api/retrieval/jobs/{job_id}",
-            credential_headers,
-        )
+    log_missing_audit_job_state(
+        persona_client,
+        f"/mesh/{fed_name}/api/retrieval/jobs/{job_id}",
+        credential_headers,
+        gate_audits,
+    )
     return rows, gate_audits
 
 
