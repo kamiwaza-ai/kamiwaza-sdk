@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import cast
 
 from kamiwaza_sdk.delegated_workloads.readiness import (
+    FAMILY_PLATFORM_OPERATIONS,
     MANDATORY_V1_CAPABILITY_FAMILIES,
     MAX_READINESS_CACHE_SECONDS,
     CapabilityDiscoveryDocument,
@@ -16,6 +17,7 @@ from kamiwaza_sdk.delegated_workloads.readiness import (
     ReadinessEvaluator,
     ReadinessRequirements,
     ResourceReadinessRequirement,
+    gated_families,
 )
 from kamiwaza_sdk.delegated_workloads.proof import WorkloadAssertion
 from kamiwaza_sdk.delegated_workloads.transport import (
@@ -85,7 +87,9 @@ def test_each_missing_v1_family_blocks_readiness() -> None:
         capabilities = tuple(
             family for family in MANDATORY_V1_CAPABILITY_FAMILIES if family != missing
         )
-        result = _evaluate(_document().model_copy(update={"capabilities": capabilities}))
+        result = _evaluate(
+            _document().model_copy(update={"capabilities": capabilities})
+        )
 
         assert result.ready is False
         assert ReadinessDiagnosticCode.V1_FAMILY_MISSING in result.diagnostics
@@ -96,25 +100,34 @@ def test_incompatible_protocol_or_family_status_blocks_readiness() -> None:
     components = dict(_document().components)
     components["durable_audit"] = UNAVAILABLE
 
-    assert ReadinessDiagnosticCode.INCOMPATIBLE_VERSION in _evaluate(
-        incompatible
-    ).diagnostics
-    assert ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE in _evaluate(
-        _document().model_copy(update={"components": components})
-    ).diagnostics
+    assert (
+        ReadinessDiagnosticCode.INCOMPATIBLE_VERSION
+        in _evaluate(incompatible).diagnostics
+    )
+    assert (
+        ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE
+        in _evaluate(
+            _document().model_copy(update={"components": components})
+        ).diagnostics
+    )
 
     components["durable_audit"] = ComponentReadiness(
         status=ComponentStatus.INCOMPATIBLE,
         reason_codes=(ReadinessDiagnosticCode.INCOMPATIBLE_VERSION,),
     )
-    assert ReadinessDiagnosticCode.INCOMPATIBLE_VERSION in _evaluate(
-        _document().model_copy(update={"components": components})
-    ).diagnostics
+    assert (
+        ReadinessDiagnosticCode.INCOMPATIBLE_VERSION
+        in _evaluate(
+            _document().model_copy(update={"components": components})
+        ).diagnostics
+    )
 
 
 def test_optional_profile_loss_selects_the_first_healthy_fallback() -> None:
     profiles = {"preferred-v1": UNAVAILABLE, "portable-v1": READY}
-    result = _evaluate(_document().model_copy(update={"attestation_profile_status": profiles}))
+    result = _evaluate(
+        _document().model_copy(update={"attestation_profile_status": profiles})
+    )
 
     assert result.ready is True
     assert result.selected_profiles == {"executor": "portable-v1"}
@@ -144,9 +157,9 @@ class _Transport:
 
     def send_json(self, request: object) -> object:
         self.requests.append(request)
-        return self.responses[min(len(self.requests) - 1, len(self.responses) - 1)].model_dump(
-            mode="json"
-        )
+        return self.responses[
+            min(len(self.requests) - 1, len(self.responses) - 1)
+        ].model_dump(mode="json")
 
 
 def test_cache_is_bounded_by_sdk_ceiling_and_server_validity() -> None:
@@ -251,7 +264,7 @@ def test_workload_and_descriptor_revision_changes_fence_the_cache() -> None:
 
 OPERATION_DENIED = ComponentReadiness(
     status=ComponentStatus.UNAVAILABLE,
-    reason_codes=(ReadinessDiagnosticCode.PLATFORM_OPERATION_UNAVAILABLE,),
+    reason_codes=(ReadinessDiagnosticCode.ROLLOUT_DISABLED,),
 )
 
 
@@ -269,30 +282,67 @@ def _document_denying(*families: str) -> CapabilityDiscoveryDocument:
     )
 
 
-def test_a_capability_the_caller_may_not_invoke_is_named_as_such() -> None:
-    """Otherwise the consumer waits out an outage that is not happening.
+def test_a_capability_the_caller_may_not_invoke_is_derived_from_the_field() -> None:
+    """The gate is computed, not read off a reason code.
 
-    A dependency outage clears on its own; a capability the caller's roles do
-    not permit stays closed until someone grants the operation. The two need
-    different responses, so they need different diagnostics.
+    Core cannot name admission inside `reason_codes` — that enum is closed in
+    every released client, so a new member makes the document unparseable for
+    anyone who has not upgraded. The permitted-operations field carries the
+    answer instead, and it resolves to exactly the families the run surface
+    would refuse.
     """
 
-    result = _evaluate(
-        _document_denying("run_capabilities", "run_lifecycle", "atomic_queue_claims")
+    document = _document_denying(
+        "run_capabilities", "run_lifecycle", "atomic_queue_claims"
     )
 
-    assert result.ready is False
-    assert ReadinessDiagnosticCode.PLATFORM_OPERATION_UNAVAILABLE in result.diagnostics
-    assert (
-        ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE not in result.diagnostics
+    assert _evaluate(document).ready is False
+    assert gated_families(document) == (
+        "atomic_queue_claims",
+        "brokered_credentials",
+        "effect_capabilities",
+        "effect_lifecycle",
+        "exact_effect_approval",
+        "run_capabilities",
+        "run_lifecycle",
     )
+
+
+def test_a_caller_holding_every_operation_has_no_gated_family() -> None:
+    document = _document().model_copy(
+        update={
+            "permitted_platform_operations": tuple(
+                sorted(
+                    {op for ops in FAMILY_PLATFORM_OPERATIONS.values() for op in ops}
+                )
+            )
+        }
+    )
+
+    assert gated_families(document) == ()
+
+
+def test_the_reason_vocabulary_stays_closed_against_the_published_contract() -> None:
+    """A new member here would be a breaking change, not an additive one."""
+
+    assert {item.value for item in ReadinessDiagnosticCode} == {
+        "healthy",
+        "dependency_unavailable",
+        "incompatible_version",
+        "profile_unavailable",
+        "resource_registration_unavailable",
+        "v1_family_missing",
+        "rollout_disabled",
+    }
 
 
 def test_a_real_dependency_outage_still_reports_as_a_dependency_outage() -> None:
     document = _document()
     components = dict(document.components)
     components["run_lifecycle"] = UNAVAILABLE
-    result = _evaluate(document.model_copy(update={"components": components, "ready": False}))
+    result = _evaluate(
+        document.model_copy(update={"components": components, "ready": False})
+    )
 
     assert result.diagnostics == (ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE,)
 
@@ -301,3 +351,13 @@ def test_permitted_operations_default_empty_on_a_core_that_cannot_answer() -> No
     """An older Core omits the field; silence must not read as a full grant."""
 
     assert _document().permitted_platform_operations == ()
+
+
+def test_every_gated_family_is_one_the_contract_actually_declares() -> None:
+    """A key that is not a real family gates nothing and hides a typo.
+
+    The gate is derived from this map, so a misspelled family silently reads as
+    usable to every consumer.
+    """
+
+    assert set(FAMILY_PLATFORM_OPERATIONS) <= set(MANDATORY_V1_CAPABILITY_FAMILIES)

@@ -44,6 +44,19 @@ MANDATORY_V1_CAPABILITY_FAMILIES = (
     "platform_consent",
     "protected_resource_guard",
 )
+#: Mirrors Core's platform_operations.FAMILY_PLATFORM_OPERATIONS. A family
+#: absent here is gated on no operation and is usable by every registered
+#: workload once the platform dependencies behind it are healthy.
+FAMILY_PLATFORM_OPERATIONS: Mapping[str, tuple[str, ...]] = {
+    "atomic_queue_claims": ("run:claim",),
+    "brokered_credentials": ("credential:use",),
+    "effect_capabilities": ("effect:reserve",),
+    "effect_lifecycle": ("effect:transition",),
+    "exact_effect_approval": ("effect:execute",),
+    "run_capabilities": ("run:reserve",),
+    "run_lifecycle": ("run:transition",),
+}
+
 MAX_READINESS_CACHE_SECONDS = 30
 _ASSERTION_HEADER = "X-Kamiwaza-Workload-Assertion"
 
@@ -63,7 +76,6 @@ class ReadinessDiagnosticCode(str, Enum):
     RESOURCE_REGISTRATION_UNAVAILABLE = "resource_registration_unavailable"
     V1_FAMILY_MISSING = "v1_family_missing"
     ROLLOUT_DISABLED = "rollout_disabled"
-    PLATFORM_OPERATION_UNAVAILABLE = "platform_operation_unavailable"
 
 
 class ComponentReadiness(DelegatedResponse):
@@ -219,10 +231,12 @@ def _check_contract(
     requirements: ReadinessRequirements,
     diagnostics: list[ReadinessDiagnosticCode],
 ) -> None:
-    if not all((
-        "v1" in requirements.contract_versions,
-        "v1" in document.contract_versions,
-    )):
+    if not all(
+        (
+            "v1" in requirements.contract_versions,
+            "v1" in document.contract_versions,
+        )
+    ):
         diagnostics.append(ReadinessDiagnosticCode.INCOMPATIBLE_VERSION)
     if document.profile_requirement_semantics != "ordered_any_of":
         diagnostics.append(ReadinessDiagnosticCode.INCOMPATIBLE_VERSION)
@@ -241,8 +255,7 @@ def _check_components(
     diagnostics: list[ReadinessDiagnosticCode],
 ) -> None:
     family_statuses = (
-        document.components.get(family)
-        for family in MANDATORY_V1_CAPABILITY_FAMILIES
+        document.components.get(family) for family in MANDATORY_V1_CAPABILITY_FAMILIES
     )
     if any(item is None for item in family_statuses):
         diagnostics.append(ReadinessDiagnosticCode.V1_FAMILY_MISSING)
@@ -250,30 +263,7 @@ def _check_components(
     if ComponentStatus.INCOMPATIBLE in statuses:
         diagnostics.append(ReadinessDiagnosticCode.INCOMPATIBLE_VERSION)
     elif statuses - {ComponentStatus.READY}:
-        diagnostics.append(_unready_reason(document))
-
-
-def _unready_reason(
-    document: CapabilityDiscoveryDocument,
-) -> ReadinessDiagnosticCode:
-    """Say whether a closed family is the platform's problem or the caller's.
-
-    Both close the gate, but they call for opposite responses: a dependency
-    outage clears on its own and is worth waiting out, while a capability the
-    caller's roles do not permit will read closed forever until someone grants
-    the operation. Collapsing them into DEPENDENCY_UNAVAILABLE leaves the
-    consumer retrying an outcome that cannot change — the failure this
-    diagnostic exists to name.
-    """
-
-    denied = any(
-        ReadinessDiagnosticCode.PLATFORM_OPERATION_UNAVAILABLE in item.reason_codes
-        for item in document.components.values()
-        if item.status is not ComponentStatus.READY
-    )
-    if denied:
-        return ReadinessDiagnosticCode.PLATFORM_OPERATION_UNAVAILABLE
-    return ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE
+        diagnostics.append(ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE)
 
 
 def _select_profiles(
@@ -313,9 +303,7 @@ def _check_resources(
     ):
         diagnostics.append(ReadinessDiagnosticCode.INCOMPATIBLE_VERSION)
     elif any(not _component_ready(item) for item in statuses):
-        diagnostics.append(
-            ReadinessDiagnosticCode.RESOURCE_REGISTRATION_UNAVAILABLE
-        )
+        diagnostics.append(ReadinessDiagnosticCode.RESOURCE_REGISTRATION_UNAVAILABLE)
 
 
 def _component_ready(component: ComponentReadiness | None) -> bool:
@@ -331,7 +319,30 @@ def _resource_fence(item: ResourceReadinessRequirement) -> dict[str, object]:
     }
 
 
+def gated_families(
+    document: CapabilityDiscoveryDocument,
+) -> tuple[str, ...]:
+    """Families this caller's roles do not hold the operations for.
+
+    Derived rather than read off a reason code on purpose. ``reason_codes`` is
+    a closed enum in every released client, so Core cannot introduce a value
+    naming admission without making the whole document unparseable for anyone
+    who has not upgraded — and the least-privileged caller, the one this
+    answers for, is exactly who would hit that. ``permitted_platform_operations``
+    is a new *field*, which older clients ignore harmlessly, so the precise
+    answer travels there and is resolved against the published family map here.
+    """
+
+    permitted = frozenset(document.permitted_platform_operations)
+    return tuple(
+        family
+        for family, required in sorted(FAMILY_PLATFORM_OPERATIONS.items())
+        if not permitted.issuperset(required)
+    )
+
+
 __all__ = (
+    "FAMILY_PLATFORM_OPERATIONS",
     "MANDATORY_V1_CAPABILITY_FAMILIES",
     "MAX_READINESS_CACHE_SECONDS",
     "CapabilityDiscoveryDocument",
@@ -343,4 +354,5 @@ __all__ = (
     "ReadinessRequirements",
     "ReadinessResult",
     "ResourceReadinessRequirement",
+    "gated_families",
 )
