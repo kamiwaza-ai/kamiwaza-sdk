@@ -91,6 +91,7 @@ def test_provider_mesh_retrieval_explicitly_requests_sse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str, dict[str, Any]]] = []
+    diagnostic_calls: list[tuple] = []
 
     class Persona:
         session = SimpleNamespace(verify=True)
@@ -117,6 +118,11 @@ def test_provider_mesh_retrieval_explicitly_requests_sse(
         lambda _federation_name: {"X-Kamiwaza-Federation-Credential": "test"},
     )
     monkeypatch.setattr(case_module, "_retrieval_stream", lambda _request: response)
+    monkeypatch.setattr(
+        case_module,
+        "log_missing_audit_job_state",
+        lambda *args: diagnostic_calls.append(args),
+    )
 
     assert case_module._mesh_retrieve(
         case_module.RetrievalRequest(
@@ -136,11 +142,17 @@ def test_provider_mesh_retrieval_explicitly_requests_sse(
                 "headers": {"X-Kamiwaza-Federation-Credential": "test"},
             },
         ),
+    ]
+    assert diagnostic_calls == [
         (
-            "GET",
-            "/mesh/peer/api/retrieval/jobs/job-1",
-            {"headers": {"X-Kamiwaza-Federation-Credential": "test"}, "timeout": 10},
-        ),
+            "https://edge-a.test/api/mesh/peer/api/retrieval/jobs/job-1",
+            {
+                "Authorization": "Bearer token",
+                "X-Kamiwaza-Federation-Credential": "test",
+            },
+            True,
+            [],
+        )
     ]
     assert response.closed
 

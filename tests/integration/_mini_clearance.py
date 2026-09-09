@@ -448,10 +448,7 @@ def mesh_retrieve_through_gate(
                 data_lines.append(raw[len("data:") :].lstrip())
 
     log_missing_audit_job_state(
-        persona_client,
-        f"/mesh/{fed_name}/api/retrieval/jobs/{job_id}",
-        credential_headers,
-        gate_audits,
+        url.removesuffix("/stream"), headers, verify, gate_audits
     )
     return rows, gate_audits
 

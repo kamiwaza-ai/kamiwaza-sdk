@@ -12,6 +12,8 @@ import logging
 from collections.abc import Iterator, Mapping
 from typing import Any
 
+import requests
+
 _LOGGER = logging.getLogger(__name__)
 _EVENTS = ("chunk", "complete", "error", "done", "message", "other")
 _STATUSES = frozenset({"PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELED"})
@@ -79,24 +81,40 @@ def _observe_line(raw: Any, summary: dict[str, Any], events: dict[str, int]) -> 
 
 
 def log_missing_audit_job_state(
-    client: Any, path: str, headers: Mapping[str, str], audits: list
+    url: str, headers: Mapping[str, str], verify: Any, audits: list
 ) -> None:
     """Best-effort read after missing audit evidence; never replace its failure."""
     if audits:
         return
     try:
-        job = client._request("GET", path, headers=dict(headers), timeout=10)
+        summary = _retrieval_job_summary(url, headers, verify)
     except Exception:
         # The original known-answer assertion still fails. This separate lookup
         # is diagnostic only, and arbitrary exception strings can contain secrets.
         summary = {"lookup": "failed"}
-    else:
-        summary = {
+    _LOGGER.warning("federation_retrieval_job %s", json.dumps(summary, sort_keys=True))
+
+
+def _retrieval_job_summary(url: str, headers: Mapping[str, str], verify: Any) -> dict:
+    # Reuse the stream's credentials and TLS policy. SDK _request logs raw
+    # error bodies before raising; this diagnostic read must not use that path.
+    # Never redirect the federation credential or retry a diagnostic lookup.
+    with requests.get(
+        url,
+        headers={**headers, "Accept": "application/json"},
+        verify=verify,
+        timeout=10,
+        allow_redirects=False,
+        stream=True,
+    ) as response:
+        if not 200 <= response.status_code < 300:
+            return {"lookup": "failed", "http_status": response.status_code}
+        job = response.json()
+        return {
             "lookup": "ok",
             "status": _known_field(job, "status", _STATUSES),
             "transport": _known_field(job, "transport", _TRANSPORTS),
         }
-    _LOGGER.warning("federation_retrieval_job %s", json.dumps(summary, sort_keys=True))
 
 
 def _known_field(job: Any, name: str, choices: frozenset[str]) -> str:

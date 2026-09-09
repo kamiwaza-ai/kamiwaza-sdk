@@ -305,10 +305,10 @@ def _mesh_retrieve(
     finally:
         response.close()
     log_missing_audit_job_state(
-        request.persona,
-        f"/mesh/{quote(request.federation_name, safe='')}/api/retrieval/jobs/"
+        f"{request.base_url}/mesh/{quote(request.federation_name, safe='')}/api/retrieval/jobs/"
         f"{quote(str(job_id), safe='')}",
-        credential_headers,
+        {"Authorization": f"Bearer {request.token}", **credential_headers},
+        getattr(request.persona.session, "verify", True),
         result[1],
     )
     return result

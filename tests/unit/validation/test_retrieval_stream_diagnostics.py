@@ -7,7 +7,10 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+import requests
+import responses
 
+from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.validation import federation_cases as fc
 from tests.integration import _mini_clearance as mc
 
@@ -49,16 +52,36 @@ class _Persona:
     def __init__(self, job_status="FAILED"):
         self.job_status = job_status
         self.lookups = []
+        self.job_response = None
 
     def _request(self, method, path, **kwargs):
-        if method == "POST":
-            assert kwargs["json"]["transport"] == "sse"
-            return {"job_id": "job-1"}
-        self.lookups.append((method, path))
+        assert method == "POST"  # Diagnostics must bypass raw SDK error logging.
+        assert kwargs["json"]["transport"] == "sse"
+        return {"job_id": "job-1"}
+
+    def lookup(self, url, **kwargs):
+        self.lookups.append(("GET", url))
         assert kwargs["timeout"] == 10
-        assert kwargs["headers"] == {"X-Kamiwaza-Federation-Credential": _SECRET}
+        assert kwargs["allow_redirects"] is False
+        assert kwargs["stream"] is True
+        assert kwargs["verify"] == self.session.verify
+        assert kwargs["headers"] == {
+            "Authorization": f"Bearer {_SECRET}",
+            "X-Kamiwaza-Federation-Credential": _SECRET,
+            "Accept": "application/json",
+        }
         if isinstance(self.job_status, Exception):
             raise self.job_status
+        self.job_response = _JobResponse(self.job_status)
+        return self.job_response
+
+
+class _JobResponse(_Response):
+    def __init__(self, job_status):
+        super().__init__([])
+        self.job_status = job_status
+
+    def json(self):
         return {"status": self.job_status, "transport": "sse", "secret": _SECRET}
 
 
@@ -72,9 +95,17 @@ def invoke(request, monkeypatch, caplog):
             lambda _name: {"X-Kamiwaza-Federation-Credential": _SECRET},
         )
 
-    def call(response, persona=None):
+    def call(response, persona=None, *, real_http=False):
         persona = persona or _Persona()
-        monkeypatch.setattr("requests.get", lambda *_args, **_kwargs: response)
+        if not real_http:
+            monkeypatch.setattr(
+                "requests.get",
+                lambda url, **kwargs: (
+                    response
+                    if url.endswith("/stream")
+                    else persona.lookup(url, **kwargs)
+                ),
+            )
         if request.param == "provider":
             result = fc._mesh_retrieve(
                 fc.RetrievalRequest(
@@ -88,7 +119,7 @@ def invoke(request, monkeypatch, caplog):
                 _SECRET,
                 "peer",
                 "urn:test",
-                verify=True,
+                verify=persona.session.verify,
             )
         return result, persona
 
@@ -117,8 +148,20 @@ def test_empty_stream_retains_shape_and_terminal_job_state(invoke, caplog, lines
     assert _evidence(caplog, "federation_retrieval_job ") == [
         {"lookup": "ok", "status": "FAILED", "transport": "sse"}
     ]
-    assert persona.lookups == [("GET", "/mesh/peer/api/retrieval/jobs/job-1")]
+    assert persona.lookups == [
+        ("GET", "https://source.example/api/mesh/peer/api/retrieval/jobs/job-1")
+    ]
     assert response.closed
+    assert persona.job_response.closed
+
+
+@pytest.mark.parametrize("verify", [False, "/tmp/federation-test-ca.pem"])
+def test_diagnostic_lookup_preserves_stream_tls_policy(invoke, verify):
+    persona = _Persona()
+    persona.session = SimpleNamespace(verify=verify)
+    result, _ = invoke(_Response([]), persona)
+    assert result == ([], [])
+    assert persona.job_response.closed
 
 
 def test_error_and_unknown_events_do_not_expose_contents(invoke, caplog):
@@ -149,6 +192,32 @@ def test_failed_job_lookup_cannot_replace_original_stream_result(invoke, caplog)
     assert result == ([], [])
     assert _evidence(caplog, "federation_retrieval_job ") == [{"lookup": "failed"}]
     assert _SECRET not in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["http_500", "timeout", "redirect", "invalid_json"])
+def test_real_client_diagnostic_failures_do_not_log_private_content(
+    invoke, caplog, failure
+):
+    client = KamiwazaClient(base_url="https://source.example/api", api_key=_SECRET)
+    job_url = "https://source.example/api/mesh/peer/api/retrieval/jobs/job-1"
+    options = {
+        "http_500": {"status": 500, "json": {"detail": _SECRET}},
+        "timeout": {"body": requests.Timeout(_SECRET)},
+        "redirect": {
+            "status": 302,
+            "headers": {"Location": f"https://elsewhere.example/{_SECRET}"},
+        },
+        "invalid_json": {"body": _SECRET, "content_type": "application/json"},
+    }
+    with responses.RequestsMock() as http:
+        http.post(job_url.rsplit("/", 1)[0], json={"job_id": "job-1"})
+        http.get(f"{job_url}/stream", body="", content_type="text/event-stream")
+        http.get(job_url, **options[failure])
+        result, _ = invoke(None, client, real_http=True)
+        assert result == ([], [])
+        assert _SECRET not in caplog.text
+        assert _evidence(caplog, "federation_retrieval_job ")[0]["lookup"] == "failed"
+        assert len(http.calls) == 3  # Never follow a redirect or retry the lookup.
 
 
 @pytest.mark.parametrize("lines", [[], ["event: complete", "data: {}", ""]])
