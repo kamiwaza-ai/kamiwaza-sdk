@@ -1,5 +1,8 @@
 # kamiwaza_sdk/schemas/serving/serving.py
 
+import re
+from decimal import Decimal, InvalidOperation
+
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
 from typing import Dict, List, Literal, Optional
 from datetime import datetime
@@ -13,6 +16,33 @@ class CpuResourceQuantities(BaseModel):
 
     cpu: StrictStr = Field(min_length=1, max_length=128)
     memory: StrictStr = Field(min_length=1, max_length=128)
+
+    @field_validator("cpu")
+    @classmethod
+    def _valid_cpu_quantity(cls, value: str) -> str:
+        if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[numkMGTPE]|[eE][+-]?[0-9]+)?", value):
+            raise ValueError("cpu must be a Kubernetes decimal quantity")
+        try:
+            number, suffix = re.fullmatch(r"([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))([numkMGTPE]|[eE][+-]?[0-9]+)?", value).groups()
+            exponent = {None: 0, "n": -9, "u": -6, "m": -3, "k": 3, "M": 6, "G": 9, "T": 12, "P": 15, "E": 18}.get(suffix)
+            exponent = int(suffix[1:]) if exponent is None else exponent
+            amount = Decimal(number) * (Decimal(10) ** (exponent + 3))
+        except (InvalidOperation, ValueError, OverflowError) as exc:
+            raise ValueError("cpu exceeds the supported quantity range") from exc
+        if amount <= 0 or amount > 2**63 - 1 or amount != amount.to_integral_value():
+            raise ValueError("cpu must fit a positive signed 64-bit integer")
+        return value
+
+    @field_validator("memory")
+    @classmethod
+    def _valid_memory_quantity(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?(?:Mi|Gi)", value):
+            raise ValueError("memory must use a positive Mi or Gi quantity")
+        number, unit = value[:-2], value[-2:]
+        amount = Decimal(number) * (1024 ** (2 if unit == "Mi" else 3))
+        if amount <= 0 or amount > 2**63 - 1 or amount != amount.to_integral_value():
+            raise ValueError("memory must fit a positive signed 64-bit integer")
+        return value
 
 
 class CpuResourceRequest(BaseModel):

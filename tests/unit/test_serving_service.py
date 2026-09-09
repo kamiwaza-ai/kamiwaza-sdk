@@ -74,6 +74,35 @@ def test_create_model_deployment_round_trips_tenant_cpu_resources():
     }
 
 
+@pytest.mark.parametrize("cpu,memory", [("", "2Gi"), ("500x", "2Gi"), ("0", "2Gi"), ("500m", "2G")])
+def test_create_model_deployment_rejects_invalid_cpu_quantities(cpu, memory):
+    with pytest.raises(ValueError):
+        CreateModelDeployment.model_validate({
+            "m_id": uuid4(), "m_config_id": uuid4(), "inferenceResources": {
+                "schemaVersion": 1, "cpu": {"architecture": "arm64", "requests": {"cpu": cpu, "memory": memory}},
+                "runtime": {"selection": "automatic"},
+            },
+        })
+
+
+def test_deploy_model_sends_canonical_inference_resource_aliases(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect("POST", "/serving/deploy_model", str(deployment_id))
+    service = ServingService(mock_client)
+    service.deploy_model(
+        model_id=uuid4(), m_config_id=uuid4(), wait=False,
+        inferenceResources={
+            "schemaVersion": 1,
+            "cpu": {"architecture": "arm64", "requests": {"cpu": "500m", "memory": "2Gi"}},
+            "runtime": {"selection": "automatic"},
+        },
+    )
+    payload = mock_client.calls[0][2]["json"]
+    assert "inferenceResources" in payload
+    assert "schemaVersion" in payload["inferenceResources"]
+    assert "inference_resources" not in payload
+
+
 def test_deploy_model_waits_until_ready_by_default(mock_client):
     """wait is omitted (default True) — the deploy polls through to
     DEPLOYED. poll_interval_seconds/timeout_seconds are forwarded to the

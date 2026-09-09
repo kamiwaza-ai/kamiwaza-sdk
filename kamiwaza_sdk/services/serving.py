@@ -128,7 +128,7 @@ class ServingService(BaseService):
         )
 
         # Convert UUIDs to strings in the deployment_request dictionary
-        request_dict = deployment_request.model_dump()
+        request_dict = deployment_request.model_dump(by_alias=True, exclude_none=True)
         request_dict['m_id'] = str(request_dict['m_id'])
         if request_dict.get('m_file_id'):
             request_dict['m_file_id'] = str(request_dict['m_file_id'])
