@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
+import pytest
+
 from kamiwaza_sdk.delegated_workloads.readiness import (
     FAMILY_PLATFORM_OPERATIONS,
     MANDATORY_V1_CAPABILITY_FAMILIES,
@@ -444,3 +446,46 @@ def test_a_core_that_does_report_admission_answers_concretely() -> None:
 
     assert admission_reported(current) is True
     assert "run_capabilities" in (gated_families(current) or ())
+
+
+@pytest.mark.parametrize(
+    "resolution",
+    ["unreported", "registry_unavailable", "role_inactive"],
+)
+def test_only_an_observation_supports_a_definitive_denial(resolution: str) -> None:
+    """An outage and a stale assertion are not answers about grants.
+
+    All three leave the permitted set empty for reasons unrelated to what the
+    caller was granted. Reporting a concrete gated list under any of them would
+    send an operator hunting a permission problem during a registry blip — this
+    contract's own bug, one level down.
+    """
+
+    document = _document().model_copy(update={"role_resolution": resolution})
+
+    assert admission_reported(document) is False
+    assert gated_families(document) is None
+
+
+def test_an_explicit_null_degrades_rather_than_bricking_discovery() -> None:
+    """A server serving null must cost the caller admission data, not the document.
+
+    These fields are additive; failing validation over one of them would take
+    the whole discovery response with it.
+    """
+
+    # Validated rather than model_copy'd: model_copy bypasses validators, so it
+    # would not exercise the path a real server response takes.
+    payload = _document().model_dump(mode="json")
+    payload.update(
+        role_resolution=None,
+        permitted_platform_operations=None,
+        family_platform_operations=None,
+    )
+
+    document = CapabilityDiscoveryDocument.model_validate(payload)
+
+    assert document.role_resolution == "unreported"
+    assert document.permitted_platform_operations == ()
+    assert dict(document.family_platform_operations) == {}
+    assert gated_families(document) is None

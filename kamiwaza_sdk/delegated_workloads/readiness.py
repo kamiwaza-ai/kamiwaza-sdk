@@ -8,7 +8,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Protocol
+from typing import Annotated, Protocol
+
+from pydantic import BeforeValidator
 
 from kamiwaza_sdk.delegated_workloads._protocol import (
     base_url as normalized_base_url,
@@ -86,6 +88,21 @@ class ComponentReadiness(DelegatedResponse):
     reason_codes: tuple[ReadinessDiagnosticCode, ...]
 
 
+def _or_default(default: object) -> object:
+    """Coerce an explicit JSON null to the field's default.
+
+    A server that serves `null` for an absent value should leave the caller
+    without admission data, not without a discovery document: these fields are
+    additive, and failing validation over one of them takes the whole response
+    with it.
+    """
+
+    def _coerce(value: object) -> object:
+        return default if value is None else value
+
+    return BeforeValidator(_coerce)
+
+
 class CapabilityDiscoveryDocument(DelegatedResponse):
     contract_versions: tuple[str, ...]
     attestation_profiles: tuple[str, ...]
@@ -96,13 +113,17 @@ class CapabilityDiscoveryDocument(DelegatedResponse):
     components: Mapping[str, ComponentReadiness]
     #: Served by Core so a consumer need not keep its own copy. Empty on a Core
     #: that predates the field, in which case the local fallback is used.
-    family_platform_operations: Mapping[str, tuple[str, ...]] = {}
+    family_platform_operations: Annotated[
+        Mapping[str, tuple[str, ...]], _or_default({})
+    ] = {}
     #: Platform operations the attested caller's roles hold, as Core observed
     #: them. Absent on a Core older than the admission-aware discovery, which
     #: is why it defaults rather than being required: an old server cannot
     #: answer the question, and the evaluator must not read that silence as a
     #: grant of everything.
-    permitted_platform_operations: tuple[str, ...] = ()
+    permitted_platform_operations: Annotated[
+        tuple[str, ...], _or_default(())
+    ] = ()
     #: How Core resolved the role read: "observed", "registry_unavailable" or
     #: "role_inactive". An empty permitted set means something different under
     #: each — an outage that clears itself, an assertion a fresh one would fix,
@@ -115,7 +136,7 @@ class CapabilityDiscoveryDocument(DelegatedResponse):
     #: indistinguishable from a caller who genuinely holds nothing — and since
     #: `permitted_platform_operations` is empty in both cases, a consumer would
     #: refuse all work against an older Core with nothing saying why.
-    role_resolution: str = "unreported"
+    role_resolution: Annotated[str, _or_default("unreported")] = "unreported"
     checked_at: datetime
     valid_until: datetime
     ready: bool
@@ -231,6 +252,17 @@ class ReadinessClient:
         self._cache = _CacheEntry(fence, expires_at, result)
         return result
 
+    def discover(self) -> CapabilityDiscoveryDocument:
+        """Fetch the raw discovery document.
+
+        `check()` answers readiness and discards the document, but the
+        admission fields — and `gated_families`, which resolves them — live on
+        the document itself. Without this a consumer would have to reimplement
+        the request and its assertion header to reach them.
+        """
+
+        return self._fetch()
+
     def _fetch(self) -> CapabilityDiscoveryDocument:
         request = DelegatedProtocolRequest(
             method="GET",
@@ -339,14 +371,18 @@ def _resource_fence(item: ResourceReadinessRequirement) -> dict[str, object]:
 
 
 def admission_reported(document: CapabilityDiscoveryDocument) -> bool:
-    """Whether this Core answers admission at all.
+    """Whether this document carries an answer about the caller's grants.
 
-    False against a Core predating ENG-11695, whose document carries no
-    admission fields. Distinguishing that from a real denial is the whole
-    point: both leave the permitted set empty.
+    True only for "observed". A Core predating this contract reports
+    "unreported"; a Core that could not read the role registry reports
+    "registry_unavailable"; one whose assertion matched no active role reports
+    "role_inactive". All three leave the permitted set empty for reasons that
+    have nothing to do with what the caller was granted, and treating any of
+    them as an answer turns a transient outage into a permanent denial — the
+    conflation this contract exists to remove, one level down.
     """
 
-    return document.role_resolution != "unreported"
+    return document.role_resolution == "observed"
 
 
 def gated_families(
