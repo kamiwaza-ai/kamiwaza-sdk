@@ -29,6 +29,10 @@ from kamiwaza_sdk.validation.federation_fixture import (
 from kamiwaza_sdk.validation.federation_spec import SHARED_REALM_CLIENT_ID
 from kamiwaza_sdk.validation.models import CaseResult, ResolvedScenario
 from kamiwaza_sdk.validation.provider import ProviderContractError
+from kamiwaza_sdk.validation.retrieval_diagnostics import (
+    diagnostic_lines,
+    log_retrieval_job_state,
+)
 
 
 @dataclass(frozen=True)
@@ -297,9 +301,17 @@ def _mesh_retrieve(
         )
     )
     try:
-        return _collect_retrieval_stream(response)
+        result = _collect_retrieval_stream(response)
     finally:
         response.close()
+    if not result[1]:
+        log_retrieval_job_state(
+            request.persona,
+            f"/mesh/{quote(request.federation_name, safe='')}/api/retrieval/jobs/"
+            f"{quote(str(job_id), safe='')}",
+            credential_headers,
+        )
+    return result
 
 
 def _retrieval_job_id(job: Any) -> Any:
@@ -336,7 +348,7 @@ def _collect_retrieval_stream(
     audits: list[dict[str, Any]] = []
     event: str | None = None
     data_lines: list[str] = []
-    for raw in response.iter_lines(decode_unicode=True):
+    for raw in diagnostic_lines(response):
         if raw:
             event, data_lines = _parse_sse_line(raw, event, data_lines)
         else:

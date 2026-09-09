@@ -37,6 +37,10 @@ from kamiwaza_sdk.validation.federation_fixture import (
     KNOWN as SDK_KNOWN,
     records as sdk_records,
 )
+from kamiwaza_sdk.validation.retrieval_diagnostics import (
+    diagnostic_lines,
+    log_retrieval_job_state,
+)
 
 WHEEL_NAME = "acme_gates-1.1.0-py3-none-any.whl"
 PACKAGE_SPEC = GATE_PACKAGE_SPEC
@@ -148,9 +152,9 @@ def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
             hash_digest=_wheel_sha256(wheel_dir),
             index_url=index_url,
         )
-        assert GATE_CLASSPATH in result.package.classpaths, (
-            f"{GATE_CLASSPATH} not recorded in installed classpaths: {result.package.classpaths}"
-        )
+        assert (
+            GATE_CLASSPATH in result.package.classpaths
+        ), f"{GATE_CLASSPATH} not recorded in installed classpaths: {result.package.classpaths}"
     gate = kz.gates.discover(GATE_CLASSPATH)
     assert gate.name == GATE_NAME
 
@@ -421,7 +425,7 @@ def mesh_retrieve_through_gate(
         sr.raise_for_status()
         event: Optional[str] = None
         data_lines: list[str] = []
-        for raw in sr.iter_lines(decode_unicode=True):
+        for raw in diagnostic_lines(sr):
             if raw is None:
                 continue
             if raw == "":  # SSE event terminator (blank line)
@@ -443,6 +447,12 @@ def mesh_retrieve_through_gate(
             elif raw.startswith("data:"):
                 data_lines.append(raw[len("data:") :].lstrip())
 
+    if not gate_audits:
+        log_retrieval_job_state(
+            persona_client,
+            f"/mesh/{fed_name}/api/retrieval/jobs/{job_id}",
+            credential_headers,
+        )
     return rows, gate_audits
 
 
@@ -502,9 +512,9 @@ def assert_persona_result(
     """
     included, redacted, allowed = KNOWN[clearance]
     assert gate_audits, "no gate_audit footer in retrieval stream — gate not invoked?"
-    assert len(rows) == included, (
-        f"expected {included} rows for {clearance}, got {len(rows)}"
-    )
+    assert (
+        len(rows) == included
+    ), f"expected {included} rows for {clearance}, got {len(rows)}"
     _assert_exact_fixture_rows(clearance, rows, allowed)
     assert any(bool(audit.get("filtered")) for audit in gate_audits) is (
         redacted > 0

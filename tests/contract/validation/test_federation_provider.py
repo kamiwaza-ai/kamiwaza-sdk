@@ -101,6 +101,7 @@ def test_provider_mesh_retrieval_explicitly_requests_sse(
 
     class Response:
         closed = False
+        status_code = 200
 
         def iter_lines(self, *, decode_unicode: bool) -> list[str]:
             assert decode_unicode is True
@@ -134,7 +135,12 @@ def test_provider_mesh_retrieval_explicitly_requests_sse(
                 "json": {"dataset_urn": "urn:test", "transport": "sse"},
                 "headers": {"X-Kamiwaza-Federation-Credential": "test"},
             },
-        )
+        ),
+        (
+            "GET",
+            "/mesh/peer/api/retrieval/jobs/job-1",
+            {"headers": {"X-Kamiwaza-Federation-Credential": "test"}, "timeout": 10},
+        ),
     ]
     assert response.closed
 
