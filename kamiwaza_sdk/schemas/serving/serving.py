@@ -1,11 +1,59 @@
 # kamiwaza_sdk/schemas/serving/serving.py
 
-from pydantic import BaseModel, Field
-from typing import Dict, List, Optional
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
+from typing import Dict, List, Literal, Optional
 from datetime import datetime
 from uuid import UUID
 
+
+class CpuResourceQuantities(BaseModel):
+    """Explicit Kubernetes CPU request quantities for tenant inference."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    cpu: StrictStr = Field(min_length=1, max_length=128)
+    memory: StrictStr = Field(min_length=1, max_length=128)
+
+
+class CpuResourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    architecture: StrictStr = Field(min_length=1)
+    requests: CpuResourceQuantities
+
+    @field_validator("architecture")
+    @classmethod
+    def _no_whitespace_architecture(cls, value: str) -> str:
+        if not value.strip() or any(char.isspace() for char in value):
+            raise ValueError("architecture must be a non-empty identifier")
+        return value
+
+
+class CpuRuntimeSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    selection: Literal["automatic"]
+
+
+class CpuInferenceRequest(BaseModel):
+    """Provider-neutral CPU request accepted by the restricted tenant path."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    schema_version: StrictInt = Field(alias="schemaVersion")
+    cpu: CpuResourceRequest
+    runtime: CpuRuntimeSelection
+
+    @field_validator("schema_version")
+    @classmethod
+    def _schema_v1(cls, value: int) -> int:
+        if value != 1:
+            raise ValueError("schemaVersion must be 1")
+        return value
+
 class CreateModelDeployment(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     m_id: UUID = Field(description="The UUID of the model to deploy")
     m_file_id: Optional[UUID] = Field(default=None, description="Which weights file to use for models with >1 set of weights")
     m_config_id: UUID = Field(description="The UUID of the ModelConfig to use for this deployment")
@@ -22,6 +70,11 @@ class CreateModelDeployment(BaseModel):
     max_concurrent_requests: Optional[int] = Field(default=None, description="Maximum number of concurrent requests allowed")
     vram_allocation: Optional[float] = Field(default=None, description="The VRAM allocation, in bytes of vram for each copy of the deployed model")
     gpu_allocation: Optional[float] = Field(default=None, description="The GPU allocation, as a percentage of the total VRAM available")
+    inference_resources: Optional[CpuInferenceRequest] = Field(
+        default=None,
+        alias="inferenceResources",
+        description="Explicit CPU resources for restricted tenant inference.",
+    )
 
     def __str__(self):
         return (
