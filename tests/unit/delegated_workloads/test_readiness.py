@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
+import pytest
+
 from kamiwaza_sdk.delegated_workloads.readiness import (
+    FAMILY_PLATFORM_OPERATIONS,
     MANDATORY_V1_CAPABILITY_FAMILIES,
     MAX_READINESS_CACHE_SECONDS,
     CapabilityDiscoveryDocument,
@@ -16,6 +19,8 @@ from kamiwaza_sdk.delegated_workloads.readiness import (
     ReadinessEvaluator,
     ReadinessRequirements,
     ResourceReadinessRequirement,
+    admission_reported,
+    gated_families,
 )
 from kamiwaza_sdk.delegated_workloads.proof import WorkloadAssertion
 from kamiwaza_sdk.delegated_workloads.transport import (
@@ -85,7 +90,9 @@ def test_each_missing_v1_family_blocks_readiness() -> None:
         capabilities = tuple(
             family for family in MANDATORY_V1_CAPABILITY_FAMILIES if family != missing
         )
-        result = _evaluate(_document().model_copy(update={"capabilities": capabilities}))
+        result = _evaluate(
+            _document().model_copy(update={"capabilities": capabilities})
+        )
 
         assert result.ready is False
         assert ReadinessDiagnosticCode.V1_FAMILY_MISSING in result.diagnostics
@@ -96,25 +103,34 @@ def test_incompatible_protocol_or_family_status_blocks_readiness() -> None:
     components = dict(_document().components)
     components["durable_audit"] = UNAVAILABLE
 
-    assert ReadinessDiagnosticCode.INCOMPATIBLE_VERSION in _evaluate(
-        incompatible
-    ).diagnostics
-    assert ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE in _evaluate(
-        _document().model_copy(update={"components": components})
-    ).diagnostics
+    assert (
+        ReadinessDiagnosticCode.INCOMPATIBLE_VERSION
+        in _evaluate(incompatible).diagnostics
+    )
+    assert (
+        ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE
+        in _evaluate(
+            _document().model_copy(update={"components": components})
+        ).diagnostics
+    )
 
     components["durable_audit"] = ComponentReadiness(
         status=ComponentStatus.INCOMPATIBLE,
         reason_codes=(ReadinessDiagnosticCode.INCOMPATIBLE_VERSION,),
     )
-    assert ReadinessDiagnosticCode.INCOMPATIBLE_VERSION in _evaluate(
-        _document().model_copy(update={"components": components})
-    ).diagnostics
+    assert (
+        ReadinessDiagnosticCode.INCOMPATIBLE_VERSION
+        in _evaluate(
+            _document().model_copy(update={"components": components})
+        ).diagnostics
+    )
 
 
 def test_optional_profile_loss_selects_the_first_healthy_fallback() -> None:
     profiles = {"preferred-v1": UNAVAILABLE, "portable-v1": READY}
-    result = _evaluate(_document().model_copy(update={"attestation_profile_status": profiles}))
+    result = _evaluate(
+        _document().model_copy(update={"attestation_profile_status": profiles})
+    )
 
     assert result.ready is True
     assert result.selected_profiles == {"executor": "portable-v1"}
@@ -144,9 +160,9 @@ class _Transport:
 
     def send_json(self, request: object) -> object:
         self.requests.append(request)
-        return self.responses[min(len(self.requests) - 1, len(self.responses) - 1)].model_dump(
-            mode="json"
-        )
+        return self.responses[
+            min(len(self.requests) - 1, len(self.responses) - 1)
+        ].model_dump(mode="json")
 
 
 def test_cache_is_bounded_by_sdk_ceiling_and_server_validity() -> None:
@@ -247,3 +263,229 @@ def test_workload_and_descriptor_revision_changes_fence_the_cache() -> None:
     client.check(changed_resource)
 
     assert len(transport.requests) == 3
+
+
+def _document_denying() -> CapabilityDiscoveryDocument:
+    """A caller holding no operations at all, on a healthy platform.
+
+    Core reports platform health in `components` for every caller, so a denied
+    caller's document differs only in `permitted_platform_operations` — which
+    is the whole point of carrying admission there.
+    """
+
+    return _document().model_copy(
+        update={
+            "permitted_platform_operations": (),
+            "role_resolution": "observed",
+        }
+    )
+
+
+def test_a_platform_healthy_document_still_reports_ready_for_a_denied_caller() -> None:
+    """The false-red this arrangement exists to avoid.
+
+    A released client derives readiness from `components`, so if Core closed a
+    family for want of a grant, every least-privilege workload would read
+    not-ready — including ones that never touch the family in question.
+    """
+
+    assert _evaluate(_document_denying()).ready is True
+
+
+def test_a_capability_the_caller_may_not_invoke_is_derived_from_the_field() -> None:
+    """The gate is computed, not read off a reason code.
+
+    Core cannot name admission inside `reason_codes` — that enum is closed in
+    every released client, so a new member makes the document unparseable for
+    anyone who has not upgraded. The permitted-operations field carries the
+    answer instead, and it resolves to exactly the families the run surface
+    would refuse.
+    """
+
+    document = _document_denying()
+
+    assert gated_families(document) == (
+        "atomic_queue_claims",
+        "automation_grants",
+        "brokered_credentials",
+        "effect_capabilities",
+        "effect_lifecycle",
+        "exact_effect_approval",
+        "platform_consent",
+        "run_capabilities",
+        "run_lifecycle",
+    )
+
+
+def test_a_caller_holding_every_operation_has_no_gated_family() -> None:
+    document = _document().model_copy(
+        update={
+            "permitted_platform_operations": tuple(
+                sorted(
+                    {op for ops in FAMILY_PLATFORM_OPERATIONS.values() for op in ops}
+                )
+            ),
+            "role_resolution": "observed",
+        }
+    )
+
+    assert gated_families(document) == ()
+
+
+def test_the_reason_vocabulary_stays_closed_against_the_published_contract() -> None:
+    """A new member here would be a breaking change, not an additive one."""
+
+    assert {item.value for item in ReadinessDiagnosticCode} == {
+        "healthy",
+        "dependency_unavailable",
+        "incompatible_version",
+        "profile_unavailable",
+        "resource_registration_unavailable",
+        "v1_family_missing",
+        "rollout_disabled",
+    }
+
+
+def test_a_real_dependency_outage_still_reports_as_a_dependency_outage() -> None:
+    document = _document()
+    components = dict(document.components)
+    components["run_lifecycle"] = UNAVAILABLE
+    result = _evaluate(
+        document.model_copy(update={"components": components, "ready": False})
+    )
+
+    assert result.diagnostics == (ReadinessDiagnosticCode.DEPENDENCY_UNAVAILABLE,)
+
+
+def test_permitted_operations_default_empty_on_a_core_that_cannot_answer() -> None:
+    """An older Core omits the field; silence must not read as a full grant."""
+
+    assert _document().permitted_platform_operations == ()
+
+
+def test_every_gated_family_is_one_the_contract_actually_declares() -> None:
+    """A key that is not a real family gates nothing and hides a typo.
+
+    The gate is derived from this map, so a misspelled family silently reads as
+    usable to every consumer.
+    """
+
+    assert set(FAMILY_PLATFORM_OPERATIONS) <= set(MANDATORY_V1_CAPABILITY_FAMILIES)
+
+
+def test_the_served_family_map_wins_over_the_local_fallback() -> None:
+    """A client copy is what let the two surfaces disagree originally.
+
+    So when Core publishes the mapping, that is the one resolved against —
+    the fallback exists only for a Core that predates the field.
+    """
+
+    document = _document().model_copy(
+        update={
+            "permitted_platform_operations": ("run:reserve",),
+            "family_platform_operations": {"run_capabilities": ("run:reserve",)},
+            "role_resolution": "observed",
+        }
+    )
+
+    assert gated_families(document) == ()
+
+
+def test_a_core_without_the_served_map_falls_back_locally() -> None:
+    document = _document().model_copy(
+        update={
+            "permitted_platform_operations": ("run:reserve",),
+            "role_resolution": "observed",
+        }
+    )
+
+    assert document.family_platform_operations == {}
+    assert "atomic_queue_claims" in gated_families(document)
+
+
+def test_an_empty_permitted_set_carries_the_reason_it_is_empty() -> None:
+    """Three situations, one empty set, and only one is the caller's to fix.
+
+    A registry outage clears on its own; a stale assertion clears on a fresh
+    one; a genuinely ungranted role needs an operator. Collapsing them would
+    send a caller after the wrong remedy in two cases out of three.
+    """
+
+    document = _document().model_copy(update={"role_resolution": "observed"})
+
+    assert document.role_resolution == "observed"
+    for resolution in ("registry_unavailable", "role_inactive", "something_new"):
+        updated = document.model_copy(update={"role_resolution": resolution})
+        assert updated.role_resolution == resolution
+
+
+def test_a_core_that_does_not_report_admission_is_not_read_as_a_denial() -> None:
+    """Silence is not the same as "you hold nothing".
+
+    A Core predating this contract sends no admission fields, leaving the
+    permitted set empty for a reason that has nothing to do with the caller's
+    grants. Defaulting that to "observed" would make a consumer gate refuse
+    every family against an older server, with no field saying why — the false
+    red that mirrors the false green this work removes.
+    """
+
+    legacy = _document()
+
+    assert legacy.role_resolution == "unreported"
+    assert admission_reported(legacy) is False
+    assert gated_families(legacy) is None
+
+
+def test_a_core_that_does_report_admission_answers_concretely() -> None:
+    current = _document().model_copy(
+        update={
+            "role_resolution": "observed",
+            "permitted_platform_operations": ("intent:create", "intent:read"),
+        }
+    )
+
+    assert admission_reported(current) is True
+    assert "run_capabilities" in (gated_families(current) or ())
+
+
+@pytest.mark.parametrize(
+    "resolution",
+    ["unreported", "registry_unavailable", "role_inactive"],
+)
+def test_only_an_observation_supports_a_definitive_denial(resolution: str) -> None:
+    """An outage and a stale assertion are not answers about grants.
+
+    All three leave the permitted set empty for reasons unrelated to what the
+    caller was granted. Reporting a concrete gated list under any of them would
+    send an operator hunting a permission problem during a registry blip — this
+    contract's own bug, one level down.
+    """
+
+    document = _document().model_copy(update={"role_resolution": resolution})
+
+    assert admission_reported(document) is False
+    assert gated_families(document) is None
+
+
+def test_an_explicit_null_degrades_rather_than_bricking_discovery() -> None:
+    """A server serving null must cost the caller admission data, not the document.
+
+    These fields are additive; failing validation over one of them would take
+    the whole discovery response with it.
+    """
+
+    # Validated rather than model_copy'd: model_copy bypasses validators, so it
+    # would not exercise the path a real server response takes.
+    payload = _document().model_dump(mode="json")
+    payload.update(
+        role_resolution=None,
+        permitted_platform_operations=None,
+        family_platform_operations=None,
+    )
+
+    document = CapabilityDiscoveryDocument.model_validate(payload)
+
+    assert document.role_resolution == "unreported"
+    assert document.permitted_platform_operations == ()
+    assert dict(document.family_platform_operations) == {}
+    assert gated_families(document) is None

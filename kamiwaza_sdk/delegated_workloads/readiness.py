@@ -8,7 +8,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Protocol
+from typing import Annotated, Protocol
+
+from pydantic import BeforeValidator
 
 from kamiwaza_sdk.delegated_workloads._protocol import (
     base_url as normalized_base_url,
@@ -44,6 +46,22 @@ MANDATORY_V1_CAPABILITY_FAMILIES = (
     "platform_consent",
     "protected_resource_guard",
 )
+#: Fallback for a Core that predates `family_platform_operations` on the
+#: discovery document. When the document carries the mapping, that is used
+#: instead — a client copy is exactly how the discovery/admission disagreement
+#: this contract exists to close arose, so the served value always wins.
+FAMILY_PLATFORM_OPERATIONS: Mapping[str, tuple[str, ...]] = {
+    "atomic_queue_claims": ("run:claim",),
+    "automation_grants": ("intent:create",),
+    "brokered_credentials": ("credential:use",),
+    "effect_capabilities": ("effect:reserve",),
+    "effect_lifecycle": ("effect:transition",),
+    "exact_effect_approval": ("effect:execute",),
+    "platform_consent": ("intent:read",),
+    "run_capabilities": ("run:reserve",),
+    "run_lifecycle": ("run:transition",),
+}
+
 MAX_READINESS_CACHE_SECONDS = 30
 _ASSERTION_HEADER = "X-Kamiwaza-Workload-Assertion"
 
@@ -70,6 +88,21 @@ class ComponentReadiness(DelegatedResponse):
     reason_codes: tuple[ReadinessDiagnosticCode, ...]
 
 
+def _or_default(default: object) -> object:
+    """Coerce an explicit JSON null to the field's default.
+
+    A server that serves `null` for an absent value should leave the caller
+    without admission data, not without a discovery document: these fields are
+    additive, and failing validation over one of them takes the whole response
+    with it.
+    """
+
+    def _coerce(value: object) -> object:
+        return default if value is None else value
+
+    return BeforeValidator(_coerce)
+
+
 class CapabilityDiscoveryDocument(DelegatedResponse):
     contract_versions: tuple[str, ...]
     attestation_profiles: tuple[str, ...]
@@ -78,6 +111,32 @@ class CapabilityDiscoveryDocument(DelegatedResponse):
     resource_registrations: Mapping[str, ComponentReadiness]
     capabilities: tuple[str, ...]
     components: Mapping[str, ComponentReadiness]
+    #: Served by Core so a consumer need not keep its own copy. Empty on a Core
+    #: that predates the field, in which case the local fallback is used.
+    family_platform_operations: Annotated[
+        Mapping[str, tuple[str, ...]], _or_default({})
+    ] = {}
+    #: Platform operations the attested caller's roles hold, as Core observed
+    #: them. Absent on a Core older than the admission-aware discovery, which
+    #: is why it defaults rather than being required: an old server cannot
+    #: answer the question, and the evaluator must not read that silence as a
+    #: grant of everything.
+    permitted_platform_operations: Annotated[
+        tuple[str, ...], _or_default(())
+    ] = ()
+    #: How Core resolved the role read: "observed", "registry_unavailable" or
+    #: "role_inactive". An empty permitted set means something different under
+    #: each — an outage that clears itself, an assertion a fresh one would fix,
+    #: or a grant to go and ask an operator for. Typed as a plain string, not
+    #: an enum, so a value added later cannot make the document unparseable
+    #: here.
+    #:
+    #: Defaults to "unreported", which is what a Core predating this field
+    #: leaves behind. Defaulting to "observed" instead would have made silence
+    #: indistinguishable from a caller who genuinely holds nothing — and since
+    #: `permitted_platform_operations` is empty in both cases, a consumer would
+    #: refuse all work against an older Core with nothing saying why.
+    role_resolution: Annotated[str, _or_default("unreported")] = "unreported"
     checked_at: datetime
     valid_until: datetime
     ready: bool
@@ -193,6 +252,17 @@ class ReadinessClient:
         self._cache = _CacheEntry(fence, expires_at, result)
         return result
 
+    def discover(self) -> CapabilityDiscoveryDocument:
+        """Fetch the raw discovery document.
+
+        `check()` answers readiness and discards the document, but the
+        admission fields — and `gated_families`, which resolves them — live on
+        the document itself. Without this a consumer would have to reimplement
+        the request and its assertion header to reach them.
+        """
+
+        return self._fetch()
+
     def _fetch(self) -> CapabilityDiscoveryDocument:
         request = DelegatedProtocolRequest(
             method="GET",
@@ -212,10 +282,12 @@ def _check_contract(
     requirements: ReadinessRequirements,
     diagnostics: list[ReadinessDiagnosticCode],
 ) -> None:
-    if not all((
-        "v1" in requirements.contract_versions,
-        "v1" in document.contract_versions,
-    )):
+    if not all(
+        (
+            "v1" in requirements.contract_versions,
+            "v1" in document.contract_versions,
+        )
+    ):
         diagnostics.append(ReadinessDiagnosticCode.INCOMPATIBLE_VERSION)
     if document.profile_requirement_semantics != "ordered_any_of":
         diagnostics.append(ReadinessDiagnosticCode.INCOMPATIBLE_VERSION)
@@ -234,8 +306,7 @@ def _check_components(
     diagnostics: list[ReadinessDiagnosticCode],
 ) -> None:
     family_statuses = (
-        document.components.get(family)
-        for family in MANDATORY_V1_CAPABILITY_FAMILIES
+        document.components.get(family) for family in MANDATORY_V1_CAPABILITY_FAMILIES
     )
     if any(item is None for item in family_statuses):
         diagnostics.append(ReadinessDiagnosticCode.V1_FAMILY_MISSING)
@@ -283,9 +354,7 @@ def _check_resources(
     ):
         diagnostics.append(ReadinessDiagnosticCode.INCOMPATIBLE_VERSION)
     elif any(not _component_ready(item) for item in statuses):
-        diagnostics.append(
-            ReadinessDiagnosticCode.RESOURCE_REGISTRATION_UNAVAILABLE
-        )
+        diagnostics.append(ReadinessDiagnosticCode.RESOURCE_REGISTRATION_UNAVAILABLE)
 
 
 def _component_ready(component: ComponentReadiness | None) -> bool:
@@ -301,7 +370,58 @@ def _resource_fence(item: ResourceReadinessRequirement) -> dict[str, object]:
     }
 
 
+def admission_reported(document: CapabilityDiscoveryDocument) -> bool:
+    """Whether this document carries an answer about the caller's grants.
+
+    True only for "observed". A Core predating this contract reports
+    "unreported"; a Core that could not read the role registry reports
+    "registry_unavailable"; one whose assertion matched no active role reports
+    "role_inactive". All three leave the permitted set empty for reasons that
+    have nothing to do with what the caller was granted, and treating any of
+    them as an answer turns a transient outage into a permanent denial — the
+    conflation this contract exists to remove, one level down.
+    """
+
+    return document.role_resolution == "observed"
+
+
+def gated_families(
+    document: CapabilityDiscoveryDocument,
+) -> tuple[str, ...] | None:
+    """Families this caller's roles do not hold the operations for.
+
+    Returns None when this Core does not report admission at all — see
+    `admission_reported`. A consumer must handle that case explicitly rather
+    than treating it as either extreme.
+
+    Derived rather than read off a reason code on purpose. ``reason_codes`` is
+    a closed enum in every released client, so Core cannot introduce a value
+    naming admission without making the whole document unparseable for anyone
+    who has not upgraded — and the least-privileged caller, the one this
+    answers for, is exactly who would hit that. ``permitted_platform_operations``
+    is a new *field*, which older clients ignore harmlessly, so the precise
+    answer travels there and is resolved against the published family map here.
+    """
+
+    if not admission_reported(document):
+        # Unknown, and neither guess is safe: every family gated is a false red
+        # that refuses all work, and none gated is the false green this whole
+        # contract exists to remove. The caller has to decide.
+        return None
+
+    served = document.family_platform_operations
+    families = served if served else FAMILY_PLATFORM_OPERATIONS
+    permitted = frozenset(document.permitted_platform_operations)
+    return tuple(
+        family
+        for family, required in sorted(families.items())
+        if not permitted.issuperset(required)
+    )
+
+
 __all__ = (
+    "FAMILY_PLATFORM_OPERATIONS",
+    "admission_reported",
     "MANDATORY_V1_CAPABILITY_FAMILIES",
     "MAX_READINESS_CACHE_SECONDS",
     "CapabilityDiscoveryDocument",
@@ -313,4 +433,5 @@ __all__ = (
     "ReadinessRequirements",
     "ReadinessResult",
     "ResourceReadinessRequirement",
+    "gated_families",
 )
