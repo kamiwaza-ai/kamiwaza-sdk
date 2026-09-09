@@ -364,6 +364,39 @@ class TestStatusDerivation:
 
 
 @pytest.mark.unit
+class TestArmAttribution:
+    """`arm` names which producer arm emitted a record (ENG-11522).
+
+    `method` says automated-vs-manual; both the SDK and UI arms emit
+    `automated`, so a passing record could not establish *which* arm ran --
+    every "planned arm verified" cell in the generated reports read NO.
+    The vocabulary matches capability documents' `evidence_plan` so a
+    consumer can compare them directly instead of guessing.
+    """
+
+    def test_harness_emits_arm_sdk(self):
+        result = run_scenario(_one_step_runbook(), {"x": lambda: "ok"})
+        assert result.arm == "sdk"
+
+    def test_recorded_json_carries_arm(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(harness, "RUNS_DIR", tmp_path / "runs")
+        result = run_scenario(_one_step_runbook(), {"x": lambda: "ok"})
+        record = json.loads(record_run(result).read_text())
+        assert record["arm"] == "sdk"
+
+    def test_unknown_arm_is_refused(self):
+        record = _synthetic_v2_record(arm="carrier-pigeon")
+        with pytest.raises(ValueError, match="arm"):
+            validate_evidence_record(record)
+
+    def test_absent_arm_still_validates(self):
+        """The 45 records predating this field stay valid: arm is optional."""
+        record = _synthetic_v2_record()
+        record.pop("arm", None)
+        validate_evidence_record(record)
+
+
+@pytest.mark.unit
 class TestEvidenceValidation:
     def test_synthetic_v2_record_is_valid(self):
         validate_evidence_record(_synthetic_v2_record())
@@ -536,8 +569,13 @@ class TestSchemaFileSync:
     def test_schema_required_matches_emitted_record_shape(self, schema):
         result = run_scenario(_one_step_runbook(), {"x": lambda: "ok"})
         emitted_keys = set(asdict(result))
-        assert set(schema["required"]) == emitted_keys
+        # Every required field must actually be emitted. Subset rather than
+        # equality since ENG-11522 added `arm`, which is emitted but
+        # deliberately optional so records predating it stay valid.
+        assert set(schema["required"]) <= emitted_keys
+        # ...and nothing is emitted that the schema does not declare.
         assert set(schema["properties"]) == emitted_keys
+        assert "arm" in emitted_keys and "arm" not in set(schema["required"])
 
     def test_v2_record_validates_against_schema_file(self, schema):
         """Validate a v2 record against the checked-in JSON Schema."""

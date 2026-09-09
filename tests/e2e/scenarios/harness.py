@@ -67,6 +67,12 @@ EVIDENCE_SCHEMA_PATH = SCHEMAS_DIR / "scenario-evidence.v2.schema.json"
 EVIDENCE_SCHEMA_ID = "scenario-evidence.v2"
 SCENARIO_STATUSES = frozenset({"passed", "passed_with_notes", "failed"})
 EVIDENCE_METHODS = frozenset({"automated", "manual"})
+# Which producer arm emitted the record (ENG-11522). `method` says
+# automated-vs-manual and both the SDK and UI arms emit "automated", so it
+# cannot name the arm. The vocabulary deliberately matches capability
+# documents' `evidence_plan` so a consumer can compare the two directly
+# rather than inferring one from the other.
+EVIDENCE_ARMS = frozenset({"sdk", "ui", "manual"})
 EVIDENCE_PROVENANCES = frozenset({"pre-existing", "cycle-authored"})
 # Kebab-case segments, optionally dot-namespaced as area.capability
 # (e.g. "workroom-app-launch", "workrooms.create") — ENG-9749 spike.
@@ -111,6 +117,7 @@ class ScenarioResult:
     schema: str = EVIDENCE_SCHEMA_ID
     build: str = ""
     method: str = "automated"
+    arm: str = "sdk"  # this harness is the SDK arm
     capability_ids: list[str] = field(default_factory=list)
     evidence_provenance: str = "cycle-authored"
     status: str = ""
@@ -555,6 +562,7 @@ def validate_evidence_record(record: dict) -> None:
     intentionally rejected: they are historical artifacts, not v2 records.
     """
     problems = _check_scalar_fields(record)
+    problems += _check_arm(record)
     problems += _check_capability_ids(record)
     problems += _check_steps(record)
     if problems:
@@ -569,6 +577,24 @@ def _check_scalar_fields(record: dict) -> list[str]:
         elif not predicate(record[field_name]):
             problems.append(f"{field_name} {requirement} (got {record[field_name]!r})")
     return problems
+
+
+def _check_arm(record: dict) -> list[str]:
+    """Validate the OPTIONAL ``arm`` field.
+
+    Optional on purpose: the records emitted before ENG-11522 carry no arm,
+    and invalidating them would force a corpus migration to add a field
+    nobody can retroactively know. A consumer therefore treats "absent" as
+    "unattributed", which is exactly what it was.
+    """
+    if "arm" not in record:
+        return []
+    if record["arm"] not in EVIDENCE_ARMS:
+        return [
+            f"arm must be one of {sorted(EVIDENCE_ARMS)} "
+            f"(got {record['arm']!r})"
+        ]
+    return []
 
 
 def _check_capability_ids(record: dict) -> list[str]:

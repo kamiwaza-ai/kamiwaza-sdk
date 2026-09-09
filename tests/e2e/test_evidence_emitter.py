@@ -664,3 +664,18 @@ def test_incomplete_outcome_contributes_no_step():
         "test_x.py::test_b": emitter._TestOutcome(status="passed", complete=False),
     }
     assert [s.name for s in plugin._steps_for(entry)] == ["test_x.py::test_a"]
+
+
+@pytest.mark.unit
+def test_pre_existing_emitter_also_names_its_arm():
+    """The capability_map emitter is the SDK arm too (ENG-11522).
+
+    Both SDK producers must agree, or a consumer comparing `arm` to
+    `evidence_plan` would see the pre-existing half as unattributed.
+    """
+    import inspect
+
+    from tests.e2e import _evidence_emitter
+
+    src = inspect.getsource(_evidence_emitter.EvidenceEmitterPlugin._build_record)
+    assert '"arm": "sdk"' in src

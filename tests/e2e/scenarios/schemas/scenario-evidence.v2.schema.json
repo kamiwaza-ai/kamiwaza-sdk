@@ -74,6 +74,14 @@
       ],
       "description": "How the evidence was produced (closes gap G3; the automated-coverage ratio is a count over this field)."
     },
+    "arm": {
+      "enum": [
+        "sdk",
+        "ui",
+        "manual"
+      ],
+      "description": "Which producer arm emitted this record (ENG-11522). `method` distinguishes automated from manual, but both the SDK and UI arms emit \"automated\", so a passing record could not establish which arm produced it and every \"planned arm verified\" cell read NO. The vocabulary matches a capability document's `evidence_plan` so the two can be compared directly. Optional: records emitted before this field exists carry no arm and are treated as unattributed, which is what they were."
+    },
     "capability_ids": {
       "type": "array",
       "minItems": 1,

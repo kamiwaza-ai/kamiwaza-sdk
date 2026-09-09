@@ -424,6 +424,7 @@ class EvidenceEmitterPlugin:
             "ci_job_url": os.environ.get("CI_JOB_URL"),
             "build": self._build,
             "method": "automated",
+            "arm": "sdk",
             "capability_ids": list(entry.capability_ids),
             "evidence_provenance": "pre-existing",
             "status": harness.derive_status(steps),
