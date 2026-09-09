@@ -160,6 +160,11 @@ def test_incomplete_stream_diagnostics_survive_default_warning_logging(
     assert _evidence(caplog, "federation_retrieval_stream ")[0]["eof"] is True
 
 
+def test_none_lines_are_forwarded_without_diagnostic_failure(invoke):
+    result, _ = invoke(_Response([None]))
+    assert result == ([], [])
+
+
 def test_stream_error_is_propagated_with_partial_diagnostics(invoke, caplog):
     error = RuntimeError(_SECRET)
     response = _Response(["event: chunk"], error)

@@ -152,9 +152,9 @@ def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
             hash_digest=_wheel_sha256(wheel_dir),
             index_url=index_url,
         )
-        assert (
-            GATE_CLASSPATH in result.package.classpaths
-        ), f"{GATE_CLASSPATH} not recorded in installed classpaths: {result.package.classpaths}"
+        assert GATE_CLASSPATH in result.package.classpaths, (
+            f"{GATE_CLASSPATH} not recorded in installed classpaths: {result.package.classpaths}"
+        )
     gate = kz.gates.discover(GATE_CLASSPATH)
     assert gate.name == GATE_NAME
 
@@ -512,9 +512,9 @@ def assert_persona_result(
     """
     included, redacted, allowed = KNOWN[clearance]
     assert gate_audits, "no gate_audit footer in retrieval stream — gate not invoked?"
-    assert (
-        len(rows) == included
-    ), f"expected {included} rows for {clearance}, got {len(rows)}"
+    assert len(rows) == included, (
+        f"expected {included} rows for {clearance}, got {len(rows)}"
+    )
     _assert_exact_fixture_rows(clearance, rows, allowed)
     assert any(bool(audit.get("filtered")) for audit in gate_audits) is (
         redacted > 0

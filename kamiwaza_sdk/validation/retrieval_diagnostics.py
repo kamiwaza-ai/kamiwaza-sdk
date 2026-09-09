@@ -66,7 +66,9 @@ def _content_type(response: Any) -> str:
     return "sse" if media_type == "text/event-stream" else "other"
 
 
-def _observe_line(raw: str, summary: dict, events: dict[str, int]) -> None:
+def _observe_line(raw: Any, summary: dict[str, Any], events: dict[str, int]) -> None:
+    if raw is None:
+        return
     if not raw:
         summary["blank_lines"] += 1
     elif raw.startswith("data:"):
