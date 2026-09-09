@@ -262,24 +262,27 @@ def test_workload_and_descriptor_revision_changes_fence_the_cache() -> None:
     assert len(transport.requests) == 3
 
 
-OPERATION_DENIED = ComponentReadiness(
-    status=ComponentStatus.UNAVAILABLE,
-    reason_codes=(ReadinessDiagnosticCode.ROLLOUT_DISABLED,),
-)
-
-
 def _document_denying(*families: str) -> CapabilityDiscoveryDocument:
-    document = _document()
-    components = dict(document.components)
-    for family in families:
-        components[family] = OPERATION_DENIED
-    return document.model_copy(
-        update={
-            "components": components,
-            "ready": False,
-            "permitted_platform_operations": ("intent:create", "intent:read"),
-        }
-    )
+    """A caller holding no operations at all, on a healthy platform.
+
+    Core reports platform health in `components` for every caller, so a denied
+    caller's document differs only in `permitted_platform_operations` — which
+    is the whole point of carrying admission there.
+    """
+
+    del families
+    return _document().model_copy(update={"permitted_platform_operations": ()})
+
+
+def test_a_platform_healthy_document_still_reports_ready_for_a_denied_caller() -> None:
+    """The false-red this arrangement exists to avoid.
+
+    A released client derives readiness from `components`, so if Core closed a
+    family for want of a grant, every least-privilege workload would read
+    not-ready — including ones that never touch the family in question.
+    """
+
+    assert _evaluate(_document_denying()).ready is True
 
 
 def test_a_capability_the_caller_may_not_invoke_is_derived_from_the_field() -> None:
@@ -296,13 +299,14 @@ def test_a_capability_the_caller_may_not_invoke_is_derived_from_the_field() -> N
         "run_capabilities", "run_lifecycle", "atomic_queue_claims"
     )
 
-    assert _evaluate(document).ready is False
     assert gated_families(document) == (
         "atomic_queue_claims",
+        "automation_grants",
         "brokered_credentials",
         "effect_capabilities",
         "effect_lifecycle",
         "exact_effect_approval",
+        "platform_consent",
         "run_capabilities",
         "run_lifecycle",
     )

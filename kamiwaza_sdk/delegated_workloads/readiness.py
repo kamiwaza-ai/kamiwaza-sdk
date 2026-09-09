@@ -49,10 +49,12 @@ MANDATORY_V1_CAPABILITY_FAMILIES = (
 #: workload once the platform dependencies behind it are healthy.
 FAMILY_PLATFORM_OPERATIONS: Mapping[str, tuple[str, ...]] = {
     "atomic_queue_claims": ("run:claim",),
+    "automation_grants": ("intent:create",),
     "brokered_credentials": ("credential:use",),
     "effect_capabilities": ("effect:reserve",),
     "effect_lifecycle": ("effect:transition",),
     "exact_effect_approval": ("effect:execute",),
+    "platform_consent": ("intent:read",),
     "run_capabilities": ("run:reserve",),
     "run_lifecycle": ("run:transition",),
 }
@@ -97,6 +99,11 @@ class CapabilityDiscoveryDocument(DelegatedResponse):
     #: answer the question, and the evaluator must not read that silence as a
     #: grant of everything.
     permitted_platform_operations: tuple[str, ...] = ()
+    #: False when Core could not read the role registry. An empty permitted set
+    #: then means "not observed" rather than "holds nothing" — only one of
+    #: which the caller can do anything about. Defaults True for a Core that
+    #: predates the field.
+    roles_observed: bool = True
     checked_at: datetime
     valid_until: datetime
     ready: bool
