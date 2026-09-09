@@ -391,3 +391,19 @@ def test_a_core_without_the_served_map_falls_back_locally() -> None:
 
     assert document.family_platform_operations == {}
     assert "atomic_queue_claims" in gated_families(document)
+
+
+def test_an_empty_permitted_set_carries_the_reason_it_is_empty() -> None:
+    """Three situations, one empty set, and only one is the caller's to fix.
+
+    A registry outage clears on its own; a stale assertion clears on a fresh
+    one; a genuinely ungranted role needs an operator. Collapsing them would
+    send a caller after the wrong remedy in two cases out of three.
+    """
+
+    document = _document()
+
+    assert document.role_resolution == "observed"
+    for resolution in ("registry_unavailable", "role_inactive", "something_new"):
+        updated = document.model_copy(update={"role_resolution": resolution})
+        assert updated.role_resolution == resolution

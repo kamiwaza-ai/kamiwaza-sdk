@@ -103,11 +103,13 @@ class CapabilityDiscoveryDocument(DelegatedResponse):
     #: answer the question, and the evaluator must not read that silence as a
     #: grant of everything.
     permitted_platform_operations: tuple[str, ...] = ()
-    #: False when Core could not read the role registry. An empty permitted set
-    #: then means "not observed" rather than "holds nothing" — only one of
-    #: which the caller can do anything about. Defaults True for a Core that
-    #: predates the field.
-    roles_observed: bool = True
+    #: How Core resolved the role read: "observed", "registry_unavailable" or
+    #: "role_inactive". An empty permitted set means something different under
+    #: each — an outage that clears itself, an assertion a fresh one would fix,
+    #: or a grant to go and ask an operator for. Typed as a plain string, not
+    #: an enum, so a value added later cannot make the document unparseable
+    #: here. Defaults to "observed" for a Core that predates the field.
+    role_resolution: str = "observed"
     checked_at: datetime
     valid_until: datetime
     ready: bool
