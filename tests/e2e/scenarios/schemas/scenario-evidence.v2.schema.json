@@ -76,11 +76,12 @@
     },
     "capability_ids": {
       "type": "array",
+      "minItems": 1,
       "items": {
         "type": "string",
         "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(\\.[a-z0-9]+(-[a-z0-9]+)*)*$"
       },
-      "description": "Capability documents this evidence supports (closes gap G2). Items are kebab-case segments, optionally dot-namespaced as area.capability (e.g. \"single-sign-on\", \"workrooms.create\"). Each item must match the `id` of a capability document exactly; a near-miss such as \"workroom-app-launch\" for \"workrooms.app-launch\" is a different id and silently joins to nothing. May be empty when the mapping has not yet been authored."
+      "description": "Capability documents this evidence supports (closes gap G2). Items are kebab-case segments, optionally dot-namespaced as area.capability (e.g. \"single-sign-on\", \"workrooms.create\"). Each item must match the `id` of a capability document exactly; a near-miss such as \"workroom-app-launch\" for \"workrooms.app-launch\" is a different id and silently joins to nothing. Must name at least one capability: a record that names none joins to nothing and is invisible to every coverage section, so it is refused at emission and in CI rather than surfacing later as an input defect (ENG-11522)."
     },
     "evidence_provenance": {
       "enum": [
