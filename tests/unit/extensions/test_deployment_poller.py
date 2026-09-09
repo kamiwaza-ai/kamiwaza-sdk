@@ -78,6 +78,29 @@ class TestWaitForReady:
         with pytest.raises(DeploymentFailedError, match="ImagePullBackOff"):
             poller.wait_for_ready(client, "test", timeout=10)
 
+    @patch.object(DeploymentPoller, "_check_via_status_endpoint", return_value=(None, ""))
+    @patch.object(DeploymentPoller, "_check_pods_ready", return_value=(True, "2/2 ready"))
+    @patch("kamiwaza_extensions.deployment_poller.time.sleep")
+    def test_ignores_stale_failed_phase_during_patch_rollout(
+        self, mock_sleep, mock_pods, mock_status, poller
+    ):
+        client = MagicMock()
+        client.extensions.get_extension.side_effect = [
+            _make_ext("Failed"),
+            _make_ext("Provisioning"),
+            _make_ext("Running"),
+        ]
+        client.extensions.get_extension_status.return_value = ExtensionStatus(
+            name="test",
+            phase="Failed",
+            rolling_update=True,
+        )
+
+        result = poller.wait_for_ready(client, "test", timeout=10)
+
+        assert result.phase == "Running"
+        client.extensions.get_extension_status.assert_called_once_with("test")
+
     @patch("kamiwaza_extensions.deployment_poller.time.monotonic")
     @patch("kamiwaza_extensions.deployment_poller.time.sleep")
     def test_raises_on_timeout(self, mock_sleep, mock_monotonic, poller):
