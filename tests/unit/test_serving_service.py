@@ -74,7 +74,11 @@ def test_create_model_deployment_round_trips_tenant_cpu_resources():
     }
 
 
-@pytest.mark.parametrize("cpu,memory", [("", "2Gi"), ("500x", "2Gi"), ("0", "2Gi"), ("500m", "2G")])
+@pytest.mark.parametrize("cpu,memory", [
+    ("", "2Gi"), ("500x", "2Gi"), ("0", "2Gi"), ("500m", "2G"),
+    ("1.000000000000000000000000000000000000001", "2Gi"),
+    ("500m", "1.000000000000000000000000000000000000001Gi"),
+])
 def test_create_model_deployment_rejects_invalid_cpu_quantities(cpu, memory):
     with pytest.raises(ValueError):
         CreateModelDeployment.model_validate({
@@ -83,6 +87,15 @@ def test_create_model_deployment_rejects_invalid_cpu_quantities(cpu, memory):
                 "runtime": {"selection": "automatic"},
             },
         })
+
+
+def test_create_model_deployment_rejects_inference_resource_alias_collision():
+    request = {
+        "m_id": uuid4(), "m_config_id": uuid4(),
+        "inferenceResources": None, "inference_resources": None,
+    }
+    with pytest.raises(ValueError, match="may not both"):
+        CreateModelDeployment.model_validate(request)
 
 
 def test_deploy_model_sends_canonical_inference_resource_aliases(mock_client):

@@ -1,9 +1,9 @@
 # kamiwaza_sdk/schemas/serving/serving.py
 
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator, model_validator
 from typing import Dict, List, Literal, Optional
 from datetime import datetime
 from uuid import UUID
@@ -26,7 +26,9 @@ class CpuResourceQuantities(BaseModel):
             number, suffix = re.fullmatch(r"([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))([numkMGTPE]|[eE][+-]?[0-9]+)?", value).groups()
             exponent = {None: 0, "n": -9, "u": -6, "m": -3, "k": 3, "M": 6, "G": 9, "T": 12, "P": 15, "E": 18}.get(suffix)
             exponent = int(suffix[1:]) if exponent is None else exponent
-            amount = Decimal(number) * (Decimal(10) ** (exponent + 3))
+            with localcontext() as context:
+                context.prec = 256
+                amount = Decimal(number) * (Decimal(10) ** (exponent + 3))
         except (InvalidOperation, ValueError, OverflowError) as exc:
             raise ValueError("cpu exceeds the supported quantity range") from exc
         if amount <= 0 or amount > 2**63 - 1 or amount != amount.to_integral_value():
@@ -39,7 +41,9 @@ class CpuResourceQuantities(BaseModel):
         if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?(?:Mi|Gi)", value):
             raise ValueError("memory must use a positive Mi or Gi quantity")
         number, unit = value[:-2], value[-2:]
-        amount = Decimal(number) * (1024 ** (2 if unit == "Mi" else 3))
+        with localcontext() as context:
+            context.prec = 256
+            amount = Decimal(number) * (1024 ** (2 if unit == "Mi" else 3))
         if amount <= 0 or amount > 2**63 - 1 or amount != amount.to_integral_value():
             raise ValueError("memory must fit a positive signed 64-bit integer")
         return value
@@ -105,6 +109,13 @@ class CreateModelDeployment(BaseModel):
         alias="inferenceResources",
         description="Explicit CPU resources for restricted tenant inference.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_resource_alias_collision(cls, value):
+        if isinstance(value, dict) and "inferenceResources" in value and "inference_resources" in value:
+            raise ValueError("inferenceResources and inference_resources may not both be supplied")
+        return value
 
     def __str__(self):
         return (
