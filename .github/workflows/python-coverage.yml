@@ -64,8 +64,10 @@ jobs:
         # carried code without proportional unit-test coverage, dropping total
         # coverage to 67.96%. ENG-5324 tracks restoring the 80% threshold by
         # adding targeted unit tests for the merged extensions modules.
+        # Match make test's offline suite: contract tests own coverage for
+        # validation providers and other SDK boundaries (ENG-11687).
         run: |
-          uv run pytest tests/unit/ \
+          uv run pytest -m "not integration and not live and not e2e" \
             --cov=kamiwaza_sdk \
             --cov-report=term-missing \
             --cov-report=json \
