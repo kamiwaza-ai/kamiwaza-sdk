@@ -44,9 +44,10 @@ MANDATORY_V1_CAPABILITY_FAMILIES = (
     "platform_consent",
     "protected_resource_guard",
 )
-#: Mirrors Core's platform_operations.FAMILY_PLATFORM_OPERATIONS. A family
-#: absent here is gated on no operation and is usable by every registered
-#: workload once the platform dependencies behind it are healthy.
+#: Fallback for a Core that predates `family_platform_operations` on the
+#: discovery document. When the document carries the mapping, that is used
+#: instead — a client copy is exactly how the discovery/admission disagreement
+#: this contract exists to close arose, so the served value always wins.
 FAMILY_PLATFORM_OPERATIONS: Mapping[str, tuple[str, ...]] = {
     "atomic_queue_claims": ("run:claim",),
     "automation_grants": ("intent:create",),
@@ -93,6 +94,9 @@ class CapabilityDiscoveryDocument(DelegatedResponse):
     resource_registrations: Mapping[str, ComponentReadiness]
     capabilities: tuple[str, ...]
     components: Mapping[str, ComponentReadiness]
+    #: Served by Core so a consumer need not keep its own copy. Empty on a Core
+    #: that predates the field, in which case the local fallback is used.
+    family_platform_operations: Mapping[str, tuple[str, ...]] = {}
     #: Platform operations the attested caller's roles hold, as Core observed
     #: them. Absent on a Core older than the admission-aware discovery, which
     #: is why it defaults rather than being required: an old server cannot
@@ -340,10 +344,12 @@ def gated_families(
     answer travels there and is resolved against the published family map here.
     """
 
+    served = document.family_platform_operations
+    families = served if served else FAMILY_PLATFORM_OPERATIONS
     permitted = frozenset(document.permitted_platform_operations)
     return tuple(
         family
-        for family, required in sorted(FAMILY_PLATFORM_OPERATIONS.items())
+        for family, required in sorted(families.items())
         if not permitted.issuperset(required)
     )
 

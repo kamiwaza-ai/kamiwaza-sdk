@@ -365,3 +365,29 @@ def test_every_gated_family_is_one_the_contract_actually_declares() -> None:
     """
 
     assert set(FAMILY_PLATFORM_OPERATIONS) <= set(MANDATORY_V1_CAPABILITY_FAMILIES)
+
+
+def test_the_served_family_map_wins_over_the_local_fallback() -> None:
+    """A client copy is what let the two surfaces disagree originally.
+
+    So when Core publishes the mapping, that is the one resolved against —
+    the fallback exists only for a Core that predates the field.
+    """
+
+    document = _document().model_copy(
+        update={
+            "permitted_platform_operations": ("run:reserve",),
+            "family_platform_operations": {"run_capabilities": ("run:reserve",)},
+        }
+    )
+
+    assert gated_families(document) == ()
+
+
+def test_a_core_without_the_served_map_falls_back_locally() -> None:
+    document = _document().model_copy(
+        update={"permitted_platform_operations": ("run:reserve",)}
+    )
+
+    assert document.family_platform_operations == {}
+    assert "atomic_queue_claims" in gated_families(document)
