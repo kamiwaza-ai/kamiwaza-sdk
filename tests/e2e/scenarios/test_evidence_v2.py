@@ -59,6 +59,9 @@ def _runbook(steps, *, scenario_id="S1", **extra):
         "name": f"Test scenario {scenario_id}",
         "sign_off_actor": "SDK team",
         "uacs": ["UAC-16"],
+        # Required since ENG-11522; `**extra` still lets a test override it
+        # (e.g. with [] or a malformed value) to exercise the refusal paths.
+        "capability_ids": ["workrooms.create"],
         "expected_outcomes": ["something demonstrable"],
         "steps": steps,
         **extra,
@@ -242,7 +245,9 @@ class TestEvidenceV2Fields:
         assert result.schema == EVIDENCE_SCHEMA_ID
         assert result.method == "automated"
         assert result.evidence_provenance == "cycle-authored"
-        assert result.capability_ids == []
+        # ENG-11522: capability_ids is required and non-empty, so a record
+        # carries whatever the runbook declared -- never an empty default.
+        assert result.capability_ids == ["workrooms.create"]
         assert result.status == "passed"
 
     def test_capability_ids_copied_from_runbook(self):
@@ -429,6 +434,7 @@ class TestEvidenceValidation:
             finished_at="2026-08-06T17:00:05Z",
             duration_s=5.0,
             sign_off_actor="SDK team",
+            capability_ids=["workrooms.create"],
             ci_job_url=None,
             build=TEST_BUILD,
             status="passed",
@@ -469,6 +475,7 @@ class TestEvidenceValidation:
             finished_at="2026-08-06T17:00:05+00:00",
             duration_s=5.0,
             sign_off_actor="SDK team",
+            capability_ids=["workrooms.create"],
             ci_job_url=None,
             build="",  # the G1 violation
             status="passed",
@@ -564,11 +571,38 @@ class TestSchemaFileSync:
 
 @pytest.mark.unit
 class TestValidateRunbookCapabilityIds:
-    """The OPTIONAL capability_ids runbook field (mapping runbooks to
-    capability documents is T1.4; the field is accepted but not required)."""
+    """The REQUIRED, non-empty capability_ids runbook field.
 
-    def test_absent_capability_ids_is_accepted(self, tmp_path):
-        _validate_runbook(_one_step_runbook(), source=tmp_path / "s1-x.yaml")
+    Optional until ENG-11522, which is how four of five runbooks came to
+    omit it. `test_absent_capability_ids_raises` replaces the former
+    `test_absent_capability_ids_is_accepted`."""
+
+    def test_absent_capability_ids_raises(self, tmp_path):
+        """A runbook that never names a capability emits unjoinable evidence.
+
+        ENG-11522: the field used to be optional, so four of five runbooks
+        omitted it, the harness defaulted to [], and the resulting records
+        were schema-valid but joined to nothing -- surfacing months later as
+        an "input defect" in a generated report. Absent is now refused at
+        load time, which is the only moment the author is present.
+        """
+        rb = _one_step_runbook()
+        del rb["capability_ids"]  # the helper supplies it; absence is the case under test
+        # Match the *required-field* message specifically: absence must be
+        # caught by REQUIRED_RUNBOOK_FIELDS, not incidentally by the
+        # is-it-a-list check, so the declarative contract stays pinned.
+        with pytest.raises(ValueError, match=r"missing required fields.*capability_ids"):
+            _validate_runbook(rb, source=tmp_path / "s1-x.yaml")
+
+    def test_empty_capability_ids_raises(self, tmp_path):
+        """Present-but-empty is the same defect as absent, one step later.
+
+        Required-ness alone does not close this: `capability_ids` is already
+        in the scenario-evidence.v2 `required` list and `[]` satisfies it.
+        """
+        rb = _one_step_runbook(capability_ids=[])
+        with pytest.raises(ValueError, match="capability_ids"):
+            _validate_runbook(rb, source=tmp_path / "s1-x.yaml")
 
     def test_valid_capability_ids_accepted(self, tmp_path):
         rb = _one_step_runbook(

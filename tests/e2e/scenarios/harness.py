@@ -77,6 +77,7 @@ REQUIRED_RUNBOOK_FIELDS = (
     "name",
     "sign_off_actor",
     "uacs",
+    "capability_ids",
     "steps",
     "expected_outcomes",
 )
@@ -178,18 +179,31 @@ def _validate_runbook(runbook: dict, *, source: Path) -> None:
 
 
 def _validate_capability_ids(runbook: dict, *, source: Path) -> None:
-    """Validate the OPTIONAL ``capability_ids`` runbook field (ENG-9748).
+    """Validate the REQUIRED ``capability_ids`` runbook field (ENG-9748).
 
-    When present it must be a list of capability identifiers — kebab-case
-    segments, optionally dot-namespaced (``workrooms.create``). The harness
-    copies it verbatim into the scenario-evidence.v2 record; absent means
-    the mapping has not been authored yet and the record carries ``[]``.
+    A list of capability identifiers — kebab-case segments, optionally
+    dot-namespaced (``workrooms.create``) — copied verbatim into the
+    scenario-evidence.v2 record.
+
+    Required and non-empty since ENG-11522. It was previously optional, so
+    four of the five runbooks omitted it, the dataclass defaulted to ``[]``,
+    and the emitted record was schema-valid but joined to no capability —
+    invisible to every generated report until it surfaced as an "input
+    defect" months later. Refusing here is the only point at which the
+    author is still present to make the mapping decision.
+
+    Note that requiring the *key* is not sufficient on its own:
+    ``capability_ids`` is already in scenario-evidence.v2's ``required``
+    list, and ``[]`` satisfies that, so emptiness is refused explicitly.
     """
     cap_ids = runbook.get("capability_ids")
-    if cap_ids is None:
-        return
     if not isinstance(cap_ids, list):
         raise ValueError(f"{source.name}: capability_ids must be a list of strings")
+    if not cap_ids:
+        raise ValueError(
+            f"{source.name}: capability_ids must name at least one capability; "
+            "a runbook that evidences nothing cannot emit a joinable record"
+        )
     non_strings = [c for c in cap_ids if not isinstance(c, str)]
     if non_strings:
         raise ValueError(f"{source.name}: capability_ids must be a list of strings")
@@ -560,7 +574,9 @@ def _check_scalar_fields(record: dict) -> list[str]:
 def _check_capability_ids(record: dict) -> list[str]:
     cap_ids = record.get("capability_ids")
     if not isinstance(cap_ids, list):
-        return ["capability_ids must be a list (may be empty)"]
+        return ["capability_ids must be a list of capability ids"]
+    if not cap_ids:
+        return ["capability_ids must name at least one capability (ENG-11522)"]
     problems = []
     for c in cap_ids:
         if not isinstance(c, str) or not CAPABILITY_ID_RE.fullmatch(c):

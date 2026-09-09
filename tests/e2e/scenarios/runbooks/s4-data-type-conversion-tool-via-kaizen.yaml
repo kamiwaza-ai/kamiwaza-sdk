@@ -1,6 +1,12 @@
 id: "S4"
 name: "Data-type conversion tool accessible via Kaizen"
 sign_off_actor: "Preston McGowan"
+# Reviewed mapping (ENG-11522). Scaffolds a tool via
+# `kz-ext create --type tool`, registers it over MCP, and invokes it
+# from a Kaizen session.
+capability_ids:
+  - "platform.app-generation-path"
+  - "tools.mcp-tool-shed"
 uacs:
   - UAC-12
   - UAC-16
