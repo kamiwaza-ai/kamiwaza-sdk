@@ -42,9 +42,21 @@ def diagnostic_lines(response: Any) -> Iterator[str]:
             yield raw
         summary["eof"] = True
     finally:
-        _LOGGER.info(
-            "federation_retrieval_stream %s", json.dumps(summary, sort_keys=True)
+        _LOGGER.log(
+            _stream_log_level(summary),
+            "federation_retrieval_stream %s",
+            json.dumps(summary, sort_keys=True),
         )
+
+
+def _stream_log_level(summary: dict[str, Any]) -> int:
+    # Pytest's default capture hides INFO; preserve anomalous stream shapes.
+    if not summary["eof"]:
+        return logging.WARNING
+    events = summary["events"]
+    if events["error"]:
+        return logging.WARNING
+    return logging.INFO if events["chunk"] and events["complete"] else logging.WARNING
 
 
 def _content_type(response: Any) -> str:

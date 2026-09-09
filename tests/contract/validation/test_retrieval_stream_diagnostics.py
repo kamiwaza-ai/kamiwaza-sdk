@@ -151,6 +151,15 @@ def test_failed_job_lookup_cannot_replace_original_stream_result(invoke, caplog)
     assert _SECRET not in caplog.text
 
 
+@pytest.mark.parametrize("lines", [[], ["event: complete", "data: {}", ""]])
+def test_incomplete_stream_diagnostics_survive_default_warning_logging(
+    invoke, caplog, lines
+):
+    caplog.set_level(logging.WARNING)
+    invoke(_Response(lines))
+    assert _evidence(caplog, "federation_retrieval_stream ")[0]["eof"] is True
+
+
 def test_stream_error_is_propagated_with_partial_diagnostics(invoke, caplog):
     error = RuntimeError(_SECRET)
     response = _Response(["event: chunk"], error)
