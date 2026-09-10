@@ -153,6 +153,10 @@ def test_pass_plus_skip_emits_passed_with_notes(pytester, evidence_out):
     record = records[0]
     harness.validate_evidence_record(record)
     assert record["schema"] == harness.EVIDENCE_SCHEMA_ID
+    # Both SDK producers must name the same arm, or a consumer comparing
+    # `arm` to `evidence_plan` reads the pre-existing half as unattributed
+    # (ENG-11522). Asserted on a real emitted record, not on source text.
+    assert record["arm"] == "sdk"
     assert record["scenario_id"] == "mapped-scenario"
     assert record["build"] == TEST_BUILD
     assert record["method"] == "automated"
@@ -179,7 +183,7 @@ def test_all_passed_emits_passed(pytester, evidence_out):
 def test_any_failure_emits_failed(pytester, evidence_out):
     pytester.makepyfile(
         test_mapped=(
-            "def test_ok():\n    assert True\n" "def test_broken():\n    assert False\n"
+            "def test_ok():\n    assert True\ndef test_broken():\n    assert False\n"
         )
     )
     result = _run_emitting(
@@ -317,8 +321,7 @@ def test_stop_early_on_maxfail_emits_nothing(pytester, evidence_out):
     """``-x`` leaves later mapped tests unrun — the same partial-coverage risk."""
     pytester.makepyfile(
         test_mapped=(
-            "def test_a_broken():\n    assert False\n"
-            "def test_b():\n    assert True\n"
+            "def test_a_broken():\n    assert False\ndef test_b():\n    assert True\n"
         )
     )
     _run_emitting(
@@ -551,7 +554,7 @@ def test_loader_rejects_empty_exclude_glob(tmp_path):
 def test_loader_rejects_malformed_capability_id(tmp_path):
     path = tmp_path / "map.yaml"
     path.write_text(
-        "- pattern: 'x::*'\n  capability_ids: ['Not Valid!']\n" "  scenario_name: 'A'\n"
+        "- pattern: 'x::*'\n  capability_ids: ['Not Valid!']\n  scenario_name: 'A'\n"
     )
     with pytest.raises(ValueError, match="kebab-case"):
         emitter.load_capability_map(path)
@@ -664,3 +667,22 @@ def test_incomplete_outcome_contributes_no_step():
         "test_x.py::test_b": emitter._TestOutcome(status="passed", complete=False),
     }
     assert [s.name for s in plugin._steps_for(entry)] == ["test_x.py::test_a"]
+
+
+@pytest.mark.unit
+def test_emitter_evidence_predicate_delegates_to_the_harness_rule():
+    """One rule, one implementation (ENG-11522).
+
+    The emitter previously asked "not skipped" where the harness asks
+    "passed or failed". Those agree only while `_TestOutcome.status` cannot
+    yield `pending` or `not_reached`; a `pending` step separates them, and
+    the lookalike would call it evidence.
+    """
+    from tests.e2e import _evidence_emitter
+
+    pending = [harness.StepResult(name="a", status="pending", duration_s=0.0)]
+    assert _evidence_emitter._is_evidence(pending) is False
+    assert harness.is_evidence(pending) is False
+
+    passed = [harness.StepResult(name="a", status="passed", duration_s=0.0)]
+    assert _evidence_emitter._is_evidence(passed) is True

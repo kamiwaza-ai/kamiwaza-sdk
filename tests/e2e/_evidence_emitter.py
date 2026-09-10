@@ -424,6 +424,7 @@ class EvidenceEmitterPlugin:
             "ci_job_url": os.environ.get("CI_JOB_URL"),
             "build": self._build,
             "method": "automated",
+            "arm": "sdk",
             "capability_ids": list(entry.capability_ids),
             "evidence_provenance": "pre-existing",
             "status": harness.derive_status(steps),
@@ -441,8 +442,15 @@ def _is_evidence(steps: list[harness.StepResult]) -> bool:
     gates) are the normal outcome on an under-provisioned host, and
     ``derive_status`` would score that green-with-notes — an affirmative
     claim over a capability the run never exercised.
+
+    Delegates rather than restating the rule (ENG-11522): the two producers
+    must agree about what counts as evidence, and this predicate previously
+    said "not skipped" where the harness says "passed or failed". Those are
+    equivalent only while ``_TestOutcome.status`` cannot yield ``pending``
+    or ``not_reached`` — a coincidence of today's vocabulary, not a shared
+    rule.
     """
-    return any(s.status != "skipped" for s in steps)
+    return harness.is_evidence(steps)
 
 
 def _run_was_aborted(session: pytest.Session, exitstatus: int) -> bool:
