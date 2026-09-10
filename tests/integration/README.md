@@ -11,6 +11,7 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_API_KEY` | API key for the primary cluster | unset |
 | `KAMIWAZA_USERNAME` | Username for password-auth fallback | `admin` |
 | `KAMIWAZA_PASSWORD` | Password for password-auth fallback | unset (falls back to kz-login) |
+| `KAMIWAZA_ROOT` | Deploy checkout or its parent; locates `scripts/kz-login` or `deploy/scripts/kz-login` | sibling `../deploy` checkout |
 | `KAMIWAZA_VERIFY_SSL` | Set `false` for self-signed certs in dev | `true` |
 | `KAMIWAZA_PEER_BASE_URL` | Federation peer cluster base URL (ENG-5784) | unset |
 | `KAMIWAZA_PEER_API_KEY` | API key on the peer cluster (ENG-5784) | unset |
@@ -42,6 +43,20 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_TEST_QWEN_IMAGE_SPLIT_GPU_COUNT` | Split-layout GPU allocation (minimum enforced by test) | `2` |
 | `KAMIWAZA_TEST_DIFFUSION_ARTIFACT_DIR` | Generated PNG and JSON evidence directory | timestamped `/tmp/kzsdk-diffusion-evidence-*` |
 | `KAMIWAZA_SKIP_DIFFUSION` | Explicitly opt out of diffusion validation | unset/false |
+
+Password resolution tries the sibling deploy checkout's `scripts/kz-login`,
+then both accepted `KAMIWAZA_ROOT` layouts, and validates the returned password
+against the target API. If the helper is unavailable or its password is rejected,
+the harness tries `KAMIWAZA_PASSWORD` (or `--live-password`). Each distinct
+password is validated at most once per session configuration. The helper must
+have access to the target cluster's secret; for remote clusters, supply the
+correct credentials explicitly.
+
+Selected password-grant, PAT-lifecycle, and CLI-login tests **fail setup** if no
+password can be resolved, even when `KAMIWAZA_API_KEY` is set. They never send an
+empty password or skip this coverage. PAT-only client tests remain usable when
+selected independently. A full live/UAT run must supply a resolvable password;
+missing credentials are a harness failure, not a successful acceptance run.
 
 For source-based user-space acceptance, source
 `scripts/prepare_diffusion_live.sh` before `pytest -m integration`, or run
