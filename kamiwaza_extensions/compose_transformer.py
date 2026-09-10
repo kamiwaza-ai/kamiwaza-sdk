@@ -787,7 +787,7 @@ _URL_REF_RE = re.compile(
     # IPv6 authorities cannot be siblings, but their URL components must still
     # be protected from bare-endpoint scanning. Brackets around a sibling URL
     # remain surrounding text rather than part of its authority.
-    r"(?:\[[^\]\s]+\](?::[0-9]+)?|[^/?#\s,;|()\[\]<>\"'{}]+|(?=[/?#]))"
+    r"(?:\[[^\]\s]+\](?::[0-9]*)?|[^/?#\s,;|()\[\]<>\"'{}]+|(?=[/?#]))"
     # A list separator followed by a full URL starts another entry;
     # ordinary punctuation inside components remains part of this URL.
     # A surrounding quote delimits serialized URLs; without it, apostrophes

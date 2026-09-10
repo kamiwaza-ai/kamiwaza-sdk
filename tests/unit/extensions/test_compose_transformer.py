@@ -1321,6 +1321,7 @@ class TestDetectServiceUrlRewrites:
             "http://etcd:2379=1",
             "http://etcd:2379%20",
             "http://etcd:2379.",
+            "http://[2001:db8::1]:/?targets=a,etcd:2379",
             "etcd:2379@external",
         ],
     )
