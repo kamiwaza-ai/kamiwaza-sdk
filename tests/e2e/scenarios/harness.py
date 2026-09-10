@@ -189,10 +189,10 @@ def _validate_runbook(runbook: dict, *, source: Path) -> None:
             raise ValueError(
                 f"{source.name}: step[{i}] missing required fields {missing_step}"
             )
-    _validate_capability_ids(runbook, source=source)
+    _validate_capability_ids(runbook, where=source.name)
 
 
-def _validate_capability_ids(runbook: dict, *, source: Path) -> None:
+def _validate_capability_ids(runbook: dict, *, where: str) -> None:
     """Validate the REQUIRED ``capability_ids`` runbook field (ENG-9748).
 
     A list of capability identifiers — kebab-case segments, optionally
@@ -212,19 +212,19 @@ def _validate_capability_ids(runbook: dict, *, source: Path) -> None:
     """
     cap_ids = runbook.get("capability_ids")
     if not isinstance(cap_ids, list):
-        raise ValueError(f"{source.name}: capability_ids must be a list of strings")
+        raise ValueError(f"{where}: capability_ids must be a list of strings")
     if not cap_ids:
         raise ValueError(
-            f"{source.name}: capability_ids must name at least one capability; "
+            f"{where}: capability_ids must name at least one capability; "
             "a runbook that evidences nothing cannot emit a joinable record"
         )
     non_strings = [c for c in cap_ids if not isinstance(c, str)]
     if non_strings:
-        raise ValueError(f"{source.name}: capability_ids must be a list of strings")
+        raise ValueError(f"{where}: capability_ids must be a list of strings")
     malformed = [c for c in cap_ids if not CAPABILITY_ID_RE.fullmatch(c)]
     if malformed:
         raise ValueError(
-            f"{source.name}: capability_ids entries must be kebab-case, "
+            f"{where}: capability_ids entries must be kebab-case, "
             f"optionally dot-namespaced (e.g. 'workrooms.create'); got {malformed}"
         )
 
@@ -345,6 +345,11 @@ def run_scenario(
     # (ENG-11522). load_runbook already refuses an absent or empty value;
     # this keeps a hand-built runbook from getting halfway through a
     # scenario and then raising KeyError on the way out.
+    # Validate, don't coerce. `list("abc")` is `["a", "b", "c"]` -- three ids
+    # that each satisfy the kebab-case pattern -- so checking only that the key
+    # exists let a string mapping reach a persisted record. Same rules as
+    # load_runbook, called rather than restated (ENG-11522).
+    _validate_capability_ids(runbook, where=f"runbook {runbook.get('id', '?')!r}")
     capability_ids = list(runbook["capability_ids"])
     provenance = _resolve_provenance(evidence_provenance)
     started = datetime.now(timezone.utc)

@@ -61,6 +61,16 @@ def test_s1_full_loop(staging_url, build_id):
             f"S1 driver has unimplemented steps: {pending}. "
             f"{recorded}; sign-off scaffolding at {sign_off}."
         )
+    # A run where every step was `skipped` writes no record: `record_run`
+    # suppresses it, but `pending_steps` is empty and `ScenarioResult.passed`
+    # counts `skipped` as non-failing, so without this the test would report
+    # PASS while evidencing nothing at all (ENG-11717). "Not applicable on
+    # this host" is a skip, not a pass.
+    if artifact is None:
+        pytest.skip(
+            f"S1 evidenced nothing -- no step passed or failed, so no record "
+            f"was written. Sign-off scaffolding at {sign_off}."
+        )
     assert result.passed, (
         f"S1 unexpected non-passing result: artifact={artifact}, sign-off={sign_off}, "
         f"steps={[(s.name, s.status) for s in result.steps]}"

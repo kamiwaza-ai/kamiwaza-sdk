@@ -667,3 +667,22 @@ def test_incomplete_outcome_contributes_no_step():
         "test_x.py::test_b": emitter._TestOutcome(status="passed", complete=False),
     }
     assert [s.name for s in plugin._steps_for(entry)] == ["test_x.py::test_a"]
+
+
+@pytest.mark.unit
+def test_emitter_evidence_predicate_delegates_to_the_harness_rule():
+    """One rule, one implementation (ENG-11522).
+
+    The emitter previously asked "not skipped" where the harness asks
+    "passed or failed". Those agree only while `_TestOutcome.status` cannot
+    yield `pending` or `not_reached`; a `pending` step separates them, and
+    the lookalike would call it evidence.
+    """
+    from tests.e2e import _evidence_emitter
+
+    pending = [harness.StepResult(name="a", status="pending", duration_s=0.0)]
+    assert _evidence_emitter._is_evidence(pending) is False
+    assert harness.is_evidence(pending) is False
+
+    passed = [harness.StepResult(name="a", status="passed", duration_s=0.0)]
+    assert _evidence_emitter._is_evidence(passed) is True

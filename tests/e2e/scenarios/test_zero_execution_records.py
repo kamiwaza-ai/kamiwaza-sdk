@@ -120,8 +120,17 @@ class TestZeroExecutionRunsAreNotRecorded:
         path = record_run(result)
         assert path is not None and path.exists()
 
+    @pytest.mark.parametrize(
+        "module_name, scenario",
+        [
+            ("test_s1_user_facing_app", "S1"),
+            ("test_s3_operator_connector", "S3"),
+            ("test_s4_kaizen_tool", "S4"),
+            ("test_s5_data_enrichment", "S5"),
+        ],
+    )
     def test_an_unimplemented_driver_skips_without_claiming_an_artifact(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, module_name, scenario
     ):
         """Exercise the driver body, which this suite otherwise never runs.
 
@@ -133,14 +142,17 @@ class TestZeroExecutionRunsAreNotRecorded:
         scaffolding was "rendered at None", while a driver still reading a
         pre-ENG-11717 ``record_run`` would leave a record behind.
         """
-        from tests.e2e.scenarios import test_s3_operator_connector as s3
+        import importlib
+
+        driver = importlib.import_module(f"tests.e2e.scenarios.{module_name}")
+        entrypoint = getattr(driver, f"test_{scenario.lower()}_full_loop")
 
         runs_dir = tmp_path / "runs"
         monkeypatch.setattr(harness, "RUNS_DIR", runs_dir)
         monkeypatch.setattr(harness, "SIGN_OFF_DIR", tmp_path / "sign-off")
 
         with pytest.raises(pytest.skip.Exception) as excinfo:
-            s3.test_s3_full_loop("https://staging.invalid", TEST_BUILD)
+            entrypoint("https://staging.invalid", TEST_BUILD)
 
         message = str(excinfo.value)
         assert "unimplemented steps" in message
@@ -199,6 +211,82 @@ class TestZeroExecutionRunsAreNotRecorded:
             "expected_outcomes": ["something demonstrable"],
             "steps": [{"name": "deploy", "description": "..."}],
         }  # no capability_ids: the case load_runbook would have refused
-        with pytest.raises(KeyError):
+        # ValueError, not KeyError: run_scenario shares load_runbook's
+        # validator, so an absent mapping is reported the same way at both
+        # entry points instead of leaking a raw dict lookup.
+        with pytest.raises(ValueError, match="capability_ids"):
             run_scenario(runbook, {"deploy": deploy})
         assert fired == [], "a handler ran before the mapping was resolved"
+
+    @pytest.mark.parametrize(
+        "bad_mapping",
+        ["abc", [], ["Not_Kebab"], [123], None],
+        ids=["string", "empty", "malformed", "non-string", "none"],
+    )
+    def test_a_bad_capability_mapping_fails_before_any_handler_runs(self, bad_mapping):
+        """Coercion is not validation.
+
+        ``list("abc")`` is ``["a", "b", "c"]`` -- three ids that each satisfy
+        the kebab-case pattern, so a string mapping used to survive all the
+        way into a persisted record. Resolving the mapping early fixed the
+        *ordering* but validated only that the key existed; the value has to
+        be checked too, with the same rules ``load_runbook`` applies.
+        """
+        fired = []
+
+        def deploy():
+            fired.append("deployed")
+            return "ok"
+
+        runbook = {
+            "id": "S1",
+            "name": "Test scenario S1",
+            "sign_off_actor": "SDK team",
+            "uacs": ["UAC-16"],
+            "expected_outcomes": ["something demonstrable"],
+            "capability_ids": bad_mapping,
+            "steps": [{"name": "deploy", "description": "..."}],
+        }
+        with pytest.raises(ValueError, match="capability_ids"):
+            run_scenario(runbook, {"deploy": deploy})
+        assert fired == [], "a handler ran before the mapping was validated"
+
+    def test_an_all_skipped_driver_run_skips_rather_than_reporting_pass(
+        self, monkeypatch, tmp_path
+    ):
+        """The silent-green path, exercised through a real driver.
+
+        When every handler declines, no step is ``pending`` (so the
+        unimplemented-driver branch is bypassed) and ``ScenarioResult.passed``
+        counts ``skipped`` as non-failing -- so the driver used to report PASS
+        while ``record_run`` had written nothing at all. A run that evidences
+        nothing is "not applicable here", which is a skip.
+
+        S2 is the only driver with real handlers, so it is the only one whose
+        all-``skipped`` path is reachable; patching its module-level handler
+        functions is what makes that path testable at all.
+        """
+        from tests.e2e.scenarios import test_s2_workroom_manager as s2
+
+        monkeypatch.setattr(harness, "RUNS_DIR", tmp_path / "runs")
+        monkeypatch.setattr(harness, "SIGN_OFF_DIR", tmp_path / "sign-off")
+
+        def decline():
+            pytest.skip("not applicable on this host")
+
+        for name in (
+            "_scaffold_app",
+            "_assert_workroom_scoped_identity_headers",
+            "_assert_global_workroom_sentinel_handling",
+            "_assert_workroom_boundary_enforcement",
+        ):
+            monkeypatch.setattr(s2, name, decline)
+
+        with pytest.raises(pytest.skip.Exception) as excinfo:
+            s2.test_s2_full_loop("https://staging.invalid", TEST_BUILD)
+
+        message = str(excinfo.value)
+        assert "evidenced nothing" in message
+        assert not (tmp_path / "runs").exists() or not list(
+            (tmp_path / "runs").iterdir()
+        )
