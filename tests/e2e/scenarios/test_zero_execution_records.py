@@ -11,7 +11,12 @@ from __future__ import annotations
 import pytest
 
 from tests.e2e.scenarios import harness
-from tests.e2e.scenarios.harness import record_run, run_scenario
+from tests.e2e.scenarios.harness import (
+    ScenarioResult,
+    StepResult,
+    record_run,
+    run_scenario,
+)
 
 # Version-first: resolve_build_identity refuses a stamp that does not lead
 # with a release version. Mirrors the constant in the sibling test modules.
@@ -142,3 +147,31 @@ class TestZeroExecutionRunsAreNotRecorded:
         assert "no evidence record written" in message
         assert "None" not in message, "the driver leaked record_run's None"
         assert not runs_dir.exists() or not list(runs_dir.iterdir())
+
+    def test_an_unknown_step_status_is_refused_not_silently_dropped(
+        self, monkeypatch, tmp_path
+    ):
+        """Suppression must not run ahead of validation.
+
+        A typo'd status is in neither ``EVIDENCED_STEP_STATUSES`` nor
+        ``STEP_STATUSES``, so a guard placed *before*
+        ``validate_evidence_record`` sees "nothing was evidenced", returns
+        ``None``, and discards a malformed result silently - turning a loud
+        contract violation into lost data. Validation runs first.
+        """
+        monkeypatch.setattr(harness, "RUNS_DIR", tmp_path / "runs")
+        result = ScenarioResult(
+            scenario_id="S1",
+            scenario_name="t",
+            started_at="2026-08-06T17:00:00+00:00",
+            finished_at="2026-08-06T17:00:05+00:00",
+            duration_s=5.0,
+            sign_off_actor="SDK team",
+            capability_ids=["workrooms.create"],
+            ci_job_url=None,
+            build=TEST_BUILD,
+            status="passed",
+            steps=[StepResult(name="x", status="passsed", duration_s=0.1)],
+        )
+        with pytest.raises(ValueError, match="status"):
+            record_run(result)

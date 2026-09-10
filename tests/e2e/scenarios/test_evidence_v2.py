@@ -18,6 +18,7 @@ from jsonschema import Draft202012Validator
 from tests.e2e.scenarios import build_identity, harness
 from tests.e2e.scenarios.harness import (
     CAPABILITY_ID_RE,
+    EVIDENCE_ARMS,
     EVIDENCE_METHODS,
     EVIDENCE_PROVENANCES,
     EVIDENCE_SCHEMA_ID,
@@ -191,9 +192,7 @@ class TestVersionFirstBuildIdentity:
             "1.3.0; core@sha256:abc123"
         )
 
-    def test_release_env_composes_in_front_of_several_annotations(
-        self, monkeypatch
-    ):
+    def test_release_env_composes_in_front_of_several_annotations(self, monkeypatch):
         """The migration path for the shape cycle 1 actually stamped.
 
         The operator's existing KAMIWAZA_BUILD is ``digest; environment`` --
@@ -202,9 +201,10 @@ class TestVersionFirstBuildIdentity:
         one annotation.
         """
         monkeypatch.setenv("KAMIWAZA_RELEASE", "1.3.0")
-        assert resolve_build_identity(
-            "core@sha256:abc123; kamiwaza.test (local k0s)"
-        ) == "1.3.0; core@sha256:abc123; kamiwaza.test (local k0s)"
+        assert (
+            resolve_build_identity("core@sha256:abc123; kamiwaza.test (local k0s)")
+            == "1.3.0; core@sha256:abc123; kamiwaza.test (local k0s)"
+        )
 
     def test_a_stamp_written_without_the_separator_space_is_version_first(self):
         """``;`` alone is the same identity -- the space is presentation."""
@@ -476,7 +476,9 @@ class TestEvidenceValidation:
         path = record_run(result)
         assert path.exists()
 
-    @pytest.mark.parametrize("field", ["method", "evidence_provenance", "status"])
+    @pytest.mark.parametrize(
+        "field", ["method", "evidence_provenance", "status", "arm"]
+    )
     def test_malformed_enum_field_raises_value_error_not_type_error(self, field):
         """Regression: set-membership on an unhashable value (e.g. a list)
         raised TypeError, escaping the ``ValueError`` this module documents
@@ -516,9 +518,9 @@ class TestEvidenceValidation:
         )
         with pytest.raises(ValueError, match="build"):
             record_run(result)
-        assert not runs_dir.exists() or not list(
-            runs_dir.iterdir()
-        ), "an invalid record must not be persisted"
+        assert not runs_dir.exists() or not list(runs_dir.iterdir()), (
+            "an invalid record must not be persisted"
+        )
 
     def test_v1_artifact_is_untouched_and_not_v2(self):
         """A pre-existing v1 run record — no ``schema`` field — is readable,
@@ -563,6 +565,11 @@ class TestSchemaFileSync:
         assert set(props["method"]["enum"]) == EVIDENCE_METHODS
         assert set(props["evidence_provenance"]["enum"]) == EVIDENCE_PROVENANCES
         assert props["capability_ids"]["items"]["pattern"] == CAPABILITY_ID_RE.pattern
+        # ENG-11522 added these two; the mirror is byte-locked to
+        # capability-kit's canonical, so an unpinned constraint is exactly
+        # where the two copies drift apart.
+        assert set(props["arm"]["enum"]) == EVIDENCE_ARMS
+        assert props["capability_ids"]["minItems"] == 1
         step_props = schema["$defs"]["step"]["properties"]
         assert set(step_props["status"]["enum"]) == STEP_STATUSES
 

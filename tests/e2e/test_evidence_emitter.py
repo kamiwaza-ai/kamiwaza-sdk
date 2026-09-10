@@ -153,6 +153,10 @@ def test_pass_plus_skip_emits_passed_with_notes(pytester, evidence_out):
     record = records[0]
     harness.validate_evidence_record(record)
     assert record["schema"] == harness.EVIDENCE_SCHEMA_ID
+    # Both SDK producers must name the same arm, or a consumer comparing
+    # `arm` to `evidence_plan` reads the pre-existing half as unattributed
+    # (ENG-11522). Asserted on a real emitted record, not on source text.
+    assert record["arm"] == "sdk"
     assert record["scenario_id"] == "mapped-scenario"
     assert record["build"] == TEST_BUILD
     assert record["method"] == "automated"
@@ -179,7 +183,7 @@ def test_all_passed_emits_passed(pytester, evidence_out):
 def test_any_failure_emits_failed(pytester, evidence_out):
     pytester.makepyfile(
         test_mapped=(
-            "def test_ok():\n    assert True\n" "def test_broken():\n    assert False\n"
+            "def test_ok():\n    assert True\ndef test_broken():\n    assert False\n"
         )
     )
     result = _run_emitting(
@@ -317,8 +321,7 @@ def test_stop_early_on_maxfail_emits_nothing(pytester, evidence_out):
     """``-x`` leaves later mapped tests unrun — the same partial-coverage risk."""
     pytester.makepyfile(
         test_mapped=(
-            "def test_a_broken():\n    assert False\n"
-            "def test_b():\n    assert True\n"
+            "def test_a_broken():\n    assert False\ndef test_b():\n    assert True\n"
         )
     )
     _run_emitting(
@@ -551,7 +554,7 @@ def test_loader_rejects_empty_exclude_glob(tmp_path):
 def test_loader_rejects_malformed_capability_id(tmp_path):
     path = tmp_path / "map.yaml"
     path.write_text(
-        "- pattern: 'x::*'\n  capability_ids: ['Not Valid!']\n" "  scenario_name: 'A'\n"
+        "- pattern: 'x::*'\n  capability_ids: ['Not Valid!']\n  scenario_name: 'A'\n"
     )
     with pytest.raises(ValueError, match="kebab-case"):
         emitter.load_capability_map(path)
@@ -664,18 +667,3 @@ def test_incomplete_outcome_contributes_no_step():
         "test_x.py::test_b": emitter._TestOutcome(status="passed", complete=False),
     }
     assert [s.name for s in plugin._steps_for(entry)] == ["test_x.py::test_a"]
-
-
-@pytest.mark.unit
-def test_pre_existing_emitter_also_names_its_arm():
-    """The capability_map emitter is the SDK arm too (ENG-11522).
-
-    Both SDK producers must agree, or a consumer comparing `arm` to
-    `evidence_plan` would see the pre-existing half as unattributed.
-    """
-    import inspect
-
-    from tests.e2e import _evidence_emitter
-
-    src = inspect.getsource(_evidence_emitter.EvidenceEmitterPlugin._build_record)
-    assert '"arm": "sdk"' in src

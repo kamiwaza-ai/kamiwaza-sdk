@@ -27,7 +27,7 @@ design §3.6/§4.6): the run artifact is the versioned successor to the original
 harness record. It adds ``build`` (the build identity the run executed against —
 version-first, and the harness *refuses to run* without a usable one, closing
 gap G1; see ``build_identity.py``), ``method``
-(``automated`` for harness runs), ``capability_ids`` (copied from the optional
+(``automated`` for harness runs), ``capability_ids`` (copied from the required
 runbook field of the same name), ``evidence_provenance``, and a scenario-level
 three-valued ``status`` (``passed`` / ``passed_with_notes`` / ``failed``)
 matching the sign-off template's decision vocabulary. Emitted records are
@@ -336,7 +336,7 @@ def run_scenario(
     Emits a ``scenario-evidence.v2`` result: the build identity is resolved
     *before any step runs* (see :func:`resolve_build_identity` — no build,
     no run), ``method`` is always ``"automated"`` for harness executions,
-    and ``capability_ids`` is copied from the optional runbook field.
+    and ``capability_ids`` is copied from the required runbook field.
     """
     resolved_build = resolve_build_identity(build)
     provenance = _resolve_provenance(evidence_provenance)
@@ -354,7 +354,11 @@ def run_scenario(
         ci_job_url=ci_job_url or os.environ.get("CI_JOB_URL"),
         build=resolved_build,
         method="automated",
-        capability_ids=list(runbook.get("capability_ids") or []),
+        # Direct indexing on purpose: load_runbook refuses an absent or
+        # empty value, so a `.get(...) or []` fallback here could only mask
+        # a runbook that bypassed validation -- which is how the orphaned
+        # records happened in the first place (ENG-11522).
+        capability_ids=list(runbook["capability_ids"]),
         evidence_provenance=provenance,
         status=derive_status(results),
         steps=results,
@@ -485,10 +489,14 @@ def record_run(result: ScenarioResult) -> Path | None:
     microseconds (rare; only if ``finished_at`` was hand-set), a numeric
     suffix disambiguates.
     """
-    if not is_evidence(result.steps):
-        return None
     record = asdict(result)
     validate_evidence_record(record)
+    # AFTER validation, never before: an unknown step status is in neither
+    # EVIDENCED_STEP_STATUSES nor STEP_STATUSES, so suppressing first would
+    # read a malformed result as "evidenced nothing" and discard it silently
+    # instead of raising. Suppression is for valid runs that proved nothing.
+    if not is_evidence(result.steps):
+        return None
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = _timestamp_suffix(result.finished_at)
     out = RUNS_DIR / f"{result.scenario_id.lower()}-{stamp}.json"
@@ -626,7 +634,7 @@ def _check_arm(record: dict) -> list[str]:
     """
     if "arm" not in record:
         return []
-    if record["arm"] not in EVIDENCE_ARMS:
+    if not _is_one_of(EVIDENCE_ARMS)(record["arm"]):
         return [f"arm must be one of {sorted(EVIDENCE_ARMS)} (got {record['arm']!r})"]
     return []
 
