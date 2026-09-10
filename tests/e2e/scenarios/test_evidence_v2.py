@@ -652,7 +652,10 @@ class TestValidateRunbookCapabilityIds:
         in the scenario-evidence.v2 `required` list and `[]` satisfies it.
         """
         rb = _one_step_runbook(capability_ids=[])
-        with pytest.raises(ValueError, match="capability_ids"):
+        # The filename prefix is part of the contract: `_validate_capability_ids`
+        # is shared with `run_scenario`, so each entry point must still say
+        # which artifact was refused.
+        with pytest.raises(ValueError, match=r"s1-x\.yaml: capability_ids"):
             _validate_runbook(rb, source=tmp_path / "s1-x.yaml")
 
     def test_valid_capability_ids_accepted(self, tmp_path):

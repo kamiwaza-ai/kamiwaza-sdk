@@ -137,10 +137,12 @@ class TestZeroExecutionRunsAreNotRecorded:
         All five scenario drivers are skipped here by the ``staging_url``
         fixture (``KAMIWAZA_STAGING_URL`` unset), so their handling of
         ``record_run``'s return value is invisible to the rest of the file.
-        Call S3 directly instead: an un-updated driver would interpolate the
-        new ``None`` straight into its skip message and announce that
-        scaffolding was "rendered at None", while a driver still reading a
-        pre-ENG-11717 ``record_run`` would leave a record behind.
+        Call each unimplemented driver directly instead: an un-updated one
+        would interpolate the new ``None`` straight into its skip message and
+        announce that scaffolding was "rendered at None", while a driver still
+        reading a pre-ENG-11717 ``record_run`` would leave a record behind.
+        All four carry byte-identical copies of that block, so each is
+        exercised rather than trusting S3 to speak for the rest.
         """
         import importlib
 
@@ -214,7 +216,7 @@ class TestZeroExecutionRunsAreNotRecorded:
         # ValueError, not KeyError: run_scenario shares load_runbook's
         # validator, so an absent mapping is reported the same way at both
         # entry points instead of leaking a raw dict lookup.
-        with pytest.raises(ValueError, match="capability_ids"):
+        with pytest.raises(ValueError, match=r"runbook 'S1': capability_ids"):
             run_scenario(runbook, {"deploy": deploy})
         assert fired == [], "a handler ran before the mapping was resolved"
 
@@ -247,7 +249,9 @@ class TestZeroExecutionRunsAreNotRecorded:
             "capability_ids": bad_mapping,
             "steps": [{"name": "deploy", "description": "..."}],
         }
-        with pytest.raises(ValueError, match="capability_ids"):
+        # Match the label too: `where` exists so a refusal names its origin,
+        # and blanking it is otherwise an undetectable change.
+        with pytest.raises(ValueError, match=r"runbook 'S1': capability_ids"):
             run_scenario(runbook, {"deploy": deploy})
         assert fired == [], "a handler ran before the mapping was validated"
 
