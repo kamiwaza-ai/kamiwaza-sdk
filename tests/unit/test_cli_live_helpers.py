@@ -1,6 +1,7 @@
 import ast
 import importlib
 import inspect
+import json
 import shlex
 import subprocess
 import sys
@@ -119,7 +120,7 @@ def test_cli_serve_deploy_attempts_revocation_and_clears_cache(
     events: list[str] = []
 
     def fake_login_and_create_pat(*_args: object, **_kwargs: object) -> str:
-        token_path.write_text('{"access_token": "admin-pat"}')
+        token_path.write_text(json.dumps({"access_token": pat_token}))
         return pat_token
 
     def fake_revoke(jti: str) -> None:
@@ -158,7 +159,12 @@ def test_cli_serve_deploy_attempts_revocation_and_clears_cache(
 
     pat_client = SimpleNamespace(
         auth=SimpleNamespace(revoke_pat=fake_revoke),
-        serving=SimpleNamespace(stop_deployment=fake_stop_deployment),
+        serving=SimpleNamespace(
+            stop_deployment=fake_stop_deployment,
+            wait_deployment_ready=lambda *a, **kw: SimpleNamespace(
+                status=deploy_status
+            ),
+        ),
         openai=SimpleNamespace(
             get_client=lambda **_kwargs: SimpleNamespace(
                 chat=SimpleNamespace(
@@ -184,9 +190,15 @@ def test_cli_serve_deploy_attempts_revocation_and_clears_cache(
             ),
             lambda _model, _quantization: None,
             tmp_path,
+            pat_client,
         )
 
-    if inference_error is not None:
+    if revoke_error is not None:
+        with pytest.raises(AssertionError, match="CLI cleanup failed: revoke"):
+            invoke_deploy_test()
+        assert "stop" in events
+        assert events[-1] == "revoke"
+    elif inference_error is not None:
         with pytest.raises(RuntimeError, match="inference failed"):
             invoke_deploy_test()
         assert events == ["deploy", "infer", "stop", "revoke"]

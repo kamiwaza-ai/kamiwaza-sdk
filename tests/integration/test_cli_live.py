@@ -7,13 +7,14 @@ import shlex
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import jwt
 import pytest
 from model_targets import InferenceTarget
 
-from kamiwaza_sdk.exceptions import APIError, AuthenticationError
 from kamiwaza_sdk.token_store import FileTokenStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
@@ -228,22 +229,51 @@ def _cli_login_and_create_pat(
     pat_token = result.stdout.strip()
     assert pat_token
 
-    cached = json.loads(token_path.read_text())
-    if cached.get("access_token") != pat_token:
-        raise AssertionError("Cached PAT did not match the CLI-created PAT")
     return pat_token
 
 
-def _cleanup_cli_pat(pat_client, pat_jti: str | None, token_path: Path) -> None:
-    """Revoke the test PAT and always remove its local cache."""
+def _assert_cli_pat_cache(token_path: Path, pat_token: str) -> None:
+    cached = json.loads(token_path.read_text())
+    if cached.get("access_token") != pat_token:
+        raise AssertionError("Cached PAT did not match the CLI-created PAT")
+
+
+@dataclass
+class _CliResources:
+    cleanup_client: Any
+    token_path: Path
+    secrets: tuple[str, ...]
+    pat_jti: str | None = None
+    deployment_id: str | None = None
+
+
+def _cleanup_cli_resources(resources: _CliResources) -> None:
+    """Attempt every owned cleanup step, then report sanitized failures."""
+    failures: list[str] = []
+    if resources.deployment_id:
+        try:
+            stopped = resources.cleanup_client.serving.stop_deployment(
+                deployment_id=resources.deployment_id, force=True
+            )
+            if stopped is False:
+                raise RuntimeError("stop_deployment returned False")
+        except Exception as exc:
+            failures.append(f"stop: {_scrub_output(str(exc), resources.secrets)[:500]}")
+    if resources.pat_jti:
+        try:
+            resources.cleanup_client.auth.revoke_pat(resources.pat_jti)
+        except Exception as exc:
+            failures.append(
+                f"revoke: {_scrub_output(str(exc), resources.secrets)[:500]}"
+            )
     try:
-        if pat_jti:
-            try:
-                pat_client.auth.revoke_pat(pat_jti)
-            except (AuthenticationError, APIError):
-                pass
-    finally:
-        FileTokenStore(token_path).clear()
+        FileTokenStore(resources.token_path).clear()
+    except Exception as exc:
+        failures.append(f"cache: {_scrub_output(str(exc), resources.secrets)[:500]}")
+    if failures:
+        # Raise outside the except blocks: raw credential-bearing exceptions
+        # must not appear as chained tracebacks in pytest/JUnit output.
+        raise AssertionError("CLI cleanup failed: " + "; ".join(failures)) from None
 
 
 def _pat_jti(pat_token: str) -> str:
@@ -270,25 +300,83 @@ def test_cli_login_and_pat_flow(
     live_username: str,
     live_password_required: str,
     tmp_path: Path,
+    live_kamiwaza_client,
 ) -> None:
-    """CLI login + PAT creation/caching (no model deployment required)."""
+    """CLI login + least-privileged PAT creation/caching and revocation."""
     token_path = tmp_path / "token.json"
     base_args = ["--base-url", live_server_available, "--token-path", str(token_path)]
-
     env = os.environ.copy()
     env.setdefault("PYTHONWARNINGS", "ignore")
-
-    # _cli_login_and_create_pat asserts the session token, PAT, and cache match.
-    _cli_login_and_create_pat(
-        base_args,
-        env,
-        live_username,
-        live_password_required,
-        token_path,
-        pat_prefix="cli-m1",
-        pat_scope="openid",
-        pat_ttl_seconds=900,
+    resources = _CliResources(
+        live_kamiwaza_client, token_path, (live_password_required,)
     )
+    try:
+        pat_token = _cli_login_and_create_pat(
+            base_args,
+            env,
+            live_username,
+            live_password_required,
+            token_path,
+            pat_prefix="cli-m1",
+            pat_scope="openid",
+            pat_ttl_seconds=900,
+        )
+        resources.secrets += (pat_token,)
+        resources.pat_jti = _pat_jti(pat_token)
+        _assert_cli_pat_cache(token_path, pat_token)
+    finally:
+        _cleanup_cli_resources(resources)
+
+
+def _serve_deploy_args(
+    base_args: list[str], target: InferenceTarget, model_file_id: str | None
+) -> list[str]:
+    return [
+        *base_args,
+        "serve",
+        "deploy",
+        "--repo-id",
+        target.repo_id,
+        "--engine-name",
+        target.engine_name,
+        *(["--file-id", model_file_id] if model_file_id else []),
+    ]
+
+
+def _assert_cli_inference(pat_client, deployment_id: str) -> None:
+    openai_client = pat_client.openai.get_client(deployment_id=deployment_id)
+    response = openai_client.chat.completions.create(
+        model="kamiwaza",
+        messages=[{"role": "user", "content": "Reply with exactly: ready /no_think"}],
+        temperature=0.7,
+        top_p=0.8,
+        presence_penalty=1.5,
+        max_tokens=64,
+        timeout=60,
+    )
+    assert response.choices, "CLI-deployed model returned no chat choices"
+    content = response.choices[0].message.content or ""
+    assert content.strip(), "CLI-deployed model returned an empty chat response"
+
+
+def _cli_deploy_and_wait(
+    pat_client,
+    resources: _CliResources,
+    invocation: tuple[list[str], dict[str, str]],
+) -> None:
+    args, env = invocation
+    # Do not add --wait: CLI failures emit no JSON, losing the ID needed for
+    # exact cleanup. Capture ownership before readiness or inference can fail.
+    result = run_cli(args, env, secret_values=resources.secrets)
+    resources.deployment_id = json.loads(result.stdout.strip()).get("deployment_id")
+    assert resources.deployment_id, "CLI serve deploy did not return a deployment_id"
+    deployment = pat_client.serving.wait_deployment_ready(
+        resources.deployment_id,
+        timeout_seconds=600,
+        poll_interval_seconds=5,
+    )
+    assert deployment.status == "DEPLOYED"
+    _assert_cli_inference(pat_client, resources.deployment_id)
 
 
 @pytest.mark.requires_deployable_model
@@ -301,87 +389,36 @@ def test_cli_serve_deploy(
     deployable_model_target: InferenceTarget,
     target_model_file_id,
     tmp_path: Path,
+    live_kamiwaza_client,
 ) -> None:
-    """CLI ``serve deploy`` plus an authenticated inference round-trip.
-
-    Requires a host that can actually deploy the test model; gated by
-    ``requires_deployable_model`` so inventory-selected targets skip on hosts
-    without compatible inference capacity. Explicit fleet targets fail closed.
-    """
+    """CLI deployment and inference with exact cleanup on readiness failure."""
     token_path = tmp_path / "token.json"
     base_args = ["--base-url", live_server_available, "--token-path", str(token_path)]
-
     env = os.environ.copy()
     env.setdefault("PYTHONWARNINGS", "ignore")
-
-    pat_token = _cli_login_and_create_pat(
-        base_args,
-        env,
-        live_username,
-        live_password_required,
-        token_path,
-        pat_prefix="cli-deploy",
-        pat_scope="admin",
-        pat_ttl_seconds=_DEPLOYMENT_PAT_TTL_SECONDS,
+    resources = _CliResources(
+        live_kamiwaza_client, token_path, (live_password_required,)
     )
-    pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
-    pat_jti: str | None = None
-    deployment_id: str | None = None
-
     try:
-        pat_jti = _pat_jti(pat_token)
-
+        pat_token = _cli_login_and_create_pat(
+            base_args,
+            env,
+            live_username,
+            live_password_required,
+            token_path,
+            pat_prefix="cli-deploy",
+            pat_scope="admin",
+            pat_ttl_seconds=_DEPLOYMENT_PAT_TTL_SECONDS,
+        )
+        resources.secrets += (pat_token,)
+        resources.pat_jti = _pat_jti(pat_token)
+        _assert_cli_pat_cache(token_path, pat_token)
+        pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
         model = ensure_deployable_model_ready(pat_client)
         model_file_id = target_model_file_id(
             model, deployable_model_target.quantization
         )
-
-        serve_result = run_cli(
-            [
-                *base_args,
-                "serve",
-                "deploy",
-                "--repo-id",
-                deployable_model_target.repo_id,
-                "--engine-name",
-                deployable_model_target.engine_name,
-                *(["--file-id", model_file_id] if model_file_id else []),
-                "--wait",
-                "--poll-interval",
-                "5",
-                "--timeout",
-                "600",
-            ],
-            env,
-        )
-
-        summary = json.loads(serve_result.stdout.strip())
-        deployment_id = summary.get("deployment_id")
-        assert deployment_id, "CLI serve deploy did not return a deployment_id"
-        assert summary.get("status") == "DEPLOYED"
-
-        openai_client = pat_client.openai.get_client(deployment_id=deployment_id)
-        response = openai_client.chat.completions.create(
-            model="kamiwaza",
-            messages=[
-                {"role": "user", "content": "Reply with exactly: ready /no_think"}
-            ],
-            temperature=0.7,
-            top_p=0.8,
-            presence_penalty=1.5,
-            max_tokens=64,
-            timeout=60,
-        )
-        assert response.choices, "CLI-deployed model returned no chat choices"
-        content = response.choices[0].message.content or ""
-        assert content.strip(), "CLI-deployed model returned an empty chat response"
+        args = _serve_deploy_args(base_args, deployable_model_target, model_file_id)
+        _cli_deploy_and_wait(pat_client, resources, (args, env))
     finally:
-        if deployment_id:
-            try:
-                pat_client.serving.stop_deployment(
-                    deployment_id=deployment_id,
-                    force=True,
-                )
-            except Exception:
-                pass
-        _cleanup_cli_pat(pat_client, pat_jti, token_path)
+        _cleanup_cli_resources(resources)
