@@ -180,6 +180,7 @@ class TestBuildOverlayEntry:
                 "required_env_vars": ["API_KEY"],
                 "capabilities": ["graph"],
                 "tags": ["dev"],
+                "preview_image": "images/kaizen.svg",
                 "strip_path_prefix": False,
                 "kamiwaza_version": ">=0.7.0",
                 "env_metadata": {"API_KEY": {"type": "secret"}},
@@ -189,6 +190,7 @@ class TestBuildOverlayEntry:
         assert entry["required_env_vars"] == ["API_KEY"]
         assert entry["capabilities"] == ["graph"]
         assert entry["tags"] == ["dev"]
+        assert entry["preview_image"] == "images/kaizen.svg"
         assert entry["strip_path_prefix"] is False
         assert entry["kamiwaza_version"] == ">=0.7.0"
         assert entry["env_metadata"] == {"API_KEY": {"type": "secret"}}
@@ -341,3 +343,31 @@ class TestImportInvariant:
                     f"{mod.__name__} imports from {forbidden} — forbidden on "
                     "the dev path (ENG-6802 hard invariant)"
                 )
+
+
+def test_preview_image_shorthand_is_normalized_like_publish():
+    """The publish path stores ``images/<file>``. Writing the raw shorthand
+    here would overwrite that row with a key the asset never used."""
+    from kamiwaza_extensions.catalog_overlay import build_overlay_entry
+
+    entry = build_overlay_entry(
+        version="1.0.0",
+        transformed_compose={"services": {}},
+        canonical_refs={},
+        metadata={"preview_image": "screenshot.png"},
+    )
+
+    assert entry["preview_image"] == "images/screenshot.png"
+
+
+def test_preview_image_already_prefixed_is_left_alone():
+    from kamiwaza_extensions.catalog_overlay import build_overlay_entry
+
+    entry = build_overlay_entry(
+        version="1.0.0",
+        transformed_compose={"services": {}},
+        canonical_refs={},
+        metadata={"preview_image": "images/screenshot.png"},
+    )
+
+    assert entry["preview_image"] == "images/screenshot.png"

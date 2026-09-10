@@ -1,8 +1,10 @@
 # Seeder image for the nightly UAT-box seeding step.
 #
-# Self-contained delivery of the `kamiwaza-seed` CLI: `pip install .` installs
-# the SDK and its console scripts (kamiwaza-seed, including the `login`
-# subcommand) and resolves the kamiwaza-extensions-lib dependency from PyPI.
+# Self-contained delivery of the `kamiwaza-seed` CLI: install the in-tree
+# kamiwaza-extensions-lib release first, then `pip install .` installs the SDK
+# and its console scripts (kamiwaza-seed, including the `login` subcommand).
+# Keeping both workspace packages in the build context lets a PR raise the SDK
+# dependency floor before that runtime-lib release exists on PyPI.
 # The build VM pulls this from GHCR, bundles it, and it relocates into the
 # in-cluster local registry under the org's `<registry>/images/seeder:<tag>`
 # rule — no clone+pip/venv on the box.
@@ -23,15 +25,19 @@ RUN groupadd -r -g 1001 seeder \
 
 WORKDIR /app
 
-# Only the source needed to build the wheel. kamiwaza-extensions-lib is a
-# declared dependency resolved from PyPI (pip ignores the uv workspace source),
-# so the in-repo workspace member is not copied.
+# The in-tree runtime install is an intentional pre-publish validation path:
+# PRs that raise the SDK dependency floor can build before that runtime reaches
+# PyPI. It does not prove published-PyPI resolution; release validation must do
+# that in a clean environment. Remove the first install after this coupling is
+# replaced by a published-artifact smoke.
 COPY pyproject.toml README.md LICENSE MANIFEST.in ./
 COPY kamiwaza_sdk/ ./kamiwaza_sdk/
 COPY kamiwaza_client/ ./kamiwaza_client/
 COPY kamiwaza_extensions/ ./kamiwaza_extensions/
+COPY kamiwaza_extensions_lib/ ./kamiwaza_extensions_lib/
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ./kamiwaza_extensions_lib \
+    && pip install --no-cache-dir .
 
 USER 1001
 

@@ -54,6 +54,7 @@ fi
 
 INLINE_SMALL="$STATE_DIR/test-data/inline-small.parquet"
 INLINE_LARGE="$STATE_DIR/test-data/inline-large.parquet"
+INLINE_LARGE_SSE="$STATE_DIR/test-data/inline-large-sse.parquet"
 FALLBACK_PARQUET="$STATE_DIR/test-data/sales_data_10k.parquet"
 
 if [[ "${SKIP_INLINE_PARQUET:-0}" == "1" ]]; then
@@ -122,6 +123,10 @@ fi
 if [[ ! -f "$INLINE_LARGE" && -f "$FALLBACK_PARQUET" ]]; then
     cp "$FALLBACK_PARQUET" "$INLINE_LARGE"
     echo "Copied fallback parquet to inline-large.parquet."
+fi
+if [[ -f "$INLINE_LARGE" ]]; then
+    cp "$INLINE_LARGE" "$INLINE_LARGE_SSE"
+    echo "Copied inline-large.parquet to the SSE retrieval fixture."
 fi
 
 wait_for_port() {

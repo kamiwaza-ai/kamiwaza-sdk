@@ -12,6 +12,9 @@ pip install kamiwaza-sdk
 
 > **Version compatibility:** This SDK (version 0.5.1+) is incompatible with Kamiwaza versions before 0.5.1. Please ensure you're using the latest version of Kamiwaza.
 
+For deterministic engine validation against an existing cluster, see the
+[strict inference lifecycle provider](docs/validation/inference-lifecycle.md).
+
 ## Python SDK Usage
 
 ```python
@@ -30,6 +33,22 @@ client.authenticator = UserPasswordAuthenticator("admin", "kamiwaza", client.aut
 pat = client.auth.create_pat(PATCreate(name="local-bootstrap")).token
 print("Save this token:", pat)
 ```
+
+### Workroom-scoped automation
+
+PAT/API-key clients should scope automation per request instead of calling
+`workrooms.enter()`, which is reserved for real selected-session binding. Use a
+local scoped client when a block of SDK calls should target one workroom:
+
+```python
+with client.workroom_scope(workroom_id) as scoped:
+    scoped.context.create_vectordb(name="project-vdb", engine="milvus")
+```
+
+`workroom_scope()` returns a new client that adds the explicit workroom scope
+header to its requests. It does not mutate the parent client or server-side
+selected-session state. It is not a client-side security boundary; the server
+must still authorize the caller for the requested workroom on every request.
 
 ## Federation walkthrough (kamiwaza-mesh-v1.0.0)
 
@@ -273,6 +292,47 @@ job_id = kz.jobs.submit_async(
 result = kz.jobs.wait(job_id, timeout=600)
 ```
 
+For a governed receiver job, pass exact typed resources at submission. The
+server rejects the whole request if any resource or operation is not granted:
+
+```python
+from kamiwaza_sdk import DelegatedAccess, DatasetDelegatedAccess
+
+job_id = kz.jobs.submit_async(
+    target_cluster="ORION",
+    entrypoint="python summarize.py",
+    timeout_seconds=36_000,
+    delegated_access=DelegatedAccess(
+        datasets=(
+            DatasetDelegatedAccess(
+                urn=DATASET_URN,
+                operations=("discover", "read", "retrieve"),
+            ),
+        ),
+    ),
+)
+```
+
+Inside that managed job, use only the private credential-agent socket. The
+runtime client never reads an API key, user token, refresh token, or public
+base URL; capability renewal remains inside the agent:
+
+```python
+from kamiwaza_sdk import JobRuntimeClient
+
+with JobRuntimeClient.from_environment() as receiver:
+    granted = receiver.datasets.list_granted()
+    rows = receiver.retrieval.collect(dataset_urn=DATASET_URN)
+    answer = receiver.models.chat(
+        deployment_id=DEPLOYMENT_ID,
+        messages=[{"role": "user", "content": summarize(rows)}],
+    )
+```
+
+`receiver.retrieval.stream(...)` and `receiver.models.stream_chat(...)` expose
+streaming iterators. A sidecar restart is picked up on the next operation by
+re-reading and kernel-verifying the platform-owned agent identity file.
+
 `wait` raises `kamiwaza.exceptions.MeshJobTimeoutError` when the
 budget expires before a terminal state. A *failed* job returns a
 JobResult with `status="FAILED"` and an `error` message — that's
@@ -332,14 +392,22 @@ job_id = kz.jobs.submit_async(
     target_cluster="ORION",
     timeout_seconds=600,
 )
-# ... persist job_id somewhere (sqlite, /tmp file, etc.) ...
+# ... persist (job_id, target_cluster) somewhere (sqlite, etc.) ...
 # ... process dies ...
 
 # Fresh process, much later
 saved_job_id = load_persisted_job_id()
-result = kz.jobs.wait(saved_job_id, timeout=600)
-print(result.status, result.result)
+saved_target_cluster = "ORION"
+result = kz.jobs.wait(
+    saved_job_id,
+    timeout=600,
+    target_cluster=saved_target_cluster,
+)
 ```
+
+The client that submitted the job remembers up to 256 recent remote handles,
+so `wait(job_id, ...)` and `cancel(job_id)` on that same client do not need the
+selector repeated. A new client has no such in-memory routing state.
 
 **Recommended:** use `recoverable=True` for any job with
 `timeout_seconds > 60`. The two-call cost (submit + poll) is amortized
@@ -414,6 +482,10 @@ More examples coming soon!
 | `client.ingestion` | Data ingestion | [Ingestion Service](docs/services/ingestion/README.md) |
 | `client.enclaves` | Connectors + documents | [Enclaves Service](docs/services/enclaves/README.md) |
 
+The cross-service [Kaizen v4 SDK capability audit](docs/kaizen-v4-sdk-capability-matrix.md)
+maps supported SDK entry points to their Kaizen runtime registrations, evidence,
+and closure owners.
+
 ## Auth / User Management (0.9.0)
 
 - **Base URL rule:** set `base_url=https://<host>` (no `/auth` suffix). Quick preflight: `GET {base_url}/auth/ping` → 200. If you include `/auth`, calls will double-prefix and fail.
@@ -447,14 +519,31 @@ The `kz-ext` CLI helps extension developers scaffold, validate, build, deploy, a
 # Install the SDK (includes extension tools)
 pip install kamiwaza-sdk
 
-# Optional extras for publishing and AI-powered conversion:
+# Optional extras:
 pip install kamiwaza-sdk[publish]    # Adds boto3 for kz-ext publish
 pip install kamiwaza-sdk[convert]    # Adds anthropic for kz-ext convert (OpenAI is included by default)
-pip install kamiwaza-sdk[all]        # Both
+pip install kamiwaza-sdk[flight]     # Adds PyArrow for retrieval Flight streams
+pip install kamiwaza-sdk[all]        # All three extras
 
 # Verify
 kz-ext --version
 ```
+
+`kz-ext` has its own manifest-capability version because it can evolve on a
+different cadence from the containing `kamiwaza-sdk` distribution. Version
+`0.2.0` is the first enforceable capability baseline that guarantees support
+for `kamiwaza.json.services.<service>.healthCheck` (ENG-4832). Extension
+manifests declare their required CLI range with `kz_ext_version`; incompatible
+tooling fails before build, publish, or remote deployment.
+
+For the Kamiwaza 1.2 release line, the distribution mapping is:
+
+| `kamiwaza-sdk` distribution | bundled `kz-ext` capability | validated platform range |
+| --- | --- | --- |
+| `1.1.0` | `0.2.0` | `>=1.2.0,<1.3.0` |
+
+The `kamiwaza-v1.2.0` and `release/1.2.1` SDK sources use the same extension
+payload contract, so this single artifact supports both platform releases.
 
 ### Quick Start
 
@@ -511,7 +600,7 @@ kz-ext publish --stage prod
 | Command | Description |
 |---------|-------------|
 | `kz-ext login [url]` | Authenticate with a Kamiwaza instance (default: `https://kamiwaza.test/api`). Supports `--api-key`, `--name`, `--list`, `--use`, `--no-verify-ssl`. |
-| `kz-ext create --type <type> --name <name>` | Scaffold a new extension in the current (empty) directory. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
+| `kz-ext create --type <type> --name <name>` | Scaffold into the current empty directory, or create `./<name>/` from a non-empty workspace. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
 | `kz-ext validate [path]` | Validate `kamiwaza.json`, `docker-compose.yml`, and clear platform-runtime incompatibilities such as privileged ports or root-only web containers. Use `--json` for machine-readable output. |
 | `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. Auto-detects port conflicts and remaps to available ports. Supports `--sdk-repo`, `--detach`, and `--auth` (bridges the developer's identity from `kz-ext login` and routes loopback Kamiwaza URLs through the host gateway — see [docs/extensions/cli-reference/dev-local.md](docs/extensions/cli-reference/dev-local.md)). |
 | `kz-ext dev` | Build, push, and deploy to a Kamiwaza cluster. Uses zero-downtime PATCH updates for existing extensions. Supports `--no-build`, `--no-push`, `--service`, `--revision`, `--sdk-repo`. |
@@ -561,8 +650,18 @@ Optionally uses `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`) for AI-powered convers
 
 - **App** (`--type app`): Full-stack extension with Next.js frontend and FastAPI backend, pre-wired with `@kamiwaza-ai/extensions-lib` and `kamiwaza-extensions-lib`.
 - The app starter includes a working authenticated chat flow so developers can customize a real extension instead of starting from a status dashboard.
+- Production app images contain native port and relocatable path artifacts.
+  Container startup selects or byte-relocates a prebuilt artifact; it never
+  runs `next build`.
 - **Tool** (`--type tool`): MCP tool server using FastMCP with `kamiwaza-extensions-lib`.
 - **Service** (`--type service`): Minimal containerized service.
+
+Extension authoring references:
+
+- [Developer guide](docs/extensions/developer-guide.md)
+- [Path routing and dual-artifact runtime](docs/extensions/runtime-path/path-based-routing-cheatsheet.md)
+- [Auth integration](docs/extensions/auth-integration-guide.md)
+- [Legacy auth/runtime import map](docs/extensions/auth-runtime-migration.md)
 
 ### Local SDK Development (`--sdk-repo`)
 

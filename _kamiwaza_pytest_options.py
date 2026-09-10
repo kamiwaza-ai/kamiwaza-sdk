@@ -62,6 +62,10 @@ DEFAULT_BASE_URL = (
 ).rstrip("/")
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def add_live_options(parser: pytest.Parser) -> None:
     group = parser.getgroup("kamiwaza")
     group.addoption(
@@ -91,6 +95,25 @@ def add_live_options(parser: pytest.Parser) -> None:
             "(defaults to env KAMIWAZA_PASSWORD, else integration fixture resolves via kz-login)."
         ),
     )
+    # ENG-9748 - build identity recorded in scenario-evidence.v2 run records.
+    # ENG-10715 - version-first: the leading `; `-separated segment is the
+    # release a consumer asks by, and the digest/environment follow as
+    # annotations. KAMIWAZA_RELEASE supplies the release when this option
+    # carries only the annotation.
+    group.addoption(
+        "--build",
+        action="store",
+        default=os.environ.get("KAMIWAZA_BUILD", ""),
+        help=(
+            "Build identity the e2e scenario run executed against, recorded in "
+            "scenario-evidence.v2 artifacts (defaults to env KAMIWAZA_BUILD). "
+            "Version-first: '1.3.0; <image digest>; <environment>', or "
+            "'develop@<sha>; ...' for a dev build. The scenario harness refuses "
+            "to run without one, or with one no version query could reach. Set "
+            "KAMIWAZA_RELEASE=1.3.0 to have the release composed in front of a "
+            "digest-only value."
+        ),
+    )
     # ENG-5784 - federation peer cluster for two-cluster live tests.
     group.addoption(
         "--live-peer-base-url",
@@ -112,3 +135,43 @@ def add_live_options(parser: pytest.Parser) -> None:
             "KAMIWAZA_PEER_API_KEY). Required when --live-peer-base-url is set."
         ),
     )
+    group.addoption(
+        "--skip-diffusion",
+        action="store_true",
+        default=_env_flag("KAMIWAZA_SKIP_DIFFUSION"),
+        help=(
+            "Explicitly skip live diffusion deployment and image-generation "
+            "coverage (defaults to env KAMIWAZA_SKIP_DIFFUSION)."
+        ),
+    )
+    group.addoption(
+        "--require-federation-edge",
+        action="store_true",
+        default=os.environ.get("KAMIWAZA_REQUIRE_FEDERATION_EDGE", "").lower()
+        in {"1", "true", "yes", "on"},
+        help=(
+            "Run the required shared-IDP two-cluster edge fail-closed: all six "
+            "contract cases must collect and any skip is promoted to failure."
+        ),
+    )
+    group.addoption(
+        "--require-delegated-workload-edge",
+        action="store_true",
+        default=os.environ.get("KAMIWAZA_REQUIRE_DELEGATED_WORKLOAD_EDGE", "").lower()
+        in {"1", "true", "yes", "on"},
+        help=(
+            "Run the delegated shared-IDP workload edge fail-closed: its live "
+            "case must collect and any skip is promoted to failure."
+        ),
+    )
+
+
+def mark_skipped_diffusion_items(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    if not config.getoption("skip_diffusion"):
+        return
+    skip_marker = pytest.mark.skip(reason="disabled by explicit --skip-diffusion")
+    for item in items:
+        if "diffusion" in item.keywords:
+            item.add_marker(skip_marker)

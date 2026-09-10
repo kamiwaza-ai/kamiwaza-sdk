@@ -14,13 +14,6 @@ def project_root() -> Path:
 
 
 @pytest.fixture(scope="session")
-def qwen_model_id() -> str:
-    """Canonical downloadable/deployable model ID for tests."""
-
-    return "mlx-community/Qwen3-4B-4bit"
-
-
-@pytest.fixture(scope="session")
 def artifact_cache_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Workspace for test artifacts (model downloads, temp datasets, etc.)."""
 

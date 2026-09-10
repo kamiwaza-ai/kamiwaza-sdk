@@ -1,6 +1,8 @@
 id: "S2"
 name: "App launched from Workroom Manager"
 sign_off_actor: "SDK team"
+capability_ids:
+  - "workrooms.app-launch"
 uacs:
   - UAC-9c
   - UAC-16

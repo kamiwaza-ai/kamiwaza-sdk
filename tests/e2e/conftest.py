@@ -28,3 +28,16 @@ def staging_url() -> str:
             "staging cluster (see tests/e2e/scenarios/harness.py)"
         )
     return url
+
+
+@pytest.fixture(scope="session")
+def build_id(request: pytest.FixtureRequest) -> str:
+    """Build identity recorded in scenario-evidence.v2 run artifacts.
+
+    Resolved from the ``--build`` pytest option (which itself defaults to
+    the ``KAMIWAZA_BUILD`` env var). Deliberately NOT a skip when empty:
+    the harness refuses to run without a build identity (design gap G1 —
+    evidence that does not name its build is not evidence), so an
+    unconfigured run fails loudly instead of silently skipping.
+    """
+    return request.config.getoption("--build")

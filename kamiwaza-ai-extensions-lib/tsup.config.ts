@@ -10,6 +10,12 @@ export default defineConfig([
             // createProxyHandlers, identity extractors) don't load
             // `next/server` at all. PR #87 round-3 review (codex P2).
             "local-dev-auth/index": "src/local-dev-auth/index.ts",
+            // Runtime-path relocation contract (dual-artifact App Garden
+            // runtime). next-config is build-time only; runtime is
+            // client-safe; runtime/server-index needs Node/server APIs.
+            "next-config/index": "src/next-config/index.ts",
+            "runtime/index": "src/runtime/index.ts",
+            "runtime/server-index": "src/runtime/server-index.ts",
         },
         format: ["esm", "cjs"],
         dts: true,

@@ -41,7 +41,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
 # not sufficient as a trust signal — uvicorn populates it on every request
 # including direct container traffic. The trusted-routed path now also
 # requires the `x-kamiwaza-trusted-proxy` header to match
-# `$KAMIWAZA_TRUSTED_PROXY_SECRET`, which the routing layer (Traefik /
-# istio ingress) injects only for routed traffic. The compose file passes
+# `$KAMIWAZA_TRUSTED_PROXY_SECRET`, which the provider-owned ingress injects
+# only for routed traffic. The compose file passes
 # the secret in via env so the harness can mint matching test headers.
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --root-path \"${KAMIWAZA_APP_PATH:-}\""]

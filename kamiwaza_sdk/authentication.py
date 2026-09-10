@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
-import time
 from typing import Optional
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 from .exceptions import AuthenticationError
 from .schemas.auth import TokenResponse
@@ -44,6 +44,14 @@ class Authenticator(ABC):
         "after token refresh" message.
         """
         return True
+
+    def invalidate_session(self, session: requests.Session) -> bool:
+        """Invalidate cached session credentials when fresh login can recover.
+
+        Returns ``False`` by default so fixed credentials such as PATs are
+        never cleared or retried as though they were refreshable sessions.
+        """
+        return False
 
 
 class ApiKeyAuthenticator(Authenticator):
@@ -84,6 +92,7 @@ class UserPasswordAuthenticator(Authenticator):
         self.token_expiry: Optional[datetime] = None
         self.refresh_token_value: Optional[str] = None
         self.token_store = token_store or FileTokenStore()
+        self._session_invalidated = False
         self._load_cached_token()
 
     def authenticate(self, session: requests.Session) -> None:
@@ -122,6 +131,9 @@ class UserPasswordAuthenticator(Authenticator):
                 LOGGER.debug("Performed password grant for new access token")
             except Exception as exc:  # pylint: disable=broad-except
                 errors.append(str(exc))
+                if self._session_invalidated and self.token_store:
+                    self.token_store.clear()
+                    self._session_invalidated = False
                 raise AuthenticationError(
                     f"Failed to obtain access token ({'; '.join(errors)})"
                 ) from exc
@@ -139,6 +151,22 @@ class UserPasswordAuthenticator(Authenticator):
             self.refresh_token(session)
         return self.token
 
+    def invalidate_session(self, session: requests.Session) -> bool:
+        """Discard a stale scoped session so the next request logs in afresh."""
+        self.token = None
+        self.token_expiry = None
+        self.refresh_token_value = None
+        self._session_invalidated = True
+        session.headers.pop("Authorization", None)
+        for cookie in list(session.cookies):
+            if cookie.name == "access_token":
+                session.cookies.clear(
+                    domain=cookie.domain,
+                    path=cookie.path,
+                    name=cookie.name,
+                )
+        return True
+
     def _store_token_response(self, token_response: TokenResponse) -> None:
         self.token = token_response.access_token
         expiry_epoch = time.time() + token_response.expires_in
@@ -152,6 +180,7 @@ class UserPasswordAuthenticator(Authenticator):
         )
         if self.token_store:
             self.token_store.save(stored)
+        self._session_invalidated = False
 
     def _load_cached_token(self) -> None:
         if not self.token_store:

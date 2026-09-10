@@ -58,6 +58,34 @@ kz-ext create --type tool --name my-tool   # creates ./tool-my-tool/
 
 The auto-prefix convention (`tool-` and `service-`) still applies.
 
+### Generated app runtime
+
+App scaffolds build two standalone Next.js artifacts into one production
+image: a native port-routed build and a sentinel-prefixed path-routed build.
+At container start, the runtime selects the native artifact or copies and
+byte-relocates the indexed path artifact to `KAMIWAZA_APP_PATH` under `/tmp`.
+It does not run `next build` during deployment startup.
+
+The scaffold owns this contract:
+
+- `frontend/Dockerfile` builds and packages both artifacts.
+- `withKamiwazaAppGarden()` owns `basePath` and `assetPrefix`; do not set them
+  directly.
+- `next` is pinned to the exact version validated by the relocation canary.
+- `KAMIWAZA_ROUTING_MODE` and `KAMIWAZA_APP_PATH` are runtime inputs, not
+  public build variables.
+- `NEXT_PUBLIC_APP_BASE_PATH` is legacy and must not be reintroduced.
+
+Use `kz-ext update` to reconcile existing SDK-native extensions with a newer
+scaffold before adopting this runtime.
+
+For the full contract and migration guidance, see:
+
+- [Path-based routing and dual artifacts](./runtime-path/path-based-routing-cheatsheet.md)
+- [Auth integration](./auth-integration-guide.md)
+- [Legacy-to-canonical import map](./auth-runtime-migration.md)
+- [Logout flow](./logout-flow.md)
+
 ## `kz-ext dev local` — fast local iteration
 
 `kz-ext dev local` runs the scaffolded `docker-compose.yml` against
@@ -98,12 +126,11 @@ are rewritten to `host.docker.internal`; named hostnames keep their
 original name (so TLS SNI matches your local cert) and get an
 `extra_hosts: <name>:host-gateway` entry in the compose overlay.
 
-> **Frontend hot-reload:** `kz-ext dev local` invokes `next build && next start`,
-> so frontend changes require a re-run. We deliberately ship the
-> production build path locally to keep behavior identical to what
-> deploys to the cluster — `next dev` mode is on the post-v1.0 roadmap.
-> Backend changes still hot-reload via `uvicorn --reload` inside the
-> backend container.
+> **Frontend hot-reload:** `kz-ext dev local` selects the scaffold's `dev`
+> image target and runs `next dev`; frontend source mounts therefore
+> hot-reload. Production `kz-ext dev` and `kz-ext publish` builds still use
+> the dual prebuilt-artifact runner described above. Backend changes
+> hot-reload via `uvicorn --reload`.
 
 > **`--auth` security note:** the bearer is passed to the container as
 > `KAMIWAZA_BEARER_TOKEN` (visible to anything that can run `docker
@@ -131,11 +158,23 @@ original name (so TLS SNI matches your local cert) and get an
 
 ## `kz-ext dev` — deploy onto a cluster
 
-Targets the cluster pointed at by your `kubectl` context. Builds your
-images, pushes them to the configured registry, then applies the CR.
-The deployed name is `<your-extension-name>-dev-<short-sha>` so multiple
-people can develop side-by-side without collision; the CLI prints it on
-success / timeout / failure (P9, M1).
+Targets the cluster your active `kz-ext login` connection points at —
+**not** your `kubectl` context. Builds your images, pushes them to the
+resolved dev registry, then creates the CR through the platform API.
+The deployed name is `<slug>-dev-<hash6>`, where `<slug>` is your
+extension name as a DNS-1123 label and `<hash6>` is derived from your
+user id, so two people on the same commit do not collide and your own
+name stays stable across runs; the CLI prints it on success / timeout /
+failure (P9, M1).
+
+> **Where `kubectl` still matters.** Only for registry discovery, and
+> only when your connection is local. For a loopback or explicit dev
+> hostname, `kz-ext` reads the extension registry from the cluster's
+> `core-config` ConfigMap via `kubectl` — so a wrong kube context can
+> still give you a wrong registry. For any non-local connection it
+> skips that deliberately and derives `registry.<connection-hostname>`
+> instead, because your kube context may point at an unrelated cluster
+> (ENG-5719). `KAMIWAZA_REGISTRY` overrides both.
 
 The first run on a new cluster: confirm `kz-ext doctor` is green
 (`cluster_extension_readiness` probe added in M1). A red doctor means

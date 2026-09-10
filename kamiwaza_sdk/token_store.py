@@ -67,9 +67,16 @@ class FileTokenStore(TokenStore):
     def save(self, token: StoredToken) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.path.with_suffix(".tmp")
-        with tmp_path.open("w", encoding="utf-8") as handle:
+        descriptor = os.open(
+            tmp_path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(asdict(token), handle)
+        tmp_path.chmod(0o600)
         tmp_path.replace(self.path)
+        self.path.chmod(0o600)
 
     def clear(self) -> None:
         try:

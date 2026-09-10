@@ -24,10 +24,10 @@ import (
 // shutdown drain (≤ 30s)").
 const shutdownGrace = 30 * time.Second
 
-// maxBodyBytes caps request bodies on tool endpoints. The trust boundary is
-// Traefik (non-sdk-flow.md §8) but a forged in-cluster caller could still
-// hit the extension directly until the Istio follow-on lands; bound the
-// JSON decode to keep that failure mode local.
+// maxBodyBytes caps request bodies on tool endpoints. The platform ingress
+// authorization path is the trust boundary (non-sdk-flow.md §8), but a direct
+// in-cluster caller can bypass that boundary; bound the JSON decode to keep
+// that failure mode local.
 const maxBodyBytes int64 = 1 << 20 // 1 MiB
 
 func main() {

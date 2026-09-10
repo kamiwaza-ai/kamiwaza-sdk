@@ -1,19 +1,36 @@
 from __future__ import annotations
 
+import itertools
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from kamiwaza_sdk.exceptions import APIError, AuthenticationError, NotFoundError
-from kamiwaza_sdk.schemas.kaizen import LLMConfig
+from kamiwaza_sdk.exceptions import (
+    APIError,
+    AuthenticationError,
+    BrokeredUserNotAllowlistedError,
+    NotFoundError,
+)
+from kamiwaza_sdk.seeding import kaizen_turns
+from kamiwaza_sdk.schemas.kaizen import AgentDefinition, LLMConfig
 from kamiwaza_sdk.services.kaizen import (
+    AGENT_CONTRACT_CANONICAL,
+    AGENT_CONTRACT_LEGACY,
+    CANONICAL_EXTENSION_NAME,
+    LEGACY_EXTENSION_NAME,
     AgentService,
     AmbiguousExtensionError,
     ConversationError,
     ConversationService,
+    KaizenOpsService,
+    agent_contract_for_extension,
+    _CONVERSATIONS_PATH,
     _agent_error_from_events,
+    _endpoint_from_extension,
     _has_finish_action,
     _is_serving,
+    _is_transient_resolve_error,
     _reply_from_events,
     resolve_base_url,
     wait_for_base_url,
@@ -34,8 +51,143 @@ class DummyClient:
         return self.responses[(method, path)]
 
 
+def test_agent_contract_is_selected_by_catalog_identity():
+    assert (
+        agent_contract_for_extension(CANONICAL_EXTENSION_NAME)
+        == AGENT_CONTRACT_CANONICAL
+    )
+    assert agent_contract_for_extension(LEGACY_EXTENSION_NAME) == AGENT_CONTRACT_LEGACY
+
+
+def test_agent_contract_for_unknown_identity_raises_instead_of_guessing():
+    # Fail closed: guessing a contract is invisible in the request and only
+    # surfaces as a schema rejection at the server.
+    with pytest.raises(ValueError, match="not a known Kaizen catalog identity"):
+        agent_contract_for_extension("kaizen-next")
+
+
+def test_agent_create_canonical_wraps_definition_in_content_envelope():
+    responses = {("POST", "api/agents"): {"id": "agent-9", "version": 1}}
+    client = DummyClient(responses)
+    service = AgentService(client)
+
+    agent = service.create_canonical(
+        AgentDefinition(name="uat-bedrock-agent", persona="Answer UAT questions."),
+        base_url=KAIZEN_URL,
+        workroom_id="wr-123",
+    )
+
+    # The canonical response maps onto the SDK's stable agent-id output.
+    assert (agent.id, agent.version) == ("agent-9", 1)
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("POST", "api/agents")
+    assert kwargs["base_url"] == KAIZEN_URL
+    # Exactly the canonical body: a `content` envelope and nothing else. The
+    # server forbids extra keys, so any stray field is an HTTP 422.
+    assert kwargs["json"] == {
+        "content": {"name": "uat-bedrock-agent", "persona": "Answer UAT questions."}
+    }
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-123"}
+
+
+def test_agent_create_canonical_omits_unset_fields_and_carries_set_ones():
+    responses = {("POST", "api/agents"): {"id": "agent-10", "version": 1}}
+    client = DummyClient(responses)
+    service = AgentService(client)
+
+    service.create_canonical(
+        AgentDefinition(
+            name="a",
+            persona="p",
+            description="d",
+            capability_ceiling="read",
+        ),
+        base_url=KAIZEN_URL,
+    )
+
+    _, _, kwargs = client.calls[0]
+    content = kwargs["json"]["content"]
+    assert content == {
+        "name": "a",
+        "persona": "p",
+        "description": "d",
+        "capability_ceiling": "read",
+    }
+    # Unset optionals stay off the wire so the server's defaults apply, rather
+    # than nulls the fail-closed parser would reject.
+    assert "mode" not in content
+    assert "routing" not in content
+    assert kwargs["headers"] == {}
+
+
+def test_agent_create_canonical_never_sends_a_per_agent_model_binding():
+    responses = {("POST", "api/agents"): {"id": "agent-11", "version": 1}}
+    client = DummyClient(responses)
+    service = AgentService(client)
+
+    service.create_canonical(AgentDefinition(name="a", persona="p"), base_url=KAIZEN_URL)
+
+    body = client.calls[0][2]["json"]
+    # Canonical Kaizen has no per-agent model binding; the model is bound
+    # instance-wide instead. These keys are exactly what produced the 422.
+    for legacy_key in ("name", "agent_config", "llm_api_key"):
+        assert legacy_key not in body
+
+
+def test_agent_delete_targets_the_agent_resource():
+    client = DummyClient({("DELETE", "api/agents/agent-9"): None})
+    service = AgentService(client)
+
+    service.delete("agent-9", base_url=KAIZEN_URL, workroom_id="wr-123")
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("DELETE", "api/agents/agent-9")
+    assert kwargs["base_url"] == KAIZEN_URL
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-123"}
+
+
+def test_ops_set_chat_model_sends_only_the_deployment_id():
+    responses = {("PUT", "api/ops/models/chat"): {"chat": {"current": {"id": "dep-1"}}}}
+    client = DummyClient(responses)
+    service = KaizenOpsService(client)
+
+    result = service.set_chat_model("dep-1", base_url=KAIZEN_URL, workroom_id="wr-123")
+
+    assert result == {"chat": {"current": {"id": "dep-1"}}}
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("PUT", "api/ops/models/chat")
+    assert kwargs["base_url"] == KAIZEN_URL
+    # Kaizen resolves endpoint + credentials from the deployment itself, so a
+    # URL or key must never ride along.
+    assert kwargs["json"] == {"deployment_id": "dep-1"}
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-123"}
+
+
+def test_ops_set_embedding_model_targets_the_embedding_role():
+    responses = {
+        ("PUT", "api/ops/models/embedding"): {
+            "embedding": {"current": {"id": "dep-embed"}}
+        }
+    }
+    client = DummyClient(responses)
+    service = KaizenOpsService(client)
+
+    result = service.set_embedding_model(
+        "dep-embed", base_url=KAIZEN_URL, workroom_id="wr-123"
+    )
+
+    assert result == {"embedding": {"current": {"id": "dep-embed"}}}
+    method, path, kwargs = client.calls[0]
+    # The embedding role has its own route: binding chat leaves this one unset,
+    # which is what silently degrades semantic search to lexical matching.
+    assert (method, path) == ("PUT", "api/ops/models/embedding")
+    assert kwargs["base_url"] == KAIZEN_URL
+    assert kwargs["json"] == {"deployment_id": "dep-embed"}
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-123"}
+
+
 def test_agent_create_merges_llm_and_targets_kaizen_base_url():
-    responses = {("POST", "api/agents/"): {"id": "agent-1", "name": "seed-agent"}}
+    responses = {("POST", "api/agents"): {"id": "agent-1", "name": "seed-agent"}}
     client = DummyClient(responses)
     service = AgentService(client)
 
@@ -49,7 +201,7 @@ def test_agent_create_merges_llm_and_targets_kaizen_base_url():
 
     assert agent.id == "agent-1"
     method, path, kwargs = client.calls[0]
-    assert (method, path) == ("POST", "api/agents/")
+    assert (method, path) == ("POST", "api/agents")
     assert kwargs["base_url"] == KAIZEN_URL
     # llm is merged under agent_config; model binding preserved.
     assert kwargs["json"]["agent_config"]["llm"] == {
@@ -64,7 +216,7 @@ def test_agent_create_merges_llm_and_targets_kaizen_base_url():
 
 
 def test_agent_create_accepts_raw_llm_dict_and_no_workroom():
-    responses = {("POST", "api/agents/"): {"id": "agent-2"}}
+    responses = {("POST", "api/agents"): {"id": "agent-2"}}
     client = DummyClient(responses)
     service = AgentService(client)
 
@@ -82,7 +234,7 @@ def test_agent_create_accepts_raw_llm_dict_and_no_workroom():
 
 def test_conversation_create_builds_body_and_header():
     responses = {
-        ("POST", "api/conversations/"): {"id": "conv-1", "agent_id": "agent-1"}
+        ("POST", "api/conversations"): {"id": "conv-1", "agent_id": "agent-1"}
     }
     client = DummyClient(responses)
     service = ConversationService(client)
@@ -96,7 +248,7 @@ def test_conversation_create_builds_body_and_header():
 
     assert conv.id == "conv-1"
     method, path, kwargs = client.calls[0]
-    assert (method, path) == ("POST", "api/conversations/")
+    assert (method, path) == ("POST", "api/conversations")
     assert kwargs["base_url"] == KAIZEN_URL
     assert kwargs["json"] == {
         "agent_id": "agent-1",
@@ -125,7 +277,9 @@ def test_resolve_base_url_falls_back_to_api_url():
     # Deployment exposes only api_url (no external/public_api_url).
     extension = SimpleNamespace(
         endpoints=SimpleNamespace(
-            external=None, public_api_url=None, api_url="https://kamiwaza.test/kaizen-api/"
+            external=None,
+            public_api_url=None,
+            api_url="https://kamiwaza.test/kaizen-api/",
         )
     )
     client = SimpleNamespace(
@@ -168,7 +322,7 @@ def _client_listing(extensions):
     client.extensions = SimpleNamespace(list_extensions=list_extensions)
     # Backend probe (_is_serving) succeeds by default; tests that exercise the
     # not-serving path supply their own _request.
-    client._request = lambda *a, **k: {}
+    client._request = lambda *_a, **_k: {}
     return client
 
 
@@ -177,8 +331,8 @@ def test_resolve_base_url_matches_workroom_by_base_name_and_id():
     # and ignore other extensions (milvus) and other workrooms' Kaizen.
     client = _client_listing(
         [
-            _ext("kaizen-4f8b3ae1", "wr-A"),
-            _ext("kaizen-99999999", "wr-B"),  # another workroom's Kaizen
+            _ext("kaizen-4f8b3ae100000000", "wr-A"),
+            _ext("kaizen-9999999900000000", "wr-B"),  # another workroom's Kaizen
             _ext("service-milvus-xyz", "wr-A", external="https://x/milvus"),
         ]
     )
@@ -191,7 +345,7 @@ def test_resolve_base_url_matches_workroom_by_base_name_and_id():
 
 def test_resolve_base_url_workroom_no_match_raises():
     # Kaizen exists, but only in a different workroom — must not be picked.
-    client = _client_listing([_ext("kaizen-99999999", "wr-B")])
+    client = _client_listing([_ext("kaizen-9999999900000000", "wr-B")])
 
     with pytest.raises(ValueError, match="No 'kaizen' extension found"):
         resolve_base_url(client, "kaizen", workroom_id="wr-A")
@@ -200,7 +354,12 @@ def test_resolve_base_url_workroom_no_match_raises():
 def test_resolve_base_url_workroom_ambiguous_raises():
     # Two Kaizen in the SAME workroom is anomalous — fail loudly, don't guess.
     # AmbiguousExtensionError (not ValueError) so the wait loop won't retry it.
-    client = _client_listing([_ext("kaizen-aaaa", "wr-A"), _ext("kaizen-bbbb", "wr-A")])
+    client = _client_listing(
+        [
+            _ext("kaizen-aaaaaaaaaaaaaaaa", "wr-A"),
+            _ext("kaizen-bbbbbbbbbbbbbbbb", "wr-A"),
+        ]
+    )
 
     with pytest.raises(AmbiguousExtensionError, match="Multiple 'kaizen' extensions"):
         resolve_base_url(client, "kaizen", workroom_id="wr-A")
@@ -213,9 +372,43 @@ def test_resolve_base_url_workroom_ignores_unsuffixed_exact_name():
     client = _client_listing(
         [
             _ext("kaizen", "wr-A", external="https://x/bare"),
-            _ext("kaizen-4f8b3ae1", "wr-A"),
+            _ext("kaizen-4f8b3ae100000000", "wr-A"),
         ]
     )
+
+    assert resolve_base_url(client, "kaizen", workroom_id="wr-A") == KAIZEN_URL
+
+
+def test_resolve_base_url_does_not_adopt_kaizen_next_instance_by_prefix():
+    client = _client_listing(
+        [_ext("kaizen-next-4f8b3ae100000000", "wr-A")]
+    )
+
+    with pytest.raises(ValueError, match="No 'kaizen' extension found"):
+        resolve_base_url(client, "kaizen", workroom_id="wr-A")
+
+
+def test_resolve_base_url_does_not_adopt_the_legacy_instance_as_canonical():
+    # Both products can sit in one workroom while legacy is still shipping.
+    # Canonical must never resolve the legacy instance: the two speak different
+    # agent-create contracts, so a wrong resolve is a silent HTTP 422 later.
+    client = _client_listing([_ext("kaizen-legacy-4f8b3ae100000000", "wr-A")])
+
+    with pytest.raises(ValueError, match="No 'kaizen' extension found"):
+        resolve_base_url(client, CANONICAL_EXTENSION_NAME, workroom_id="wr-A")
+
+
+def test_resolve_base_url_resolves_the_legacy_instance_by_its_own_identity():
+    client = _client_listing([_ext("kaizen-legacy-4f8b3ae100000000", "wr-A")])
+
+    assert (
+        resolve_base_url(client, LEGACY_EXTENSION_NAME, workroom_id="wr-A")
+        == KAIZEN_URL
+    )
+
+
+def test_resolve_base_url_accepts_non_uuid_workroom_suffix_shape():
+    client = _client_listing([_ext("kaizen-wra", "wr-A")])
 
     assert resolve_base_url(client, "kaizen", workroom_id="wr-A") == KAIZEN_URL
 
@@ -225,7 +418,12 @@ def test_wait_for_base_url_does_not_retry_ambiguity(monkeypatch):
 
     slept: list = []
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
-    client = _client_listing([_ext("kaizen-aaaa", "wr-A"), _ext("kaizen-bbbb", "wr-A")])
+    client = _client_listing(
+        [
+            _ext("kaizen-aaaaaaaaaaaaaaaa", "wr-A"),
+            _ext("kaizen-bbbbbbbbbbbbbbbb", "wr-A"),
+        ]
+    )
 
     # Ambiguity is deterministic — it must propagate immediately, never poll.
     with pytest.raises(AmbiguousExtensionError):
@@ -262,14 +460,14 @@ def test_wait_for_base_url_workroom_retries_until_listed(monkeypatch):
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
 
     # First poll: workroom has no Kaizen yet. Second poll: it's listed and ready.
-    rounds = [[], [_ext("kaizen-4f8b3ae1", "wr-A")]]
+    rounds = [[], [_ext("kaizen-4f8b3ae100000000", "wr-A")]]
 
     def list_extensions(workroom_id=None):
         return rounds.pop(0)
 
     client = SimpleNamespace(
         extensions=SimpleNamespace(list_extensions=list_extensions),
-        _request=lambda *a, **k: {},  # backend serves once listed
+        _request=lambda *_a, **_k: {},  # backend serves once listed
     )
 
     url = wait_for_base_url(
@@ -279,13 +477,192 @@ def test_wait_for_base_url_workroom_retries_until_listed(monkeypatch):
     assert rounds == []
 
 
+def test_wait_for_base_url_retries_transient_api_error_from_resolve(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # A freshly-installed box can 403 (or 5xx) on the platform /extensions listing
+    # while the workroom's rebac grant / gateway route settle, then succeed. That
+    # transient must be retried, not propagated — otherwise resolve-kaizen-url
+    # crashes the nightly seed's agent step (observed as a 403 mid-poll).
+    rounds = [
+        APIError("transient authz", status_code=403),
+        [_ext("kaizen-4f8b3ae1", "wr-A")],
+    ]
+
+    def list_extensions(workroom_id=None):
+        item = rounds.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *_a, **_k: {},  # backend serves once listed
+    )
+
+    url = wait_for_base_url(
+        client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0
+    )
+    assert url == KAIZEN_URL
+    assert rounds == []
+
+
+def test_wait_for_base_url_retries_transient_authorization_error(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # The rebac 403 on a fresh box surfaces as an AuthorizationError SUBCLASS
+    # (via error_for_response's typed dispatch), which is a sibling of APIError
+    # — an `except APIError` alone would let it crash the poll (the observed
+    # nightly failure). It must be caught and classified transient by its 403.
+    rounds = [
+        BrokeredUserNotAllowlistedError("grant not propagated", status_code=403),
+        [_ext("kaizen-4f8b3ae1", "wr-A")],
+    ]
+
+    def list_extensions(workroom_id=None):
+        item = rounds.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *_a, **_k: {},
+    )
+
+    url = wait_for_base_url(
+        client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0
+    )
+    assert url == KAIZEN_URL
+    assert rounds == []
+
+
+def test_wait_for_base_url_retries_transient_5xx_from_resolve(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # A gateway 503 while the upstream warms must ride the same loop path as
+    # the 403 case (not just the pure classifier).
+    rounds = [
+        APIError("no healthy upstream", status_code=503),
+        [_ext("kaizen-4f8b3ae1", "wr-A")],
+    ]
+
+    def list_extensions(workroom_id=None):
+        item = rounds.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *_a, **_k: {},
+    )
+
+    url = wait_for_base_url(
+        client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0
+    )
+    assert url == KAIZEN_URL
+    assert rounds == []
+
+
+def test_is_transient_resolve_error_accepts_authorization_error():
+    # The classifier must work on AuthorizationError subclasses, not just
+    # APIError — both carry status_code from the response boundary.
+    err = BrokeredUserNotAllowlistedError("not allowlisted yet", status_code=403)
+    assert _is_transient_resolve_error(err, workroom_scoped=True) is True
+
+
+def test_wait_for_base_url_does_not_retry_unscoped_403(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+
+    # Without a workroom scope there is no rebac grant to wait for — a 403 on
+    # the get_extension path is a genuine permission denial. It must surface
+    # immediately instead of burning the whole timeout into an opaque
+    # TimeoutError that buries the authorization failure.
+    def get_extension(_name):
+        raise APIError("forbidden", status_code=403)
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=get_extension),
+        _request=lambda *_a, **_k: {},
+    )
+
+    with pytest.raises(APIError):
+        wait_for_base_url(client, "kaizen", poll_interval_seconds=0)
+    assert slept == []
+
+
+def test_wait_for_base_url_does_not_retry_non_transient_api_error(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+
+    # A genuine bad request (400) is not a startup blip — surface it immediately
+    # rather than burning the whole timeout polling a request that can't succeed.
+    # (400 is used rather than 401 because the real client intercepts 401 in its
+    # token-refresh path and raises AuthenticationError, never a bare APIError.)
+    def list_extensions(workroom_id=None):
+        raise APIError("bad request", status_code=400)
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *_a, **_k: {},
+    )
+
+    with pytest.raises(APIError):
+        wait_for_base_url(client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0)
+    assert slept == []
+
+
+@pytest.mark.parametrize(
+    "status,workroom_scoped,expected",
+    [
+        (None, True, True),  # transport error before any response — settling
+        (None, False, True),  # ...regardless of scope
+        (500, True, True),  # any 5xx — gateway/upstream not ready
+        (500, False, True),  # ...regardless of scope
+        (503, True, True),  # no healthy upstream while backend comes up
+        (599, True, True),  # upper 5xx bound
+        (403, True, True),  # workroom rebac grant not applied yet on a fresh box
+        (403, False, False),  # unscoped 403 = real permission denial — surface it
+        (429, True, True),  # rate limited
+        (429, False, True),  # ...regardless of scope
+        (400, True, False),  # bad request — can't clear on its own
+        (401, True, False),  # auth failure — surface immediately
+        (404, True, False),  # not found — handled separately, not transient here
+        (200, True, False),  # a non-error status is never transient
+    ],
+)
+def test_is_transient_resolve_error_classifies_statuses(
+    status, workroom_scoped, expected
+):
+    # Table-driven check of the pure classifier so every retryable/terminal
+    # status is pinned independently of the wait_for_base_url poll loop.
+    assert (
+        _is_transient_resolve_error(
+            APIError("boom", status_code=status), workroom_scoped=workroom_scoped
+        )
+        is expected
+    )
+
+
 def test_wait_for_base_url_returns_when_ready():
     extension = SimpleNamespace(
         endpoints=SimpleNamespace(external=KAIZEN_URL, public_api_url=None)
     )
     client = SimpleNamespace(
         extensions=SimpleNamespace(get_extension=lambda name: extension),
-        _request=lambda *a, **k: {},  # backend serves
+        _request=lambda *_a, **_k: {},  # backend serves
     )
 
     assert wait_for_base_url(client, "kaizen-4f8b3ae1") == KAIZEN_URL
@@ -313,7 +690,7 @@ def test_wait_for_base_url_retries_past_transient_states(monkeypatch):
 
     client = SimpleNamespace(
         extensions=SimpleNamespace(get_extension=get_extension),
-        _request=lambda *a, **k: {},  # backend serves once published
+        _request=lambda *_a, **_k: {},  # backend serves once published
     )
 
     assert wait_for_base_url(client, "kaizen", poll_interval_seconds=0) == KAIZEN_URL
@@ -358,7 +735,7 @@ def test_is_serving_true_on_success():
     assert _is_serving(client, KAIZEN_URL, workroom_id="wr-A") is True
     # Probes the agents endpoint against the resolved base_url, workroom-scoped.
     method, path, kwargs = calls[0]
-    assert (method, path) == ("GET", "api/agents/")
+    assert (method, path) == ("GET", "api/agents")
     assert kwargs["base_url"] == KAIZEN_URL
     assert kwargs["headers"] == {"X-Workroom-Id": "wr-A"}
 
@@ -367,7 +744,7 @@ def test_is_serving_true_on_success():
 def test_is_serving_false_on_5xx(status):
     # Any 5xx means the gateway/backend isn't ready (no healthy upstream during
     # pod startup is 503, but envoy can also emit 502/504 mid-startup).
-    def server_error(*a, **k):
+    def server_error(*_a, **_k):
         raise APIError("server error", status_code=status)
 
     client = SimpleNamespace(_request=server_error)
@@ -377,7 +754,7 @@ def test_is_serving_false_on_5xx(status):
 def test_is_serving_false_on_connection_error():
     # A transport failure surfaces as APIError with no status_code — the route
     # exists but nothing is answering yet, so keep polling.
-    def refused(*a, **k):
+    def refused(*_a, **_k):
         raise APIError("An error occurred while making the request: refused")
 
     client = SimpleNamespace(_request=refused)
@@ -386,7 +763,7 @@ def test_is_serving_false_on_connection_error():
 
 def test_is_serving_true_on_4xx():
     # A 4xx means the backend answered — it's up, just rejecting this probe.
-    def not_found(*a, **k):
+    def not_found(*_a, **_k):
         raise APIError("not found", status_code=404)
 
     client = SimpleNamespace(_request=not_found)
@@ -395,7 +772,7 @@ def test_is_serving_true_on_4xx():
 
 def test_is_serving_true_on_structured_error():
     # Non-APIError KamiwazaError subclasses (auth/validation) prove a response.
-    def unauthorized(*a, **k):
+    def unauthorized(*_a, **_k):
         raise AuthenticationError("nope")
 
     client = SimpleNamespace(_request=unauthorized)
@@ -415,7 +792,7 @@ def test_wait_for_base_url_polls_past_503_until_serving(monkeypatch):
         {"agents": []},
     ]
 
-    def probe(*a, **k):
+    def probe(*_a, **_k):
         item = outcomes.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -458,7 +835,7 @@ def test_wait_for_base_url_times_out_when_published_but_never_serving(monkeypatc
 
     # Ingress resolves but the backend 503s forever — the timeout message must
     # reflect "not serving", not "not resolvable".
-    def always_503(*a, **k):
+    def always_503(*_a, **_k):
         raise APIError("no healthy upstream", status_code=503)
 
     client = _serving_client(always_503)
@@ -467,7 +844,7 @@ def test_wait_for_base_url_times_out_when_published_but_never_serving(monkeypatc
 
 
 def test_agent_list_unwraps_agents_envelope():
-    responses = {("GET", "api/agents/"): {"agents": [{"id": "agent-1", "name": "a"}]}}
+    responses = {("GET", "api/agents"): {"agents": [{"id": "agent-1", "name": "a"}]}}
     client = DummyClient(responses)
     service = AgentService(client)
 
@@ -475,7 +852,7 @@ def test_agent_list_unwraps_agents_envelope():
 
     assert [a.id for a in agents] == ["agent-1"]
     method, path, kwargs = client.calls[0]
-    assert (method, path) == ("GET", "api/agents/")
+    assert (method, path) == ("GET", "api/agents")
     assert kwargs["headers"] == {"X-Workroom-Id": "wr-1"}
 
 
@@ -498,7 +875,9 @@ def test_conversation_send_message_enqueues_without_json_response():
     client = DummyClient(responses)
     service = ConversationService(client)
 
-    result = service.send_message("conv-1", "hello", base_url=KAIZEN_URL, workroom_id="wr-1")
+    result = service.send_message(
+        "conv-1", "hello", base_url=KAIZEN_URL, workroom_id="wr-1"
+    )
 
     assert result is None
     method, path, kwargs = client.calls[0]
@@ -526,7 +905,9 @@ def test_conversation_get_events_passes_pagination():
     client = DummyClient(responses)
     service = ConversationService(client)
 
-    out = service.get_events("conv-1", base_url=KAIZEN_URL, workroom_id="wr-1", offset=5, limit=50)
+    out = service.get_events(
+        "conv-1", base_url=KAIZEN_URL, workroom_id="wr-1", offset=5, limit=50
+    )
 
     assert out == {"events": [], "total": 0}
     method, path, kwargs = client.calls[0]
@@ -696,7 +1077,9 @@ def test_agent_error_from_events_returns_message_or_none():
     assert _agent_error_from_events([_message_event("ok")]) is None
     # Defensively accept the alternate error-event kind + its `message` field.
     assert (
-        _agent_error_from_events([{"kind": "ConversationErrorEvent", "message": "nope"}])
+        _agent_error_from_events(
+            [{"kind": "ConversationErrorEvent", "message": "nope"}]
+        )
         == "nope"
     )
 
@@ -768,9 +1151,7 @@ def test_chat_zero_poll_interval_does_not_raise(monkeypatch):
     service = ConversationService(client)
 
     assert (
-        service.chat(
-            "conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0
-        )
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
         == "done"
     )
     assert slept == [0.0]
@@ -799,10 +1180,15 @@ def test_chat_ignores_interim_assistant_text_before_finish(monkeypatch):
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
     # First poll: only interim assistant narration, no finish yet — must NOT be
     # returned. Second poll: the terminal finish carries the real answer.
-    client = ChatClient(polls=[[_message_event("Let me think…")], [_finish_event("real answer")]])
+    client = ChatClient(
+        polls=[[_message_event("Let me think…")], [_finish_event("real answer")]]
+    )
     service = ConversationService(client)
 
-    assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0) == "real answer"
+    assert (
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
+        == "real answer"
+    )
 
 
 def test_chat_returns_plain_assistant_reply_when_execution_finished(monkeypatch):
@@ -843,7 +1229,9 @@ def test_chat_returns_none_when_finished_without_final_reply(monkeypatch):
     import kamiwaza_sdk.services.kaizen as kaizen_mod
 
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
-    client = ChatClient(polls=[[]], execution_statuses=["running", "finished", "finished"])
+    client = ChatClient(
+        polls=[[]], execution_statuses=["running", "finished", "finished"]
+    )
     service = ConversationService(client)
 
     assert (
@@ -1019,10 +1407,7 @@ def test_chat_same_terminal_changing_reply_respects_timeout(monkeypatch):
             self.reply_polls = 0
 
         def _request(self, method, path, **kwargs):
-            if (
-                path.endswith("/events")
-                and kwargs.get("params", {}).get("limit") != 1
-            ):
+            if path.endswith("/events") and kwargs.get("params", {}).get("limit") != 1:
                 self.reply_polls += 1
                 if self.reply_polls > 3:
                     raise AssertionError("chat() did not enforce its timeout")
@@ -1344,3 +1729,667 @@ def test_chat_times_out_when_no_reply(monkeypatch):
 
     with pytest.raises(TimeoutError, match="No agent reply"):
         service.chat("conv-1", "hi", base_url=KAIZEN_URL, timeout_seconds=1)
+
+
+# --- canonical (Kaizen v4) conversation contract ----------------------------
+#
+# Canonical Kaizen and legacy Kaizen diverge across the whole turn, not just at
+# create: canonical has no `/messages` and no `/run` route at all, and streams
+# its events as SSE. These tests pin the wire contract on both sides of the
+# split, because a mismatch is invisible locally and only surfaces as an HTTP
+# 422/404 against a real deployment.
+
+
+class _FakeSSEResponse:
+    """Stands in for a streamed ``requests.Response`` carrying SSE frames."""
+
+    def __init__(self, frames):
+        self._frames = list(frames)
+        self.closed = False
+
+    def iter_lines(self, decode_unicode=False):
+        for frame in self._frames:
+            for line in frame.split("\n"):
+                yield line
+
+    def close(self):
+        self.closed = True
+
+
+def _durable_frame(event, data, *, input_id="input-1"):
+    body = {
+        "schema_version": 1,
+        "stream_kind": "durable",
+        "event": event,
+        "input_id": input_id,
+        "data": data,
+    }
+    return f"event: {event}\ndata: {json.dumps(body)}\n\n"
+
+
+class CanonicalChatClient:
+    """Answers create/inputs with JSON and events with an SSE stream.
+
+    ``streams`` is a list of frame-lists, one per expected ``/events`` open, so
+    a test can model a stream that drops and is reconnected.
+    """
+
+    def __init__(self, frames, *, accepted_position=7, streams=None):
+        self.frames = frames
+        self.accepted_position = accepted_position
+        self.calls: list[tuple[str, str, dict]] = []
+        self.response = _FakeSSEResponse(frames)
+        self._streams = list(streams) if streams is not None else None
+        self.responses: list[_FakeSSEResponse] = [self.response]
+
+    def _request(self, method: str, path: str, **kwargs):
+        self.calls.append((method, path, kwargs))
+        if path == _CONVERSATIONS_PATH:
+            return {"id": "conv-9"}
+        if path.endswith("/inputs"):
+            return {
+                "input_id": "input-1",
+                "accepted_position": self.accepted_position,
+                "status": "accepted",
+            }
+        if path.endswith("/events"):
+            if self._streams is None:
+                return self.response
+            nxt = self._streams.pop(0) if self._streams else []
+            resp = _FakeSSEResponse(nxt)
+            self.responses.append(resp)
+            return resp
+        raise AssertionError(f"unexpected path {path}")
+
+
+def test_conversation_create_canonical_sends_idempotency_key_and_no_body():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    conv = service.create_canonical(base_url=KAIZEN_URL, workroom_id="wr-123")
+
+    assert conv.id == "conv-9"
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("POST", "api/conversations")
+    # The route declares no body param, and the v3 fields are exactly what
+    # canonical Kaizen rejects with the 422 this split exists to fix.
+    assert "json" not in kwargs
+    key = kwargs["headers"]["Idempotency-Key"]
+    assert 1 <= len(key) <= 200
+    assert kwargs["headers"]["X-Workroom-Id"] == "wr-123"
+
+
+def test_conversation_create_canonical_uses_a_fresh_key_per_call():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    service.create_canonical(base_url=KAIZEN_URL)
+    service.create_canonical(base_url=KAIZEN_URL)
+
+    first, second = (call[2]["headers"]["Idempotency-Key"] for call in client.calls)
+    # Two separate creates must not collapse into one conversation server-side.
+    assert first != second
+
+
+def test_conversation_create_canonical_honors_a_caller_supplied_key():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    service.create_canonical(base_url=KAIZEN_URL, idempotency_key="seed-run-1")
+
+    assert client.calls[0][2]["headers"]["Idempotency-Key"] == "seed-run-1"
+
+
+@pytest.mark.parametrize("bad_key", ["", "   ", "k" * 201])
+def test_conversation_create_canonical_rejects_a_key_the_server_would_reject(bad_key):
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    # Fail locally with the fix in the message rather than as an opaque 422.
+    with pytest.raises(ValueError, match="Idempotency-Key"):
+        service.create_canonical(base_url=KAIZEN_URL, idempotency_key=bad_key)
+    assert client.calls == []
+
+
+def test_conversation_create_legacy_still_sends_the_v3_body_and_no_header():
+    responses = {("POST", "api/conversations"): {"id": "conv-1", "agent_id": "agent-1"}}
+    client = DummyClient(responses)
+    service = ConversationService(client)
+
+    service.create(base_url=KAIZEN_URL, agent_id="agent-1", workroom_id="wr-1")
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["json"]["max_iterations"] == 500
+    assert kwargs["json"]["stuck_detection"] is True
+    # The legacy route never reads the header; sending it here would be the
+    # mirror image of the bug being fixed.
+    assert "Idempotency-Key" not in kwargs["headers"]
+
+
+def test_send_input_canonical_posts_a_message_kind_with_an_idempotency_key():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    accepted = service.send_input_canonical(
+        "conv-9", "hello there", base_url=KAIZEN_URL, workroom_id="wr-1"
+    )
+
+    assert (accepted.input_id, accepted.accepted_position) == ("input-1", 7)
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("POST", "api/conversations/conv-9/inputs")
+    assert kwargs["json"] == {"kind": "message", "message": "hello there"}
+    assert kwargs["headers"]["Idempotency-Key"]
+    assert kwargs["headers"]["X-Workroom-Id"] == "wr-1"
+
+
+def test_send_input_canonical_carries_an_agent_selector_when_asked():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    service.send_input_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, agent="uat-bedrock-agent"
+    )
+
+    # Canonical Kaizen selects the agent per input, not at conversation create.
+    assert client.calls[0][2]["json"]["agent"] == "uat-bedrock-agent"
+
+
+def test_chat_canonical_returns_the_assistant_text_once_the_run_completes():
+    frames = [
+        _durable_frame("agent_run_started", {"v": 1}),
+        _durable_frame("assistant_message", {"v": 1, "text": "Hello! I am claude."}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+    client = CanonicalChatClient(frames)
+    service = ConversationService(client)
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5
+    )
+
+    assert reply == "Hello! I am claude."
+    # The stream must replay from the accepted position, or an agent that
+    # finishes before the stream opens loses its reply.
+    events_call = [c for c in client.calls if c[1].endswith("/events")][0]
+    assert events_call[2]["params"]["after"] == 7
+    assert client.response.closed is True
+
+
+def test_chat_canonical_raises_a_terminal_error_when_the_run_fails():
+    frames = [
+        _durable_frame("agent_run_started", {"v": 1}),
+        _durable_frame(
+            "agent_run_failed", {"v": 1, "status": "failed", "reason": "no model bound"}
+        ),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    with pytest.raises(ConversationError, match="no model bound"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+
+
+def test_chat_canonical_ignores_events_belonging_to_another_input():
+    frames = [
+        _durable_frame(
+            "assistant_message", {"v": 1, "text": "stale"}, input_id="input-0"
+        ),
+        _durable_frame(
+            "agent_run_completed", {"v": 1, "status": "completed"}, input_id="input-0"
+        ),
+        _durable_frame("assistant_message", {"v": 1, "text": "fresh"}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5
+    )
+
+    # A shared conversation replays other turns; only this turn's reply counts.
+    assert reply == "fresh"
+
+
+def test_chat_canonical_times_out_when_the_run_never_finishes():
+    frames = [_durable_frame("agent_run_started", {"v": 1})]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    with pytest.raises(TimeoutError, match="conv-9"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=0)
+
+
+def test_chat_canonical_fire_and_forget_skips_the_event_stream():
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=None
+    )
+
+    assert reply is None
+    assert [c for c in client.calls if c[1].endswith("/events")] == []
+
+
+# --- canonical turn: budget, terminals, transport faults --------------------
+
+
+def _transient_frame(event):
+    """A conversation-level frame carrying no input_id (keepalive/presence)."""
+    body = {"schema_version": 1, "stream_kind": "transient", "event": event, "data": {}}
+    return f"event: {event}\ndata: {json.dumps(body)}\n\n"
+
+
+class _EndlessKeepaliveResponse(_FakeSSEResponse):
+    """A stream that never stops emitting conversation-level keepalives.
+
+    Deliberately unbounded: the server emits one roughly every 10s for the life
+    of the stream and they carry no input_id, so a budget check sitting behind
+    the turn filter never runs on them. Against this response, that bug does not
+    merely mis-report — it hangs, which is exactly what it did to the seeder.
+    """
+
+    def iter_lines(self, decode_unicode=False):
+        while True:
+            for line in _transient_frame("keepalive").split("\n"):
+                yield line
+
+
+def test_chat_canonical_times_out_while_only_keepalives_arrive(monkeypatch):
+    client = CanonicalChatClient([])
+    client.response = _EndlessKeepaliveResponse([])
+    service = ConversationService(client)
+
+    ticks = itertools.count(0.0, 1.0)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.kaizen.time.monotonic", lambda: next(ticks)
+    )
+
+    with pytest.raises(TimeoutError, match="conv-9"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+    assert client.response.closed is True
+
+
+def test_chat_canonical_accepts_a_salvaged_run_that_carried_a_reply():
+    # SALVAGED is a real terminal input status server-side; without it the loop
+    # never ends on a salvaged run.
+    frames = [
+        _durable_frame("assistant_message", {"v": 1, "text": "partial answer"}),
+        _durable_frame("agent_run_salvaged", {"v": 1, "status": "salvaged"}),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5
+    )
+
+    assert reply == "partial answer"
+
+
+def test_chat_canonical_faults_a_salvaged_run_with_no_reply():
+    frames = [
+        _durable_frame(
+            "agent_run_salvaged", {"v": 1, "status": "salvaged", "reason": "runtime lost"}
+        ),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    # Reporting an empty salvaged run as success would pass chat verification
+    # without the agent ever answering.
+    with pytest.raises(ConversationError, match="runtime lost"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+
+
+def test_chat_canonical_accumulates_multi_part_assistant_messages():
+    frames = [
+        _durable_frame("assistant_message", {"v": 1, "text": "first"}),
+        _durable_frame("assistant_message", {"v": 1, "text": "second"}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5
+    )
+
+    # Nothing in the journal contract caps a turn at one assistant_message.
+    assert reply == "first\nsecond"
+
+
+def test_chat_canonical_reconnects_when_the_stream_drops_early():
+    # An ingress idle timeout or degraded fanout closes the stream mid-turn.
+    # Replay-from-position is exactly what makes that recoverable, so it must
+    # not surface as a timeout.
+    first = [
+        _durable_frame("agent_run_started", {"v": 1}),
+    ]
+    first[0] = first[0].replace('"input_id"', '"position": 9, "input_id"')
+    second = [
+        _durable_frame("assistant_message", {"v": 1, "text": "after reconnect"}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+    client = CanonicalChatClient([], streams=[first, second])
+    service = ConversationService(client)
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=30
+    )
+
+    assert reply == "after reconnect"
+    events_calls = [c for c in client.calls if c[1].endswith("/events")]
+    assert len(events_calls) == 2
+    # The reopen resumes from the last position seen, not from the start.
+    assert events_calls[0][2]["params"]["after"] == 7
+    assert events_calls[1][2]["params"]["after"] == 9
+    assert all(r.closed for r in client.responses[1:])
+
+
+def test_chat_canonical_maps_a_read_timeout_onto_the_documented_contract():
+    import requests
+
+    class _BoomResponse(_FakeSSEResponse):
+        def iter_lines(self, decode_unicode=False):
+            raise requests.exceptions.ReadTimeout("read timed out")
+
+    client = CanonicalChatClient([])
+    client.response = _BoomResponse([])
+    service = ConversationService(client)
+
+    # requests' timeouts do NOT subclass the builtin TimeoutError, so unwrapped
+    # they bypass both this method's Raises contract and the seeder CLI handler.
+    with pytest.raises(TimeoutError, match="conv-9"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+    assert client.response.closed is True
+
+
+def test_chat_canonical_maps_a_connection_error_onto_the_documented_contract():
+    import requests
+
+    class _BoomResponse(_FakeSSEResponse):
+        def iter_lines(self, decode_unicode=False):
+            raise requests.exceptions.ConnectionError("peer reset")
+
+    client = CanonicalChatClient([])
+    client.response = _BoomResponse([])
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError, match="peer reset"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+    assert client.response.closed is True
+
+
+def test_chat_canonical_closes_the_stream_when_the_run_fails():
+    frames = [
+        _durable_frame("agent_run_failed", {"v": 1, "status": "failed", "reason": "boom"}),
+    ]
+    client = CanonicalChatClient(frames)
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+    # The error path must release the connection too, not just the happy path.
+    assert client.response.closed is True
+
+
+@pytest.mark.parametrize("bad_key", ["", "   ", "k" * 201])
+def test_send_input_canonical_rejects_a_key_the_server_would_reject(bad_key):
+    client = CanonicalChatClient([])
+    service = ConversationService(client)
+
+    with pytest.raises(ValueError, match="Idempotency-Key"):
+        service.send_input_canonical(
+            "conv-9", "hi", base_url=KAIZEN_URL, idempotency_key=bad_key
+        )
+    assert client.calls == []
+
+
+# --- canonical turn: reconnect throttling and stream-open faults ------------
+
+
+class _AlwaysEmptyResponse(_FakeSSEResponse):
+    """A stream that closes immediately without ever sending a terminal event."""
+
+    def iter_lines(self, decode_unicode=False):
+        return iter(())
+
+
+class _EmptyStreamClient(CanonicalChatClient):
+    """Every /events open yields a stream that closes with no progress."""
+
+    def _request(self, method: str, path: str, **kwargs):
+        if path.endswith("/events"):
+            self.calls.append((method, path, kwargs))
+            resp = _AlwaysEmptyResponse([])
+            self.responses.append(resp)
+            return resp
+        return super()._request(method, path, **kwargs)
+
+
+def test_chat_canonical_throttles_reconnects_when_the_stream_makes_no_progress(
+    monkeypatch,
+):
+    # The server ends the stream immediately while its live bus is down, so an
+    # unthrottled reopen would amplify an extension outage into a request storm
+    # against that same extension for the whole budget.
+    client = _EmptyStreamClient([])
+    service = ConversationService(client)
+
+    slept: list[float] = []
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.kaizen.time.sleep", lambda s: slept.append(s)
+    )
+    ticks = itertools.count(0.0, 1.0)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.kaizen.time.monotonic", lambda: next(ticks)
+    )
+
+    with pytest.raises(TimeoutError):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5)
+
+    events_opens = [c for c in client.calls if c[1].endswith("/events")]
+    # Bounded by the budget rather than by round-trip latency, and every reopen
+    # is preceded by a pause that never exceeds the remaining budget.
+    assert len(events_opens) <= 5
+    assert slept and all(s <= 1.0 for s in slept)
+    assert all(r.closed for r in client.responses[1:])
+
+
+def test_chat_canonical_retries_a_transport_failure_at_stream_open():
+    # The client maps a connect-phase transport fault onto APIError, so it never
+    # reaches the SSE iterator's handler; a momentary blip must not abort a turn.
+    frames = [
+        _durable_frame("assistant_message", {"v": 1, "text": "after retry"}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+
+    class _FlakyOpenClient(CanonicalChatClient):
+        opens = 0
+
+        def _request(self, method: str, path: str, **kwargs):
+            if path.endswith("/events"):
+                _FlakyOpenClient.opens += 1
+                self.calls.append((method, path, kwargs))
+                if _FlakyOpenClient.opens == 1:
+                    raise APIError("connection reset by peer")
+                return self.response
+            return super()._request(method, path, **kwargs)
+
+    client = _FlakyOpenClient(frames)
+    service = ConversationService(client)
+
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=30
+    )
+
+    assert reply == "after retry"
+
+
+def test_chat_canonical_reports_the_transport_cause_when_open_never_succeeds(
+    monkeypatch,
+):
+    class _DeadOpenClient(CanonicalChatClient):
+        def _request(self, method: str, path: str, **kwargs):
+            if path.endswith("/events"):
+                raise APIError("name resolution failed")
+            return super()._request(method, path, **kwargs)
+
+    client = _DeadOpenClient([])
+    service = ConversationService(client)
+    monkeypatch.setattr("kamiwaza_sdk.services.kaizen.time.sleep", lambda s: None)
+
+    # An unqualified TimeoutError here would hide the real cause from the
+    # operator reading a failed seed run.
+    with pytest.raises(ConversationError, match="name resolution failed"):
+        service.chat_canonical("conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=3)
+
+
+def test_chat_canonical_keeps_a_terminal_event_that_landed_inside_the_budget():
+    frames = [
+        _durable_frame("assistant_message", {"v": 1, "text": "just in time"}),
+        _durable_frame("agent_run_completed", {"v": 1, "status": "completed"}),
+    ]
+    service = ConversationService(CanonicalChatClient(frames))
+
+    # The frame is handled before the budget is re-checked, so a terminal event
+    # that arrived in time is never discarded for being dequeued a hair late.
+    reply = service.chat_canonical(
+        "conv-9", "hi", base_url=KAIZEN_URL, timeout_seconds=5
+    )
+    assert reply == "just in time"
+
+
+def test_conversation_contract_rejects_an_unknown_identity_directly():
+    # Exercised directly: argparse `choices` shields the CLI path, so this
+    # branch would otherwise never run under test.
+    args = SimpleNamespace(extension_name="kaizen-next")
+    with pytest.raises(SystemExit, match="not a known Kaizen catalog identity"):
+        kaizen_turns.conversation_contract(args)
+
+
+def test_wait_for_base_url_accepts_relative_endpoint_from_platform(monkeypatch):
+    # A real client, because the point is that the credentialed readiness probe
+    # resolves a path-only endpoint against the platform origin rather than
+    # refusing it as off-host.
+    from kamiwaza_sdk.client import KamiwazaClient
+
+    relative = "/runtime/apps/kaizen-ddd84430"
+    client = KamiwazaClient(base_url="https://testhelm.kamiwaza.dev/api")
+    client._extensions = SimpleNamespace(
+        get_extension=lambda name: SimpleNamespace(
+            endpoints=SimpleNamespace(external=relative, public_api_url=None)
+        )
+    )
+    seen: list[str] = []
+
+    def fake_request(method, url, **kwargs):
+        seen.append(url)
+        return SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+            json=lambda: {"agents": []},
+        )
+
+    monkeypatch.setattr(client.session, "request", fake_request)
+
+    assert wait_for_base_url(client, "kaizen", timeout_seconds=0) == relative
+    assert seen == [
+        "https://testhelm.kamiwaza.dev/runtime/apps/kaizen-ddd84430/api/agents"
+    ]
+
+
+def test_wait_for_base_url_timeout_names_the_url_stage():
+    unpublished = SimpleNamespace(
+        endpoints=SimpleNamespace(external=None, public_api_url=None)
+    )
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=lambda name: unpublished)
+    )
+
+    with pytest.raises(TimeoutError, match="could not determine the extension's URL"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)
+
+
+def test_wait_for_base_url_timeout_names_the_serving_stage():
+    def always_503(*_a, **_k):
+        raise APIError("no healthy upstream", status_code=503)
+
+    client = _serving_client(always_503)
+    with pytest.raises(TimeoutError, match="extension not ready"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)
+
+
+def test_wait_for_base_url_does_not_retry_offhost_probe_refusal(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+    from kamiwaza_sdk.client import KamiwazaClient
+    from kamiwaza_sdk.exceptions import KamiwazaError, OffHostBaseURLError
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # A real client resolving a genuinely off-host endpoint, so the guard itself
+    # raises rather than a stand-in: the refusal is deterministic, and retrying
+    # it would spend the whole budget and then report the wrong stage.
+    client = KamiwazaClient(base_url="https://example.test/api")
+    client._extensions = SimpleNamespace(
+        get_extension=lambda name: SimpleNamespace(
+            endpoints=SimpleNamespace(
+                external="https://evil.example/kaizen", public_api_url=None
+            )
+        )
+    )
+    attempts = []
+    client.session.request = lambda *a, **k: attempts.append(1)
+
+    with pytest.raises(OffHostBaseURLError) as caught:
+        wait_for_base_url(client, "kaizen", poll_interval_seconds=0)
+
+    # _is_serving answers True for any KamiwazaError, so a refusal that landed in
+    # that hierarchy would be read as "the backend answered" and the off-host URL
+    # returned as serving.
+    assert not isinstance(caught.value, KamiwazaError)
+    assert attempts == []
+
+
+@pytest.mark.parametrize("attr", ["external", "api_url", "public_api_url"])
+def test_endpoint_of_slash_is_treated_as_unpublished(attr):
+    # "/" rstrips to "", which downstream would read as an unusable root and
+    # abort the wait. It means the route exists but its path is not stamped yet,
+    # which is a state that clears on its own.
+    endpoints = SimpleNamespace(external=None, api_url=None, public_api_url=None)
+    setattr(endpoints, attr, "/")
+    assert _endpoint_from_extension(SimpleNamespace(endpoints=endpoints), public=False) is None
+
+
+def test_wait_for_base_url_polls_when_endpoint_is_slash(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(
+            get_extension=lambda name: SimpleNamespace(
+                endpoints=SimpleNamespace(external="/", public_api_url=None)
+            )
+        )
+    )
+
+    with pytest.raises(TimeoutError, match="could not determine the extension's URL"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)
+
+
+def test_offhost_refusal_stays_outside_the_kamiwaza_hierarchy():
+    from kamiwaza_sdk.exceptions import KamiwazaError, OffHostBaseURLError
+
+    # _is_serving treats every KamiwazaError as "the backend answered", so this
+    # placement is what stops an off-host URL being reported as serving. It stays
+    # a ValueError so existing callers keep working.
+    assert issubclass(OffHostBaseURLError, ValueError)
+    assert not issubclass(OffHostBaseURLError, KamiwazaError)
+
+
+def test_is_serving_would_mistake_a_kamiwaza_scoped_refusal_for_a_live_backend():
+    from kamiwaza_sdk.exceptions import KamiwazaError
+
+    # Pins the reason for the placement above: were the guard's error moved into
+    # the KamiwazaError hierarchy, this is what the readiness probe would answer.
+    def refuse(*_a, **_k):
+        raise KamiwazaError("off-host")
+
+    assert _is_serving(_serving_client(refuse), KAIZEN_URL, workroom_id=None) is True

@@ -14,26 +14,26 @@ Tests cover additional endpoints not in the original test_models_live.py:
 Note: TS12.004 (deploy_after_download) and TS12.006 (download_and_deploy)
 are complex operations that require careful orchestration.
 """
+
 from __future__ import annotations
 
 import pytest
-from uuid import UUID
 
 from kamiwaza_sdk.exceptions import APIError
-from kamiwaza_sdk.schemas.models.model import Model, CreateModel
+from kamiwaza_sdk.schemas.models.model import Model
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
-
-CANONICAL_REPO = "mlx-community/Qwen3-4B-4bit"
 
 
 class TestModelListOperations:
     """Tests for model list operations."""
 
-    def test_list_models(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_list_models(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS12.001: GET /models/ - List all models."""
         # Ensure at least one model exists
-        ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         models = live_kamiwaza_client.models.list_models()
         assert isinstance(models, list)
@@ -42,9 +42,11 @@ class TestModelListOperations:
             assert isinstance(m, Model)
             assert m.name is not None
 
-    def test_list_models_with_files(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_list_models_with_files(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS12.001: GET /models/ with load_files=True."""
-        ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         models = live_kamiwaza_client.models.list_models(load_files=True)
         assert isinstance(models, list)
@@ -59,48 +61,66 @@ class TestModelListOperations:
 class TestModelSearchOperations:
     """Tests for model search operations."""
 
-    def test_search_models_by_repo_id(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_search_models_by_repo_id(
+        self,
+        live_kamiwaza_client,
+        ensure_model_lifecycle_target_ready,
+        deployable_model_target,
+    ) -> None:
         """TS12.008: POST /models/search/ - Search by repo ID."""
-        ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_model_lifecycle_target_ready(live_kamiwaza_client)
+        repo_id = deployable_model_target.repo_id
 
-        results = live_kamiwaza_client.models.search_models(CANONICAL_REPO)
+        results = live_kamiwaza_client.models.search_models(repo_id)
         assert isinstance(results, list)
         # Should find the model we ensured exists
         assert len(results) > 0
         # At least one result should match the repo ID
-        found = any(m.repo_modelId == CANONICAL_REPO for m in results)
-        assert found, f"Expected to find {CANONICAL_REPO} in search results"
+        found = any(m.repo_modelId == repo_id for m in results)
+        assert found, f"Expected to find {repo_id} in search results"
 
-    def test_search_models_exact_match(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_search_models_exact_match(
+        self,
+        live_kamiwaza_client,
+        ensure_model_lifecycle_target_ready,
+        deployable_model_target,
+    ) -> None:
         """TS12.008: POST /models/search/ with exact match."""
-        ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_model_lifecycle_target_ready(live_kamiwaza_client)
+        repo_id = deployable_model_target.repo_id
 
         # Note: parameter is 'exact', not 'exact_match'
-        results = live_kamiwaza_client.models.search_models(
-            CANONICAL_REPO, exact=True
-        )
+        results = live_kamiwaza_client.models.search_models(repo_id, exact=True)
         assert isinstance(results, list)
         if results:
             # Exact match should return models matching the exact repo ID
             for m in results:
-                assert m.repo_modelId == CANONICAL_REPO
+                assert m.repo_modelId == repo_id
 
-    def test_get_model_by_repo_id(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_model_by_repo_id(
+        self,
+        live_kamiwaza_client,
+        ensure_model_lifecycle_target_ready,
+        deployable_model_target,
+    ) -> None:
         """Test get_model_by_repo_id convenience method."""
-        ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_model_lifecycle_target_ready(live_kamiwaza_client)
+        repo_id = deployable_model_target.repo_id
 
-        model = live_kamiwaza_client.models.get_model_by_repo_id(CANONICAL_REPO)
+        model = live_kamiwaza_client.models.get_model_by_repo_id(repo_id)
         assert model is not None
         assert isinstance(model, Model)
-        assert model.repo_modelId == CANONICAL_REPO
+        assert model.repo_modelId == repo_id
 
 
 class TestModelDetailOperations:
     """Tests for model detail operations."""
 
-    def test_get_model(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_model(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS12.010: GET /models/{model_id} - Get model by ID."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         retrieved = live_kamiwaza_client.models.get_model(model.id)
         assert retrieved is not None
@@ -108,10 +128,10 @@ class TestModelDetailOperations:
         assert retrieved.id == model.id
 
     def test_get_model_configs_via_model(
-        self, live_kamiwaza_client, ensure_repo_ready
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
     ) -> None:
         """TS12.011: GET /models/{model_id}/configs."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         configs = live_kamiwaza_client.models.get_model_configs_for_model(model.id)
         assert isinstance(configs, list)
@@ -121,9 +141,11 @@ class TestModelDetailOperations:
                 assert hasattr(config, "id")
                 assert hasattr(config, "m_id")
 
-    def test_get_model_memory_usage(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_model_memory_usage(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS12.013: GET /models/{model_id}/memory_usage."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         try:
             usage = live_kamiwaza_client.models.get_model_memory_usage(model.id)
@@ -137,9 +159,11 @@ class TestModelDetailOperations:
 class TestModelDeploymentInfo:
     """Tests for model deployment information."""
 
-    def test_get_model_deployment_info(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_model_deployment_info(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS12.012: GET /models/{model_id}/deployment_info."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         try:
             info = live_kamiwaza_client.get(f"/models/{model.id}/deployment_info")
@@ -149,7 +173,9 @@ class TestModelDeploymentInfo:
             if exc.status_code == 404:
                 pytest.skip("Deployment info endpoint not available")
             if exc.status_code == 403:
-                pytest.skip("Insufficient permissions for deployment info (requires editor role)")
+                pytest.skip(
+                    "Insufficient permissions for deployment info (requires editor role)"
+                )
             raise
 
     def test_get_pending_deployments(self, live_kamiwaza_client) -> None:
@@ -216,32 +242,38 @@ class TestModelDownloadHelpers:
     """Tests for download helper methods."""
 
     def test_initiate_model_download_already_downloaded(
-        self, live_kamiwaza_client, ensure_repo_ready
+        self,
+        live_kamiwaza_client,
+        ensure_model_lifecycle_target_ready,
+        deployable_model_target,
     ) -> None:
         """Test initiating download for already downloaded model."""
         # First ensure the model is downloaded
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         # Initiating download again should handle gracefully
         try:
             result = live_kamiwaza_client.models.initiate_model_download(
-                CANONICAL_REPO, quantization="q6_k"
+                deployable_model_target.repo_id,
+                quantization=deployable_model_target.quantization,
             )
             assert result is not None
             # Should indicate files are already downloaded or proceed normally
         except ValueError as e:
             # May raise ValueError if already downloaded - that's acceptable
-            assert "already downloaded" in str(e).lower() or "not found" in str(e).lower()
+            assert (
+                "already downloaded" in str(e).lower() or "not found" in str(e).lower()
+            )
 
 
 class TestModelQuantizations:
     """Tests for model quantization handling."""
 
     def test_model_available_quantizations(
-        self, live_kamiwaza_client, ensure_repo_ready
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
     ) -> None:
         """Test that model has available_quantizations field."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         # Get the full model to check quantizations
         full_model = live_kamiwaza_client.models.get_model(model.id)

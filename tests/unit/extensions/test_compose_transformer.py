@@ -4,7 +4,10 @@ from typing import Any, Dict
 
 import pytest
 
-from kamiwaza_extensions.compose_transformer import ComposeTransformer
+from kamiwaza_extensions.compose_transformer import (
+    ComposeTransformer,
+    resolve_compose_value,
+)
 
 
 @pytest.fixture
@@ -56,17 +59,17 @@ def multi_service_compose():
 class TestStripHostPorts:
     def test_strips_host_port(self, transformer):
         compose = {"services": {"web": {"ports": ["3000:3000"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["ports"] == ["3000"]
 
     def test_strips_with_protocol(self, transformer):
         compose = {"services": {"web": {"ports": ["8080:3000/tcp"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["ports"] == ["3000/tcp"]
 
     def test_container_only_port_unchanged(self, transformer):
         compose = {"services": {"web": {"ports": ["8000"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["ports"] == ["8000"]
 
     def test_long_form_port_preserved_with_l7_hints(self, transformer):
@@ -86,7 +89,7 @@ class TestStripHostPorts:
                 }
             }
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["ports"] == [
             {
                 "target": 19530,
@@ -113,7 +116,7 @@ class TestStripHostPorts:
                 }
             }
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["ports"] == [{"target": 8080, "name": "http"}]
 
 
@@ -122,17 +125,17 @@ class TestStripBindMounts:
         compose = {
             "services": {"web": {"volumes": ["./data:/app/data", "named:/app/persist"]}}
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["volumes"] == ["named:/app/persist"]
 
     def test_strips_absolute_bind_mount(self, transformer):
         compose = {"services": {"web": {"volumes": ["/host/path:/container"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "volumes" not in result["services"]["web"]
 
     def test_keeps_named_volumes(self, transformer):
         compose = {"services": {"web": {"volumes": ["data:/app/data"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["volumes"] == ["data:/app/data"]
 
     def test_strips_home_dir_bind_mount(self, transformer):
@@ -140,26 +143,28 @@ class TestStripBindMounts:
         compose = {
             "services": {"web": {"volumes": ["~/data:/app/data", "named:/app/persist"]}}
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["volumes"] == ["named:/app/persist"]
 
     def test_strips_windows_drive_bind_mount(self, transformer):
         """ENG-4956: Windows drive-letter paths are flagged by the validator."""
         compose = {"services": {"web": {"volumes": [r"C:\host\data:/app/data"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "volumes" not in result["services"]["web"]
 
     def test_strips_cwd_bind_mount(self, transformer):
         """ENG-4956: a bare '.' source is flagged by the validator."""
         compose = {"services": {"web": {"volumes": [".:/app"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "volumes" not in result["services"]["web"]
 
 
 class TestBuildContextRemoval:
     def test_removes_build_adds_image(self, transformer):
         compose = {"services": {"api": {"build": "./backend"}}}
-        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test")
+        result = transformer.transform(
+            compose, "my-app", "1.0.0-dev", "registry.test", purpose="publish"
+        )
         svc = result["services"]["api"]
         assert "build" not in svc
         assert svc["image"] == "registry.test/my-app-api:1.0.0-dev"
@@ -179,7 +184,9 @@ class TestBuildContextRemoval:
                 }
             }
         }
-        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test")
+        result = transformer.transform(
+            compose, "my-app", "1.0.0-dev", "registry.test", purpose="publish"
+        )
         assert result["services"]["api"]["image"] == (
             "ghcr.io/kamiwazaai/my-app-api:1.0.0-dev"
         )
@@ -206,6 +213,7 @@ class TestBuildContextRemoval:
             "my-app",
             "1.0.0-dev",
             "registry.test",
+            purpose="publish",
         )
         assert result["services"]["api"]["image"] == (
             "registry.test/my-app-api:1.0.0-dev"
@@ -228,9 +236,50 @@ class TestBuildContextRemoval:
             "tool-omniparse",
             "2.0.14-dev",
             "ghcr.io/kamiwaza-internal/foo/images",
+            purpose="publish",
         )
         assert result["services"]["omniparse-server"]["image"] == (
             "ghcr.io/kamiwaza-internal/foo/images/omniparse:2.0.14-dev"
+        )
+
+    def test_dev_transform_relocates_divergent_namespace_to_dev_registry(
+        self, transformer
+    ):
+        # ENG-8626: the same compose, transformed for dev, must name an image
+        # the cluster can actually pull. The transform feeds the CR payload,
+        # so if it disagreed with the canonical-ref map the pod would
+        # reference an image nobody pushed.
+        compose = {
+            "services": {
+                "omniparse-server": {
+                    "build": "./tool-omniparse",
+                    "image": "ghcr.io/kamiwaza-internal/foo/images/omniparse:2.0.14",
+                }
+            }
+        }
+        result = transformer.transform(
+            compose,
+            "tool-omniparse",
+            "2.0.14-dev",
+            "host.docker.internal:5001",
+            purpose="dev",
+        )
+        assert result["services"]["omniparse-server"]["image"] == (
+            "host.docker.internal:5001/kamiwaza-internal/foo/images/omniparse:2.0.14-dev"
+        )
+
+    def test_dev_transform_leaves_external_images_untouched(self, transformer):
+        # No build: → not ours. Dev must not retag or relocate it.
+        compose = {
+            "services": {
+                "postgres": {"image": "ghcr.io/upstream/images/postgres:v18.4"},
+            }
+        }
+        result = transformer.transform(
+            compose, "my-app", "1.0.0-dev", "host.docker.internal:5001", purpose="dev"
+        )
+        assert result["services"]["postgres"]["image"] == (
+            "ghcr.io/upstream/images/postgres:v18.4"
         )
 
     def test_dict_build_config(self, transformer):
@@ -239,7 +288,9 @@ class TestBuildContextRemoval:
                 "web": {"build": {"context": ".", "dockerfile": "frontend/Dockerfile"}}
             }
         }
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         assert "build" not in result["services"]["web"]
         assert result["services"]["web"]["image"] == "reg/my-app-web:v1"
 
@@ -247,12 +298,16 @@ class TestBuildContextRemoval:
 class TestExternalImages:
     def test_postgres_preserved(self, transformer):
         compose = {"services": {"db": {"image": "postgres:15"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         assert result["services"]["db"]["image"] == "postgres:15"
 
     def test_redis_preserved(self, transformer):
         compose = {"services": {"cache": {"image": "redis:7-alpine"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         assert result["services"]["cache"]["image"] == "redis:7-alpine"
 
 
@@ -275,6 +330,7 @@ class TestNonBuildableInternalImages:
             "my-app",
             "1.0.0-dev-abc1234",
             "kamiwazaai",
+            purpose="publish",
         )
         # Tag preserved verbatim despite the SHA-pinned revision_tag.
         assert result["services"]["helper"]["image"] == "kamiwazaai/my-app-helper:0.5.0"
@@ -292,6 +348,7 @@ class TestNonBuildableInternalImages:
             "my-app",
             "1.0.0-dev-abc1234",
             "kamiwazaai",
+            purpose="publish",
         )
         # Buildable: rewritten with the revision tag.
         assert (
@@ -307,7 +364,9 @@ class TestNonBuildableInternalImages:
 class TestResourceLimits:
     def test_adds_default_limits(self, transformer):
         compose = {"services": {"api": {"image": "my-app/api:1"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         limits = result["services"]["api"]["deploy"]["resources"]["limits"]
         assert limits["cpus"] == "1.0"
         assert limits["memory"] == "1G"
@@ -323,13 +382,17 @@ class TestResourceLimits:
                 }
             }
         }
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         limits = result["services"]["api"]["deploy"]["resources"]["limits"]
         assert limits["cpus"] == "2.0"
 
     def test_postgres_gets_smaller_limits(self, transformer):
         compose = {"services": {"db": {"image": "postgres:15"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         limits = result["services"]["db"]["deploy"]["resources"]["limits"]
         assert limits["cpus"] == "0.5"
         assert limits["memory"] == "512M"
@@ -340,12 +403,12 @@ class TestCleanup:
         compose = {
             "services": {"api": {"extra_hosts": ["host.docker.internal:host-gateway"]}}
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "extra_hosts" not in result["services"]["api"]
 
     def test_removes_container_name(self, transformer):
         compose = {"services": {"api": {"container_name": "my-api"}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "container_name" not in result["services"]["api"]
 
     def test_removes_networks(self, transformer):
@@ -353,7 +416,7 @@ class TestCleanup:
             "services": {"api": {"networks": ["default"]}},
             "networks": {"default": None},
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "networks" not in result["services"]["api"]
         assert "networks" not in result
 
@@ -369,7 +432,7 @@ class TestCleanup:
                 }
             }
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["postgres"]["x-kamiwaza"] == {
             "containerSecurityContext": {"runAsNonRoot": False},
             "healthCheck": {"tcpSocket": {"port": 5432}},
@@ -379,7 +442,11 @@ class TestCleanup:
 class TestFullTransform:
     def test_multi_service(self, transformer, multi_service_compose):
         result = transformer.transform(
-            multi_service_compose, "my-app", "1.0.0-dev-abc.123", "registry.test"
+            multi_service_compose,
+            "my-app",
+            "1.0.0-dev-abc.123",
+            "registry.test",
+            purpose="publish",
         )
         # Frontend
         fe = result["services"]["frontend"]
@@ -406,22 +473,37 @@ class TestFullTransform:
     def test_does_not_mutate_input(self, transformer):
         compose = {"services": {"api": {"build": ".", "ports": ["8000:8000"]}}}
         original_ports = list(compose["services"]["api"]["ports"])
-        transformer.transform(compose, "test", "v1", "reg")
+        transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert compose["services"]["api"]["ports"] == original_ports
         assert "build" in compose["services"]["api"]
 
 
 class TestResolveEnvPlaceholders:
-    """``resolve_env_placeholders`` collapses ``${VAR:-default}`` env
-    placeholders to their default, drops unresolvable forms, and drops
-    ``KAMIWAZA_*`` keys (so the operator's ConfigMap envFrom wins)."""
+    """Direct deploy resolves Compose env values and drops platform keys."""
 
-    def test_resolves_default_substitution_dict_form(self, transformer):
+    def test_process_resolution_handles_unbraced_defaults_and_escape(self, monkeypatch):
+        monkeypatch.setenv("KZ_TEST_PROCESS", "serve")
+        monkeypatch.delenv("KZ_TEST_MISSING", raising=False)
+
+        resolved = resolve_compose_value(
+            "$KZ_TEST_PROCESS ${KZ_TEST_MISSING:-fallback} $$(LITERAL)",
+            resolve_unbraced=True,
+        )
+
+        assert resolved == "serve fallback $(LITERAL)"
+
+    def test_process_resolution_rejects_missing_unbraced_variable(self, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_MISSING", raising=False)
+
+        assert resolve_compose_value("$KZ_TEST_MISSING", resolve_unbraced=True) is None
+
+    def test_resolves_default_substitution_dict_form(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_BACKEND_URL", raising=False)
         compose = {
             "services": {
                 "frontend": {
                     "environment": {
-                        "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
+                        "BACKEND_URL": "${KZ_TEST_BACKEND_URL:-http://backend:8000}",
                     },
                 },
             },
@@ -431,12 +513,13 @@ class TestResolveEnvPlaceholders:
             "BACKEND_URL": "http://backend:8000",
         }
 
-    def test_resolves_default_substitution_list_form(self, transformer):
+    def test_resolves_default_substitution_list_form(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_BACKEND_URL", raising=False)
         compose = {
             "services": {
                 "frontend": {
                     "environment": [
-                        "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
+                        "BACKEND_URL=${KZ_TEST_BACKEND_URL:-http://backend:8000}",
                         "PLAIN_VAR=plain-value",
                     ],
                 },
@@ -448,10 +531,49 @@ class TestResolveEnvPlaceholders:
             "PLAIN_VAR=plain-value",
         ]
 
-    def test_drops_kamiwaza_platform_vars(self, transformer):
+    def test_resolves_default_substitution_embedded_in_value(
+        self, transformer, monkeypatch
+    ):
+        monkeypatch.delenv("KZ_TEST_NEO4J_PASSWORD", raising=False)
+        compose = {
+            "services": {
+                "neo4j": {
+                    "environment": {
+                        "NEO4J_AUTH": "neo4j/${KZ_TEST_NEO4J_PASSWORD:-changeme}",
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["neo4j"]["environment"] == {
+            "NEO4J_AUTH": "neo4j/changeme",
+        }
+
+    def test_drops_embedded_substitution_without_safe_default(
+        self, transformer, monkeypatch
+    ):
+        monkeypatch.delenv("KZ_TEST_NEO4J_PASSWORD", raising=False)
+        compose = {
+            "services": {
+                "neo4j": {
+                    "environment": {
+                        "NEO4J_AUTH": "neo4j/${KZ_TEST_NEO4J_PASSWORD:?required}",
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["neo4j"]["environment"] == {}
+
+    def test_drops_kamiwaza_platform_vars(self, transformer, monkeypatch):
         """``KAMIWAZA_*`` vars are platform-injected via ConfigMap
         envFrom; an explicit env entry would shadow the cluster-internal
         value with the laptop-only default."""
+        monkeypatch.delenv("BACKEND_URL", raising=False)
         compose = {
             "services": {
                 "backend": {
@@ -468,15 +590,17 @@ class TestResolveEnvPlaceholders:
             "BACKEND_URL": "http://backend:8000",
         }
 
-    def test_drops_unresolvable_substitutions(self, transformer):
+    def test_drops_unresolvable_substitutions(self, transformer, monkeypatch):
         """``${VAR}`` without a default and ``${VAR:?error}`` (required)
         have no safe value to ship — drop them."""
+        monkeypatch.delenv("KZ_TEST_UNSET_VALUE", raising=False)
+        monkeypatch.delenv("KZ_TEST_REQUIRED_VALUE", raising=False)
         compose = {
             "services": {
                 "backend": {
                     "environment": {
-                        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
-                        "REQUIRED_VAR": "${REQUIRED_VAR:?missing}",
+                        "OPENAI_API_KEY": "${KZ_TEST_UNSET_VALUE}",
+                        "REQUIRED_VAR": "${KZ_TEST_REQUIRED_VALUE:?missing}",
                         "PLAIN": "kept",
                     },
                 },
@@ -485,24 +609,341 @@ class TestResolveEnvPlaceholders:
         result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["backend"]["environment"] == {"PLAIN": "kept"}
 
-    def test_alternate_default_form_dash_only(self, transformer):
-        """Compose accepts both ``${VAR:-default}`` (unset OR empty)
-        and ``${VAR-default}`` (unset only). Both collapse to default."""
+    def test_default_form_dash_only_uses_fallback_when_unset(
+        self, transformer, monkeypatch
+    ):
+        """``${VAR-default}`` uses its fallback when the variable is unset."""
+        monkeypatch.delenv("KZ_TEST_UNSET_VALUE", raising=False)
         compose = {
             "services": {
                 "backend": {
-                    "environment": {"X": "${UNSET-fallback}"},
+                    "environment": {"X": "${KZ_TEST_UNSET_VALUE-fallback}"},
                 },
             },
         }
         result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["backend"]["environment"] == {"X": "fallback"}
 
+    def test_uses_exported_value_for_bare_placeholder(self, transformer, monkeypatch):
+        monkeypatch.setenv("KZ_TEST_FIELD_KEY", "durable-secret")
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {"SECRET_ENCRYPTION_KEY": "${KZ_TEST_FIELD_KEY}"},
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "SECRET_ENCRYPTION_KEY": "durable-secret",
+        }
+
+    @pytest.mark.parametrize(
+        ("expression", "host_value", "expected"),
+        [
+            ("${KZ_TEST_VALUE:-fallback}", "", "fallback"),
+            ("${KZ_TEST_VALUE-fallback}", "", ""),
+            ("${KZ_TEST_VALUE:?required}", "set", "set"),
+            ("${KZ_TEST_VALUE?required}", "", ""),
+            ("${KZ_TEST_VALUE:+alternate}", "set", "alternate"),
+            ("${KZ_TEST_VALUE+alternate}", "", "alternate"),
+        ],
+    )
+    def test_preserves_compose_empty_value_semantics(
+        self, transformer, monkeypatch, expression, host_value, expected
+    ):
+        monkeypatch.setenv("KZ_TEST_VALUE", host_value)
+        compose = {"services": {"backend": {"environment": {"VALUE": expression}}}}
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {"VALUE": expected}
+
+    @pytest.mark.parametrize(
+        "expression",
+        ["${KZ_TEST_VALUE:+alternate}", "${KZ_TEST_VALUE+alternate}"],
+    )
+    def test_alternate_substitution_is_empty_when_unset(
+        self, transformer, monkeypatch, expression
+    ):
+        monkeypatch.delenv("KZ_TEST_VALUE", raising=False)
+        compose = {"services": {"backend": {"environment": {"VALUE": expression}}}}
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {"VALUE": ""}
+
+    def test_resolves_nested_alternate_substitution(self, transformer, monkeypatch):
+        monkeypatch.setenv("KZ_TEST_VALUE", "selected")
+        monkeypatch.setenv("KZ_TEST_ALTERNATE", "nested-value")
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "VALUE": "${KZ_TEST_VALUE:+${KZ_TEST_ALTERNATE}}",
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "VALUE": "nested-value",
+        }
+
+    def test_resolves_nested_default_substitution(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_DATABASE_URL", raising=False)
+        monkeypatch.delenv("KZ_TEST_LEGACY_DATABASE_URL", raising=False)
+        value = (
+            "${KZ_TEST_DATABASE_URL:-"
+            "${KZ_TEST_LEGACY_DATABASE_URL:-postgresql://postgres:dev@postgres/db}}"
+        )
+        compose = {"services": {"backend": {"environment": {"DATABASE_URL": value}}}}
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "DATABASE_URL": "postgresql://postgres:dev@postgres/db",
+        }
+
+    @pytest.mark.parametrize("host_value", [None, "host-secret"])
+    def test_preserves_escaped_substitution_literal(
+        self, transformer, monkeypatch, host_value
+    ):
+        if host_value is None:
+            monkeypatch.delenv("KZ_TEST_ESCAPED", raising=False)
+        else:
+            monkeypatch.setenv("KZ_TEST_ESCAPED", host_value)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "LITERAL": "$${KZ_TEST_ESCAPED:-fallback}",
+                        "PLAIN_ESCAPE": "cost$$value",
+                        "RAW_MIXED": "cost$raw ${KZ_TEST_SUFFIX:-resolved}",
+                        "MIXED": (
+                            "$${KZ_TEST_ESCAPED:-literal} "
+                            "${KZ_TEST_SUFFIX:-resolved}"
+                        ),
+                    },
+                },
+            },
+        }
+        monkeypatch.delenv("KZ_TEST_SUFFIX", raising=False)
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "LITERAL": "${KZ_TEST_ESCAPED:-fallback}",
+            "PLAIN_ESCAPE": "cost$value",
+            "RAW_MIXED": "cost$raw resolved",
+            "MIXED": "${KZ_TEST_ESCAPED:-literal} resolved",
+        }
+
+    @pytest.mark.parametrize(
+        ("host_value", "expected"),
+        [
+            (None, '{"a":1,"nested":{"enabled":true}}'),
+            ("from-host", "from-host"),
+        ],
+    )
+    def test_preserves_literal_braces_in_default(
+        self, transformer, monkeypatch, host_value, expected
+    ):
+        if host_value is None:
+            monkeypatch.delenv("KZ_TEST_JSON", raising=False)
+        else:
+            monkeypatch.setenv("KZ_TEST_JSON", host_value)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "JSON_CONFIG": (
+                            '${KZ_TEST_JSON:-{"a":1,"nested":{"enabled":true}}}'
+                        ),
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "JSON_CONFIG": expected,
+        }
+
+    def test_preserves_unmatched_literal_open_brace_in_default(
+        self, transformer, monkeypatch
+    ):
+        monkeypatch.delenv("KZ_TEST_TEMPLATE", raising=False)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "TEMPLATE": '${KZ_TEST_TEMPLATE:-{"template":"{"}}',
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "TEMPLATE": '{"template":"{"}',
+        }
+
+    def test_resolves_embedded_list_and_multiple_substitutions(
+        self, transformer, monkeypatch
+    ):
+        monkeypatch.delenv("KZ_TEST_USER", raising=False)
+        monkeypatch.delenv("KZ_TEST_PASSWORD", raising=False)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": [
+                        "AUTH=${KZ_TEST_USER:-neo4j}/${KZ_TEST_PASSWORD:-changeme}",
+                        "LITERAL=cost$$value",
+                    ],
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == [
+            "AUTH=neo4j/changeme",
+            "LITERAL=cost$value",
+        ]
+
+    def test_resolves_name_value_dict_list_entries(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_PRICE", raising=False)
+        value_from = {"secretKeyRef": {"name": "secret", "key": "token"}}
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": [
+                        {"name": "PRICE", "value": "cost$$value"},
+                        {
+                            "name": "RESOLVED",
+                            "value": "${KZ_TEST_PRICE:-cost$$value}",
+                        },
+                        {"name": "PLAIN", "value": "kept"},
+                        {"name": "SECRET", "valueFrom": value_from},
+                    ],
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == [
+            {"name": "PRICE", "value": "cost$value"},
+            {"name": "RESOLVED", "value": "cost$value"},
+            {"name": "PLAIN", "value": "kept"},
+            {"name": "SECRET", "valueFrom": value_from},
+        ]
+
+    def test_resolves_mapping_fragment_list_entries(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_PRICE", raising=False)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": [
+                        {
+                            "PRICE": "cost$$value",
+                            "RESOLVED": "${KZ_TEST_PRICE:-cost$$value}",
+                            "KAMIWAZA_API_URL": (
+                                "${KAMIWAZA_API_URL:-http://localhost}"
+                            ),
+                        },
+                    ],
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == [
+            {"PRICE": "cost$value", "RESOLVED": "cost$value"},
+        ]
+
+    def test_deeply_nested_substitution_fails_closed(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_DEEP", raising=False)
+        value = "fallback"
+        for _ in range(200):
+            value = f"${{KZ_TEST_DEEP:-{value}}}"
+        compose = {"services": {"backend": {"environment": {"VALUE": value}}}}
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {}
+
+    def test_unbraced_reference_remains_literal(self, transformer, monkeypatch):
+        monkeypatch.setenv("KZ_TEST_UNBRACED", "host-value")
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {"VALUE": "$KZ_TEST_UNBRACED/data"},
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "VALUE": "$KZ_TEST_UNBRACED/data",
+        }
+
+    def test_malformed_and_empty_required_substitutions_fail_closed(
+        self, transformer, monkeypatch
+    ):
+        monkeypatch.delenv("KZ_TEST_MALFORMED", raising=False)
+        monkeypatch.setenv("KZ_TEST_EMPTY_REQUIRED", "")
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "MALFORMED": "${KZ_TEST_MALFORMED:-no-close",
+                        "REQUIRED": "${KZ_TEST_EMPTY_REQUIRED:?required}",
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {}
+
+    def test_platform_key_with_escaped_placeholder_stays_literal(
+        self, transformer, monkeypatch
+    ):
+        monkeypatch.setenv("KZ_TEST_ESCAPED_PLATFORM", "host-value")
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "KAMIWAZA_LITERAL": "$${KZ_TEST_ESCAPED_PLATFORM:-fallback}",
+                        "KAMIWAZA_PRICE": "cost$5",
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "KAMIWAZA_LITERAL": "${KZ_TEST_ESCAPED_PLATFORM:-fallback}",
+            "KAMIWAZA_PRICE": "cost$5",
+        }
+
     def test_plain_values_pass_through(self, transformer):
         compose = {
             "services": {
                 "backend": {
-                    "environment": {"FOO": "bar", "PORT": "8000"},
+                    "environment": {"FOO": "bar", "PORT": "8000", "TAIL": "abc$"},
                 },
             },
         }
@@ -510,6 +951,7 @@ class TestResolveEnvPlaceholders:
         assert result["services"]["backend"]["environment"] == {
             "FOO": "bar",
             "PORT": "8000",
+            "TAIL": "abc$",
         }
 
     def test_does_not_mutate_input(self, transformer):
@@ -551,7 +993,7 @@ class TestTransformPreservesEnvPlaceholders:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["neo4j"]["environment"] == {
             "NEO4J_AUTH": "neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
             "KZ_NEO4J_PASSWORD": "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
@@ -572,7 +1014,7 @@ class TestTransformPreservesEnvPlaceholders:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["graphiti"]["environment"] == {
             "KAMIWAZA_ENDPOINT": "${KAMIWAZA_ENDPOINT:-http://host.docker.internal:8080}",
             "OPENAI_API_KEY": "${OPENAI_API_KEY:-not-needed-kamiwaza}",
@@ -590,7 +1032,7 @@ class TestTransformPreservesEnvPlaceholders:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["backend"]["environment"] == {
             "OPENAI_BASE_URL": "${OPENAI_BASE_URL}",
         }
@@ -611,7 +1053,7 @@ class TestTransformPreservesEnvPlaceholders:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["backend"]["environment"] == [
             "NEO4J_PASSWORD=${NEO4J_PASSWORD:?required}",
             "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
@@ -649,6 +1091,80 @@ class TestDetectServiceUrlRewrites:
             }
         }
 
+    def test_rewrites_bare_sibling_endpoint(self):
+        """KZUAT live evidence: the milvus extension's bare
+        ``ETCD_ENDPOINTS=etcd:2379`` / ``MINIO_ADDRESS=seaweedfs:9000``
+        crashed its standalone workload under the native direct runtime
+        (env applied verbatim, bare compose alias unresolvable in K8s
+        DNS). Bare ``<sibling>:<port>`` must be detected like URLs are."""
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "standalone": {
+                "environment": {
+                    "ETCD_ENDPOINTS": "etcd:2379",
+                    "MINIO_ADDRESS": "seaweedfs:9000",
+                },
+            },
+            "etcd": {"environment": {}},
+            "seaweedfs": {"environment": {}},
+        }
+        rewrites = detect_service_url_rewrites(services, "service-milvus-dev-3da53c")
+        assert rewrites == {
+            "standalone": {
+                "ETCD_ENDPOINTS": {
+                    "from": "etcd:2379",
+                    "to": "service-milvus-dev-3da53c-etcd:2379",
+                },
+                "MINIO_ADDRESS": {
+                    "from": "seaweedfs:9000",
+                    "to": "service-milvus-dev-3da53c-seaweedfs:9000",
+                },
+            }
+        }
+
+    def test_bare_endpoint_detection_boundaries(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "app": {
+                "environment": {
+                    # Comma-separated endpoint lists translate per host.
+                    "LIST": "etcd:2379,backup:2380",
+                    # Hosts embedded in longer tokens are NOT sibling refs.
+                    "PREFIXED": "myetcd:2379",
+                    # Non-numeric suffixes are not endpoints.
+                    "FORMAT": "etcd:debug",
+                    # Self-references stay untouched (documented contract).
+                    "SELF": "app:8000",
+                    # Unknown hosts stay untouched.
+                    "OTHER": "db:5432",
+                },
+            },
+            "etcd": {"environment": {}},
+            "backup": {"environment": {}},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        assert rewrites == {
+            "app": {
+                "LIST": {
+                    "from": "etcd:2379,backup:2380",
+                    "to": "ext-etcd:2379,ext-backup:2380",
+                }
+            }
+        }
+
+    def test_url_and_bare_endpoints_rewrite_in_one_value(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "app": {"environment": {"MIXED": "http://etcd:2379,backup:2379"}},
+            "etcd": {"environment": {}},
+            "backup": {"environment": {}},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        assert rewrites["app"]["MIXED"]["to"] == "http://ext-etcd:2379,ext-backup:2379"
+
     def test_handles_https_and_path(self):
         from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
 
@@ -678,6 +1194,32 @@ class TestDetectServiceUrlRewrites:
                     "to": "http://ext-backend:8000",
                 }
             }
+        }
+
+    def test_handles_mapping_fragment_list_environment(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "frontend": {
+                "environment": [
+                    {
+                        "BACKEND_URL": "http://backend:8000",
+                        "PLAIN": "kept",
+                    },
+                ],
+            },
+            "backend": {"environment": []},
+        }
+
+        rewrites = detect_service_url_rewrites(services, "ext")
+
+        assert rewrites == {
+            "frontend": {
+                "BACKEND_URL": {
+                    "from": "http://backend:8000",
+                    "to": "http://ext-backend:8000",
+                },
+            },
         }
 
     def test_ignores_self_reference(self):
@@ -757,6 +1299,380 @@ class TestDetectServiceUrlRewrites:
         services = {"backend": {}, "frontend": {}}
         assert detect_service_url_rewrites(services, "ext") == {}
 
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "ghcr.io/my-org/images/agent:1.8.13",
+            "postgres:16-alpine",
+            "redis:7.2",
+            "quay.io/coreos/etcd:3.6",
+            "postgresql://postgres:123secret@db.example.com:5432/app",
+            "http://postgres:123@db.example.com:5432/app",
+            "0 2 * * * web:80",
+            "etcd:0",
+            "etcd:65536",
+            "etcd:999999",
+            "etcd:2379suffix",
+            "etcd:2379-alpine",
+            "etcd:2379.0",
+            "http://external/path/etcd:2379",
+            "file:///tmp/a,etcd:2379",
+            "http://etcd:2379&x=1",
+            "http://etcd:2379=1",
+            "http://etcd:2379%20",
+            "http://etcd:2379.",
+            "http://[2001:db8::1]:/?targets=a,etcd:2379",
+            "etcd:2379@external",
+        ],
+    )
+    def test_preserves_non_endpoint_values(self, value):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {name: {} for name in ("agent", "postgres", "redis", "etcd", "web")}
+        services["app"] = {"environment": {"VALUE": value}}
+        assert detect_service_url_rewrites(services, "ext") == {}
+
+    @pytest.mark.parametrize(
+        "key,value",
+        [
+            ("AGENT_SERVER_IMAGE", "registry:5000/repo/agent:1"),
+            ("SANDBOX_ALLOWED_IMAGE_PREFIXES", "registry:5000/repo,agent:1"),
+            ("CACHE_IMAGE", "redis:7"),
+            ("IMAGE", "postgres:16"),
+            ("DB_PASSWORD", "postgres:123"),
+            ("API_TOKEN", "etcd:2379"),
+            ("cache-image", "redis:7"),
+            ("api-token", "etcd:2379"),
+            ("AGENT_SERVER_IMAGE", "docker://postgres:16"),
+            ("PGPASSWORD", "postgres:123"),
+            ("APIKEY", "etcd:2379"),
+            ("SECRETTOKEN", "etcd:2379"),
+        ],
+    )
+    def test_preserves_image_and_credential_env(self, key, value):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            name: {} for name in ("registry", "agent", "redis", "postgres", "etcd")
+        }
+        services["app"] = {"environment": {key: value}}
+        assert detect_service_url_rewrites(services, "ext") == {}
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (
+                "postgresql://postgres:123secret@etcd:2379/app",
+                "postgresql://postgres:123secret@ext-etcd:2379/app",
+            ),
+            ("redis://etcd:6379/0", "redis://ext-etcd:6379/0"),
+            ("http://etcd:", "http://ext-etcd:"),
+            ("http://etcd:/health", "http://ext-etcd:/health"),
+            ("http://etcd/path?foo=bar#frag", "http://ext-etcd/path?foo=bar#frag"),
+            (" etcd:1, backup:65535/path ", " ext-etcd:1, ext-backup:65535/path "),
+            ("etcd:2379/path", "ext-etcd:2379/path"),
+        ],
+    )
+    def test_rewrites_only_endpoint_host(self, value, expected):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {name: {} for name in ("etcd", "backup", "postgres")}
+        services["app"] = {"environment": {"ENDPOINTS": value}}
+        assert detect_service_url_rewrites(services, "ext")["app"]["ENDPOINTS"] == {
+            "from": value,
+            "to": expected,
+        }
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "TOKEN_URL",
+            "USER_SERVICE_URL",
+            "IMAGE_SERVICE_ENDPOINT",
+            "SECRET_STORE_ADDRESS",
+            "IMAGE_SERVICE",
+            "USER_SERVICE",
+            "TOKEN_SERVICE",
+            "SECRET_STORE",
+            "KEY_SERVER",
+        ],
+    )
+    def test_endpoint_key_takes_precedence_over_protected_word(self, key):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"app": {"environment": {key: "http://etcd:2379/token"}}, "etcd": {}}
+        assert (
+            detect_service_url_rewrites(services, "ext")["app"][key]["to"]
+            == "http://ext-etcd:2379/token"
+        )
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "TOKEN_ADDR",
+            "TOKEN_ADDRS",
+            "TOKEN_URL",
+            "USER_SERVICE_URL",
+            "IMAGE_SERVICE_ENDPOINT",
+            "SECRET_STORE_ADDRESS",
+            "DB_HOST",
+            "DB_DSN",
+        ],
+    )
+    def test_address_suffix_identifies_bare_endpoint(self, key):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"app": {"environment": {key: "etcd:2379"}}, "etcd": {}}
+        assert (
+            detect_service_url_rewrites(services, "ext")["app"][key]["to"]
+            == "ext-etcd:2379"
+        )
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("http://external.example/search?targets=x,etcd:2379", None),
+            ("http://external.example/path/a,etcd:2379", None),
+            (
+                "http://etcd:2379/path/a,etcd:2379",
+                "http://ext-etcd:2379/path/a,etcd:2379",
+            ),
+            (
+                "http://etcd:2379/?targets=a,backup:2380",
+                "http://ext-etcd:2379/?targets=a,backup:2380",
+            ),
+            ("http://etcd:2379/#a,backup:2380", "http://ext-etcd:2379/#a,backup:2380"),
+            (
+                "postgresql://user,etcd:2379@backup:2380/db",
+                "postgresql://user,etcd:2379@ext-backup:2380/db",
+            ),
+            (
+                "http://etcd:2379,backup:2380/path",
+                "http://ext-etcd:2379,ext-backup:2380/path",
+            ),
+        ],
+    )
+    def test_csv_detection_preserves_url_components(self, value, expected):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"app": {"environment": {"URL": value}}, "etcd": {}, "backup": {}}
+        rewrites = detect_service_url_rewrites(services, "ext")
+        if expected is None:
+            assert rewrites == {}
+        else:
+            assert rewrites["app"]["URL"] == {"from": value, "to": expected}
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ('{"url":"http://etcd:2379/path"}', '{"url":"http://ext-etcd:2379/path"}'),
+            (
+                "connect http://etcd:2379 then https://backup/health",
+                "connect http://ext-etcd:2379 then https://ext-backup/health",
+            ),
+            ('{"url":"http://external/path,etcd:2379"}', None),
+            (
+                "['http://etcd:2379/','http://backup:2380/']",
+                "['http://ext-etcd:2379/','http://ext-backup:2380/']",
+            ),
+            (
+                "{'first': 'http://etcd:2379/', 'second': 'http://backup:2380/'}",
+                "{'first': 'http://ext-etcd:2379/', 'second': 'http://ext-backup:2380/'}",
+            ),
+            ("['http://external/path/a,etcd:2379']", None),
+        ],
+    )
+    def test_preserves_embedded_url_support(self, value, expected):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"app": {"environment": {"CONFIG": value}}, "etcd": {}, "backup": {}}
+        rewrites = detect_service_url_rewrites(services, "ext")
+        if expected is None:
+            assert rewrites == {}
+        else:
+            assert rewrites["app"]["CONFIG"]["to"] == expected
+
+    @pytest.mark.parametrize("separator", [";", "|"])
+    @pytest.mark.parametrize("path", ["", "/health"])
+    def test_rewrites_delimited_url_lists(self, separator, path):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        value = f"http://etcd:2379{path}{separator}http://backup:2380{path}"
+        expected = f"http://ext-etcd:2379{path}{separator}http://ext-backup:2380{path}"
+        services = {"app": {"environment": {"URL": value}}, "etcd": {}, "backup": {}}
+        assert (
+            detect_service_url_rewrites(services, "ext")["app"]["URL"]["to"] == expected
+        )
+
+    @pytest.mark.parametrize("opening,closing", [("(", ")"), ("[", "]"), ("<", ">")])
+    def test_rewrites_wrapped_url(self, opening, closing):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        value = f"{opening}http://etcd:2379{closing}"
+        services = {"app": {"environment": {"URL": value}}, "etcd": {}}
+        assert detect_service_url_rewrites(services, "ext")["app"]["URL"]["to"] == (
+            f"{opening}http://ext-etcd:2379{closing}"
+        )
+
+    def test_host_only_values_remain_out_of_scope(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"app": {"environment": {"DB_HOST": "etcd"}}, "etcd": {}}
+        assert detect_service_url_rewrites(services, "ext") == {}
+
+    @pytest.mark.parametrize("userinfo", ["", "user:p'ass,word@"])
+    @pytest.mark.parametrize(
+        "component", ["/path/a,etcd:2379", "/?targets=a,etcd:2379", "/#a,etcd:2379"]
+    )
+    def test_preserves_ipv6_url_components(self, userinfo, component):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        value = f"http://{userinfo}[2001:db8::1]:8080{component}"
+        services = {"app": {"environment": {"URL": value}}, "etcd": {}}
+        assert detect_service_url_rewrites(services, "ext") == {}
+
+    def test_ipv6_and_sibling_url_list(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        value = "http://[2001:db8::1]/,http://etcd:2379/"
+        services = {"app": {"environment": {"URL": value}}, "etcd": {}}
+        assert detect_service_url_rewrites(services, "ext")["app"]["URL"]["to"] == (
+            "http://[2001:db8::1]/,http://ext-etcd:2379/"
+        )
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("http://external/path/O'Reilly,etcd:2379", None),
+            (
+                "http://etcd/path/O'Reilly,backup:2380",
+                "http://ext-etcd/path/O'Reilly,backup:2380",
+            ),
+            ("postgresql://postgres:123'secret@db.example.com:5432/app", None),
+            (
+                "postgresql://postgres:123'secret@etcd:2379/app",
+                "postgresql://postgres:123'secret@ext-etcd:2379/app",
+            ),
+            (
+                "http://etcd:2379/,http://backup:2380/",
+                "http://ext-etcd:2379/,http://ext-backup:2380/",
+            ),
+            (
+                "http://external.example/,http://backup:2380/",
+                "http://external.example/,http://ext-backup:2380/",
+            ),
+            (
+                "postgresql://u:p'ass,word@etcd:2379/db,http://backup:2380/",
+                "postgresql://u:p'ass,word@ext-etcd:2379/db,http://ext-backup:2380/",
+            ),
+        ],
+    )
+    def test_url_credentials_and_complete_url_lists(self, value, expected):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "app": {"environment": {"DATABASE_URL": value}},
+            "postgres": {},
+            "etcd": {},
+            "backup": {},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        if expected is None:
+            assert rewrites == {}
+        else:
+            assert rewrites["app"]["DATABASE_URL"] == {"from": value, "to": expected}
+
+
+class TestApplyServiceRefRewrites:
+    """The native direct runtime applies ``service.env`` verbatim with no
+    annotation consumer, so ``PayloadBuilder`` bakes the rewrite map into
+    the payload env. The map is applied EXACTLY (from -> to), never
+    re-derived, for both Compose environment shapes."""
+
+    def test_applies_to_mapping_and_list_env(self):
+        from kamiwaza_extensions.compose_transformer import (
+            apply_service_ref_rewrites,
+            detect_service_url_rewrites,
+        )
+
+        services = {
+            "standalone": {
+                "environment": [
+                    "ETCD_ENDPOINTS=etcd:2379",
+                    "MINIO_ADDRESS=seaweedfs:9000",
+                ],
+            },
+            "proxy": {
+                "environment": {"UPSTREAM": "http://standalone:19530"},
+            },
+            "etcd": {"environment": []},
+            "seaweedfs": {"environment": []},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        apply_service_ref_rewrites(services, rewrites)
+        assert services["standalone"]["environment"] == [
+            "ETCD_ENDPOINTS=ext-etcd:2379",
+            "MINIO_ADDRESS=ext-seaweedfs:9000",
+        ]
+        assert services["proxy"]["environment"] == {
+            "UPSTREAM": "http://ext-standalone:19530"
+        }
+
+    def test_exact_match_only(self):
+        from kamiwaza_extensions.compose_transformer import (
+            apply_service_ref_rewrites,
+        )
+
+        services = {
+            "app": {"environment": {"URL": "http://backend:9000"}},
+        }
+        apply_service_ref_rewrites(
+            services,
+            {
+                "app": {
+                    "URL": {
+                        "from": "http://backend:8000",
+                        "to": "http://ext-backend:8000",
+                    },
+                    "GONE": {"from": "x", "to": "y"},
+                }
+            },
+        )
+        # The value drifted from the recorded map -> left verbatim, never
+        # guessed; missing keys and missing services are no-ops.
+        assert services == {"app": {"environment": {"URL": "http://backend:9000"}}}
+
+    @pytest.mark.parametrize(
+        "environment,expected",
+        [
+            (
+                [{"ETCD_ENDPOINTS": "etcd:2379", "PLAIN": "kept"}],
+                [{"ETCD_ENDPOINTS": "ext-etcd:2379", "PLAIN": "kept"}],
+            ),
+            (
+                [{"name": 17, "value": "etcd:2379"}],
+                [{"name": 17, "value": "ext-etcd:2379"}],
+            ),
+            (
+                [{"name": ["X"], "value": "etcd:2379"}],
+                [{"name": ["X"], "value": "ext-etcd:2379"}],
+            ),
+            ({17: "etcd:2379"}, {17: "ext-etcd:2379"}),
+        ],
+    )
+    def test_applies_supported_mapping_shapes(self, environment, expected):
+        from kamiwaza_extensions.compose_transformer import (
+            apply_service_ref_rewrites,
+            detect_service_url_rewrites,
+        )
+
+        services = {"app": {"environment": environment}, "etcd": {}}
+        rewrites = detect_service_url_rewrites(services, "ext")
+        apply_service_ref_rewrites(services, rewrites)
+        assert services["app"]["environment"] == expected
+        apply_service_ref_rewrites(services, rewrites)
+        assert services["app"]["environment"] == expected
+
 
 class TestLooksRegistryQualified:
     """`_looks_registry_qualified` distinguishes registry-qualified refs
@@ -802,7 +1718,7 @@ class TestCanonicalBuildRef:
     falling back to the legacy form for everything else."""
 
     @staticmethod
-    def _call(image=None, *, has_build=True, declared_only=False):
+    def _call(image=None, *, has_build=True, declared_only=False, purpose="publish"):
         from kamiwaza_extensions.compose_transformer import _canonical_build_ref
 
         svc: Dict[str, Any] = {}
@@ -815,7 +1731,8 @@ class TestCanonicalBuildRef:
         return _canonical_build_ref(
             svc,
             "api",
-            fallback_registry="registry.test",
+            purpose=purpose,
+            registry="registry.test",
             fallback_extension_name="my-ext",
             revision_tag="2.0.0-dev",
         )
@@ -876,6 +1793,78 @@ class TestCanonicalBuildRef:
             )
             == "ghcr.io/my-org/api:2.0.0-dev"
         )
+
+
+class TestCanonicalBuildRefDevPurpose:
+    """ENG-8626: under ``purpose="dev"`` a qualified declared ``image:`` on a
+    service with ``build:`` is an image *identity*, not a destination.
+
+    ``kz-ext dev`` is building that image for this cluster right now, so it
+    must land in the resolved cluster dev registry. Honoring the declared
+    ``ghcr.io`` host pushed owned dev images to the org registry (failing the
+    whole command when the developer can't write dev tags there) and deployed
+    a CR the cluster couldn't pull. Publish keeps the declared namespace —
+    see ``TestCanonicalBuildRef`` — because there the namespace IS where the
+    image gets published (ENG-4909).
+    """
+
+    _call = staticmethod(TestCanonicalBuildRef._call)
+
+    def _dev(self, image=None, **kw):
+        return self._call(image=image, purpose="dev", **kw)
+
+    def test_qualified_ref_relocated_to_dev_registry(self):
+        assert (
+            self._dev("ghcr.io/my-org/api:1.0") == "registry.test/my-org/api:2.0.0-dev"
+        )
+
+    def test_declared_repository_path_preserved(self):
+        # The full repo path survives the host swap. Flattening to the legacy
+        # {ext}-{svc} form would discard the declared identity and collide —
+        # see test_same_basename_different_repos_do_not_collide.
+        assert self._dev(
+            "ghcr.io/kamiwaza-internal/kamiwaza-extensions-kaizen/images/kaizen-controller:2.0.2"
+        ) == (
+            "registry.test/kamiwaza-internal/kamiwaza-extensions-kaizen/images"
+            "/kaizen-controller:2.0.0-dev"
+        )
+
+    def test_same_basename_different_repos_do_not_collide(self):
+        a = self._dev("ghcr.io/a/images/svc:1")
+        b = self._dev("ghcr.io/b/images/svc:1")
+        assert a == "registry.test/a/images/svc:2.0.0-dev"
+        assert b == "registry.test/b/images/svc:2.0.0-dev"
+        assert a != b
+
+    def test_relocation_is_idempotent(self):
+        # A ref already under the dev registry (a resumed run re-deriving from
+        # its own prior output) must not accrete another registry prefix.
+        once = self._dev("ghcr.io/my-org/api:1.0")
+        assert self._dev(once) == once
+
+    def test_digest_pinned_ref_relocated_and_retagged(self):
+        assert (
+            self._dev("ghcr.io/my-org/api@sha256:" + "a" * 64)
+            == "registry.test/my-org/api:2.0.0-dev"
+        )
+
+    def test_registry_with_port_relocated(self):
+        # Qualified-by-port refs are relocated too: a declared localhost:5000
+        # is some other machine's registry, not this cluster's.
+        assert self._dev("localhost:5000/api:1.0") == "registry.test/api:2.0.0-dev"
+
+    def test_unqualified_bare_repo_still_falls_back_to_legacy(self):
+        # Unchanged from publish: `api:latest` would push to Docker Hub.
+        assert self._dev("api:latest") == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_unqualified_short_form_still_falls_back_to_legacy(self):
+        assert self._dev("my-org/api:1.0") == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_no_declared_image_still_falls_back_to_legacy(self):
+        assert self._dev() == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_blank_declared_image_still_falls_back_to_legacy(self):
+        assert self._dev("   ") == "registry.test/my-ext-api:2.0.0-dev"
 
 
 class TestSplitImageRef:
@@ -1015,11 +2004,13 @@ class TestComputeCanonicalRefs:
         registry="registry.test",
         extension_name="my-ext",
         revision_tag="2.0.0-dev",
+        purpose="publish",
     ):
         from kamiwaza_extensions.compose_transformer import compute_canonical_refs
 
         return compute_canonical_refs(
             source,
+            purpose=purpose,
             registry=registry,
             extension_name=extension_name,
             revision_tag=revision_tag,
@@ -1039,9 +2030,11 @@ class TestComputeCanonicalRefs:
         assert "neo4j" not in result
 
     def test_profile_gated_services_excluded(self):
-        # Mirrors the buildable_services filter in run_publish. A
-        # service with a profiles: key is local-only; pushing it under
-        # --no-build would leak a dev helper into the registry.
+        # Publish only. Mirrors the buildable_services filter in run_publish.
+        # A service with a profiles: key is local-only; pushing it under
+        # --no-build would leak a dev helper into the registry. Profiled
+        # images that DO get published go via extra_docker_images.
+        # Dev includes them — see TestComputeCanonicalRefsDevPurpose.
         source = {
             "backend": {"build": ".", "image": "ghcr.io/my-org/backend:1.0"},
             "dev-helper": {
@@ -1050,7 +2043,7 @@ class TestComputeCanonicalRefs:
                 "profiles": ["dev"],
             },
         }
-        result = self._call(source)
+        result = self._call(source, purpose="publish")
         assert list(result.keys()) == ["backend"]
 
     def test_appgarden_entry_overrides_source(self):
@@ -1111,6 +2104,84 @@ class TestComputeCanonicalRefs:
         }
 
 
+class TestComputeCanonicalRefsDevPurpose:
+    """ENG-8626: the dev map covers every image ``kz-ext dev`` builds, and
+    every one of them lands in the cluster dev registry."""
+
+    _call = staticmethod(TestComputeCanonicalRefs._call)
+
+    def _dev(self, source, **kw):
+        return self._call(source, purpose="dev", **kw)
+
+    def test_profile_gated_build_services_included(self):
+        # The inverse of TestComputeCanonicalRefs.test_profile_gated_services_
+        # excluded. ImageBuilder builds every build: service regardless of
+        # profiles, so omitting profiled ones here left the builder to
+        # synthesize its own legacy ref — which is exactly how Kaizen's
+        # profiled agent ended up on a different repository path than its
+        # siblings while they went to GHCR.
+        source = {
+            "backend": {"build": ".", "image": "ghcr.io/my-org/backend:1.0"},
+            "agent": {
+                "build": "./agent",
+                "image": "ghcr.io/my-org/agent:1.0",
+                "profiles": ["image-only"],
+            },
+        }
+        assert self._dev(source) == {
+            "backend": "registry.test/my-org/backend:2.0.0-dev",
+            "agent": "registry.test/my-org/agent:2.0.0-dev",
+        }
+
+    def test_external_services_without_build_still_excluded(self):
+        # postgres/redis are not ours; dev must never retag or push them.
+        source = {
+            "backend": {"build": ".", "image": "ghcr.io/my-org/backend:1.0"},
+            "postgres": {"image": "ghcr.io/upstream/containers/images/postgres:v18.4"},
+        }
+        assert self._dev(source) == {
+            "backend": "registry.test/my-org/backend:2.0.0-dev",
+        }
+
+    def test_kaizen_shaped_compose_all_owned_images_under_dev_registry(self):
+        # The exact shape from ENG-8626: four owned builds declaring a
+        # qualified GHCR namespace (one of them profile-gated) plus an
+        # external postgres. Before the fix this produced a mixed batch —
+        # controller/backend/frontend at ghcr.io, agent at the dev registry.
+        ns = "ghcr.io/kamiwaza-internal/kamiwaza-extensions-kaizen/images"
+        source = {
+            "postgres": {
+                "image": "ghcr.io/kamiwaza-internal/containers/images/postgres:v18.4"
+            },
+            "sandbox-controller": {
+                "build": ".",
+                "image": f"{ns}/kaizen-controller:2.0.2",
+            },
+            "agent": {
+                "build": ".",
+                "image": f"{ns}/kaizen-agent:2.0.2",
+                "profiles": ["image-only"],
+            },
+            "backend": {"build": ".", "image": f"{ns}/kaizen-backend:2.0.2"},
+            "frontend": {"build": ".", "image": f"{ns}/kaizen-frontend:2.0.2"},
+        }
+        refs = self._dev(
+            source, registry="host.docker.internal:5001", extension_name="kaizen"
+        )
+
+        assert set(refs) == {"sandbox-controller", "agent", "backend", "frontend"}
+        # Every owned image, one revision, all beneath the dev registry.
+        assert all(
+            ref.startswith("host.docker.internal:5001/") for ref in refs.values()
+        ), refs
+        assert all(ref.endswith(":2.0.0-dev") for ref in refs.values()), refs
+        assert not any("ghcr.io" in ref for ref in refs.values()), refs
+        assert refs["sandbox-controller"] == (
+            "host.docker.internal:5001/kamiwaza-internal/kamiwaza-extensions-kaizen"
+            "/images/kaizen-controller:2.0.0-dev"
+        )
+
+
 class TestCanonicalBuildRefImageBasename:
     """``image_basename`` override on the legacy fallback path.
 
@@ -1123,7 +2194,13 @@ class TestCanonicalBuildRefImageBasename:
     """
 
     @staticmethod
-    def _call(*, image=None, fallback_image_basename=None, has_build=True):
+    def _call(
+        *,
+        image=None,
+        fallback_image_basename=None,
+        has_build=True,
+        purpose="publish",
+    ):
         from kamiwaza_extensions.compose_transformer import _canonical_build_ref
 
         svc: Dict[str, Any] = {}
@@ -1134,7 +2211,8 @@ class TestCanonicalBuildRefImageBasename:
         return _canonical_build_ref(
             svc,
             "api",
-            fallback_registry="registry.test",
+            purpose=purpose,
+            registry="registry.test",
             fallback_extension_name="my-ext",
             revision_tag="2.0.0-dev",
             fallback_image_basename=fallback_image_basename,
@@ -1152,7 +2230,8 @@ class TestCanonicalBuildRefImageBasename:
             _canonical_build_ref(
                 {"build": "."},
                 "api",
-                fallback_registry="registry.test",
+                purpose="publish",
+                registry="registry.test",
                 fallback_extension_name="Hello Web",
                 revision_tag="2.0.0-dev",
             )
@@ -1226,6 +2305,7 @@ class TestComposeTransformerImageBasenameRegression:
             revision_tag="0.13.0-dev",
             registry="ghcr.io/kamiwaza-internal",
             image_basename="outcome-d563-workroom-manager",
+            purpose="publish",
         )
         assert out["services"]["backend"]["image"] == (
             "ghcr.io/kamiwaza-internal/outcome-d563-workroom-manager-backend:0.13.0-dev"
@@ -1244,6 +2324,7 @@ class TestComposeTransformerImageBasenameRegression:
         }
         refs = compute_canonical_refs(
             source,
+            purpose="publish",
             registry="ghcr.io/kamiwaza-internal",
             extension_name="workroom-manager",
             revision_tag="0.13.0-dev",
@@ -1265,6 +2346,7 @@ class TestComposeTransformerImageBasenameRegression:
 
         refs = compute_canonical_refs(
             {"api": {"build": "."}},
+            purpose="publish",
             registry="registry.test",
             extension_name="Hello Web",
             revision_tag="dev1",
@@ -1282,6 +2364,7 @@ class TestComposeTransformerImageBasenameRegression:
         source = {"backend": {"build": "./backend"}}
         refs = compute_canonical_refs(
             source,
+            purpose="publish",
             registry="ghcr.io/kamiwaza-internal",
             extension_name="workroom-manager",
             revision_tag="0.13.0-dev",

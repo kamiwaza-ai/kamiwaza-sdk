@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 
-from kamiwaza_sdk.schemas.auth import PATCreate
+from kamiwaza_sdk.schemas.auth import PATCreate, ValidationHeaders
 from kamiwaza_sdk.services.auth import AuthService
 
 pytestmark = pytest.mark.unit
@@ -59,3 +59,31 @@ def test_create_pat_round_trip(dummy_client):
     method, path, kwargs = client.calls[0]
     assert path == "/auth/pats"
     assert kwargs["params"]["name"] == "sdk"
+
+
+def test_validation_headers_preserve_complete_identity_envelope():
+    headers = ValidationHeaders.from_headers(
+        {
+            "X-User-Id": "user-1",
+            "X-User-Roles": "admin, viewer",
+            "X-User-Groups": "engineering, platform",
+            "X-User-Attributes-Hash": "sha256:attributes",
+            "X-User-System-High": "TS",
+            "X-Workroom-Id": "workroom-1",
+            "X-User-Workroom-Id": "workroom-alias",
+            "X-User-Workroom-Role": "editor",
+            "X-Auth-Azp": "extension-client",
+            "X-User-Signature-Stable": "stable-signature",
+        }
+    )
+
+    assert headers.user_id == "user-1"
+    assert headers.user_roles == ["admin", "viewer"]
+    assert headers.user_groups == ["engineering", "platform"]
+    assert headers.user_attributes_hash == "sha256:attributes"
+    assert headers.user_system_high == "TS"
+    assert headers.workroom_id == "workroom-1"
+    assert headers.user_workroom_id == "workroom-alias"
+    assert headers.user_workroom_role == "editor"
+    assert headers.auth_azp == "extension-client"
+    assert headers.signature_stable == "stable-signature"

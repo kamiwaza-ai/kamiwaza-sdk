@@ -1,0 +1,260 @@
+"""Direct coverage for Compose named-volume translation.
+
+The module decides whether a Compose volume becomes a pod emptyDir or is left
+to the operator's PVC. Getting that wrong is silent data loss, so the parsing
+branches are pinned here rather than only through the payload builder.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from kamiwaza_extensions.compose_volumes import build_service_volume_specs
+
+
+def _spec(service: dict, persistence: object = None) -> object:
+    """Build the spec for one service.
+
+    ``persistence`` defaults to whatever the service declares under
+    ``x-kamiwaza``, matching how the payload builder resolves it.
+    """
+    if persistence is None:
+        persistence = (service.get("x-kamiwaza") or {}).get("persistence")
+    return build_service_volume_specs(
+        {"services": {"svc": service}}, {"svc": persistence}
+    ).get("svc")
+
+
+def test_named_volume_becomes_emptydir_with_mount() -> None:
+    spec = _spec({"volumes": ["cache:/var/cache"]})
+
+    assert spec.volumes == [{"name": "cache", "emptyDir": {}}]
+    assert spec.mounts == [{"name": "cache", "mountPath": "/var/cache"}]
+
+
+def test_repeated_source_reuses_one_volume() -> None:
+    spec = _spec({"volumes": ["shared:/a", "shared:/b"]})
+
+    assert spec.volumes == [{"name": "shared", "emptyDir": {}}]
+    assert [mount["mountPath"] for mount in spec.mounts] == ["/a", "/b"]
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [
+        "./host/path:/in/container",
+        "/abs/host:/in/container",
+        "../up:/in/container",
+        {"type": "bind", "source": "./host", "target": "/in/container"},
+    ],
+)
+def test_host_paths_and_binds_are_not_translated(volume) -> None:
+    assert _spec({"volumes": [volume]}) is None
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [
+        "cache:/data:ro",
+        {"source": "cache", "target": "/data", "read_only": True},
+        {"source": "cache", "target": "/data", "readOnly": True},
+    ],
+)
+def test_read_only_is_preserved_in_every_spelling(volume) -> None:
+    assert _spec({"volumes": [volume]}).mounts == [
+        {"name": "cache", "mountPath": "/data", "readOnly": True}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source_key", "target_key"),
+    [("source", "target"), ("src", "destination"), ("src", "dst")],
+)
+def test_long_form_key_aliases(source_key: str, target_key: str) -> None:
+    volume = {source_key: "cache", target_key: "/data"}
+
+    assert _spec({"volumes": [volume]}).mounts == [
+        {"name": "cache", "mountPath": "/data"}
+    ]
+
+
+@pytest.mark.parametrize("volume", [None, 42, ["nested"], "no-colon", "cache:rel"])
+def test_malformed_entries_are_skipped(volume) -> None:
+    assert _spec({"volumes": [volume]}) is None
+
+
+def test_operator_names_are_reserved_with_collision_counter() -> None:
+    spec = _spec({"volumes": ["tmp:/one", "data:/two"]})
+
+    assert [volume["name"] for volume in spec.volumes] == ["tmp-2", "data-2"]
+
+
+def test_long_source_name_is_truncated_to_a_dns_label() -> None:
+    spec = _spec({"volumes": [f"{'v' * 80}:/data"]})
+
+    name = spec.volumes[0]["name"]
+    assert len(name) == 63
+    assert not name.endswith("-")
+
+
+class TestPersistenceInteraction:
+    """A service with a PVC must never get an emptyDir over that subtree."""
+
+    @staticmethod
+    def _service(mount_path: str, volumes: list) -> dict:
+        return {
+            "volumes": volumes,
+            "x-kamiwaza": {
+                "persistence": {"enabled": True, "mountPath": mount_path}
+            },
+        }
+
+    def test_exact_persistence_target_is_left_to_the_pvc(self) -> None:
+        service = self._service("/var/lib/postgresql/data", ["pg:/var/lib/postgresql/data"])
+
+        assert _spec(service) is None
+
+    def test_nested_persistence_target_is_left_to_the_pvc(self) -> None:
+        """The stock Postgres layout: PGDATA nested under the mountPath."""
+        service = self._service("/var/lib/postgresql", ["pg:/var/lib/postgresql/data"])
+
+        assert _spec(service) is None
+
+    def test_trailing_slash_does_not_defeat_the_guard(self) -> None:
+        service = self._service("/var/lib/postgresql", ["pg:/var/lib/postgresql/"])
+
+        assert _spec(service) is None
+
+    def test_sibling_prefix_is_still_translated(self) -> None:
+        """``/var/lib/postgresql-backup`` is not inside ``/var/lib/postgresql``."""
+        service = self._service(
+            "/var/lib/postgresql", ["backup:/var/lib/postgresql-backup"]
+        )
+
+        assert _spec(service).mounts == [
+            {"name": "backup", "mountPath": "/var/lib/postgresql-backup"}
+        ]
+
+    def test_unrelated_volume_is_still_translated(self) -> None:
+        service = self._service("/var/lib/postgresql", ["cache:/var/cache"])
+
+        assert _spec(service).mounts == [{"name": "cache", "mountPath": "/var/cache"}]
+
+    def test_disabled_persistence_does_not_suppress_translation(self) -> None:
+        service = {
+            "volumes": ["pg:/data"],
+            "x-kamiwaza": {"persistence": {"enabled": False, "mountPath": "/data"}},
+        }
+
+        assert _spec(service).mounts == [{"name": "pg", "mountPath": "/data"}]
+
+    def test_enabled_without_mount_path_is_rejected(self) -> None:
+        """The operator would provision the PVC and mount it nowhere."""
+        service = {
+            "volumes": ["cache:/data"],
+            "x-kamiwaza": {"persistence": {"enabled": True, "size": "5Gi"}},
+        }
+
+        with pytest.raises(ValueError, match="mountPath is missing"):
+            _spec(service)
+
+
+class TestPersistenceMountPathValidation:
+    """A mountPath that can never match a Compose target is worse than an
+    error: the guard passes and an emptyDir lands on top of the PVC."""
+
+    @staticmethod
+    def _service(mount_path) -> dict:
+        return {
+            "volumes": ["pg:/var/lib/postgresql/data"],
+            "x-kamiwaza": {
+                "persistence": {"enabled": True, "mountPath": mount_path}
+            },
+        }
+
+    @pytest.mark.parametrize(
+        "mount_path", ["var/lib/postgresql", "data", "./data", "postgresql/data"]
+    )
+    def test_relative_mount_path_is_rejected(self, mount_path: str) -> None:
+        with pytest.raises(ValueError, match="absolute path"):
+            _spec(self._service(mount_path))
+
+    @pytest.mark.parametrize("mount_path", [None, 42, {"path": "/data"}, ["/data"]])
+    def test_non_string_mount_path_is_rejected(self, mount_path) -> None:
+        """``mountPath:`` with no value parses to None; stringifying it would
+        yield a truthy "None" that sails past every check."""
+        with pytest.raises(ValueError, match="mountPath is missing"):
+            _spec(self._service(mount_path))
+
+    def test_absolute_mount_path_is_accepted(self) -> None:
+        assert _spec(self._service("/var/lib/postgresql")) is None
+
+
+def test_persistence_from_metadata_arms_the_guard() -> None:
+    """The caller resolves persistence (kamiwaza.json ahead of compose) and
+    passes it in. Re-reading compose here would leave a metadata-declared PVC
+    unguarded — a PVC and an emptyDir over the same path."""
+    service = {"volumes": ["pg:/var/lib/postgresql/data"]}
+
+    specs = build_service_volume_specs(
+        {"services": {"postgres": service}},
+        {"postgres": {"enabled": True, "mountPath": "/var/lib/postgresql"}},
+    )
+
+    assert specs.get("postgres") is None
+
+
+def test_no_resolved_persistence_translates_every_volume() -> None:
+    service = {
+        "volumes": ["pg:/var/lib/postgresql/data"],
+        "x-kamiwaza": {"persistence": {"enabled": True, "mountPath": "/ignored"}},
+    }
+
+    specs = build_service_volume_specs({"services": {"postgres": service}}, {})
+
+    assert specs["postgres"].mounts == [
+        {"name": "pg", "mountPath": "/var/lib/postgresql/data"}
+    ]
+
+
+class TestPersistenceEnabledMustBeBoolean:
+    """A truthy string disarms the guard here while the platform coerces it and
+    provisions the PVC anyway — an emptyDir lands on top of the claim."""
+
+    @staticmethod
+    def _persistence(enabled) -> dict:
+        return {"enabled": enabled, "mountPath": "/var/lib/postgresql"}
+
+    @pytest.mark.parametrize("enabled", ["true", "True", "1", "yes", "on", 1])
+    def test_truthy_non_bool_is_rejected(self, enabled) -> None:
+        service = {"volumes": ["pg:/var/lib/postgresql/data"]}
+
+        with pytest.raises(ValueError, match="must be a boolean"):
+            build_service_volume_specs(
+                {"services": {"pg": service}}, {"pg": self._persistence(enabled)}
+            )
+
+    @pytest.mark.parametrize("enabled", ["false", "no", 0])
+    def test_falsy_non_bool_is_also_rejected(self, enabled) -> None:
+        with pytest.raises(ValueError, match="must be a boolean"):
+            build_service_volume_specs(
+                {"services": {"pg": {"volumes": ["pg:/data"]}}},
+                {"pg": self._persistence(enabled)},
+            )
+
+    def test_real_booleans_are_accepted(self) -> None:
+        service = {"volumes": ["pg:/var/lib/postgresql/data"]}
+
+        specs = build_service_volume_specs(
+            {"services": {"pg": service}}, {"pg": self._persistence(True)}
+        )
+
+        assert specs.get("pg") is None
+
+    def test_absent_enabled_declares_no_persistence(self) -> None:
+        specs = build_service_volume_specs(
+            {"services": {"pg": {"volumes": ["pg:/data"]}}},
+            {"pg": {"mountPath": "/data"}},
+        )
+
+        assert specs["pg"].mounts == [{"name": "pg", "mountPath": "/data"}]

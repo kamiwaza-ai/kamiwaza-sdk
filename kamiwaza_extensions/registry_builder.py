@@ -516,6 +516,98 @@ def _apply_env_image_rewrites(
     return result
 
 
+def _iter_env_pairs(env: Any):
+    """Yield ``(name, value)`` string pairs from a compose environment block.
+
+    Handles the dict shape, the ``NAME=value`` list shape, and list items
+    that are ``{name, value}`` mappings. Non-string values are skipped.
+    """
+    if isinstance(env, dict):
+        for name, value in env.items():
+            if isinstance(value, str):
+                yield str(name), value
+    elif isinstance(env, list):
+        for item in env:
+            if isinstance(item, str) and "=" in item:
+                name, _, value = item.partition("=")
+                yield name, value
+            elif isinstance(item, dict) and isinstance(item.get("value"), str):
+                yield str(item.get("name", "")), item["value"]
+
+
+def _env_value_image_ref(value: str) -> Optional[str]:
+    """Extract the statically-known image ref from an env value, if any.
+
+    Returns the default from a ``${VAR:-default}`` wrapper, or the bare
+    value itself. Returns ``None`` when the candidate still carries a
+    compose variable (unresolvable statically) or whitespace/commas (a
+    CSV or sentence, not a single image ref).
+    """
+    match = _ENV_DEFAULT_SUB_RE.match(value)
+    token = match.group(2) if match else value
+    if "$" in token or "," in token or any(ch.isspace() for ch in token):
+        return None
+    return token
+
+
+def find_uncovered_env_image_refs(
+    entry: Dict[str, Any], registry: str
+) -> List[str]:
+    """Return violations for env image refs the entry's lists don't cover.
+
+    The offline bundler relocates exactly ``docker_images`` +
+    ``extra_docker_images``; a registry-owned, tag-carrying image ref that
+    only appears inside a compose environment value (a dynamic-spawn image
+    like Kaizen's ``${AGENT_SERVER_IMAGE:-...}`` default) is unpullable on
+    air-gapped installs. ENG-8270 shipped exactly that shape to the prod
+    catalog: services retagged to the release tag while the env default
+    kept the extension-version tag, so every offline sandbox spawn
+    ImagePullBackOff'd. Coverage compares ``name:tag`` with digests
+    stripped — relocation re-digests, so digest equality can't be required.
+
+    Out of scope (can't or shouldn't be statically enforced): values still
+    carrying a compose variable, bare repo prefixes with no tag (allowlist
+    entries, not pullable refs), and refs outside *registry* (independent
+    release cadence — the extras surface's literal-tag-passthrough rule).
+    """
+    try:
+        compose = yaml.safe_load(entry.get("compose_yml") or "")
+    except yaml.YAMLError:
+        return []
+    if not isinstance(compose, dict):
+        return []
+    covered = {
+        ref.partition("@")[0]
+        for ref in (
+            list(entry.get("docker_images") or [])
+            + list(entry.get("extra_docker_images") or [])
+        )
+        if isinstance(ref, str)
+    }
+    registry_prefix = f"{registry.rstrip('/')}/"
+    violations: List[str] = []
+    for svc_name, svc in (compose.get("services") or {}).items():
+        if not isinstance(svc, dict):
+            continue
+        for var, value in _iter_env_pairs(svc.get("environment")):
+            ref = _env_value_image_ref(value)
+            if ref is None or not ref.startswith(registry_prefix):
+                continue
+            name_and_tag = ref.partition("@")[0]
+            if ":" not in name_and_tag[name_and_tag.rfind("/") + 1:]:
+                continue  # bare repo prefix, not a pullable ref
+            if name_and_tag not in covered:
+                violations.append(
+                    f"service '{svc_name}' environment '{var}' references "
+                    f"image '{ref}', which is not covered by docker_images/"
+                    f"extra_docker_images — offline bundles only relocate "
+                    f"listed images, so this ref is unpullable on air-gapped "
+                    f"installs. Declare it in extra_docker_images or align "
+                    f"its tag with this publish."
+                )
+    return violations
+
+
 def _rewrite_env_image_ref(
     value: str, stage: str, digest_map: Dict[str, str],
     revision: Optional[str] = None,

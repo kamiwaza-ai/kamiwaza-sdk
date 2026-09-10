@@ -21,6 +21,7 @@ from rich.console import Console
 from kamiwaza_extensions.connections import ConnectionInfo, ConnectionManager
 from kamiwaza_extensions.extension_detector import (
     ExtensionDetector,
+    ExtensionInfo,
     infer_extension_type,
 )
 from kamiwaza_extensions_lib.local_dev import (
@@ -33,6 +34,7 @@ from kamiwaza_extensions_lib.local_dev import (
 )
 
 console = Console(stderr=True)
+TEMPLATE_DEV_COMPOSE_FILENAME = "kamiwaza-compose.dev.yml"
 
 
 class DevLocalRunner:
@@ -49,364 +51,55 @@ class DevLocalRunner:
         sdk_repo: Optional[str] = None,
         auth: bool = False,
     ) -> int:
-        from kamiwaza_extensions.sdk_override import (
-            SdkOverrideSpec,
-            build_typescript_lib,
-            generate_compose_override,
-            generate_local_build_dockerfile_patches,
-            is_typescript_dist_stale,
-            print_override_diagnostics,
-            resolve_sdk_override,
-            validate_sdk_override,
-        )
-
-        # 1. Detect extension (shared logic)
         info = self._detector.detect()
-
-        # 2. Ensure compose file exists
         if info.compose_path is None:
             raise FileNotFoundError(
                 f"No compose file found in {info.path}. "
                 "Expected docker-compose.yml or compose.yml."
             )
 
-        # 3. Detect compose command
         compose_cmd = detect_compose_command()
+        env, connection = self._prepare_environment(info, auth=auth)
+        override_spec = self._prepare_sdk_override(sdk_repo, info.path)
 
-        # 4. Build env overlay (with optional --auth bridge)
-        connection = self._conn_mgr.get_active_connection()
-        bridge: Optional[BridgeContext] = None
-        if auth:
-            # PR #87 round-5 review High #2 — `--auth` only works for
-            # `app`-type extensions because the bridge mechanism is the
-            # Next.js middleware shipped in the app template. For
-            # `service` and `tool` extensions there's no Next.js layer
-            # to inject envelope headers, so KAMIWAZA_USE_AUTH=true with
-            # no bridge would just 401 every protected route. Refuse
-            # with a clear hint instead of silently misbehaving.
-            #
-            # PR #87 round-6 review: route the type lookup through the
-            # shared ``infer_extension_type`` helper so the legacy
-            # ``template_type`` fallback (and name-prefix heuristics for
-            # ``tool-``/``service-``/``mcp-``) are honored. Without this,
-            # a legacy extension whose kamiwaza.json carries only
-            # ``template_type: "service"`` would default to ``"app"``
-            # here and silently slip past the gate.
-            ext_type = infer_extension_type(info.metadata or {})
-            if ext_type != "app":
-                raise LocalDevAuthError(
-                    f"--auth is only supported for `app`-type extensions; "
-                    f"this extension type is `{ext_type}`. The bridge synthesizes "
-                    "envelope headers via the Next.js middleware shipped with "
-                    "the app template — service/tool extensions have no "
-                    "equivalent Python-side bridge in v1. Run without --auth, "
-                    "or wire forwarded-auth headers manually for testing."
-                )
-
-            # prepare_bridge_context raises LocalDevAuthError on no
-            # connection / missing bearer / expired token. Surface it to
-            # the developer and exit non-zero rather than starting compose.
-            bridge = prepare_bridge_context(connection_manager=self._conn_mgr)
-
-        env = os.environ.copy()
-        # Defense-in-depth: when --auth is NOT set, scrub any pre-existing
-        # bridge env vars from the developer's shell (e.g. left over from
-        # another tool) so they cannot accidentally activate the bridge or
-        # leak a stale bearer into the container.
-        if not auth:
-            for var in BRIDGE_ENV_VARS:
-                env.pop(var, None)
-
-        if connection:
-            overlay = build_env_overlay(connection, info.name, auth=auth, bridge=bridge)
-            env.update(overlay)
-            console.print(
-                f"[dim]Using connection:[/dim] {connection.name} ({connection.url})"
-            )
-            if auth:
-                who = (bridge.user_id if bridge else None) or "?"
-                console.print(
-                    f"[dim]--auth bridge active: forwarding identity for {who}[/dim]"
-                )
-            else:
-                console.print("[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
-        else:
-            console.print(
-                "[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]"
-            )
-
-        # 5. Resolve SDK override
-        override_spec = resolve_sdk_override(sdk_repo, info.path)
-
-        if override_spec:
-            validation = validate_sdk_override(override_spec)
-            for err in validation.errors:
-                console.print(f"[red]SDK override error: {err}[/red]")
-            for warn in validation.warnings:
-                console.print(f"[yellow]SDK override: {warn}[/yellow]")
-
-            if not validation.ok:
-                console.print("[red]SDK override disabled due to errors above[/red]")
-                override_spec = None
-            else:
-                # Build TypeScript when explicitly requested, when dist/ is
-                # missing entirely, or when src/ is newer than dist/. The
-                # last case is what makes ``--sdk-repo`` work without
-                # surprise: a stale dist after a ``git pull`` would otherwise
-                # surface as a "Module not found" inside the consumer's
-                # Next.js build, which is hard to diagnose. Treating stale
-                # dist as a build trigger keeps the bind-mounted artifacts
-                # in lockstep with the SDK source the developer is editing.
-                if override_spec.typescript and (
-                    override_spec.build_typescript
-                    or not override_spec.typescript_dist_path.is_dir()
-                    or is_typescript_dist_stale(override_spec)
-                ):
-                    if not build_typescript_lib(override_spec):
-                        console.print(
-                            "[yellow]Continuing without TypeScript override[/yellow]"
-                        )
-                        override_spec = SdkOverrideSpec(
-                            sdk_repo=override_spec.sdk_repo,
-                            python=override_spec.python,
-                            typescript=False,
-                            build_typescript=False,
-                        )
-
-                print_override_diagnostics(override_spec)
-
-        # 6. Check ports and remap if needed
         remaps: Dict[str, Tuple[int, int]] = {}
-        patched_compose_file: Optional[str] = None
-        sdk_override_file: Optional[str] = None
-        sdk_build_patch_file: Optional[str] = None
-        sdk_build_dockerfiles: List[str] = []
-        extra_hosts_file: Optional[str] = None
-        auth_env_file: Optional[str] = None
-        local_override_file: Optional[str] = None
-        # Initialised here (not in 10a) so the ``finally`` cleanup always
-        # has them in scope — even if an exception bubbles out of the
-        # try body before the polling thread would have been spawned.
+        temporary_files: List[str] = []
         url_poll_thread: Optional[threading.Thread] = None
         url_poll_stop = threading.Event()
 
         try:
-            if info.compose_data:
-                remaps = resolve_port_conflicts(info.compose_data)
-                if remaps:
-                    for svc, (orig, new) in remaps.items():
-                        console.print(
-                            f"[yellow]Port {orig} in use — remapping {svc} to {new}[/yellow]"
-                        )
-
-            # If ports need remapping, write a patched copy of the compose file
-            # (compose override files append ports rather than replacing them)
-            if remaps and info.compose_data:
-                patched = apply_port_remaps(info.compose_data, remaps)
-                fd = tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".yml", prefix="kz-ports-", delete=False
-                )
-                yaml.dump(patched, fd, default_flow_style=False)
-                fd.close()
-                patched_compose_file = fd.name
-                compose_file_arg = patched_compose_file
-            else:
-                compose_file_arg = str(info.compose_path)
-
-            # 6a. Load the developer's local-only compose override if present.
-            # kz-ext builds an explicit ``-f`` list, which disables Compose's
-            # automatic ``<base-stem>.override.<ext>`` loading. Re-add it so
-            # the documented local-only override path works (e.g. mounting the
-            # Docker socket for SANDBOX_BACKEND=docker). Placed after the base
-            # file but before kz-ext's generated overlays so functional
-            # overlays (auth / extra-hosts) still win on conflict. See ENG-6281.
-            #
-            # Compose mirrors the override name to the *detected base file's*
-            # stem: a ``compose.yml`` base pairs with ``compose.override.yml``,
-            # a ``docker-compose.yaml`` base with
-            # ``docker-compose.override.yaml`` — see ``COMPOSE_FILENAMES`` for
-            # the four supported base names. Derive the candidate from the
-            # detected base (not a hardcoded ``docker-compose.override.*``) so
-            # the supported ``compose.{yml,yaml}`` bases don't silently lose
-            # their override — the very bug this fixes (PR #131 review High #1).
-            base_compose_path = Path(info.compose_path)
-            compose_dir = base_compose_path.parent
-            override_stem = base_compose_path.stem
-            base_ext = base_compose_path.suffix.lstrip(".") or "yml"
-            # Prefer the suffix matching the base file, then the alternate, so
-            # a ``compose.yml`` base finds ``compose.override.yml`` first but
-            # still picks up ``compose.override.yaml`` if that's what the
-            # developer wrote.
-            override_exts = [base_ext] + [
-                ext for ext in ("yml", "yaml") if ext != base_ext
+            remaps, compose_file_arg, base_was_patched = self._prepare_base_compose(
+                info, temporary_files
+            )
+            template_dev_override_file = self._prepare_template_dev_override(
+                info, temporary_files
+            )
+            local_override_file = self._find_local_override(info.compose_path)
+            sdk_override_file, sdk_build_patch_file = self._prepare_sdk_overlays(
+                info, override_spec, temporary_files
+            )
+            extra_hosts_file, auth_env_file = self._prepare_auth_overlays(
+                info,
+                auth=auth,
+                connection=connection,
+                env=env,
+                temporary_files=temporary_files,
+            )
+            overlays = [
+                template_dev_override_file,
+                local_override_file,
+                sdk_override_file,
+                sdk_build_patch_file,
+                extra_hosts_file,
+                auth_env_file,
             ]
-            for ext in override_exts:
-                override_name = f"{override_stem}.override.{ext}"
-                candidate = compose_dir / override_name
-                if candidate.is_file():
-                    local_override_file = str(candidate)
-                    console.print(f"[dim]Loading local override: {override_name}[/dim]")
-                    break
-
-            # 7. Generate SDK override compose file
-            if override_spec and info.compose_data:
-                sdk_override_data = generate_compose_override(
-                    override_spec,
-                    info.compose_data,
-                    extension_dir=info.path,
-                )
-                fd = tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".yml", prefix="kz-sdk-", delete=False
-                )
-                yaml.dump(sdk_override_data, fd, default_flow_style=False)
-                fd.close()
-                sdk_override_file = fd.name
-
-                # 7a. Patch each Python backend service's Dockerfile to strip
-                # the kamiwaza-extensions-lib pin before pip install runs.
-                # Without this, the build phase fails when the pinned version
-                # is not yet on PyPI; the runtime PYTHONPATH overlay (set in
-                # generate_compose_override above) only kicks in once the
-                # image exists. Patched Dockerfiles are written to temp files
-                # and pointed at via compose's ``build.dockerfile`` (absolute
-                # path). Using ``dockerfile_inline`` would conflict with the
-                # scaffold's explicit ``dockerfile: Dockerfile`` field —
-                # compose treats them as mutually exclusive.
-                df_patches = generate_local_build_dockerfile_patches(
-                    override_spec,
-                    info.compose_data,
-                    info.path,
-                )
-                if df_patches:
-                    build_overlay_services: dict = {}
-                    base_services = (info.compose_data or {}).get("services", {})
-                    for svc, patched in df_patches.items():
-                        df_fd = tempfile.NamedTemporaryFile(
-                            mode="w",
-                            suffix=".Dockerfile",
-                            prefix=f"kz-sdk-df-{svc}-",
-                            delete=False,
-                        )
-                        df_fd.write(patched)
-                        df_fd.close()
-                        sdk_build_dockerfiles.append(df_fd.name)
-                        # Carry forward the original build.context (and any
-                        # other build fields) so the patched Dockerfile is
-                        # built from the same root the scaffold expects —
-                        # COPY paths in the patched Dockerfile resolve
-                        # relative to ``context``. Compose's overlay merge
-                        # would normally preserve unspecified keys, but
-                        # being explicit insulates us from any compose
-                        # version that flips merge semantics for ``build:``
-                        # (Codex P1 review on PR #91).
-                        base_build = (base_services.get(svc) or {}).get("build")
-                        merged_build: Dict[str, Any] = {}
-                        if isinstance(base_build, str):
-                            # Compose short-form ``build: ./frontend`` —
-                            # promote to long-form so context survives.
-                            merged_build["context"] = base_build
-                        elif isinstance(base_build, dict):
-                            merged_build.update(base_build)
-                        merged_build["dockerfile"] = df_fd.name
-                        build_overlay_services[svc] = {"build": merged_build}
-                    fd = tempfile.NamedTemporaryFile(
-                        mode="w", suffix=".yml", prefix="kz-sdk-build-", delete=False
-                    )
-                    yaml.dump(
-                        {"services": build_overlay_services},
-                        fd,
-                        default_flow_style=False,
-                    )
-                    fd.close()
-                    sdk_build_patch_file = fd.name
-
-            # 7b. Generate extra_hosts overlay when --auth is set. We always
-            # inject host.docker.internal:host-gateway under --auth so
-            # containers on Linux Docker Engine can reach the host (the
-            # bare-loopback URL rewrite to host.docker.internal in
-            # build_env_overlay assumes that name resolves, which is only
-            # implicit on Docker Desktop). Named loopback hostnames
-            # (kamiwaza.test) get their own alias too.
-            if auth and connection and info.compose_data:
-                eh_entries = build_compose_extra_hosts(connection, auth=True)
-                if eh_entries:
-                    extra_hosts_file = _write_compose_overlay(
-                        prefix="kz-extra-hosts-",
-                        services=info.compose_data.get("services", {}),
-                        per_service={"extra_hosts": list(eh_entries)},
-                    )
-                    console.print(
-                        f"[dim]Routing {', '.join(eh_entries)} via host-gateway[/dim]"
-                    )
-
-            # 7c. Generate env-passthrough overlay under --auth so the
-            # bridge env vars actually reach EVERY service inside the
-            # container. The runner sets these on the parent compose-CLI
-            # process via env.update(overlay), but Docker Compose only
-            # propagates env vars into a service's container when the
-            # service explicitly declares them in `environment:` or
-            # `env_file:`. Without this overlay, frontend containers
-            # whose template doesn't list the bridge vars would silently
-            # see the gate as undefined and the bridge would no-op (PR
-            # #87 round-2 review Critical #1, codex + claude consensus).
-            if auth and connection and info.compose_data:
-                services = info.compose_data.get("services", {})
-                # Use **mapping form** (``{KEY: value}``) for the env
-                # overlay — defense-in-depth against Docker Compose's
-                # ``$`` variable interpolation in list-of-strings form
-                # (``["KEY=value"]``). Round-10 review (Comprehensive H)
-                # raised this; round-11 (Comprehensive H + Claude H)
-                # corrected the rationale: canonical bearers are
-                # base64url-encoded JWTs whose alphabet is
-                # ``[A-Za-z0-9_-]`` so the **on-the-wire** token never
-                # contains ``$``. The defensive concern is the *general
-                # case* — if the bridge ever forwards a non-JWT bearer
-                # (e.g. a future opaque-PAT path) or if an env value
-                # the bridge synthesizes ever contains ``$``, the
-                # mapping form is exempt from interpolation per the
-                # Compose spec and won't silently eat the literal.
-                bridge_env_map = {
-                    var: env[var] for var in BRIDGE_ENV_VARS if var in env
-                }
-                if bridge_env_map and services:
-                    auth_env_file = _write_compose_overlay(
-                        prefix="kz-auth-env-",
-                        services=services,
-                        per_service={"environment": dict(bridge_env_map)},
-                    )
-
-            # 8. Build the project-identifier prefix (compose binary +
-            # -f / --project-directory args). The same prefix is used for
-            # `compose up` and the post-up `compose port` lookup so they
-            # query the same project even when the user invokes from a
-            # parent directory or with override files (review re-review
-            # PR #84 M1).
-            compose_prefix = compose_cmd + ["-f", compose_file_arg]
-            # User's local-only override loads after the base file but before
-            # kz-ext's generated overlays (ENG-6281).
-            if local_override_file:
-                compose_prefix += ["-f", local_override_file]
-            if sdk_override_file:
-                compose_prefix += ["-f", sdk_override_file]
-            # The build patch must apply to the same services the runtime
-            # override touches; place it after sdk_override_file so its
-            # ``build.dockerfile`` (absolute path to a temp Dockerfile)
-            # wins over any earlier build spec.
-            if sdk_build_patch_file:
-                compose_prefix += ["-f", sdk_build_patch_file]
-            if extra_hosts_file:
-                compose_prefix += ["-f", extra_hosts_file]
-            if auth_env_file:
-                compose_prefix += ["-f", auth_env_file]
-            if (
-                patched_compose_file
-                or local_override_file
-                or sdk_override_file
-                or sdk_build_patch_file
-                or extra_hosts_file
-                or auth_env_file
-            ):
-                compose_prefix += ["--project-directory", str(info.path)]
+            compose_prefix = self._build_compose_prefix(
+                compose_cmd,
+                compose_file_arg,
+                overlays,
+                info.path,
+                force_project_directory=base_was_patched,
+            )
 
             cmd = list(compose_prefix) + ["up", "--build"]
             if detach:
@@ -464,27 +157,338 @@ class DevLocalRunner:
 
             return rc
         finally:
-            # Signal the URL-poll thread to stop BEFORE unlinking the
-            # compose override files it depends on; give it a brief join
-            # window so an in-flight ``docker compose port`` call doesn't
-            # see freshly-deleted ``-f`` paths.
             url_poll_stop.set()
             if url_poll_thread is not None and url_poll_thread.is_alive():
                 url_poll_thread.join(timeout=2.0)
-            cleanup_paths: List[Optional[str]] = [
-                patched_compose_file,
-                sdk_override_file,
-                sdk_build_patch_file,
-                extra_hosts_file,
-                auth_env_file,
-            ]
-            cleanup_paths.extend(sdk_build_dockerfiles)
-            for tmp in cleanup_paths:
-                if tmp:
-                    try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
+            self._cleanup_temp_files(temporary_files)
+
+    def _prepare_environment(
+        self, info: ExtensionInfo, *, auth: bool
+    ) -> Tuple[Dict[str, str], Optional[ConnectionInfo]]:
+        """Build the compose environment and optional local-auth bridge."""
+        connection = self._conn_mgr.get_active_connection()
+        bridge: Optional[BridgeContext] = None
+        if auth:
+            ext_type = infer_extension_type(info.metadata or {})
+            if ext_type != "app":
+                raise LocalDevAuthError(
+                    f"--auth is only supported for `app`-type extensions; "
+                    f"this extension type is `{ext_type}`. The bridge synthesizes "
+                    "envelope headers via the Next.js middleware shipped with "
+                    "the app template — service/tool extensions have no "
+                    "equivalent Python-side bridge in v1. Run without --auth, "
+                    "or wire forwarded-auth headers manually for testing."
+                )
+            bridge = prepare_bridge_context(connection_manager=self._conn_mgr)
+
+        env = os.environ.copy()
+        # The CLI-owned dev target runs ``next dev`` at the origin root. Never
+        # inherit deployment path identity from the operator's shell: doing so
+        # makes server-side helpers emit prefixed URLs that the dev server does
+        # not serve. Explicit empty values override Compose's ``${VAR:-}``
+        # passthrough while preserving unrelated local connection settings.
+        env.update(
+            {
+                "KAMIWAZA_ROUTING_MODE": "port",
+                "KAMIWAZA_APP_PATH": "",
+                "KAMIWAZA_APP_PATH_URL": "",
+            }
+        )
+        if not auth:
+            for var in BRIDGE_ENV_VARS:
+                env.pop(var, None)
+
+        if not connection:
+            console.print(
+                "[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]"
+            )
+            return env, connection
+
+        env.update(build_env_overlay(connection, info.name, auth=auth, bridge=bridge))
+        console.print(
+            f"[dim]Using connection:[/dim] {connection.name} ({connection.url})"
+        )
+        if auth:
+            who = (bridge.user_id if bridge else None) or "?"
+            console.print(
+                f"[dim]--auth bridge active: forwarding identity for {who}[/dim]"
+            )
+        else:
+            console.print("[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
+        return env, connection
+
+    @staticmethod
+    def _prepare_sdk_override(sdk_repo: Optional[str], extension_path: Path) -> Any:
+        """Resolve, validate, and build an SDK override when requested."""
+        from kamiwaza_extensions.sdk_override import (
+            SdkOverrideSpec,
+            build_typescript_lib,
+            is_typescript_dist_stale,
+            print_override_diagnostics,
+            resolve_sdk_override,
+            validate_sdk_override,
+        )
+
+        override_spec = resolve_sdk_override(sdk_repo, extension_path)
+        if not override_spec:
+            return None
+
+        validation = validate_sdk_override(override_spec)
+        for err in validation.errors:
+            console.print(f"[red]SDK override error: {err}[/red]")
+        for warn in validation.warnings:
+            console.print(f"[yellow]SDK override: {warn}[/yellow]")
+        if not validation.ok:
+            console.print("[red]SDK override disabled due to errors above[/red]")
+            return None
+
+        typescript_needs_build = override_spec.typescript and (
+            override_spec.build_typescript
+            or not override_spec.typescript_dist_path.is_dir()
+            or is_typescript_dist_stale(override_spec)
+        )
+        if typescript_needs_build and not build_typescript_lib(override_spec):
+            console.print("[yellow]Continuing without TypeScript override[/yellow]")
+            override_spec = SdkOverrideSpec(
+                sdk_repo=override_spec.sdk_repo,
+                python=override_spec.python,
+                typescript=False,
+                build_typescript=False,
+            )
+
+        print_override_diagnostics(override_spec)
+        return override_spec
+
+    @staticmethod
+    def _prepare_base_compose(
+        info: ExtensionInfo, temporary_files: List[str]
+    ) -> Tuple[Dict[str, Tuple[int, int]], str, bool]:
+        """Resolve port conflicts and return the effective base compose file."""
+        remaps = resolve_port_conflicts(info.compose_data) if info.compose_data else {}
+        for svc, (orig, new) in remaps.items():
+            console.print(
+                f"[yellow]Port {orig} in use — remapping {svc} to {new}[/yellow]"
+            )
+        if not remaps or not info.compose_data:
+            return remaps, str(info.compose_path), False
+
+        patched = apply_port_remaps(info.compose_data, remaps)
+        fd = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yml", prefix="kz-ports-", delete=False
+        )
+        yaml.dump(patched, fd, default_flow_style=False)
+        fd.close()
+        temporary_files.append(fd.name)
+        return remaps, fd.name, True
+
+    @staticmethod
+    def _prepare_template_dev_override(
+        info: ExtensionInfo, temporary_files: List[str]
+    ) -> Optional[str]:
+        """Adapt the template dev overlay to the extension's current services.
+
+        Existing extensions may rename ``frontend``/``backend`` or remove one
+        entirely. Compose would otherwise create phantom services from the
+        later overlay, so match renamed services by their retained build
+        context and omit roles that no longer exist.
+        """
+        candidate = info.path / TEMPLATE_DEV_COMPOSE_FILENAME
+        if not candidate.is_file():
+            return None
+        overlay = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
+        if not isinstance(overlay, dict):
+            raise ValueError(f"{TEMPLATE_DEV_COMPOSE_FILENAME} must be a mapping")
+        template_services = overlay.get("services") or {}
+        actual_services = (info.compose_data or {}).get("services") or {}
+        if not isinstance(template_services, dict):
+            raise ValueError(
+                f"{TEMPLATE_DEV_COMPOSE_FILENAME} services must be a mapping"
+            )
+        adapted_services: Dict[str, Any] = {}
+
+        for template_name, service_overlay in template_services.items():
+            actual_name = DevLocalRunner._match_template_service(
+                template_name, actual_services
+            )
+            if actual_name is None:
+                console.print(
+                    f"[yellow]Skipping {template_name!r} from "
+                    f"{TEMPLATE_DEV_COMPOSE_FILENAME}: no matching service[/yellow]"
+                )
+                continue
+            adapted_services[actual_name] = service_overlay
+
+        if not adapted_services:
+            return None
+        if adapted_services == template_services:
+            return str(candidate)
+
+        fd = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yml", prefix="kz-template-dev-", delete=False
+        )
+        yaml.safe_dump({**overlay, "services": adapted_services}, fd)
+        fd.close()
+        temporary_files.append(fd.name)
+        return fd.name
+
+    @staticmethod
+    def _match_template_service(
+        template_name: str, actual_services: Dict[str, Any]
+    ) -> Optional[str]:
+        if template_name in actual_services:
+            return template_name
+        matches = []
+        for service_name, service in actual_services.items():
+            build = service.get("build") if isinstance(service, dict) else None
+            if isinstance(build, str):
+                context = build
+            elif isinstance(build, dict):
+                context = build.get("context")
+            else:
+                context = None
+            if (
+                isinstance(context, str)
+                and Path(context.rstrip("/")).name == template_name
+            ):
+                matches.append(service_name)
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _find_local_override(compose_path: Path) -> Optional[str]:
+        """Find Compose's user-owned override matching the detected base file."""
+        compose_dir = compose_path.parent
+        base_ext = compose_path.suffix.lstrip(".") or "yml"
+        override_exts = [base_ext] + [ext for ext in ("yml", "yaml") if ext != base_ext]
+        for ext in override_exts:
+            override_name = f"{compose_path.stem}.override.{ext}"
+            candidate = compose_dir / override_name
+            if candidate.is_file():
+                console.print(f"[dim]Loading local override: {override_name}[/dim]")
+                return str(candidate)
+        return None
+
+    @staticmethod
+    def _prepare_sdk_overlays(
+        info: ExtensionInfo, override_spec: Any, temporary_files: List[str]
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Generate runtime and Dockerfile SDK compose overlays."""
+        from kamiwaza_extensions.sdk_override import (
+            generate_compose_override,
+            generate_local_build_dockerfile_patches,
+        )
+
+        if not override_spec or not info.compose_data:
+            return None, None
+
+        sdk_override_data = generate_compose_override(
+            override_spec, info.compose_data, extension_dir=info.path
+        )
+        fd = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yml", prefix="kz-sdk-", delete=False
+        )
+        yaml.dump(sdk_override_data, fd, default_flow_style=False)
+        fd.close()
+        temporary_files.append(fd.name)
+        sdk_override_file = fd.name
+
+        df_patches = generate_local_build_dockerfile_patches(
+            override_spec, info.compose_data, info.path
+        )
+        if not df_patches:
+            return sdk_override_file, None
+
+        build_overlay_services: dict = {}
+        base_services = info.compose_data.get("services", {})
+        for svc, patched in df_patches.items():
+            df_fd = tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".Dockerfile",
+                prefix=f"kz-sdk-df-{svc}-",
+                delete=False,
+            )
+            df_fd.write(patched)
+            df_fd.close()
+            temporary_files.append(df_fd.name)
+            base_build = (base_services.get(svc) or {}).get("build")
+            merged_build: Dict[str, Any] = {}
+            if isinstance(base_build, str):
+                merged_build["context"] = base_build
+            elif isinstance(base_build, dict):
+                merged_build.update(base_build)
+            merged_build["dockerfile"] = df_fd.name
+            build_overlay_services[svc] = {"build": merged_build}
+
+        fd = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yml", prefix="kz-sdk-build-", delete=False
+        )
+        yaml.dump({"services": build_overlay_services}, fd, default_flow_style=False)
+        fd.close()
+        temporary_files.append(fd.name)
+        return sdk_override_file, fd.name
+
+    @staticmethod
+    def _prepare_auth_overlays(
+        info: ExtensionInfo,
+        *,
+        auth: bool,
+        connection: Optional[ConnectionInfo],
+        env: Dict[str, str],
+        temporary_files: List[str],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Generate host routing and bridge-environment compose overlays."""
+        if not auth or not connection or not info.compose_data:
+            return None, None
+
+        services = info.compose_data.get("services", {})
+        extra_hosts_file: Optional[str] = None
+        eh_entries = build_compose_extra_hosts(connection, auth=True)
+        if eh_entries:
+            extra_hosts_file = _write_compose_overlay(
+                prefix="kz-extra-hosts-",
+                services=services,
+                per_service={"extra_hosts": list(eh_entries)},
+            )
+            temporary_files.append(extra_hosts_file)
+            console.print(
+                f"[dim]Routing {', '.join(eh_entries)} via host-gateway[/dim]"
+            )
+
+        auth_env_file: Optional[str] = None
+        bridge_env_map = {var: env[var] for var in BRIDGE_ENV_VARS if var in env}
+        if bridge_env_map and services:
+            auth_env_file = _write_compose_overlay(
+                prefix="kz-auth-env-",
+                services=services,
+                per_service={"environment": dict(bridge_env_map)},
+            )
+            temporary_files.append(auth_env_file)
+        return extra_hosts_file, auth_env_file
+
+    @staticmethod
+    def _build_compose_prefix(
+        compose_cmd: List[str],
+        compose_file_arg: str,
+        overlays: List[Optional[str]],
+        project_directory: Path,
+        *,
+        force_project_directory: bool,
+    ) -> List[str]:
+        """Build one stable Compose prefix for up and port inspection."""
+        prefix = compose_cmd + ["-f", compose_file_arg]
+        for overlay in overlays:
+            if overlay:
+                prefix += ["-f", overlay]
+        if force_project_directory or any(overlays):
+            prefix += ["--project-directory", str(project_directory)]
+        return prefix
+
+    @staticmethod
+    def _cleanup_temp_files(paths: List[str]) -> None:
+        for tmp in paths:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------
     # URL display

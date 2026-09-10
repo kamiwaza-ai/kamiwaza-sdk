@@ -128,7 +128,7 @@ def deployment_env_vars(harness: Any, contract: Any) -> dict[str, str]:
     # ``trusted_routed_workroom_context()`` can validate routed requests.
     # Read from LIVE_EXTENSION_TRUSTED_PROXY_SECRET (or
     # KAMIWAZA_TRUSTED_PROXY_SECRET) so the harness operator can match
-    # whatever the platform's routing layer (Traefik / istio ingress)
+    # whatever provider-owned ingress the platform configures
     # injects in ``x-kamiwaza-trusted-proxy`` on routed traffic. If unset
     # the trusted-routed path stays fail-closed — which is the correct
     # stance, since direct container traffic must not be trusted.

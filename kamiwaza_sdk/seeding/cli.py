@@ -16,6 +16,36 @@ Example::
         --name claude --region us-east-1 \\
         --model-id anthropic.claude-3-sonnet-20240229-v1:0 \\
         --credential-env AWS_BEDROCK_CREDENTIAL_JSON
+    kamiwaza-seed bind-chat-model --kaizen-base-url "$URL" \\
+        --workroom-id <wid> --deployment-id <dep>
+    kamiwaza-seed bind-embedding-model --kaizen-base-url "$URL" \\
+        --workroom-id <wid>
+    kamiwaza-seed create-agent --kaizen-base-url "$URL" --workroom-id <wid> \\
+        --name uat-agent --persona "Answer UAT questions."
+
+Canonical Kaizen binds a model per instance, so ``bind-chat-model`` — not
+``create-agent`` — is what gives a seeded agent a backing model.
+
+``bind-embedding-model`` is the same step for retrieval, and is just as
+required: with no embedding deployment selected, semantic search falls back to
+lexical matching and only says so in a log line, so a seed run that skips it
+produces an instance that looks healthy and retrieves badly. It takes no
+``--deployment-id`` above because nothing in a seed run deploys an embedding
+model — the one to bind is whatever the environment already serves, so the
+command selects by capability from the instance's own inventory rather than by
+a model name that would differ between an offline box and a hosted one.
+
+Legacy Kaizen still binds per agent. Selecting it means naming it in **both**
+places — the resolve and the create — or the resolve finds one product while
+the create speaks the other contract, which is exactly the server-side 422
+this split exists to remove::
+
+    URL="$(kamiwaza-seed resolve-kaizen-url --name kaizen-legacy \\
+        --workroom-id <wid> --raw)"
+    kamiwaza-seed create-agent --kaizen-base-url "$URL" --workroom-id <wid> \\
+        --extension-name kaizen-legacy --name uat-agent --model openai/foo \\
+        --provider kamiwaza --endpoint-path /runtime/models/<dep>/v1 \\
+        --llm-api-key-env KAMIWAZA_API_KEY
 """
 
 from __future__ import annotations
@@ -24,20 +54,26 @@ import argparse
 import json
 import math
 import os
+import sys
 from pathlib import Path
-from typing import Callable, Dict, Optional, Union
+from typing import Callable, Dict, NamedTuple, Optional, Sequence, Tuple, Union
 
-from ..exceptions import DeploymentFailedError
-from ..schemas.kaizen import LLMConfig
+from ..exceptions import DeploymentFailedError, KamiwazaError, OffHostBaseURLError
+from ..schemas.kaizen import AgentDefinition, LLMConfig
 from ..schemas.models.external_endpoint import (
     AWSBedrockChatEndpoint,
     AWSTranscribeEndpoint,
 )
 from ..services.kaizen import (
+    AGENT_CONTRACT_CANONICAL,
+    CANONICAL_EXTENSION_NAME,
+    LEGACY_EXTENSION_NAME,
     AmbiguousExtensionError,
     ConversationError,
+    agent_contract_for_extension,
     wait_for_base_url,
 )
+from . import kaizen_turns
 from .client import build_client_from_env, scoped_client_for_workroom
 
 
@@ -246,23 +282,151 @@ def cmd_resolve_kaizen_url(args: argparse.Namespace, *, client) -> Optional[dict
             timeout_seconds=args.timeout,
             poll_interval_seconds=args.poll_interval,
         )
-    except (TimeoutError, AmbiguousExtensionError) as exc:
+    except (TimeoutError, AmbiguousExtensionError, OffHostBaseURLError) as exc:
+        # Only the credential guard's own refusal is a clean exit; any other
+        # ValueError is a bug and keeps its traceback.
         raise SystemExit(str(exc))
+    # The platform reports an in-cluster extension as a path. Callers consume
+    # this value from a shell ("$(... --raw)"), where only an absolute URL is
+    # usable, so resolve it here rather than emitting a root that works through
+    # the SDK and nowhere else.
+    url = client._absolutize_base_url(url)
     if args.raw:
         print(url)
         return None
     return {"kaizen_base_url": url}
 
 
-def cmd_create_agent(args: argparse.Namespace, *, client) -> dict:
+# Flags that only mean something under the legacy contract. Canonical Kaizen
+# binds a model per instance, not per agent, so accepting these there would
+# silently drop the operator's model choice — the request would still succeed
+# and the agent would answer on some other model.
+_LEGACY_ONLY_AGENT_FLAGS = (
+    ("--model", "model"),
+    ("--provider", "provider"),
+    ("--endpoint-path", "endpoint_path"),
+    ("--llm-base-url", "llm_base_url"),
+    ("--llm-api-key-env", "llm_api_key_env"),
+    ("--custom-instructions", "custom_instructions"),
+)
+
+# The mirror set: fields that exist only in the canonical ``content`` body. The
+# legacy create has nowhere to put them, so accepting them there would drop an
+# operator's choice just as silently as the reverse.
+_CANONICAL_ONLY_AGENT_FLAGS = (
+    ("--persona", "persona"),
+    ("--capability-ceiling", "capability_ceiling"),
+)
+
+
+def _reject_flags(
+    args: argparse.Namespace,
+    flags: Sequence[Tuple[str, str]],
+    singular: str,
+    plural: str,
+) -> None:
+    """Fail loudly when a create carries flags the chosen contract can't honor.
+
+    Every flag this CLI accepts belongs to exactly one contract, and the two
+    bodies have no overlap — so a flag aimed at the other contract can only be
+    dropped. Dropping it silently is the failure mode the contract split exists
+    to remove, so it is always an error, never a warning.
+    """
+    # `is not None`, not truthiness: an explicitly-passed empty value is still
+    # an operator choice aimed at the wrong contract, and dropping it silently
+    # is the behavior this guard exists to prevent.
+    supplied = [flag for flag, dest in flags if getattr(args, dest) is not None]
+    if supplied:
+        message = singular if len(supplied) == 1 else plural
+        raise SystemExit(f"{', '.join(supplied)} {message}")
+
+
+_LEGACY_ONLY_TAIL = (
+    f"canonical Kaizen ('{CANONICAL_EXTENSION_NAME}') does not support. Bind a "
+    "model to the instance with 'kamiwaza-seed bind-chat-model', or pass "
+    f"--extension-name {LEGACY_EXTENSION_NAME} to use the legacy contract."
+)
+
+_CANONICAL_ONLY_TAIL = (
+    f"the canonical Kaizen ('{CANONICAL_EXTENSION_NAME}') agent definition, "
+    f"which legacy Kaizen ('{LEGACY_EXTENSION_NAME}') has no field for. Drop "
+    "them, or omit --extension-name to create a canonical agent."
+)
+
+
+def _reject_legacy_agent_flags(args: argparse.Namespace) -> None:
+    """Reject legacy-only flags on a canonical create."""
+    _reject_flags(
+        args,
+        _LEGACY_ONLY_AGENT_FLAGS,
+        f"is a per-agent setting that {_LEGACY_ONLY_TAIL}",
+        f"are per-agent settings that {_LEGACY_ONLY_TAIL}",
+    )
+
+
+def _reject_canonical_agent_flags(args: argparse.Namespace) -> None:
+    """Reject canonical-only flags on a legacy create."""
+    _reject_flags(
+        args,
+        _CANONICAL_ONLY_AGENT_FLAGS,
+        f"belongs to {_CANONICAL_ONLY_TAIL}",
+        f"belong to {_CANONICAL_ONLY_TAIL}",
+    )
+
+
+def _validate_agent_args(args: argparse.Namespace, contract: str) -> Optional[str]:
+    """Check the flag set against the chosen contract, before any network call.
+
+    Runs ahead of client scoping on purpose: scoping issues a ``workrooms.enter``
+    session bind, so validating after it would make a local flag mistake cost a
+    server round trip and leave a session bound for a command that then fails.
+
+    Returns the legacy custom-endpoint key when one was requested, so the secret
+    is read exactly once — here, with the other local checks — rather than again
+    at send time.
+    """
+    if contract == AGENT_CONTRACT_CANONICAL:
+        _reject_legacy_agent_flags(args)
+        if not args.persona:
+            raise SystemExit(
+                "--persona is required for canonical Kaizen agents (it is the "
+                "agent's system persona)."
+            )
+        return None
+    _reject_canonical_agent_flags(args)
+    if not args.model:
+        raise SystemExit(
+            f"--model is required for legacy Kaizen ('{LEGACY_EXTENSION_NAME}') agents."
+        )
+    return _read_env_secret(args.llm_api_key_env, what="custom-endpoint LLM key")
+
+
+def _create_canonical_agent(args: argparse.Namespace, client) -> dict:
+    """Create an agent through the canonical ``content`` contract."""
+    definition = AgentDefinition(
+        name=args.name,
+        persona=args.persona,
+        description=args.description,
+        capability_ceiling=args.capability_ceiling,
+    )
+    agent = client.agents.create_canonical(
+        definition,
+        base_url=args.kaizen_base_url,
+        workroom_id=args.workroom_id,
+    )
+    return {"agent_id": agent.id, "version": agent.version}
+
+
+def _create_legacy_agent(
+    args: argparse.Namespace, client, api_key: Optional[str]
+) -> dict:
+    """Create an agent through the legacy flat ``agent_config.llm`` contract."""
     llm = LLMConfig(
         model=args.model,
         provider=args.provider,
         endpoint_path=args.endpoint_path,
         base_url=args.llm_base_url,
     )
-    api_key = _read_env_secret(args.llm_api_key_env, what="custom-endpoint LLM key")
-    client = _client_for_workroom(client, args.workroom_id)
     agent = client.agents.create(
         base_url=args.kaizen_base_url,
         name=args.name,
@@ -272,55 +436,318 @@ def cmd_create_agent(args: argparse.Namespace, *, client) -> dict:
         llm_api_key=api_key,
         workroom_id=args.workroom_id,
     )
-    return {"agent_id": agent.id}
+    # `version` rides along as None so both contracts emit the same JSON keys;
+    # legacy Kaizen has no content version to report.
+    return {"agent_id": agent.id, "version": None}
+
+
+def cmd_create_agent(args: argparse.Namespace, *, client) -> dict:
+    """Create a Kaizen agent using the contract its catalog identity speaks.
+
+    ``--extension-name`` selects the contract, so an operator never has to know
+    which body shape a given Kaizen wants — and a mismatch is a local error with
+    the fix in it, not an opaque HTTP 422 from the server.
+    """
+    try:
+        contract = agent_contract_for_extension(args.extension_name)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    api_key = _validate_agent_args(args, contract)
+    client = _client_for_workroom(client, args.workroom_id)
+    if contract == AGENT_CONTRACT_CANONICAL:
+        return _create_canonical_agent(args, client)
+    return _create_legacy_agent(args, client, api_key)
+
+
+def _bound_role_deployment_id(settings: object, role: str) -> Optional[str]:
+    """Pull one role's currently-bound deployment id out of a model-settings view.
+
+    Every model role reports through the same ``{role: {current: {id}}}`` shape,
+    so the role name is the only thing that varies between callers.
+    """
+    if not isinstance(settings, dict):
+        return None
+    entry = settings.get(role)
+    if not isinstance(entry, dict):
+        return None
+    current = entry.get("current")
+    if not isinstance(current, dict):
+        return None
+    bound = current.get("id")
+    return str(bound) if bound else None
+
+
+def _role_inventory(settings: object, role: str) -> list:
+    """List the deployments a Kaizen instance says it could bind to ``role``.
+
+    The instance has already filtered this by model type, resolved each
+    endpoint, and dropped anything it could not serve, so it is a better
+    authority on what is bindable than anything the caller could reconstruct
+    from the platform inventory itself.
+    """
+    if not isinstance(settings, dict):
+        return []
+    candidates = settings.get(f"{role}_models")
+    if not isinstance(candidates, list):
+        return []
+    return [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("id")
+    ]
+
+
+def _advertises(candidate: dict, capability: str) -> bool:
+    capabilities = candidate.get("capabilities")
+    if not isinstance(capabilities, list):
+        return False
+    return capability in {str(item) for item in capabilities}
+
+
+def _preferred_candidates(
+    candidates: list, *, already_bound: Optional[str], capability: str
+) -> list:
+    """Rank the ways a candidate can qualify, most specific first.
+
+    Each tier is a complete answer on its own; the next is consulted only when
+    the one above it is empty. A candidate that advertises a capability set
+    excluding ``capability`` qualifies under no tier at all.
+    """
+    return (
+        # Already bound, and still on offer — never repoint it.
+        [c for c in candidates if str(c["id"]) == already_bound]
+        # Says it can do the job.
+        or [c for c in candidates if _advertises(c, capability)]
+        # Says nothing either way. `is None` rather than a key check: an
+        # instance sending the key with a null value means what one that omits
+        # it means.
+        or [c for c in candidates if c.get("capabilities") is None]
+    )
+
+
+def discover_role_deployment(
+    settings: object, *, role: str, capability: str
+) -> Tuple[str, str]:
+    """Pick a deployment to bind to ``role``, preferring an explicit capability.
+
+    Selecting by capability rather than by model name is what keeps this
+    working across environments that serve the same role from different models
+    — a local offline serve on one box, a hosted endpoint on another.
+
+    An existing binding wins over any of that. Re-pointing a role that is
+    already bound would leave documents embedded by one model and searched
+    against another — the same corruption the contradiction check refuses —
+    except reached by our own write, so nothing would report it. A re-run
+    therefore keeps what is already there whenever the instance still offers
+    it.
+
+    ``capabilities`` is preferred but not required: the instance already typed
+    every candidate as this role, so an entry that does not advertise its
+    capabilities — absent or explicitly null — is still a legitimate fallback
+    rather than a reason to fail a seed run. An entry that *does* advertise a
+    capability set without this capability in it is not a fallback — it has
+    told us it cannot do the job, and binding it anyway would be the silent
+    degradation this command exists to prevent.
+
+    Returns:
+        The chosen ``(deployment_id, name)``.
+
+    Raises:
+        SystemExit: the instance offers nothing bindable for this role.
+    """
+    preferred = _preferred_candidates(
+        _role_inventory(settings, role),
+        already_bound=_bound_role_deployment_id(settings, role),
+        capability=capability,
+    )
+    if not preferred:
+        raise SystemExit(
+            f"no {role} model available to bind: the instance reports no "
+            f"{role} deployment it can serve. Deploy a model advertising the "
+            f"'{capability}' capability and re-run — proceeding without an "
+            f"{role} binding would leave the instance silently degraded."
+        )
+    chosen = preferred[0]
+    return str(chosen["id"]), str(chosen.get("name") or chosen["id"])
+
+
+class _ModelRole(NamedTuple):
+    """One bindable Kaizen model role, and what binding the wrong one costs."""
+
+    name: str
+    contradiction_consequence: str
+
+
+_CHAT_ROLE = _ModelRole(
+    "chat",
+    "an agent created now would answer on an unintended model.",
+)
+_EMBEDDING_ROLE = _ModelRole(
+    "embedding",
+    "documents indexed now would be embedded by an unintended model, and "
+    "search would compare them against a different one.",
+)
+
+
+def _bind_role_model(
+    args: argparse.Namespace,
+    *,
+    scoped,
+    role: _ModelRole,
+    bind: Callable[..., object],
+) -> dict:
+    """Bind one instance-wide model role, then confirm what the instance reports.
+
+    Shared by every ``bind-<role>-model`` command: the write, the read-back a
+    bodiless 2xx forces, and the contradiction check are identical across roles.
+    Only the role and the ``bind`` call differ.
+
+    Takes an already-workroom-scoped client. Scoping issues a real
+    ``workrooms.enter``, so doing it here as well as in a caller that already
+    needed a scoped client for its own read would cost a second round trip and
+    a second chance to fail on it.
+    """
+    unconfirmed_reason = None
+    bound = _bound_role_deployment_id(bind(scoped), role.name)
+    if bound is None:
+        # The write succeeded (a non-2xx would have raised), we just couldn't
+        # read a confirmation out of it — a 204, or a body shaped differently
+        # than we expect. Read the settings back rather than either trusting
+        # our own request or failing a binding that probably worked.
+        try:
+            bound = _bound_role_deployment_id(
+                scoped.kaizen_ops.get_model_settings(
+                    base_url=args.kaizen_base_url,
+                    workroom_id=args.workroom_id,
+                ),
+                role.name,
+            )
+        except KamiwazaError as exc:
+            # Still not fatal — the write itself succeeded. But an expired
+            # token and an odd 204 body both land on `confirmed: false`, and
+            # only one of them is an operator emergency, so say which happened
+            # instead of discarding the diagnosis.
+            bound = None
+            unconfirmed_reason = f"read-back failed: {exc}"
+            print(
+                f"warning: {role.name} binding read-back failed for "
+                f"{args.kaizen_base_url}: {exc}",
+                file=sys.stderr,
+            )
+    if bound is not None and bound != args.deployment_id:
+        # The instance contradicts us: it is bound to something else. This is
+        # the state that must never exit 0 — the seed run would continue on an
+        # unintended model and its verification would "pass" anyway.
+        raise SystemExit(
+            f"{role.name} model binding contradicted: asked for "
+            f"'{args.deployment_id}', instance reports '{bound}'. Not "
+            f"proceeding — {role.contradiction_consequence}"
+        )
+    # bound is None here only when neither the write nor the read-back carried
+    # a binding. Report that honestly instead of implying confirmation — the
+    # caller is expected to gate on `confirmed`, as the UAT seed profile does.
+    result = {
+        f"{role.name}_deployment_id": args.deployment_id,
+        "confirmed": bound is not None,
+    }
+    if unconfirmed_reason is not None:
+        result["unconfirmed_reason"] = unconfirmed_reason
+    return result
+
+
+def cmd_bind_chat_model(args: argparse.Namespace, *, client) -> dict:
+    """Point a canonical Kaizen instance's chat role at a model deployment.
+
+    Canonical Kaizen resolves a model instance-wide rather than per agent, so
+    this is what actually gives seeded agents a backing model.
+    """
+    return _bind_role_model(
+        args,
+        scoped=_client_for_workroom(client, args.workroom_id),
+        role=_CHAT_ROLE,
+        bind=lambda scoped: scoped.kaizen_ops.set_chat_model(
+            args.deployment_id,
+            base_url=args.kaizen_base_url,
+            workroom_id=args.workroom_id,
+        ),
+    )
+
+
+def cmd_bind_embedding_model(args: argparse.Namespace, *, client) -> dict:
+    """Point a canonical Kaizen instance's embedding role at a model deployment.
+
+    Without this, Kaizen has no embedding endpoint and answers semantic search
+    by silently falling back to lexical matching — a seeded instance looks
+    healthy while retrieving materially worse.
+
+    ``--deployment-id`` is optional here, unlike the chat role: nothing in a
+    seed run deploys an embedding model, so the one to bind is whatever the
+    environment already serves. Omitting it discovers a deployment advertising
+    the ``embeddings`` capability from the instance's own inventory, which is
+    what keeps this working on an offline box serving a local model and on one
+    reaching a hosted endpoint without naming either.
+    """
+    discovered_name = None
+    # Scope once and reuse: the inventory read below and the bind itself both
+    # need a scoped client, and scoping twice would enter the workroom twice.
+    scoped = _client_for_workroom(client, args.workroom_id)
+    if not args.deployment_id:
+        try:
+            settings = scoped.kaizen_ops.get_model_settings(
+                base_url=args.kaizen_base_url,
+                workroom_id=args.workroom_id,
+            )
+        except KamiwazaError as exc:
+            # Unlike the post-write read-back, this one is load-bearing: with
+            # no inventory there is nothing to bind, and continuing would leave
+            # the instance unbound while reporting success.
+            raise SystemExit(
+                f"could not read the instance's model inventory to choose an "
+                f"embedding deployment: {exc}"
+            ) from exc
+        args.deployment_id, discovered_name = discover_role_deployment(
+            settings, role=_EMBEDDING_ROLE.name, capability="embeddings"
+        )
+    result = _bind_role_model(
+        args,
+        scoped=scoped,
+        role=_EMBEDDING_ROLE,
+        bind=lambda scoped: scoped.kaizen_ops.set_embedding_model(
+            args.deployment_id,
+            base_url=args.kaizen_base_url,
+            workroom_id=args.workroom_id,
+        ),
+    )
+    if discovered_name is not None:
+        # Name what discovery picked: the caller passed no id, so this is the
+        # only record of which model the instance now embeds with.
+        result["discovered_model"] = discovered_name
+    return result
 
 
 def cmd_create_conversation(args: argparse.Namespace, *, client) -> dict:
+    create = kaizen_turns.CREATE_CONVERSATION_BY_CONTRACT[
+        kaizen_turns.conversation_contract(args)
+    ]
     client = _client_for_workroom(client, args.workroom_id)
-    conversation = client.conversations.create(
-        base_url=args.kaizen_base_url,
-        agent_id=args.agent_id,
-        title=args.title,
-        max_iterations=args.max_iterations,
-        ephemeral=args.ephemeral,
-        workroom_id=args.workroom_id,
-    )
-    return {"conversation_id": conversation.id}
+    return {"conversation_id": create(args, client).id}
 
 
 def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
     """Send a prompt to an agent and return its reply (exercises it end to end).
 
-    Opens a fresh conversation against ``--agent-id``, sends ``--message``, and
-    (with a positive ``--timeout``) waits for the agent's reply — proving the
-    agent can actually respond, not just that it was created. ``--raw`` prints
-    only the reply text. Exits non-zero on an agent error, an empty reply, or a
-    wait timeout (mirrors cmd_deploy_model / cmd_resolve_kaizen_url).
+    Opens a fresh conversation, sends ``--message``, and (with a positive
+    ``--timeout``) waits for the agent's reply — proving the agent can actually
+    respond, not just that it was created. ``--extension-name`` selects the turn
+    contract, which differs between the two Kaizen products across create, send,
+    and event delivery alike. ``--raw`` prints only the reply text. Exits
+    non-zero on an agent error, an empty reply, or a wait timeout (mirrors
+    cmd_deploy_model / cmd_resolve_kaizen_url).
     """
+    turn = kaizen_turns.CHAT_TURN_BY_CONTRACT[kaizen_turns.conversation_contract(args)]
     client = _client_for_workroom(client, args.workroom_id)
-    conversation = client.conversations.create(
-        base_url=args.kaizen_base_url,
-        agent_id=args.agent_id,
-        title=args.title,
-        workroom_id=args.workroom_id,
-    )
     try:
-        if args.timeout:
-            client.conversations.wait_until_ready(
-                conversation.id,
-                base_url=args.kaizen_base_url,
-                workroom_id=args.workroom_id,
-                timeout_seconds=args.sandbox_timeout,
-                poll_interval_seconds=args.poll_interval,
-            )
-        reply = client.conversations.chat(
-            conversation.id,
-            args.message,
-            base_url=args.kaizen_base_url,
-            workroom_id=args.workroom_id,
-            timeout_seconds=args.timeout,
-            poll_interval_seconds=args.poll_interval,
-        )
+        conversation_id, reply = turn(args, client)
     except (TimeoutError, ConversationError) as exc:
         raise SystemExit(str(exc))
     # timeout=0 is fire-and-forget (no reply to assert); only fault an empty
@@ -331,7 +758,7 @@ def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
         if reply:
             print(reply)
         return None
-    return {"conversation_id": conversation.id, "reply": reply}
+    return {"conversation_id": conversation_id, "reply": reply}
 
 
 def cmd_configure_connector(args: argparse.Namespace, *, client) -> dict:
@@ -370,6 +797,151 @@ def cmd_import_skill(args: argparse.Namespace, *, client) -> dict:
 
 
 # --- parser ----------------------------------------------------------------
+
+
+def _add_bind_model_parser(
+    sub,
+    role: str,
+    func: Callable[..., dict],
+    *,
+    discoverable: bool = False,
+) -> None:
+    """Register one ``bind-<role>-model`` subcommand.
+
+    Every model role takes the same three arguments — the instance root, the
+    deployment to bind, and the workroom scope — so the role name is all that
+    distinguishes the parsers. ``discoverable`` marks a role whose deployment
+    the command can choose from the instance's own inventory, which makes
+    ``--deployment-id`` an override rather than a requirement.
+    """
+    p = sub.add_parser(
+        f"bind-{role}-model",
+        help=(
+            f"Bind a canonical Kaizen instance's {role} role to a model "
+            "deployment."
+        ),
+    )
+    p.add_argument(
+        "--kaizen-base-url",
+        required=True,
+        help="Kaizen instance API root (per-workroom).",
+    )
+    deployment_help = f"Kamiwaza model deployment to serve Kaizen {role}."
+    if discoverable:
+        deployment_help += (
+            " Defaults to one the instance already offers for this role."
+        )
+    p.add_argument(
+        "--deployment-id",
+        required=not discoverable,
+        default=None,
+        help=deployment_help,
+    )
+    p.add_argument("--workroom-id", default=None)
+    p.set_defaults(func=func)
+
+
+def _add_create_conversation_parser(sub) -> None:
+    """Register the ``create-conversation`` subcommand."""
+    p = sub.add_parser(
+        "create-conversation",
+        help="Start a Kaizen conversation.",
+        allow_abbrev=False,
+    )
+    p.add_argument(
+        "--kaizen-base-url",
+        required=True,
+        help="Kaizen instance API root (per-workroom).",
+    )
+    p.add_argument(
+        "--extension-name",
+        default=CANONICAL_EXTENSION_NAME,
+        choices=[CANONICAL_EXTENSION_NAME, LEGACY_EXTENSION_NAME],
+        help=(
+            "Kaizen catalog identity, which selects the conversation contract "
+            f"(default: {CANONICAL_EXTENSION_NAME})."
+        ),
+    )
+    p.add_argument(
+        "--agent-id",
+        default=None,
+        help=(
+            f"Agent to converse with. Required for '{LEGACY_EXTENSION_NAME}'; "
+            f"rejected for '{CANONICAL_EXTENSION_NAME}', which selects the "
+            "agent per message instead."
+        ),
+    )
+    p.add_argument(
+        "--title", default=None, help=f"Legacy-only ('{LEGACY_EXTENSION_NAME}')."
+    )
+    p.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help=f"Agent step ceiling; legacy-only ('{LEGACY_EXTENSION_NAME}', default 500).",
+    )
+    p.add_argument(
+        "--ephemeral",
+        action="store_true",
+        help=f"Legacy-only ('{LEGACY_EXTENSION_NAME}').",
+    )
+    p.add_argument("--workroom-id", default=None)
+    p.set_defaults(func=cmd_create_conversation)
+
+
+def _add_chat_parser(sub) -> None:
+    """Register the ``chat`` subcommand."""
+    p = sub.add_parser(
+        "chat",
+        help="Send a prompt to an agent and return its reply (exercises the agent end to end).",
+        allow_abbrev=False,
+    )
+    p.add_argument(
+        "--kaizen-base-url",
+        required=True,
+        help="Kaizen instance API root (per-workroom).",
+    )
+    p.add_argument(
+        "--extension-name",
+        default=CANONICAL_EXTENSION_NAME,
+        choices=[CANONICAL_EXTENSION_NAME, LEGACY_EXTENSION_NAME],
+        help=(
+            "Kaizen catalog identity, which selects the conversation contract "
+            f"(default: {CANONICAL_EXTENSION_NAME})."
+        ),
+    )
+    p.add_argument("--agent-id", required=True)
+    p.add_argument("--message", required=True, help="Prompt to send to the agent.")
+    p.add_argument("--workroom-id", default=None)
+    p.add_argument(
+        "--title",
+        default=None,
+        help=f"Conversation title; legacy-only ('{LEGACY_EXTENSION_NAME}').",
+    )
+    p.add_argument(
+        "--raw",
+        action="store_true",
+        help='Print only the bare reply text (for REPLY="$(... --raw)").',
+    )
+    p.add_argument(
+        "--timeout",
+        type=_non_negative_float,
+        default=60.0,
+        help="Max seconds to wait for the reply (0 = fire-and-forget, don't wait).",
+    )
+    p.add_argument(
+        "--sandbox-timeout",
+        type=_non_negative_float,
+        default=120.0,
+        help="Max seconds to wait for the agent sandbox before sending the message.",
+    )
+    p.add_argument(
+        "--poll-interval",
+        type=_non_negative_float,
+        default=3.0,
+        help="Seconds between event polls while waiting (default: 3).",
+    )
+    p.set_defaults(func=cmd_chat)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -520,7 +1092,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Kaizen instance API root (per-workroom).",
     )
     p.add_argument("--name", required=True)
-    p.add_argument("--model", required=True)
+    p.add_argument(
+        "--extension-name",
+        default=CANONICAL_EXTENSION_NAME,
+        choices=[CANONICAL_EXTENSION_NAME, LEGACY_EXTENSION_NAME],
+        help=(
+            "Kaizen catalog identity, which selects the agent-create contract "
+            f"(default: {CANONICAL_EXTENSION_NAME})."
+        ),
+    )
+    p.add_argument(
+        "--persona",
+        default=None,
+        help=f"System persona (required for '{CANONICAL_EXTENSION_NAME}').",
+    )
+    p.add_argument(
+        "--capability-ceiling",
+        default=None,
+        help=f"Capability tier for '{CANONICAL_EXTENSION_NAME}' (server default: read).",
+    )
+    p.add_argument(
+        "--model", default=None, help=f"Required for '{LEGACY_EXTENSION_NAME}' only."
+    )
     p.add_argument(
         "--provider", default=None, help="'kamiwaza' for a platform deployment."
     )
@@ -536,56 +1129,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workroom-id", default=None)
     p.set_defaults(func=cmd_create_agent)
 
-    p = sub.add_parser("create-conversation", help="Start a Kaizen conversation.")
-    p.add_argument(
-        "--kaizen-base-url",
-        required=True,
-        help="Kaizen instance API root (per-workroom).",
-    )
-    p.add_argument("--agent-id", required=True)
-    p.add_argument("--title", default=None)
-    p.add_argument("--max-iterations", type=int, default=500)
-    p.add_argument("--ephemeral", action="store_true")
-    p.add_argument("--workroom-id", default=None)
-    p.set_defaults(func=cmd_create_conversation)
+    _add_bind_model_parser(sub, "chat", cmd_bind_chat_model)
 
-    p = sub.add_parser(
-        "chat",
-        help="Send a prompt to an agent and return its reply (exercises the agent end to end).",
+    _add_bind_model_parser(
+        sub, "embedding", cmd_bind_embedding_model, discoverable=True
     )
-    p.add_argument(
-        "--kaizen-base-url",
-        required=True,
-        help="Kaizen instance API root (per-workroom).",
-    )
-    p.add_argument("--agent-id", required=True)
-    p.add_argument("--message", required=True, help="Prompt to send to the agent.")
-    p.add_argument("--workroom-id", default=None)
-    p.add_argument("--title", default=None, help="Conversation title (optional).")
-    p.add_argument(
-        "--raw",
-        action="store_true",
-        help='Print only the bare reply text (for REPLY="$(... --raw)").',
-    )
-    p.add_argument(
-        "--timeout",
-        type=_non_negative_float,
-        default=60.0,
-        help="Max seconds to wait for the reply (0 = fire-and-forget, don't wait).",
-    )
-    p.add_argument(
-        "--sandbox-timeout",
-        type=_non_negative_float,
-        default=120.0,
-        help="Max seconds to wait for the agent sandbox before sending the message.",
-    )
-    p.add_argument(
-        "--poll-interval",
-        type=_non_negative_float,
-        default=3.0,
-        help="Seconds between event polls while waiting (default: 3).",
-    )
-    p.set_defaults(func=cmd_chat)
+
+    _add_create_conversation_parser(sub)
+
+    _add_chat_parser(sub)
 
     p = sub.add_parser("import-skill", help="Import a skill package (.zip).")
     p.add_argument("--file", required=True)

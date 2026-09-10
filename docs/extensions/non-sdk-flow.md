@@ -4,9 +4,9 @@
 > Python or TypeScript (Go, Rust, Java, …) who can't use `kamiwaza-extensions-lib`
 > or `@kamiwaza-ai/extensions-lib` directly.
 >
-> **Status:** Canonical contract. Revised 2026-04-23 (verify-in-extension dropped
-> per system design §4.4.2 — extensions are pass-through consumers of
-> Traefik-populated headers, not crypto verifiers).
+> **Status:** Canonical contract. Revised 2026-08-18. Extensions are
+> pass-through consumers of identity headers asserted by the platform-managed
+> ingress authorization path, not crypto verifiers.
 >
 > **See also:** A working Go reference implementation of this contract
 > (`examples/extensions/go-reference/`) is planned — tracked as
@@ -50,9 +50,10 @@ The platform injects these at deploy time. Treat any as optional unless stated.
 
 ## 2. Envelope headers
 
-When `KAMIWAZA_USE_AUTH=true`, every authenticated request reaches the
-extension via Traefik's ForwardAuth middleware, which stamps the following
-headers on success:
+When `KAMIWAZA_USE_AUTH=true`, authenticated traffic must reach the extension
+through the platform-managed ingress and authorization path. That boundary
+removes untrusted identity headers and supplies the following gateway-attested
+headers after successful authorization:
 
 | Header | Type | Notes |
 | --- | --- | --- |
@@ -77,8 +78,8 @@ read them via a case-insensitive map.
 
 The contract: read the headers above into an `Identity` value. **Header parsing
 only — no HMAC verification, no shared secret, no canonicalization, no TTL
-check.** The trust boundary is Traefik (see §8); intra-pod parsing is
-plain string handling.
+check.** The trust boundary is the platform-managed ingress authorization path
+(see §8); intra-pod parsing is plain string handling.
 
 ### Algorithm
 
@@ -216,16 +217,17 @@ the catalog dedup guard, ENG-3884 / M1).
 
 ## 8. Trust boundary and known gaps
 
-Traefik's ForwardAuth middleware is the trust boundary. An extension that
-receives a request trusts that Traefik routed it from an authenticated
-caller — that's why §3 is plain header parsing, not crypto verification.
+The platform-managed ingress authorization path is the trust boundary. It
+strips caller-supplied identity headers, authorizes the request, and supplies
+the gateway-attested envelope before forwarding to the extension. This is why
+§3 is plain header parsing rather than crypto verification. The contract is
+provider-neutral: use the ingress configured by the platform, not a direct
+connection to the extension service or pod.
 
-**Known gap:** intra-cluster pod-to-pod requests (one extension calling
-another, or any in-cluster process forging Traefik headers) are not
-currently authenticated by the platform. This is tracked separately as the
-Istio mTLS follow-on (outside D210 scope). Operators deploying extensions
-in multi-tenant or less-trusted clusters should be aware of this
-limitation.
+**Known gap:** a direct intra-cluster request does not cross that authorization
+boundary. An extension must therefore remain behind platform-managed routing
+and network policy; it must not treat a directly reachable service or
+port-forward as an authenticated entry point.
 
 The HMAC pair (`X-User-Signature` / `X-User-Signature-Ts`) emitted by the
 auth service is platform-internal integrity (covered by INF-A1 contract

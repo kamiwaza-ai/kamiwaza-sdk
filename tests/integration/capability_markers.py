@@ -42,14 +42,25 @@ class ClusterCapabilitySnapshot:
     gpu_vendors: frozenset[str] = frozenset()
     mig_supported: Optional[bool] = None  # None => undeterminable
     node_count: int = 0
+    os_platforms: frozenset[tuple[str, str]] = frozenset()
+    platform_inventory_complete: bool = True
+
+    @property
+    def is_apple_silicon(self) -> bool:
+        """Whether all trusted platform inventory identifies Apple Silicon."""
+        arm_hints = ("arm64", "aarch64", "arm-64")
+        return self.platform_inventory_complete and bool(self.os_platforms) and all(
+            os_name == "darwin" and any(hint in platform for hint in arm_hints)
+            for os_name, platform in self.os_platforms
+        )
 
 
 # --------------------------------------------------------------------------- #
 # Defensive parsing of the untyped GPU dicts (Hardware.gpus: List[Dict])
 # --------------------------------------------------------------------------- #
-_VENDOR_KEYS = ("vendor", "gpu_vendor", "brand", "manufacturer")
+_VENDOR_KEYS = ("vendor", "gpu_vendor", "brand", "manufacturer", "type")
 _NAME_KEYS = ("name", "model", "product", "product_name", "gpu_name")
-_MEM_GB_KEYS = ("memory_gb", "mem_gb", "vram_gb")
+_MEM_GB_KEYS = ("memory_gb", "mem_gb", "vram_gb", "vram", "gpu_memory_gb")
 _MEM_MB_KEYS = ("memory_mb", "mem_mb", "vram_mb", "memory_total_mb")
 _MEM_BYTES_KEYS = ("memory_bytes", "memory_total", "mem_bytes", "total_memory")
 _MIG_KEYS = ("mig", "mig_enabled", "mig_capable", "mig_support", "mig_supported")
@@ -145,6 +156,48 @@ def _hardware_node_key(hardware: Any) -> str:
     return str(node_id) if node_id is not None else f"_anon_{id(hardware)}"
 
 
+def _hardware_active(hardware: Any) -> Optional[bool]:
+    active = getattr(hardware, "active", None)
+    if active is None and isinstance(hardware, dict):
+        active = hardware.get("active")
+    return active if isinstance(active, bool) else None
+
+
+def _hardware_field(hardware: Any, field: str) -> Any:
+    value = getattr(hardware, field, None)
+    if value is None and isinstance(hardware, dict):
+        return hardware.get(field)
+    return value
+
+
+def _normalized_text(value: Any) -> str:
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def _platform_inventory(
+    hardware_entries: Iterable[Any],
+) -> tuple[frozenset[tuple[str, str]], bool]:
+    """Read OS/platform only from rows backed by real device inventory."""
+    os_platforms: set[tuple[str, str]] = set()
+    complete = True
+    for hardware in hardware_entries:
+        gpus = _hardware_gpus(hardware)
+        processors = _hardware_field(hardware, "processors")
+        if gpus is None and processors is None:
+            if _hardware_active(hardware) is True:
+                complete = False
+            continue
+        os_name = _hardware_field(hardware, "os")
+        platform = _hardware_field(hardware, "platform")
+        normalized_os = _normalized_text(os_name)
+        normalized_platform = _normalized_text(platform)
+        if normalized_os and normalized_platform:
+            os_platforms.add((normalized_os, normalized_platform))
+        else:
+            complete = False
+    return frozenset(os_platforms), complete
+
+
 def build_capability_snapshot(
     hardware_entries: Iterable[Any],
     node_count: Optional[int] = None,
@@ -156,8 +209,11 @@ def build_capability_snapshot(
     available; otherwise it is inferred from distinct hardware node ids.
     """
     entries = list(hardware_entries or [])
+    active_entries = [
+        hardware for hardware in entries if _hardware_active(hardware) is not False
+    ]
     gpu_dicts: list[dict] = []
-    for hardware in entries:
+    for hardware in active_entries:
         gpus = _hardware_gpus(hardware)
         if gpus:
             gpu_dicts.extend(gpu for gpu in gpus if isinstance(gpu, dict))
@@ -177,7 +233,9 @@ def build_capability_snapshot(
             mig_flags.append(mig)
 
     if node_count is None:
-        node_count = len({_hardware_node_key(hw) for hw in entries})
+        node_count = len({_hardware_node_key(hw) for hw in active_entries})
+
+    os_platforms, platform_inventory_complete = _platform_inventory(active_entries)
 
     return ClusterCapabilitySnapshot(
         gpu_count=len(gpu_dicts),
@@ -185,6 +243,8 @@ def build_capability_snapshot(
         gpu_vendors=frozenset(vendors),
         mig_supported=(any(mig_flags) if mig_flags else None),
         node_count=node_count or 0,
+        os_platforms=os_platforms,
+        platform_inventory_complete=platform_inventory_complete,
     )
 
 

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import time
+from datetime import datetime, timedelta, timezone
+
 import pytest
 import requests
-from datetime import datetime, timedelta, timezone
-import time
 
-from kamiwaza_sdk.authentication import UserPasswordAuthenticator
-from kamiwaza_sdk.token_store import StoredToken, TokenStore
+from kamiwaza_sdk.authentication import ApiKeyAuthenticator, UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import AuthenticationError
 from kamiwaza_sdk.schemas.auth import TokenResponse
+from kamiwaza_sdk.token_store import StoredToken, TokenStore
 
 pytestmark = pytest.mark.unit
 
@@ -58,6 +59,15 @@ class DummyAuthService:
         if not self.refresh_response:
             raise RuntimeError("refresh response not configured")
         return self.refresh_response
+
+
+def test_api_key_authenticator_invalidation_is_fail_closed() -> None:
+    authenticator = ApiKeyAuthenticator("fixed-token")
+    session = requests.Session()
+    authenticator.authenticate(session)
+
+    assert authenticator.invalidate_session(session) is False
+    assert session.headers["Authorization"] == "Bearer fixed-token"
 
 
 def test_user_password_authenticator_performs_password_grant():
@@ -119,3 +129,65 @@ def test_user_password_authenticator_uses_cached_token():
 
     assert auth_service.login_calls == []
     assert session.headers["Authorization"] == "Bearer cached"
+
+
+def test_user_password_authenticator_invalidates_cached_session() -> None:
+    store = MemoryTokenStore()
+    store.value = StoredToken(
+        access_token="scoped",
+        refresh_token="scoped-refresh",
+        expires_at=time.time() + 60,
+    )
+    auth_service = DummyAuthService(login_error=RuntimeError("not used"))
+    authenticator = UserPasswordAuthenticator(
+        "admin", "secret", auth_service, token_store=store
+    )
+    session = requests.Session()
+    session.headers["Authorization"] = "Bearer scoped"
+    session.cookies.set("access_token", "scoped")
+    session.cookies.set("access_token", "other-scope", domain="other.example")
+    session.cookies.set("load_balancer_affinity", "sticky")
+
+    assert authenticator.invalidate_session(session) is True
+
+    assert authenticator.token is None
+    assert authenticator.refresh_token_value is None
+    assert authenticator.token_expiry is None
+    assert store.value is not None
+    assert store.value.access_token == "scoped"
+    assert "Authorization" not in session.headers
+    assert all(cookie.name != "access_token" for cookie in session.cookies)
+    assert session.cookies.get("load_balancer_affinity") == "sticky"
+
+
+def test_invalidated_session_clears_stale_cache_after_password_grant_fails() -> None:
+    store = MemoryTokenStore()
+    store.value = StoredToken(
+        access_token="scoped",
+        refresh_token="scoped-refresh",
+        expires_at=time.time() + 60,
+    )
+    authenticator = UserPasswordAuthenticator(
+        "admin",
+        "wrong",
+        DummyAuthService(login_error=RuntimeError("bad credentials")),
+        token_store=store,
+    )
+    session = requests.Session()
+
+    authenticator.invalidate_session(session)
+    with pytest.raises(AuthenticationError, match="bad credentials"):
+        authenticator.authenticate(session)
+
+    assert store.value is None
+
+    replacement = StoredToken(
+        access_token="unrelated-process-token",
+        refresh_token=None,
+        expires_at=time.time() + 60,
+    )
+    store.save(replacement)
+    with pytest.raises(AuthenticationError, match="bad credentials"):
+        authenticator.authenticate(session)
+
+    assert store.value is replacement

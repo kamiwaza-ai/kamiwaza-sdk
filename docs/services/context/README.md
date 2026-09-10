@@ -14,6 +14,25 @@ keyword-only argument (e.g. `list_collections`, `create_pipeline_job`, `search`,
 `retrieve`, `upload_file`); others accept it optionally, and when it is omitted
 the server resolves the caller's default workroom.
 
+For PAT/API-key automation that makes several calls against the same workroom,
+derive a local scoped client instead of calling `workrooms.enter()`:
+
+```python
+with client.workroom_scope(my_workroom_id) as scoped:
+    db = scoped.context.create_vectordb(name="project-vdb", engine="milvus")
+    scoped.context.insert_vectors(
+        db["id"],
+        collection_name="project_docs",
+        vectors=[embedding],
+        metadata=[{"source": "seed"}],
+    )
+```
+
+The scoped client only adds the explicit workroom header on SDK requests; it
+does not change the parent client or mutate server-side selected-session state.
+It is not a client-side security boundary; the server must still authorize the
+caller for the requested workroom on every request.
+
 ## Workrooms and the Global Workroom
 
 A **Workroom** is the collaboration and isolation boundary for context: vector

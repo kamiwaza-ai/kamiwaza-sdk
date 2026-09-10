@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from kamiwaza_sdk.client import KamiwazaClient
-from kamiwaza_sdk.exceptions import APIError, VectorDBUnavailableError
+from kamiwaza_sdk.exceptions import APIError, NotFoundError, VectorDBUnavailableError
 
 
 pytestmark = pytest.mark.unit
@@ -81,3 +81,20 @@ def test_501_non_vectordb_path_raises_api_error(monkeypatch: pytest.MonkeyPatch)
 
     assert not isinstance(exc_info.value, VectorDBUnavailableError)
     assert exc_info.value.status_code == 501
+
+
+def test_generic_404_raises_not_found_api_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    response = _StubResponse(
+        status_code=404,
+        text='{"detail":"Document not found"}',
+        json_data={"detail": "Document not found"},
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(NotFoundError) as exc_info:
+        client.get("/context/storage/raw/missing")
+
+    assert isinstance(exc_info.value, APIError)
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.response_data == {"detail": "Document not found"}
+    assert exc_info.value.response_text == '{"detail":"Document not found"}'

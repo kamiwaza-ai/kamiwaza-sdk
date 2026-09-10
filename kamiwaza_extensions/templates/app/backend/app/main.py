@@ -1,5 +1,6 @@
 """FastAPI backend for {{name}}."""
 
+import ipaddress
 import logging
 import os
 from urllib.parse import urlparse, urlunparse
@@ -10,13 +11,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from kamiwaza_extensions_lib import (
     AuthConfig,
     Identity,
+    MisboundAuthError,
     backend_runtime_base,
     create_session_router,
-    forward_auth_headers,
+    forward_auth_httpx_headers,
     get_model_client,
     list_available_models,
+    public_base_url,
     require_auth,
 )
+from fastapi.responses import JSONResponse
 from openai import APIStatusError, AsyncOpenAI
 
 app = FastAPI(title="{{name}}")
@@ -33,6 +37,22 @@ app.add_middleware(
 
 # Session management endpoints (/session, /auth/login-url, /auth/logout)
 app.include_router(create_session_router())
+
+
+@app.exception_handler(MisboundAuthError)
+async def misbound_auth_error_handler(request: Request, exc: MisboundAuthError):
+    """Fail closed when a malformed envelope reaches route-level forwarding."""
+    logger.warning(
+        "MisboundAuthError on %s %s: %s",
+        request.method,
+        request.url.path,
+        exc,
+    )
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "Authentication required"},
+        headers={"WWW-Authenticate": f'Bearer error="{exc.class_name}"'},
+    )
 
 
 @app.get("/health")
@@ -78,55 +98,132 @@ def _backend_chat_base():
     return backend_runtime_base(AuthConfig.from_env())
 
 
+# Hosts that only make sense from the developer's browser/machine. Only
+# these get re-hosted onto the container base — any other fully-qualified
+# host is the platform's canonical URL for the model (on k8s, the ingress
+# gateway that owns the /runtime/models rewrite) and must be kept
+# verbatim (ENG-8766). ``host.docker.internal`` is deliberately NOT
+# here: it is the container-routable alias (the re-host *target* under
+# kz-ext dev local), never a browser-only host.
+_BROWSER_ONLY_HOSTS = frozenset({"localhost", "0.0.0.0"})
+
+
+def _is_browser_only_host(host: str) -> bool:
+    """True when ``host`` only means something on the developer machine.
+
+    Loopback is matched as the full ``127.0.0.0/8`` range (plus IPv6
+    ``::1`` and IPv4-mapped forms), not just the ``127.0.0.1`` literal —
+    the supported dev-local loopback variants include e.g. ``127.0.0.2``
+    (ENG-8766 re-review High #2).
+    """
+    if host in _BROWSER_ONLY_HOSTS:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if addr.is_loopback:
+        return True
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(mapped is not None and mapped.is_loopback)
+
+
+def _should_rehost(parsed, backend_parsed) -> bool:
+    """True when ``parsed`` may be re-hosted onto ``backend_parsed``.
+
+    Browser-only hosts are unreachable from the container and need the
+    swap; a same-netloc endpoint is already container-routable and only
+    gets the sub-path prefix merge. Anything else is the platform's
+    canonical model URL and must be kept verbatim (ENG-8766).
+    """
+    if not (backend_parsed.scheme and backend_parsed.netloc):
+        return False
+    host = (parsed.hostname or "").lower()
+    if _is_browser_only_host(host):
+        return True
+    return parsed.netloc.lower() == backend_parsed.netloc.lower()
+
+
+def _model_route_base() -> str:
+    """Base URL on which relative model routes (``access_path``) live.
+
+    Mirrors the runtime lib's ``_model_route_base``: model routes
+    (``/runtime/models/{id}``) are served by the platform's gateway, not
+    necessarily by the ``KAMIWAZA_API_URL`` host (on k8s that is the Ray
+    Serve proxy, which has no such routes — ENG-8766 re-review Medium
+    #1). Prefer the public/gateway base when its host is meaningful
+    outside the developer's browser; fall back to the container-routable
+    base under ``kz-ext dev local`` where the public host is loopback.
+    """
+    config = AuthConfig.from_env()
+    public = public_base_url(config)
+    if public:
+        host = (urlparse(public).hostname or "").lower()
+        if not _is_browser_only_host(host):
+            return public
+    return backend_runtime_base(config)
+
+
+def _strip_api_runtime_prefix(parsed):
+    """Rewrite ``/api/runtime/models/...`` paths to ``/runtime/models/...``."""
+    if parsed.path.startswith("/api/runtime/models/"):
+        return parsed._replace(
+            path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1)
+        )
+    return parsed
+
+
 def _normalize_model_endpoint(endpoint: str, access_path: str):
     backend_base = _backend_chat_base()
+    parsed = _strip_api_runtime_prefix(urlparse(endpoint)) if endpoint else None
 
-    if access_path and backend_base:
-        normalized_path = access_path if access_path.startswith("/") else f"/{access_path}"
-        normalized_path = normalized_path.rstrip("/")
-        if normalized_path.endswith("/v1"):
-            return f"{backend_base}{normalized_path}"
-        return f"{backend_base}{normalized_path}/v1"
-
-    if endpoint:
-        # Endpoint came from list_available_models's metadata, which
-        # builds browser-facing URLs. If it's a fully-qualified URL,
-        # re-host it onto the container-routable base so the backend
-        # container can actually reach it (round-8 review High #3).
-        parsed = urlparse(endpoint)
-        if parsed.path.startswith("/api/runtime/models/"):
-            parsed = parsed._replace(
-                path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1)
+    # A fully-qualified endpoint takes priority over ``access_path``:
+    # the platform emits BOTH (``endpoint`` is derived from
+    # ``access_path`` + the public base), and building ``access_path``
+    # onto KAMIWAZA_API_URL targets the k8s Ray Serve proxy, which has
+    # no ``/runtime/models/*`` routes — the access_path branch used to
+    # shadow the endpoint handling and 404 every in-cluster chat
+    # (ENG-8766 review Critical). The endpoint is re-hosted onto the
+    # container-routable base ONLY when its host is browser-only
+    # (`kz-ext dev local --auth`; round-8 review High #3) or already on
+    # the base's netloc (sub-path ingress prefix merge, round-9/11 —
+    # merge preserves the ``/foo`` prefix without double-prepending);
+    # any other real host is the platform's canonical model URL and is
+    # returned verbatim.
+    if parsed is not None and parsed.scheme and parsed.netloc:
+        backend_parsed = urlparse(backend_base) if backend_base else None
+        if backend_parsed is not None and _should_rehost(parsed, backend_parsed):
+            base_prefix = backend_parsed.path.rstrip("/")
+            already_prefixed = base_prefix and (
+                parsed.path == base_prefix or parsed.path.startswith(base_prefix + "/")
             )
-        if backend_base and parsed.scheme and parsed.netloc:
-            backend_parsed = urlparse(backend_base)
-            if backend_parsed.scheme and backend_parsed.netloc:
-                # Preserve any path prefix carried by ``backend_base`` —
-                # e.g. an ingress sub-path like ``https://gateway/foo``
-                # whose ``/foo`` would otherwise be dropped during the
-                # re-host (round-9 review High: Comprehensive).
-                #
-                # Round-11 Critical (codex): only PREPEND the prefix if
-                # the endpoint's path doesn't already carry it. Some
-                # deployments emit fully-qualified ``endpoint`` values
-                # under the same ingress (``https://gateway/foo/runtime/...``);
-                # round-9's unconditional prepend produced a doubled
-                # ``/foo/foo/runtime/...`` for those.
-                base_prefix = backend_parsed.path.rstrip("/")
-                already_prefixed = base_prefix and (
-                    parsed.path == base_prefix
-                    or parsed.path.startswith(base_prefix + "/")
-                )
-                merged_path = (
-                    parsed.path
-                    if (already_prefixed or not base_prefix)
-                    else f"{base_prefix}{parsed.path}"
-                )
-                parsed = parsed._replace(
-                    scheme=backend_parsed.scheme,
-                    netloc=backend_parsed.netloc,
-                    path=merged_path,
-                )
+            merged_path = (
+                parsed.path
+                if (already_prefixed or not base_prefix)
+                else f"{base_prefix}{parsed.path}"
+            )
+            parsed = parsed._replace(
+                scheme=backend_parsed.scheme,
+                netloc=backend_parsed.netloc,
+                path=merged_path,
+            )
+        return urlunparse(parsed).rstrip("/")
+
+    if access_path:
+        # Relative model routes live on the gateway, not necessarily on
+        # KAMIWAZA_API_URL — build them on _model_route_base (ENG-8766
+        # re-review Medium #1).
+        route_base = _model_route_base()
+        if route_base:
+            normalized_path = (
+                access_path if access_path.startswith("/") else f"/{access_path}"
+            )
+            normalized_path = normalized_path.rstrip("/")
+            if normalized_path.endswith("/v1"):
+                return f"{route_base}{normalized_path}"
+            return f"{route_base}{normalized_path}/v1"
+
+    if parsed is not None:
         return urlunparse(parsed).rstrip("/")
 
     return endpoint
@@ -154,14 +251,22 @@ async def _resolve_chat_target(request: Request, selected_model: str):
             _pick_string(extra.get("endpoint")),
             _pick_string(extra.get("access_path")),
         )
-        canonical_model = _pick_string(getattr(model, "name", "")) or selected_model.strip()
+        canonical_model = (
+            _pick_string(getattr(model, "name", "")) or selected_model.strip()
+        )
         return endpoint or None, canonical_model
 
     return None, selected_model.strip()
 
 
 def _candidate_models(requested_model: str, resolved_model: str, endpoint: str | None):
-    candidates = ["kamiwaza" if endpoint else requested_model, resolved_model, requested_model, "model", "auto"]
+    candidates = [
+        "kamiwaza" if endpoint else requested_model,
+        resolved_model,
+        requested_model,
+        "model",
+        "auto",
+    ]
     seen: set[str] = set()
     unique: list[str] = []
 
@@ -180,29 +285,25 @@ async def _build_chat_client(request: Request, endpoint: str | None):
         return await get_model_client(request)
 
     config = AuthConfig.from_env()
-    forwarded_headers = forward_auth_headers(request.headers)
-
-    auth_header = None
-    passthrough_headers: dict[str, str] = {}
-    for key, value in forwarded_headers.items():
-        if key.lower() == "authorization":
-            auth_header = value
-        else:
-            passthrough_headers[key] = value
+    wire_headers = forward_auth_httpx_headers(request.headers)
+    auth_header = wire_headers.get("authorization")
 
     api_key = "not-needed-kamiwaza"
     if auth_header:
         prefix = "bearer "
         if auth_header.lower().startswith(prefix):
-            api_key = auth_header[len(prefix):]
+            api_key = auth_header[len(prefix) :]
         else:
             api_key = auth_header
 
     return AsyncOpenAI(
         base_url=endpoint,
         api_key=api_key,
-        default_headers=passthrough_headers,
-        http_client=httpx.AsyncClient(verify=config.verify_ssl),
+        http_client=httpx.AsyncClient(
+            headers=wire_headers,
+            verify=config.httpx_verify(),
+            trust_env=False,
+        ),
     )
 
 
@@ -213,37 +314,40 @@ async def chat(request: Request, identity: Identity = Depends(require_auth)):
     requested_model = _pick_string(body.get("model")) or "auto"
     endpoint, resolved_model = await _resolve_chat_target(request, requested_model)
     client = await _build_chat_client(request, endpoint)
-    attempted_models = _candidate_models(requested_model, resolved_model, endpoint)
-    last_error: APIStatusError | None = None
+    try:
+        attempted_models = _candidate_models(requested_model, resolved_model, endpoint)
+        last_error: APIStatusError | None = None
 
-    for model_name in attempted_models:
-        try:
-            response = await client.chat.completions.create(
-                model=model_name,
-                messages=body.get("messages", []),
-            )
-            return response.model_dump()
-        except APIStatusError as exc:
-            last_error = exc
-            # Log the full upstream body server-side so operators can debug;
-            # never include `exc.body` in the response — it can carry
-            # internal hostnames, paths, or stack traces (ENG-3919).
-            logger.warning(
-                "Chat completion failed for requested_model=%s resolved_model=%s attempt_model=%s endpoint=%s status=%s body=%s",
-                requested_model,
-                resolved_model,
-                model_name,
-                endpoint or "<default>",
-                exc.status_code,
-                exc.body,
-            )
-            if exc.status_code != 404:
-                raise HTTPException(
-                    status_code=exc.status_code or 502,
-                    detail=f"Upstream model request failed with status {exc.status_code}.",
-                ) from exc
+        for model_name in attempted_models:
+            try:
+                response = await client.chat.completions.create(
+                    model=model_name,
+                    messages=body.get("messages", []),
+                )
+                return response.model_dump()
+            except APIStatusError as exc:
+                last_error = exc
+                # Log the full upstream body server-side so operators can debug;
+                # never include `exc.body` in the response — it can carry
+                # internal hostnames, paths, or stack traces (ENG-3919).
+                logger.warning(
+                    "Chat completion failed for requested_model=%s resolved_model=%s attempt_model=%s endpoint=%s status=%s body=%s",
+                    requested_model,
+                    resolved_model,
+                    model_name,
+                    endpoint or "<default>",
+                    exc.status_code,
+                    exc.body,
+                )
+                if exc.status_code != 404:
+                    raise HTTPException(
+                        status_code=exc.status_code or 502,
+                        detail=f"Upstream model request failed with status {exc.status_code}.",
+                    ) from exc
 
-    raise HTTPException(
-        status_code=last_error.status_code if last_error else 502,
-        detail=f"Unable to reach the selected model after trying: {', '.join(attempted_models)}.",
-    )
+        raise HTTPException(
+            status_code=last_error.status_code if last_error else 502,
+            detail=f"Unable to reach the selected model after trying: {', '.join(attempted_models)}.",
+        )
+    finally:
+        await client.close()

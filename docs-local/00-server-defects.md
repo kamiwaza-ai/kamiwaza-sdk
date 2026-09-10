@@ -138,3 +138,19 @@ Kafka ingestion populates catalog containers/topics, but `/retrieval/jobs` can't
 
 ### Slack retrieval missing _(resolved 2025-11-14)_ {#slack-retrieval-missing}
 Slack ingestion can now stream conversations (and optional replies) via the retrieval API when supplied with a bot token. Regression coverage: `tests/integration/test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata` ingests a channel and asserts that `/retrieval/jobs` returns inline rows when `SLACK_TEST_TOKEN`/`SLACK_TEST_CHANNEL`/`SLACK_TEST_TEAM` env vars are provided.
+
+## 2026-07-01 - SDK skip reenable pass {#sdk-skip-reenable-20260701}
+
+Branch: `chore/reenable-tests`.
+
+### Harness skips converted to coverage
+- Write-scope PAT tests now bootstrap from the session admin PAT instead of independently re-probing env/password auth. Repro: `uv run pytest -m integration -q tests/integration/test_write_scope_access.py --tb=short`; result: `8 passed`.
+- Catalog stack generated data now defaults under `tests/integration/catalog_stack/state/generated-data` instead of the root-owned compose fixture directory. Repro: `uv run pytest -m integration -q tests/integration/test_catalog_multi_source.py -k 'not slack' --tb=short`; result: `7 passed, 1 deselected, 2 xfailed`.
+- Llama.cpp matrix no longer inherits the MLX deployability marker, uses an available GGUF quantization (`q4_k`), and lets the matrix helper own deployment waiting with `deploy_model(wait=False)`.
+
+### Open findings from the same run
+- **External auth path denies valid tokens.** `/api/auth/token` returns a valid admin Keycloak bearer for `admin`, but `/api/auth/users/me`, `/api/whoami`, `/api/models`, and `/api/auth/pats` all return empty `403` responses from `istio-envoy` after about five seconds. A local PAT signed with the platform local key validates inside the core process, but the same external routes return the same empty `403`. The admin user row was also found in the wrong shape (`external_id` set to the Keycloak subject, `linked_subject_id` empty); moving that subject to `linked_subject_id` and clearing `external_id` did not clear the external 403s. Auth-dependent reenable buckets are blocked until this is fixed.
+- **PAT workroom enter is not the automation contract.** Core now treats PAT-backed `workrooms.enter` as selected-session mutation and rejects it with `409 binding_invalid`. SDK automation should use explicit request scope via `client.workroom_scope(workroom_id)` / `scoped_client_for_workroom(...)`; `tests/integration/test_seeding_live.py` now covers that path separately from the PAT-enter negative contract.
+- **Slack ingest regressed despite provided env.** `tests/integration/test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata` fails with `500` and detail `Unexpected ingestion failure: Event loop is closed` while the Slack plugin creates the DataHub secret. Slack `auth.test` succeeds; `team.info` also reports missing `team:read`, which is a secondary token-scope issue rather than the 500 root cause.
+- **Llama.cpp deploy path has platform blockers.** After the harness gate/quant fixes, deploy reached the live platform but the host requested `kamiwaza_gpus: 1.0` on a no-GPU/UMA setup, and Ray autoscaler reported no node type could satisfy it. Core logs also showed GGUF download failures under `/app/models/unsloth/...` with permission denied. The deployment status read was also affected by the external auth `403` blocker above.
+- **Catalog file/Kafka remain expected xfails.** File ingestion metadata still returns no retrievable datasets in this topology, and Kafka still exposes metadata without a retrieval transport.

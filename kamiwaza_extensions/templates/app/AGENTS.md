@@ -40,6 +40,12 @@ selection, and deployment flow that already ships with it.
   working unless you are intentionally changing the platform integration layer.
 - Prefer routing browser model calls through the backend instead of talking to
   platform model endpoints directly from the frontend.
+- For request-bound platform API calls, use
+  `platform_request(request, method, "/api/...")` from
+  `kamiwaza_extensions_lib`. Pass the exact canonical route, including its
+  trailing slash when declared; the helper intentionally rejects redirects.
+- Do not send the incoming auth envelope through a raw HTTP client or to an
+  absolute URL.
 - Use model IDs returned by `/api/models`; do not hard-code deployment paths.
 - Surface backend error details in the UI so debugging stays fast.
 - Keep chat state in the browser unless you are intentionally adding storage.

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
+
+from kamiwaza_extensions.env_names import IMAGE_ENV_NAMES, IMAGE_PREFIX_ENV_NAMES
 
 # Reuse the validator's bind-mount detection so the "stripped at deploy"
 # info message ComposeValidator emits stays in sync with what the
@@ -13,21 +16,59 @@ from kamiwaza_extensions.validators.compose import is_bind_mount
 
 _IMAGE_BASENAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9._/]{0,126}[a-z0-9])?$")
 
+# Which command is asking for a build ref. The two have opposite
+# destination policies for a registry-qualified declared ``image:``, and
+# conflating them is what ENG-8626 fixed:
+#
+# - ``publish`` — the declared namespace IS the destination. An extension
+#   may publish beneath an unconventional namespace (Omniparse, ENG-4909);
+#   preserve it verbatim so catalog refs match the pushed images.
+# - ``dev`` — the declared namespace is the image's *published identity*,
+#   not where this cluster pulls from. A service with ``build:`` is one
+#   ``kz-ext dev`` is building right now, so it must land in the resolved
+#   cluster dev registry; honoring the declared ``ghcr.io`` host pushes an
+#   owned dev image to the org registry and deploys a ref the cluster
+#   can't pull.
+#
+# Required (no default) at every entry point: a call site that forgets it
+# should fail loudly rather than silently inherit publish semantics —
+# exactly the regression ENG-8626 was.
+Purpose = Literal["dev", "publish"]
+
+
+def _tag_separator_index(ref: str) -> int:
+    """Return the index of *ref*'s tag-separating colon, or -1 if untagged.
+
+    Two colons can appear before the tag: a registry port
+    (``localhost:5000/foo``) and a Compose default-value placeholder
+    (``foo:${IMAGE_TAG:-local}``). The port is disambiguated by the last
+    ``/``; the placeholder has to win over ``rfind`` because the ``:`` in
+    ``:-`` sits *after* the real tag separator.
+
+    Single source of truth for ``_replace_image_tag`` and
+    ``_split_image_ref`` — they disagreed once, and the malformed ref that
+    produced (``foo:${IMAGE_TAG:2.0.0``) reached the K8s PATCH path.
+    """
+    last_slash = ref.rfind("/")
+    placeholder = ref.find(":${", last_slash + 1)
+    if placeholder >= 0:
+        return placeholder
+    last_colon = ref.rfind(":")
+    return last_colon if last_colon > last_slash else -1
+
 
 def _replace_image_tag(image_ref: str, new_tag: str) -> str:
     """Return *image_ref* with its tag (and any digest) replaced by *new_tag*.
 
     The namespace (registry + repo path) is preserved verbatim. Handles
-    refs that include a registry port (``localhost:5000/foo:tag``) by
-    using the position of the last ``/`` to disambiguate the port colon
-    from the tag colon, and strips any ``@sha256:...`` suffix before
-    re-tagging.
+    refs that include a registry port (``localhost:5000/foo:tag``) or a
+    Compose default-value placeholder (``foo:${IMAGE_TAG:-local}``), and
+    strips any ``@sha256:...`` suffix before re-tagging.
     """
     ref = image_ref.split("@", 1)[0]
-    last_slash = ref.rfind("/")
-    last_colon = ref.rfind(":")
-    if last_colon > last_slash:
-        ref = ref[:last_colon]
+    separator = _tag_separator_index(ref)
+    if separator >= 0:
+        ref = ref[:separator]
     return f"{ref}:{new_tag}"
 
 
@@ -68,11 +109,10 @@ def _split_image_ref(image_ref: str) -> Tuple[Optional[str], str, str]:
     repository, that mismatch would produce ImagePullBackOff.
     """
     ref = image_ref.split("@", 1)[0]
-    last_slash = ref.rfind("/")
-    last_colon = ref.rfind(":")
-    if last_colon > last_slash:
-        namespace = ref[:last_colon]
-        tag = ref[last_colon + 1 :]
+    separator = _tag_separator_index(ref)
+    if separator >= 0:
+        namespace = ref[:separator]
+        tag = ref[separator + 1 :]
     else:
         namespace = ref
         tag = "latest"
@@ -103,6 +143,7 @@ def _repo_part(image_ref: str) -> str:
 def compute_canonical_refs(
     source_services: Optional[Dict[str, Any]],
     *,
+    purpose: Purpose,
     registry: str,
     extension_name: str,
     revision_tag: str,
@@ -113,7 +154,8 @@ def compute_canonical_refs(
 
     Single source of truth for the publish and dev pipelines: build,
     push, digest resolution, and the K8s/catalog image refs all read
-    from this map so they can't drift.
+    from this map so they can't drift. *purpose* selects the destination
+    policy — see :data:`Purpose` and ``_canonical_build_ref``.
 
     Service-image precedence (per service):
     1. ``appgarden_services[name]`` when the key is present (matches
@@ -122,9 +164,19 @@ def compute_canonical_refs(
        via ``_canonical_build_ref`` rather than reading from source).
     2. Source-compose entry otherwise.
 
-    Filters out profile-gated services (matches ``buildable_services``
-    in ``run_publish``) so profile-only helpers don't leak into the
-    push list under ``--no-build``.
+    Profile-gated services (ENG-8626):
+    - ``publish`` skips them (matches ``buildable_services`` in
+      ``run_publish``) so profile-only helpers don't leak into the push
+      list under ``--no-build``. They publish via ``extra_docker_images``.
+    - ``dev`` includes them. ``ImageBuilder`` builds every ``build:``
+      service regardless of profiles, so omitting them here left the
+      builder to synthesize its own legacy ref — which is how Kaizen's
+      profiled ``agent`` ended up in the dev registry while its
+      non-profiled siblings went to GHCR. Dev owns every image it
+      builds, so every image it builds belongs in this map. Callers that
+      must not *push* profiled services (``--no-build``) filter on
+      profiles themselves; that is a push-policy question, not an
+      identity one.
 
     ``image_basename`` (when present and non-empty) overrides
     ``extension_name`` for the legacy ``{registry}/{basename}-{svc}:{tag}``
@@ -134,7 +186,9 @@ def compute_canonical_refs(
     appgarden = appgarden_services or {}
     out: Dict[str, str] = {}
     for name, svc in (source_services or {}).items():
-        if "build" not in svc or svc.get("profiles"):
+        if "build" not in svc:
+            continue
+        if purpose == "publish" and svc.get("profiles"):
             continue
         # Presence-based: a service that is *declared* in the appgarden
         # compose, even as an empty mapping, is owned by the appgarden
@@ -146,7 +200,8 @@ def compute_canonical_refs(
         out[name] = _canonical_build_ref(
             lookup,
             name,
-            fallback_registry=registry,
+            purpose=purpose,
+            registry=registry,
             fallback_extension_name=extension_name,
             revision_tag=revision_tag,
             fallback_image_basename=image_basename,
@@ -158,21 +213,34 @@ def _canonical_build_ref(
     service: Optional[Dict[str, Any]],
     svc_name: str,
     *,
-    fallback_registry: str,
+    purpose: Purpose,
+    registry: str,
     fallback_extension_name: str,
     revision_tag: str,
     fallback_image_basename: Optional[str] = None,
 ) -> str:
     """Return the canonical registry image ref for a buildable service.
 
-    Reads ``image`` from *service*. When the declared ref names an
-    explicit registry host (``ghcr.io/...``, ``localhost:5000/...``),
-    the namespace is preserved and only the tag is rewritten to
-    *revision_tag*. Unqualified refs (``api:latest``,
-    ``my-org/api:1.0``) and missing/empty declarations fall back to the
-    legacy ``{fallback_registry}/{basename}-{svc_name}:{revision_tag}``
-    form — those would otherwise route ``docker push`` to Docker Hub
-    while the cluster registry expects the rewritten path.
+    Reads ``image`` from *service*. Behavior depends on *purpose* when
+    the declared ref names an explicit registry host (``ghcr.io/...``,
+    ``localhost:5000/...``):
+
+    - ``publish`` — namespace preserved verbatim, only the tag is
+      rewritten to *revision_tag*. The declared namespace is where this
+      image actually gets published (ENG-4909).
+    - ``dev`` — the registry host is replaced with *registry* (the
+      resolved cluster dev registry) and the declared **repository path
+      is preserved**, so ``ghcr.io/org/images/api:1.0`` builds and
+      pushes as ``{registry}/org/images/api:{revision_tag}``. Keeping the
+      repository path (rather than flattening to the legacy
+      ``{basename}-{svc}`` form) keeps two declared repos that share a
+      basename distinct, and makes the rewrite idempotent (ENG-8626).
+
+    Unqualified refs (``api:latest``, ``my-org/api:1.0``) and
+    missing/empty declarations fall back — under *both* purposes — to the
+    legacy ``{registry}/{basename}-{svc_name}:{revision_tag}`` form.
+    Those would otherwise route ``docker push`` to Docker Hub while the
+    cluster registry expects the rewritten path.
 
     ``fallback_image_basename`` (when truthy) overrides
     ``fallback_extension_name`` as the ``{basename}`` segment. This
@@ -180,7 +248,8 @@ def _canonical_build_ref(
     from its kamiwaza.json ``name`` (e.g. ``name=workroom-manager`` but
     images pushed as ``outcome-d563-workroom-manager-<svc>``) declare
     the override via ``image_basename`` in kamiwaza.json without
-    touching the manifest's primary identifier.
+    touching the manifest's primary identifier. It applies only to the
+    fallback form; a qualified declared ref already carries its identity.
 
     Shared by ``ComposeTransformer.transform_service``,
     ``_retag_appgarden_compose``, ``ImageBuilder.build``, and
@@ -191,7 +260,11 @@ def _canonical_build_ref(
     if isinstance(declared, str):
         stripped = declared.strip()
         if stripped and _looks_registry_qualified(stripped):
-            return _replace_image_tag(stripped, revision_tag)
+            if purpose == "publish":
+                return _replace_image_tag(stripped, revision_tag)
+            # dev: keep the repository identity, relocate the host.
+            _declared_registry, repository, _tag = _split_image_ref(stripped)
+            return f"{registry}/{repository}:{revision_tag}"
     # Strip whitespace so a malformed-but-truthy override (e.g. "   "
     # — caller forgot to normalize) doesn't synthesize a broken
     # `{registry}/   -svc:tag`. ExtensionDetector + MetadataValidator
@@ -202,7 +275,7 @@ def _canonical_build_ref(
         fallback_extension_name,
         fallback_image_basename=fallback_image_basename,
     )
-    return f"{fallback_registry}/{basename}-{svc_name}:{revision_tag}"
+    return f"{registry}/{basename}-{svc_name}:{revision_tag}"
 
 
 def _fallback_image_basename(
@@ -223,13 +296,15 @@ def _fallback_image_basename(
     return basename or "extension"
 
 
-# Compose ``${VAR:-default}`` (use default if unset OR empty) and the
-# ``${VAR-default}`` form (use default only if unset). For our purposes
-# both collapse to the literal default — there's no host process between
-# us and Kubernetes, so the var is always "unset" by the time the pod
-# starts. ``${VAR:?error}`` and bare ``${VAR}`` aren't matched (no safe
-# default → drop downstream).
-_DEFAULT_SUB_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}$")
+# A single Compose substitution. The fallback is greedy so nested defaults
+# are parsed after ``_compose_substitution_end`` finds the balanced expression.
+_COMPOSE_SUB_RE = re.compile(
+    r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?+])(.*))?\}$",
+    re.DOTALL,
+)
+_COMPOSE_UNBRACED_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+_COMPOSE_BRACE_RE = re.compile(r"[{}]")
+_MAX_COMPOSE_SUBSTITUTION_DEPTH = 100
 
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
@@ -271,9 +346,10 @@ _DEFAULT_LIMITS: Dict[str, Dict[str, str]] = {
 class ComposeTransformer:
     """Transform a local-dev compose dict into a deployment-ready dict.
 
-    All operations are pure (no I/O).  The caller provides the parsed
-    compose dict and receives a new dict suitable for building a
-    ``CreateExtension`` payload.
+    The caller provides the parsed compose dict and receives a new dict
+    suitable for building a ``CreateExtension`` payload. Transformations are
+    pure; ``resolve_env_placeholders`` additionally reads the process
+    environment without modifying it.
     """
 
     def transform(
@@ -282,6 +358,8 @@ class ComposeTransformer:
         extension_name: str,
         revision_tag: str,
         registry: str,
+        *,
+        purpose: Purpose,
         image_basename: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return a deployment-ready copy of *compose_data*.
@@ -293,6 +371,11 @@ class ComposeTransformer:
         4. Add / update ``image`` fields with *registry*/*revision_tag*
         5. Add resource limits if missing
         6. Remove ``extra_hosts``, ``container_name``, ``networks`` keys
+
+        *purpose* selects the image-destination policy for buildable
+        services — see :data:`Purpose`. It must match the purpose the
+        caller passed to ``compute_canonical_refs``, or the deployed
+        ``image:`` would name a ref the build/push side never produced.
 
         ``image_basename`` (when present) overrides ``extension_name`` as
         the prefix in the legacy ``{registry}/{basename}-{svc}:{tag}``
@@ -306,7 +389,11 @@ class ComposeTransformer:
         """
         out = copy.deepcopy(compose_data)
 
-        # Drop services that have a profiles key (local-only services)
+        # Drop services that have a profiles key (local-only services).
+        # Note this is about what gets *deployed*: dev still builds and
+        # pushes profiled image-only services (Kaizen's agent, launched
+        # dynamically via AGENT_SERVER_IMAGE rather than by the operator),
+        # so they appear in the dev canonical-ref map but never here.
         services = out.get("services") or {}
         profiled = [name for name, svc in services.items() if svc.get("profiles")]
         for name in profiled:
@@ -319,6 +406,7 @@ class ComposeTransformer:
                 extension_name,
                 revision_tag,
                 registry,
+                purpose=purpose,
                 image_basename=image_basename,
             )
 
@@ -334,6 +422,8 @@ class ComposeTransformer:
         extension_name: str,
         revision_tag: str,
         registry: str,
+        *,
+        purpose: Purpose,
         image_basename: Optional[str] = None,
     ) -> Dict[str, Any]:
         svc = copy.deepcopy(service)
@@ -353,15 +443,18 @@ class ComposeTransformer:
         svc.pop("build", None)
 
         if had_build:
-            # The declared image's namespace is the canonical record of
-            # where this build's image lives in the registry; publish
-            # only owns the tag (stage suffix or --revision SHA). Fall
-            # back to the legacy {ext}-{svc} convention when no image
-            # is declared (auto-generated image fields).
+            # Under publish, the declared image's namespace is the
+            # canonical record of where this build's image lives, and
+            # publish owns only the tag (stage suffix or --revision SHA).
+            # Under dev, the image is one we're building for this cluster,
+            # so it is relocated into the dev registry (ENG-8626). Either
+            # way, fall back to the legacy {ext}-{svc} convention when no
+            # image is declared (auto-generated image fields).
             svc["image"] = _canonical_build_ref(
                 svc,
                 service_name,
-                fallback_registry=registry,
+                purpose=purpose,
+                registry=registry,
                 fallback_extension_name=extension_name,
                 revision_tag=revision_tag,
                 fallback_image_basename=image_basename,
@@ -395,14 +488,23 @@ class ComposeTransformer:
         the pod verbatim.
 
         Rules (per env var):
+        - Host environment values are used with Compose's supported braced
+          substitution semantics.
         - ``${VAR:-default}`` / ``${VAR-default}`` for non-platform
-          keys → collapsed to the literal ``default``.
-        - ``${KAMIWAZA_*:-default}`` → dropped. The kamiwaza-extension
-          operator injects these via ConfigMap envFrom; an explicit
-          env entry would shadow the cluster-internal value.
-        - ``${VAR}`` (no default) and ``${VAR:?error}`` (required) →
-          dropped. No safe value to ship.
+          keys → recursively collapsed to a host value or literal default.
+        - ``${VAR:+alternate}`` / ``${VAR+alternate}`` → the alternate when
+          the corresponding non-empty/set condition is satisfied, else empty.
+        - Placeholder-bearing entries whose key starts with ``KAMIWAZA_`` →
+          dropped. The kamiwaza-extension operator injects these via ConfigMap
+          envFrom; an explicit resolved entry would shadow the cluster-internal
+          value.
+        - Unset ``${VAR}`` and unsatisfied required forms are dropped.
+        - Unbraced ``$VAR`` references stay literal; this resolver intentionally
+          handles only braced Compose substitutions.
         - Plain values pass through unchanged.
+
+        ``$$`` escapes collapse to a literal dollar. A resulting ``$(VAR)``
+        token can still be expanded later by Kubernetes container-env handling.
 
         Skip this step when the destination DOES perform install-time
         substitution (e.g. a catalog template consumed by the platform
@@ -423,35 +525,35 @@ class ComposeTransformer:
 def _resolve_shell_refs(env: Any) -> Any:
     """Resolve compose ``${VAR:-default}`` substitutions, drop unresolvable.
 
-    Two rules:
+    Three rules:
 
-    1. ``${VAR:-default}`` where ``VAR`` does NOT start with
-       ``KAMIWAZA_`` → resolve to ``default``. The host env isn't
-       consulted (we're nowhere near a docker-compose run); compose
-       semantics for "VAR is unset" simply use the default. The cluster
-       deployment then carries the literal default through to the pod
+    1. Non-platform placeholders use the current process environment and
+       Compose unset/empty semantics for ``:-``, ``-``, ``:?``, ``?``,
+       ``:+``, and ``+``. Embedded substitutions and nested defaults are
+       resolved recursively. The cluster deployment carries the resolved
+       value through to the pod
        — and ``detect_service_url_rewrites`` (called by
        ``PayloadBuilder``) emits a ``service-ref-rewrites`` annotation
        so the operator can swap cross-service hostnames at deploy time.
 
-    2. ``${KAMIWAZA_*:-default}`` → drop. The kamiwaza-extension
-       operator injects these via ConfigMap envFrom; an explicit env
-       entry would shadow the cluster-internal value. Compose defaults
-       point to laptop-only addresses (``host.docker.internal:7777``)
-       that don't resolve in-cluster anyway.
+    2. Placeholder-bearing entries whose key starts with ``KAMIWAZA_`` → drop.
+       The kamiwaza-extension operator injects these via ConfigMap envFrom; an
+       explicit resolved entry would shadow the cluster-internal value.
+       Compose defaults point to laptop-only addresses
+       (``host.docker.internal:7777``) that don't resolve in-cluster anyway.
 
-    3. ``${VAR}`` (no default) and ``${VAR:?error}`` (required) → drop.
-       No safe value to ship.
+    3. Unset bare substitutions and unsatisfied required forms are dropped.
 
-    Plain values without ``${`` pass through unchanged.
+    Values without supported substitutions or ``$$`` escapes pass unchanged;
+    unbraced ``$VAR`` references are outside this resolver's scope.
     """
     if isinstance(env, dict):
         out: Dict[str, Any] = {}
         for k, v in env.items():
-            if not isinstance(v, str) or "${" not in v:
+            if not isinstance(v, str) or "$" not in v:
                 out[k] = v
                 continue
-            resolved = _resolve_default_substitution(k, v)
+            resolved = _resolve_env_value(k, v)
             if resolved is not None:
                 out[k] = resolved
         return out
@@ -468,77 +570,288 @@ def _resolve_shell_refs(env: Any) -> Any:
     return env
 
 
-def _resolve_default_substitution(key: str, value: str) -> Optional[str]:
-    """Return ``default`` from ``${VAR:-default}`` for non-platform keys.
+def _resolve_env_value(key: str, value: str) -> Optional[str]:
+    """Resolve Compose substitutions in one environment value."""
+    is_platform_key = key.startswith(_PLATFORM_INJECTED_PREFIX)
+    if is_platform_key and _has_braced_substitution(value):
+        return None
+    return resolve_compose_value(value)
 
-    Returns None when:
-    - the value isn't a single ``${VAR(:-)default}`` substitution
-    - the key is platform-injected (``KAMIWAZA_*``) — let envFrom win
+
+def _has_braced_substitution(value: str) -> bool:
+    """Whether *value* contains an unescaped ``${...}`` opener."""
+    cursor = 0
+    while (dollar := value.find("$", cursor)) >= 0:
+        if value.startswith("$$", dollar):
+            cursor = dollar + 2
+            continue
+        if value.startswith("${", dollar):
+            return True
+        cursor = dollar + 1
+    return False
+
+
+def _resolve_unbraced_reference(
+    value: str, start: int, enabled: bool
+) -> Tuple[Optional[str], int]:
+    """Return an unbraced host value and the cursor after its variable name."""
+    if enabled:
+        match = _COMPOSE_UNBRACED_RE.match(value, start)
+        if match is not None:
+            return os.environ.get(match.group(1)), match.end()
+    return "$", start + 1
+
+
+def _resolve_compose_token(
+    value: str,
+    start: int,
+    depth: int,
+    resolve_unbraced: bool,
+) -> Tuple[Optional[str], int]:
+    """Resolve the Compose token beginning at one dollar sign."""
+    if value.startswith("$$", start):
+        return "$", start + 2
+    if not value.startswith("${", start):
+        return _resolve_unbraced_reference(value, start, resolve_unbraced)
+    end = _compose_substitution_end(value, start)
+    if end is None:
+        return None, start
+    substitution = _resolve_compose_substitution(
+        value[start : end + 1],
+        depth,
+        resolve_unbraced=resolve_unbraced,
+    )
+    return substitution, end + 1
+
+
+def resolve_compose_value(
+    value: str, depth: int = 0, *, resolve_unbraced: bool = False
+) -> Optional[str]:
+    """Resolve Compose expressions while honoring its ``$$`` escape.
+
+    Environment payloads retain the historical braced-only behavior. Process
+    fields opt into unbraced ``$VAR`` resolution because Compose interpolates
+    both forms before applying ``entrypoint`` and ``command``.
     """
-    if key.startswith(_PLATFORM_INJECTED_PREFIX):
+    if depth >= _MAX_COMPOSE_SUBSTITUTION_DEPTH:
         return None
-    m = _DEFAULT_SUB_RE.match(value.strip())
-    if not m:
-        return None
-    return m.group(2)
+    resolved: List[str] = []
+    cursor = 0
+    while cursor < len(value):
+        dollar = value.find("$", cursor)
+        if dollar < 0:
+            resolved.append(value[cursor:])
+            break
+        resolved.append(value[cursor:dollar])
+        replacement, cursor = _resolve_compose_token(
+            value,
+            dollar,
+            depth,
+            resolve_unbraced,
+        )
+        if replacement is None:
+            return None
+        resolved.append(replacement)
+    return "".join(resolved)
 
 
-def _resolve_list_entry(entry: Any) -> Optional[str]:
-    """Apply ``_resolve_default_substitution`` to ``KEY=value`` list entries."""
+def _compose_substitution_end(value: str, start: int) -> Optional[int]:
+    """Find the closing brace paired with the ``${`` at *start*."""
+    depth = 1
+    for brace in _COMPOSE_BRACE_RE.finditer(value, start + 2):
+        depth += 1 if brace.group() == "{" else -1
+        if depth == 0:
+            return brace.start()
+    # Compose's greedy fallback accepts an unmatched literal ``{`` inside a
+    # default. In that case its final ``}`` still closes the substitution.
+    final_brace = value.rfind("}", start + 2)
+    return final_brace if final_brace >= 0 else None
+
+
+def _resolve_compose_substitution(
+    value: str, depth: int = 0, *, resolve_unbraced: bool = False
+) -> Optional[str]:
+    """Resolve one full substitution using Compose environment semantics."""
+    match = _COMPOSE_SUB_RE.match(value)
+    if match is None:
+        return None
+    name, operator, fallback = match.groups()
+    is_set = name in os.environ
+    host_value = os.environ.get(name, "")
+    if operator is None:
+        return host_value if is_set else None
+    if operator in (":-", ":?") and host_value:
+        return host_value
+    if operator in ("-", "?") and is_set:
+        return host_value
+    if operator == ":+":
+        return (
+            resolve_compose_value(
+                fallback, depth + 1, resolve_unbraced=resolve_unbraced
+            )
+            if host_value
+            else ""
+        )
+    if operator == "+":
+        return (
+            resolve_compose_value(
+                fallback, depth + 1, resolve_unbraced=resolve_unbraced
+            )
+            if is_set
+            else ""
+        )
+    if operator in (":?", "?"):
+        return None
+    return resolve_compose_value(fallback, depth + 1, resolve_unbraced=resolve_unbraced)
+
+
+def _resolve_list_entry(entry: Any) -> Optional[Any]:
+    """Resolve one string or name/value dict environment-list entry."""
+    if isinstance(entry, dict):
+        return _resolve_dict_list_entry(entry)
     if not isinstance(entry, str) or "=" not in entry:
         return None
     key, value = entry.split("=", 1)
-    resolved = _resolve_default_substitution(key, value)
+    resolved = _resolve_env_value(key, value)
     if resolved is None:
         return None
     return f"{key}={resolved}"
 
 
+def _resolve_dict_list_entry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve a tolerated environment-list mapping."""
+    if "name" not in entry:
+        return _resolve_mapping_list_entry(entry)
+    name = entry.get("name")
+    value = entry.get("value")
+    if name is None or not isinstance(value, str):
+        return None
+    resolved = _resolve_env_value(str(name), value)
+    if resolved is None:
+        return None
+    out = dict(entry)
+    out["value"] = resolved
+    return out
+
+
+def _resolve_mapping_list_entry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve a mapping-fragment list entry one environment key at a time."""
+    out: Dict[str, Any] = {}
+    for key, value in entry.items():
+        if not isinstance(value, str) or "$" not in value:
+            out[key] = value
+            continue
+        resolved = _resolve_env_value(str(key), value)
+        if resolved is not None:
+            out[key] = resolved
+    return out or None
+
+
 def _entry_has_shell_ref(entry: Any) -> bool:
     if isinstance(entry, str) and "=" in entry:
-        return "${" in entry.split("=", 1)[1]
-    if isinstance(entry, dict):
-        return "${" in str(entry.get("value", ""))
-    return False
+        return "$" in entry.split("=", 1)[1]
+    if not isinstance(entry, dict):
+        return False
+    if "name" in entry:
+        value = entry.get("value")
+        return isinstance(value, str) and "$" in value
+    return any(isinstance(value, str) and "$" in value for value in entry.values())
 
 
 # ------------------------------------------------------------------
-# Cross-service URL detection (for ``service-ref-rewrites`` annotation)
+# Cross-service endpoint detection and payload env rewriting
 # ------------------------------------------------------------------
 
 
-# Captures a ``http(s)://<host>`` reference. The trailing lookahead
-# requires the host to be terminated by a port (``:``), path (``/``),
-# query (``?``), fragment (``#``), or end-of-string — so ``http://api``
-# and ``http://api:8000/path`` match a sibling named ``api``, but
-# ``http://api.openai.com/v1`` does NOT (the ``.`` is not a valid
-# host-terminator). ``\b`` was previously used here but treats ``.``
-# as a word boundary, which falsely rewrites external URLs sharing a
-# leading subdomain with a sibling service name (iter-8 review repro:
-# sibling ``api`` would hijack ``api.openai.com``).
+# Match complete endpoint tokens, never arbitrary host:digits substrings in
+# image paths, credentials, commands, or URL paths. Keep URL userinfo separate
+# from the hostname so a sibling name in a username is never rewritten.
 _URL_HOST_RE = re.compile(
-    r"(?P<scheme>https?://)(?P<host>[A-Za-z][A-Za-z0-9_-]*)(?=[:/?#]|$)"
+    r"(?P<prefix>[A-Za-z][A-Za-z0-9+.-]*://(?:[^/@?#\s]*@)?)"
+    r"(?P<host>[A-Za-z][A-Za-z0-9_-]*)(?::(?P<port>[0-9]{0,5}))?"
+    r"(?P<suffix>[/?#]\S*)?"
 )
+_BARE_ENDPOINT_RE = re.compile(
+    r"(?P<host>[A-Za-z][A-Za-z0-9_-]*):(?P<port>[0-9]{1,5})(?P<suffix>[/?#]\S*)?"
+)
+
+# Consume each URL as one span before looking for bare endpoints. Its path,
+# query, fragment, and credentials may contain commas or host:port-shaped data.
+# Quotes/braces terminate URLs embedded in serialized configuration values.
+_URL_REF_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])(?P<quote>['\"])?"
+    r"(?P<url>[A-Za-z][A-Za-z0-9+.-]*://"
+    # RFC 3986 userinfo permits apostrophes and commas. Consume it through @
+    # before considering surrounding serialized-value quote delimiters.
+    r"(?:[A-Za-z0-9._~!$&'()*+,;=:%-]*@)?"
+    # IPv6 authorities cannot be siblings, but their URL components must still
+    # be protected from bare-endpoint scanning. Brackets around a sibling URL
+    # remain surrounding text rather than part of its authority.
+    r"(?:\[[^\]\s]+\](?::[0-9]*)?|[^/?#\s,;|()\[\]<>\"'{}]+|(?=[/?#]))"
+    # A list separator followed by a full URL starts another entry;
+    # ordinary punctuation inside components remains part of this URL.
+    # A surrounding quote delimits serialized URLs; without it, apostrophes
+    # remain valid path/query/fragment characters.
+    r"(?:[/?#](?:(?!(?P=quote)|[,;|][A-Za-z][A-Za-z0-9+.-]*://)[^\s\"{}])*)?)"
+)
+
+_IMAGE_ENV_KEYS = IMAGE_ENV_NAMES | IMAGE_PREFIX_ENV_NAMES
+
+
+def _is_protected_env_key(key: str) -> bool:
+    """Avoid interpreting ambiguous bare tokens as image or credential hosts."""
+    normalized = key.strip().upper()
+    if normalized in _IMAGE_ENV_KEYS:
+        return True
+    # A TOKEN_URL or USER_SERVICE_ENDPOINT names a location, not a secret.
+    if normalized.endswith(
+        (
+            "URL",
+            "URLS",
+            "URI",
+            "URIS",
+            "ENDPOINT",
+            "ENDPOINTS",
+            "HOST",
+            "HOSTS",
+            "ADDRESS",
+            "ADDRESSES",
+            "ADDR",
+            "ADDRS",
+            "DSN",
+        )
+    ):
+        return False
+    if normalized.endswith(
+        ("PASSWORD", "PASSWD", "TOKEN", "SECRET", "APIKEY", "USERPASS")
+    ):
+        return True
+    parts = set(re.split(r"[^A-Z0-9]+", normalized))
+    return bool(
+        parts
+        & {"IMAGE", "IMAGES", "PASSWORD", "SECRET", "TOKEN", "KEY", "USER", "USERNAME"}
+    )
 
 
 def detect_service_url_rewrites(
     transformed_services: Dict[str, Any],
     dev_name: str,
 ) -> Dict[str, Dict[str, Dict[str, str]]]:
-    """Detect cross-service URL references in env values.
+    """Detect cross-service endpoint references in env values.
 
-    Compose-style cross-service URLs (``http://backend:8000``) work in
-    docker-compose because compose creates a DNS alias for each service
-    short name. In Kubernetes the operator prefixes service names with
-    the deployment ID (``my-app-dev-abc-backend``), so the bare alias
+    Compose-style cross-service references work in docker-compose because
+    compose creates a DNS alias for each service short name. Both shapes
+    are detected: URLs with a scheme (``http://backend:8000``) and bare
+    ``host:port`` endpoints (``etcd:2379``, including comma-separated
+    endpoint lists). In Kubernetes the operator prefixes service names
+    with the deployment ID (``my-app-dev-abc-backend``), so the bare alias
     doesn't resolve.
 
     This function walks each transformed service's env and finds values
     referencing a SIBLING service by its compose short name. The
-    returned map is consumed by ``PayloadBuilder`` and serialized into
-    the ``extensions.kamiwaza.io/service-ref-rewrites`` annotation; the
-    operator reads that annotation and rewrites the env value at deploy
-    time:
+    returned map is baked into a copy of the payload env by ``PayloadBuilder``
+    and serialized into the ``extensions.kamiwaza.io/service-ref-rewrites``
+    annotation for operator compatibility:
 
         {
           "<service_name>": {
@@ -549,8 +862,12 @@ def detect_service_url_rewrites(
           }
         }
 
-    Self-references and references to non-sibling hostnames are
-    ignored.
+    URLs retain their surrounding text; bare endpoints must be complete
+    tokens (optionally comma-separated). URL credentials are preserved and
+    ports must be in 1..65535. Known image env keys are excluded; broader image
+    or credential key names exclude only ambiguous bare endpoints, retaining
+    existing scheme-bearing URL behavior. Host-only values, self-references,
+    and references to non-sibling hostnames are ignored.
     """
     sibling_names = set(transformed_services.keys())
     rewrites: Dict[str, Dict[str, Dict[str, str]]] = {}
@@ -559,8 +876,15 @@ def detect_service_url_rewrites(
         env = svc.get("environment")
         if not env:
             continue
+        hostnames = {name: f"{dev_name}-{name}" for name in sibling_names - {svc_name}}
         for key, value in _iter_env_entries(env):
-            new_value = _rewrite_url_hosts(value, sibling_names, svc_name, dev_name)
+            if key.strip().upper() in _IMAGE_ENV_KEYS:
+                continue
+            new_value = _rewrite_url_hosts(
+                value,
+                hostnames,
+                allow_bare=not _is_protected_env_key(key),
+            )
             if new_value is None or new_value == value:
                 continue
             rewrites.setdefault(svc_name, {})[key] = {
@@ -570,41 +894,172 @@ def detect_service_url_rewrites(
     return rewrites
 
 
+def apply_service_ref_rewrites(
+    transformed_services: Dict[str, Any],
+    rewrites: Dict[str, Dict[str, Dict[str, str]]],
+) -> None:
+    """Apply a ``detect_service_url_rewrites`` map to the transformed
+    services' env, in place.
+
+    The map is applied EXACTLY (``value == from`` -> ``to``), never
+    re-derived: the payload must carry precisely the values the operator
+    would apply from the annotation. The native direct runtime applies
+    ``service.env`` verbatim and has no annotation consumer, so
+    ``PayloadBuilder`` bakes these rewrites into the payload env directly;
+    the annotation remains compatible with the compose-adapter path. Already
+    baked values skip the operator's exact ``from`` match; its hostname lookup
+    recognizes deployment-prefixed aliases and resolves them without prefixing
+    them again. The map records at most one rewrite per env key, so duplicate
+    list keys retain their existing last-rewrite behavior.
+    Both shapes of Compose ``environment`` (mapping and list) are handled.
+    """
+    for svc_name, per_key in rewrites.items():
+        svc = transformed_services.get(svc_name)
+        if svc is None:
+            continue
+        env = svc.get("environment")
+        if isinstance(env, dict):
+            _rewrite_env_mapping(env, per_key)
+        elif isinstance(env, list):
+            _rewrite_env_list(env, per_key)
+
+
+def _rewrite_env_mapping(
+    env: Dict[str, Any], per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Apply EXACT rewrites to a mapping-shaped ``environment`` in place."""
+    for key, value in env.items():
+        rule = per_key.get(str(key))
+        if rule is not None and str(value) == rule["from"]:
+            env[key] = rule["to"]
+
+
+def _rewrite_env_list(env: List[Any], per_key: Dict[str, Dict[str, str]]) -> None:
+    """Apply EXACT rewrites to a list-shaped ``environment`` in place."""
+    for idx, entry in enumerate(env):
+        _rewrite_env_list_entry(env, idx, entry, per_key)
+
+
+def _rewrite_env_list_entry(
+    env: List[Any], idx: int, entry: Any, per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Apply one list entry's rewrite: ``KEY=from`` string or name/value dict."""
+    if isinstance(entry, str):
+        _rewrite_env_list_string_entry(env, idx, entry, per_key)
+    elif isinstance(entry, dict):
+        _rewrite_env_list_dict_entry(entry, per_key)
+
+
+def _rewrite_env_list_string_entry(
+    env: List[Any], idx: int, entry: str, per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Rewrite a ``KEY=value`` string entry in place when the value matches."""
+    if "=" not in entry:
+        return
+    key, _, value = entry.partition("=")
+    rule = per_key.get(key)
+    if rule is not None and value == rule["from"]:
+        env[idx] = f"{key}={rule['to']}"
+
+
+def _rewrite_env_list_dict_entry(
+    entry: Dict[str, Any], per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Rewrite a name/value entry or mapping fragment by exact equality."""
+    if "name" not in entry:
+        _rewrite_env_mapping(entry, per_key)
+        return
+    rule = per_key.get(str(entry["name"]))
+    if rule is None:
+        return
+    if str(entry.get("value")) == rule["from"]:
+        entry["value"] = rule["to"]
+
+
 def _iter_env_entries(env: Any) -> List[Tuple[str, str]]:
-    """Yield ``(key, value)`` pairs from either env shape."""
-    out: List[Tuple[str, str]] = []
+    """Yield ``(key, value)`` pairs from supported env shapes."""
     if isinstance(env, dict):
-        for k, v in env.items():
-            if isinstance(v, (str, int, float, bool)):
-                out.append((str(k), str(v)))
-    elif isinstance(env, list):
-        for entry in env:
-            if isinstance(entry, str) and "=" in entry:
-                k, v = entry.split("=", 1)
-                out.append((k, v))
-            elif isinstance(entry, dict) and "name" in entry and "value" in entry:
-                out.append((str(entry["name"]), str(entry["value"])))
+        return _iter_env_mapping(env)
+    if not isinstance(env, list):
+        return []
+    out: List[Tuple[str, str]] = []
+    for entry in env:
+        out.extend(_iter_env_list_entry(entry))
     return out
+
+
+def _iter_env_mapping(env: Dict[Any, Any]) -> List[Tuple[str, str]]:
+    """Return scalar key/value pairs from an environment mapping."""
+    return [
+        (str(key), str(value))
+        for key, value in env.items()
+        if isinstance(value, (str, int, float, bool))
+    ]
+
+
+def _iter_env_list_entry(entry: Any) -> List[Tuple[str, str]]:
+    """Return key/value pairs from one supported environment-list entry."""
+    if isinstance(entry, str) and "=" in entry:
+        key, value = entry.split("=", 1)
+        return [(key, value)]
+    if not isinstance(entry, dict):
+        return []
+    if "name" in entry:
+        if "value" in entry:
+            return [(str(entry["name"]), str(entry["value"]))]
+        return []
+    return _iter_env_mapping(entry)
 
 
 def _rewrite_url_hosts(
     value: str,
-    sibling_names: set,
-    self_name: str,
-    dev_name: str,
+    hostnames: Dict[str, str],
+    *,
+    allow_bare: bool = True,
 ) -> Optional[str]:
-    """Rewrite each ``http(s)://<sibling>`` host in *value* to the
-    deployment-prefixed K8s service name. Returns the rewritten value
-    or None when there's nothing to rewrite."""
-
-    def _sub(match: re.Match) -> str:
-        host = match.group("host")
-        if host == self_name or host not in sibling_names:
-            return match.group(0)
-        return f"{match.group('scheme')}{dev_name}-{host}"
-
-    new_value = _URL_HOST_RE.sub(_sub, value)
+    """Rewrite sibling hosts in complete URL or bare endpoint CSV tokens."""
+    parts: List[str] = []
+    offset = 0
+    for match in _URL_REF_RE.finditer(value):
+        parts.append(
+            _rewrite_bare_endpoint_list(
+                value[offset : match.start("url")], hostnames, allow_bare
+            )
+        )
+        parts.append(_rewrite_endpoint_token(match.group("url"), hostnames))
+        offset = match.end("url")
+    parts.append(_rewrite_bare_endpoint_list(value[offset:], hostnames, allow_bare))
+    new_value = "".join(parts)
     return new_value if new_value != value else None
+
+
+def _rewrite_bare_endpoint_list(
+    value: str, hostnames: Dict[str, str], allow_bare: bool = True
+) -> str:
+    """Only complete comma-separated tokens outside URLs can be endpoints."""
+    if not allow_bare:
+        return value
+    return ",".join(
+        _rewrite_endpoint_token(token, hostnames) for token in value.split(",")
+    )
+
+
+def _rewrite_endpoint_token(token: str, hostnames: Dict[str, str]) -> str:
+    """Preserve token formatting and credentials while replacing its host."""
+    stripped = token.strip()
+    match = _URL_HOST_RE.fullmatch(stripped) or _BARE_ENDPOINT_RE.fullmatch(stripped)
+    if match is None:
+        return token
+    port = match.group("port")
+    if port and not 1 <= int(port) <= 65535:
+        return token
+    replacement = hostnames.get(match.group("host"))
+    if replacement is None:
+        return token
+    # Use offsets rather than URL reserialization to preserve every other byte.
+    start = len(token) - len(token.lstrip()) + match.start("host")
+    end = start + len(match.group("host"))
+    return token[:start] + replacement + token[end:]
 
 
 def _strip_host_ports(ports: List[Any]) -> List[Any]:

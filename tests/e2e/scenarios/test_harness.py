@@ -3,6 +3,11 @@
 These pin the contract that the per-scenario drivers (and the upcoming T3.3
 dry-run) rely on. Each test exists because a real review would have caught
 the underlying bug — keeping them in place prevents regression.
+
+Tests for the scenario-evidence.v2 record contract (build identity, method,
+capability_ids, status derivation, structural validation) live in
+``test_evidence_v2.py`` instead — that's a separate concern from the
+step-dispatch/record/sign-off contract pinned here.
 """
 
 from __future__ import annotations
@@ -22,15 +27,37 @@ from tests.e2e.scenarios.harness import (
     run_scenario,
 )
 
+# Version-first: the leading segment is the release a question asks by, and
+# the rest is producer annotation (ENG-10715, build_identity.py). A fixture
+# leading with anything else would be refused by resolve_build_identity.
+TEST_BUILD = "0.99.0; core@sha256:abc1234; test-fixture"
 
-def _runbook(steps, *, scenario_id="S1"):
+
+@pytest.fixture(autouse=True)
+def _build_identity_env(monkeypatch):
+    """Every harness run needs a build identity (scenario-evidence.v2, G1).
+
+    Both build-identity env vars are controlled here, not inherited: a
+    KAMIWAZA_RELEASE exported in the ambient shell (which is exactly what
+    ENG-10715 asks operators and CI to do) would otherwise satisfy the
+    refusal tests and silently stop them testing refusal.
+    """
+    monkeypatch.delenv("KAMIWAZA_RELEASE", raising=False)
+    monkeypatch.setenv("KAMIWAZA_BUILD", TEST_BUILD)
+
+
+def _runbook(steps, *, scenario_id="S1", **extra):
     return {
         "id": scenario_id,
         "name": f"Test scenario {scenario_id}",
         "sign_off_actor": "SDK team",
         "uacs": ["UAC-16"],
+        # Required since ENG-11522; `**extra` still lets a test override it
+        # (e.g. with [] or a malformed value) to exercise the refusal paths.
+        "capability_ids": ["workrooms.create"],
         "expected_outcomes": ["something demonstrable"],
         "steps": steps,
+        **extra,
     }
 
 
@@ -289,7 +316,10 @@ class TestRecordRun:
             finished_at="2026-04-30T17:00:05+00:00",
             duration_s=5.0,
             sign_off_actor="SDK team",
+            capability_ids=["workrooms.create"],
             ci_job_url=None,
+            build=TEST_BUILD,
+            status="passed",
             steps=[
                 StepResult(name="x", status="passed", duration_s=0.1, detail="first")
             ],
@@ -301,7 +331,10 @@ class TestRecordRun:
             finished_at="2026-04-30T19:30:07+00:00",
             duration_s=7.0,
             sign_off_actor="SDK team",
+            capability_ids=["workrooms.create"],
             ci_job_url=None,
+            build=TEST_BUILD,
+            status="passed",
             steps=[
                 StepResult(name="x", status="passed", duration_s=0.1, detail="second")
             ],

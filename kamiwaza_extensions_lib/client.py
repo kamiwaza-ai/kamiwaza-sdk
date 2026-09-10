@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-import os
+import ssl
+from collections.abc import Mapping
 from typing import Optional
 
 import httpx
 
+from ._headers import header_bytes
+from .auth import platform_auth_httpx_headers
 from .config import AuthConfig
 
 _ACTIVE_DEPLOYMENT_STATUSES = {"deployed", "running", "ready", "active"}
-_PLATFORM_AUTH_HEADER_KEYS = {
-    "authorization",
-    "cookie",
-    "x-auth-token",
-    "x-workroom-id",
-    "x-request-id",
-}
 
 
 class KamiwazaExtClient:
@@ -36,7 +32,7 @@ class KamiwazaExtClient:
         api_base: str,
         openai_base: str = "",
         headers: Optional[dict[str, str]] = None,
-        verify_ssl: bool = True,
+        verify_ssl: bool | ssl.SSLContext = True,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self.api_base = api_base.rstrip("/")
@@ -52,12 +48,16 @@ class KamiwazaExtClient:
         Uses ``KAMIWAZA_API_URL`` for the platform API and
         ``KAMIWAZA_ENDPOINT`` (or ``KAMIWAZA_MODEL_URL``) for the
         model endpoint.
+
+        Raises:
+            UnexpectedContextError: If ``KAMIWAZA_CA_BUNDLE`` is not a
+                readable PEM trust bundle.
         """
         config = AuthConfig.from_env()
         return cls(
             api_base=config.api_url,
             openai_base=config.openai_base,
-            verify_ssl=config.verify_ssl,
+            verify_ssl=config.httpx_verify(),
         )
 
     @classmethod
@@ -69,6 +69,8 @@ class KamiwazaExtClient:
 
         Raises:
             RuntimeError: If ``KAMIWAZA_API_KEY`` is not set.
+            UnexpectedContextError: If ``KAMIWAZA_CA_BUNDLE`` is not a
+                readable PEM trust bundle.
         """
         config = AuthConfig.from_env()
         if not config.api_key:
@@ -80,12 +82,12 @@ class KamiwazaExtClient:
             api_base=config.api_url,
             openai_base=config.openai_base,
             headers={"Authorization": f"Bearer {config.api_key}"},
-            verify_ssl=config.verify_ssl,
+            verify_ssl=config.httpx_verify(),
         )
 
     def _client(
         self,
-        extra_headers: Optional[dict[str, str]] = None,
+        extra_headers: httpx.Headers | dict[str, str] | None = None,
         *,
         follow_redirects: bool = False,
     ) -> httpx.AsyncClient:
@@ -98,38 +100,35 @@ class KamiwazaExtClient:
             connection pooling to avoid port exhaustion under load.
             See: https://github.com/kamiwaza-ai/kamiwaza-sdk/issues/63
         """
-        headers = {**self._default_headers, **(extra_headers or {})}
+        headers = httpx.Headers(
+            [header_bytes(key, value) for key, value in self._default_headers.items()]
+        )
+        if extra_headers is not None:
+            encoded_extra_headers = (
+                httpx.Headers(extra_headers.raw)
+                if isinstance(extra_headers, httpx.Headers)
+                else httpx.Headers(
+                    [header_bytes(key, value) for key, value in extra_headers.items()]
+                )
+            )
+            headers.update(encoded_extra_headers)
+            # Rebuild from raw pairs so httpx infers the merged wire encoding;
+            # a string round-trip would restore its ASCII-only normalization.
+            headers = httpx.Headers(headers.raw)
         return httpx.AsyncClient(
             headers=headers,
             verify=self._verify_ssl,
             timeout=self._timeout,
             follow_redirects=follow_redirects,
+            trust_env=False,
         )
 
     @staticmethod
     def _platform_auth_headers(
-        headers: Optional[dict[str, str]] = None,
-    ) -> dict[str, str]:
-        """Keep only platform-safe auth headers for backend-to-platform calls.
-
-        ``X-User-*`` identity headers are hop-bound and can trigger stricter
-        ForwardAuth validation on platform APIs. For model discovery we forward
-        only bearer/session auth plus safe request scoping headers.
-        """
-        filtered: dict[str, str] = {}
-        for key, value in (headers or {}).items():
-            if key.lower() in _PLATFORM_AUTH_HEADER_KEYS:
-                filtered[key] = value
-
-        has_authorization = any(
-            key.lower() == "authorization" and value for key, value in filtered.items()
-        )
-        if not has_authorization:
-            for key, value in filtered.items():
-                if key.lower() == "x-auth-token" and value:
-                    filtered["Authorization"] = f"Bearer {value}"
-                    break
-        return filtered
+        headers: Mapping[str, str] | None = None,
+    ) -> httpx.Headers:
+        """Keep the complete signed envelope for backend-to-platform calls."""
+        return platform_auth_httpx_headers(headers or {})
 
     async def chat_completions(
         self,
@@ -152,7 +151,7 @@ class KamiwazaExtClient:
             resp.raise_for_status()
             return resp
 
-    async def get_models(self, headers: Optional[dict[str, str]] = None) -> list[dict]:
+    async def get_models(self, headers: Mapping[str, str] | None = None) -> list[dict]:
         """List active model deployments from the platform API.
 
         Prefers the newer ``/serving/deployments`` endpoint and falls back

@@ -6,11 +6,11 @@ from kamiwaza_sdk.exceptions import APIError
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
-CANONICAL_REPO = "mlx-community/Qwen3-4B-4bit"
 
-
-def test_live_model_metadata_and_download(live_kamiwaza_client, ensure_repo_ready) -> None:
-    target = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+def test_live_model_metadata_and_download(
+    live_kamiwaza_client, ensure_model_lifecycle_target_ready
+) -> None:
+    target = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
     detailed = live_kamiwaza_client.models.get_model(str(target.id))
     assert detailed.name

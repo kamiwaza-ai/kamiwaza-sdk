@@ -19,14 +19,14 @@ SCENARIO_ID = "S5"
 
 
 @pytest.mark.e2e
-def test_s5_full_loop(staging_url):
+def test_s5_full_loop(staging_url, build_id):
     runbook = load_runbook(SCENARIO_ID)
 
     handlers = {
         # Implement during T3.3 dry-run.
     }
 
-    result = run_scenario(runbook, handlers)
+    result = run_scenario(runbook, handlers, build=build_id)
     artifact = record_run(result)
     sign_off = render_sign_off(result)
 
@@ -37,9 +37,29 @@ def test_s5_full_loop(staging_url):
         )
     if result.pending_steps:
         pending = [s.name for s in result.pending_steps]
+        # `artifact` is None when the run evidenced nothing -- every
+        # step `pending` means no handler ran, so `record_run` writes
+        # no record rather than claim this capability was exercised
+        # (ENG-11717). A partly-implemented driver still records what
+        # it ran, so both outcomes are reachable here.
+        recorded = (
+            f"evidence record at {artifact}"
+            if artifact is not None
+            else "no evidence record written (the run evidenced nothing)"
+        )
         pytest.skip(
             f"S5 driver has unimplemented steps: {pending}. "
-            f"Runbook + sign-off scaffolding rendered at {artifact}, {sign_off}."
+            f"{recorded}; sign-off scaffolding at {sign_off}."
+        )
+    # A run where every step was `skipped` writes no record: `record_run`
+    # suppresses it, but `pending_steps` is empty and `ScenarioResult.passed`
+    # counts `skipped` as non-failing, so without this the test would report
+    # PASS while evidencing nothing at all (ENG-11717). "Not applicable on
+    # this host" is a skip, not a pass.
+    if artifact is None:
+        pytest.skip(
+            f"S5 evidenced nothing -- no step passed or failed, so no record "
+            f"was written. Sign-off scaffolding at {sign_off}."
         )
     assert result.passed, (
         f"S5 unexpected non-passing result: artifact={artifact}, sign-off={sign_off}, "

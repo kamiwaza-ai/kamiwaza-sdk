@@ -1,0 +1,119 @@
+import { describe, expect, it } from "vitest";
+
+import { normalizeAppPath, withAppPath } from "../src/runtime/shared";
+
+describe("normalizeAppPath", () => {
+    it("returns empty string for null, undefined, and empty input", () => {
+        expect(normalizeAppPath(undefined)).toBe("");
+        expect(normalizeAppPath(null)).toBe("");
+        expect(normalizeAppPath("")).toBe("");
+    });
+
+    it("strips trailing slashes from a deployment path", () => {
+        expect(normalizeAppPath("/runtime/apps/550e8400-e29b-41d4-a716-446655440000/")).toBe(
+            "/runtime/apps/550e8400-e29b-41d4-a716-446655440000",
+        );
+        expect(normalizeAppPath("/runtime/apps/x///")).toBe("/runtime/apps/x");
+    });
+
+    it("adds a single leading slash when missing", () => {
+        expect(normalizeAppPath("runtime/apps/x")).toBe("/runtime/apps/x");
+    });
+
+    it("normalizes bare and whitespace-padded roots to empty", () => {
+        expect(normalizeAppPath("/")).toBe("");
+        expect(normalizeAppPath("  ")).toBe("");
+    });
+
+    it("rejects empty interior segments", () => {
+        expect(() => normalizeAppPath("/runtime//apps/x")).toThrow(/invalid/i);
+    });
+
+    it("rejects dot and dot-dot segments", () => {
+        expect(() => normalizeAppPath("/runtime/./x")).toThrow(/invalid/i);
+        expect(() => normalizeAppPath("/runtime/../x")).toThrow(/invalid/i);
+    });
+
+    it("rejects percent escapes, query, fragment, backslash, and control characters", () => {
+        expect(() => normalizeAppPath("/runtime/%2e%2e/x")).toThrow(/invalid/i);
+        expect(() => normalizeAppPath("/runtime/apps/x?y=1")).toThrow(/invalid/i);
+        expect(() => normalizeAppPath("/runtime/apps/x#f")).toThrow(/invalid/i);
+        expect(() => normalizeAppPath("/runtime\\apps\\x")).toThrow(/invalid/i);
+        expect(() => normalizeAppPath("/runtime/app\u0000s")).toThrow(/invalid/i);
+        expect(() => normalizeAppPath("/runtime/apps/a b")).toThrow(/invalid/i);
+    });
+
+    it("accepts the documented platform path shapes", () => {
+        expect(normalizeAppPath("/runtime/apps/550e8400-e29b-41d4-a716-446655440000")).toBe(
+            "/runtime/apps/550e8400-e29b-41d4-a716-446655440000",
+        );
+        expect(normalizeAppPath("/runtime/services/abc123")).toBe("/runtime/services/abc123");
+        expect(normalizeAppPath("/__KZ_RUNTIME_BASE_7F3A91C2__")).toBe(
+            "/__KZ_RUNTIME_BASE_7F3A91C2__",
+        );
+    });
+});
+
+describe("withAppPath", () => {
+    const APP = "/runtime/apps/550e8400";
+
+    it("prefixes a root-relative path with the app path", () => {
+        expect(withAppPath("/api/things", APP)).toBe(`${APP}/api/things`);
+    });
+
+    it("is idempotent when the path is already prefixed", () => {
+        expect(withAppPath(`${APP}/api/things`, APP)).toBe(`${APP}/api/things`);
+        expect(withAppPath(APP, APP)).toBe(APP);
+    });
+
+    it("respects segment boundaries when checking for an existing prefix", () => {
+        // "/runtime/apps/550e8400" must not be treated as a prefix of
+        // "/runtime/apps/550e8400beef/..." — that is a different deployment.
+        expect(withAppPath("/runtime/apps/550e8400beef/api", APP)).toBe(
+            `${APP}/runtime/apps/550e8400beef/api`,
+        );
+    });
+
+    it("maps the bare root to the app path", () => {
+        expect(withAppPath("/", APP)).toBe(APP);
+    });
+
+    it("returns the path unchanged when the app path is empty or omitted", () => {
+        expect(withAppPath("/api/things", "")).toBe("/api/things");
+        expect(withAppPath("/api/things")).toBe("/api/things");
+    });
+
+    it("leaves absolute, protocol-relative, and non-root-relative inputs untouched", () => {
+        expect(withAppPath("https://example.com/api", APP)).toBe("https://example.com/api");
+        expect(withAppPath("http://example.com/api", APP)).toBe("http://example.com/api");
+        expect(withAppPath("//example.com/api", APP)).toBe("//example.com/api");
+        expect(withAppPath("api/things", APP)).toBe("api/things");
+        expect(withAppPath("", APP)).toBe("");
+    });
+
+    it("preserves query strings and fragments on the joined path", () => {
+        expect(withAppPath("/api/things?limit=1#top", APP)).toBe(
+            `${APP}/api/things?limit=1#top`,
+        );
+    });
+
+    it("normalizes the supplied app path before joining", () => {
+        expect(withAppPath("/api/things", `${APP}/`)).toBe(`${APP}/api/things`);
+    });
+
+    it("treats query and fragment as prefix boundaries (S2)", () => {
+        expect(withAppPath(`${APP}?x=1`, APP)).toBe(`${APP}?x=1`);
+        expect(withAppPath(`${APP}#frag`, APP)).toBe(`${APP}#frag`);
+    });
+});
+
+describe("normalizeAppPath hardening (S6)", () => {
+    it("rejects raw control characters before trimming", () => {
+        expect(() => normalizeAppPath("/runtime/apps/x\n")).toThrow(/control/i);
+        expect(() => normalizeAppPath("\t/runtime/apps/x")).toThrow(/control/i);
+    });
+
+    it("bounds total path length", () => {
+        expect(() => normalizeAppPath(`/a/${"b".repeat(600)}`)).toThrow(/length|long/i);
+    });
+});

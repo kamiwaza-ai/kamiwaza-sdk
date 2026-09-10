@@ -19,14 +19,18 @@
 export const ENVELOPE_AUTH_HEADERS = [
     "authorization",
     "x-auth-token",
+    "x-auth-azp",
     "x-user-id",
     "x-user-email",
     "x-user-name",
     "x-user-roles",
+    "x-user-groups",
+    "x-user-attributes-hash",
     "x-user-system-high",
     "x-workroom-id",
     "x-user-workroom-id",
     "x-user-workroom-role",
     "x-user-signature",
+    "x-user-signature-stable",
     "x-user-signature-ts",
 ] as const;

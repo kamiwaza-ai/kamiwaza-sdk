@@ -14,6 +14,8 @@
 !kamiwaza_client/**
 !kamiwaza_extensions/
 !kamiwaza_extensions/**
+!kamiwaza_extensions_lib/
+!kamiwaza_extensions_lib/**
 
 # Drop churn artifacts even from the unblocked trees.
 **/__pycache__/

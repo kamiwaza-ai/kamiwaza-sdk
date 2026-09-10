@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Iterator, Optional, Sequence
+
+from pydantic import SecretStr, ValidationError as PydanticValidationError
 
 from ..exceptions import (
     APIError,
     AuthorizationError,
     DatasetNotFoundError,
+    FlightIncompleteStreamError,
+    KamiwazaError,
     TransportNotSupportedError,
 )
-from .base_service import BaseService
-from pydantic import SecretStr
 from ..schemas.retrieval import (
     GrpcHandshake,
     InlineData,
@@ -25,6 +28,12 @@ from ..schemas.retrieval import (
     TransportType,
 )
 from ..utils import reveal_secrets
+from .base_service import BaseService
+
+if TYPE_CHECKING:
+    import pyarrow as pa  # type: ignore[import-untyped]
+
+_DEFAULT_FLIGHT_TIMEOUT_SECONDS = 3600.0
 
 
 @dataclass
@@ -59,14 +68,26 @@ class RetrievalService(BaseService):
         """Create a retrieval job and normalise the transport handling."""
         job = self.create_job(request)
         if job.transport == TransportType.INLINE:
-            if not job.inline:
-                raise TransportNotSupportedError("Inline transport returned no payload")
-            return RetrievalResult(job=job, inline=job.inline)
+            return self._inline_result(job)
         if job.transport == TransportType.SSE:
             return RetrievalResult(job=job, stream=self.stream_events(job.job_id))
         if job.transport == TransportType.GRPC:
-            return RetrievalResult(job=job, grpc=job.grpc)
+            return self._grpc_result(job)
         raise TransportNotSupportedError(f"Unsupported transport {job.transport}")
+
+    @staticmethod
+    def _inline_result(job: RetrievalJob) -> RetrievalResult:
+        if not job.inline:
+            raise TransportNotSupportedError("Inline transport returned no payload")
+        return RetrievalResult(job=job, inline=job.inline)
+
+    @staticmethod
+    def _grpc_result(job: RetrievalJob) -> RetrievalResult:
+        if not job.grpc:
+            raise TransportNotSupportedError(
+                "gRPC transport returned no Flight handshake"
+            )
+        return RetrievalResult(job=job, grpc=job.grpc)
 
     def get_job(self, job_id: str) -> RetrievalJobStatus:
         try:
@@ -89,19 +110,125 @@ class RetrievalService(BaseService):
         """Backward-compatible alias for :meth:`stream_events`."""
         return self.stream_events(job_id)
 
+    def flight_batches(
+        self,
+        job: RetrievalJob,
+        *,
+        ca_cert_path: str | os.PathLike[str] | None = None,
+        tls_root_certs: bytes | None = None,
+        override_hostname: str | None = None,
+        timeout_seconds: float = _DEFAULT_FLIGHT_TIMEOUT_SECONDS,
+        allow_insecure: bool = False,
+    ) -> "Iterator[pa.RecordBatch]":
+        """Stream Arrow record batches for a grpc-transport retrieval job.
+
+        After the Flight iterator reaches a clean EOF, the retrieval job must
+        report ``COMPLETED`` or a ``FlightIncompleteStreamError`` is raised.
+        Closing or abandoning the iterator early intentionally skips this
+        completion check.
+
+        When the caller does not supply ``ca_cert_path`` or ``tls_root_certs``,
+        the method attempts to bridge TLS settings from the underlying HTTP
+        session: if ``self.client.session.verify`` is a string path to a CA
+        bundle, that path is used as ``ca_cert_path``.  When ``verify`` is a
+        boolean (or absent), no automatic bridging occurs.
+
+        Args:
+            job: A ``RetrievalJob`` whose ``transport`` is ``grpc`` and which
+                carries a populated ``grpc`` handshake.
+            ca_cert_path: Path to a PEM CA bundle for TLS verification.
+            tls_root_certs: Raw PEM CA bytes; takes precedence over
+                ``ca_cert_path``.
+            override_hostname: Override the TLS SNI and certificate-validation
+                hostname. Use only when the endpoint address and certificate
+                identity intentionally differ.
+            timeout_seconds: End-to-end Arrow Flight transfer deadline.
+            allow_insecure: Explicitly permit plaintext endpoints for trusted
+                local development. TLS is required by default.
+
+        Returns:
+            An iterator of ``pyarrow.RecordBatch`` objects.
+
+        Raises:
+            TransportNotSupportedError: When the job has no Flight handshake.
+        """
+        from .retrieval_flight import open_flight_stream
+
+        if not job.grpc:
+            raise TransportNotSupportedError("Job has no Flight handshake")
+
+        ca_cert_path = self._flight_ca_path(
+            ca_cert_path,
+            tls_root_certs,
+            allow_insecure=allow_insecure,
+        )
+        batches = open_flight_stream(
+            job.grpc,
+            job_id=job.job_id,
+            ca_cert_path=ca_cert_path,
+            tls_root_certs=tls_root_certs,
+            override_hostname=override_hostname,
+            timeout_seconds=timeout_seconds,
+            allow_insecure=allow_insecure,
+        )
+        return self._verify_flight_completion(job.job_id, batches)
+
+    def _flight_ca_path(
+        self,
+        explicit_path: str | os.PathLike[str] | None,
+        tls_root_certs: bytes | None,
+        *,
+        allow_insecure: bool,
+    ) -> str | os.PathLike[str] | None:
+        if explicit_path is not None or tls_root_certs is not None:
+            return explicit_path
+        if allow_insecure:
+            return None
+        session = getattr(self.client, "session", None)
+        verify = getattr(session, "verify", None)
+        if isinstance(verify, (str, os.PathLike)):
+            return os.fspath(verify)
+        return None
+
+    def _verify_flight_completion(
+        self,
+        job_id: str,
+        batches: "Iterator[pa.RecordBatch]",
+    ) -> "Iterator[pa.RecordBatch]":
+        yield from batches
+        try:
+            status = self.get_job(job_id)
+        except (KamiwazaError, PydanticValidationError) as exc:
+            raise FlightIncompleteStreamError(
+                f"Flight stream ended, but completion for job {job_id!r} "
+                "could not be verified",
+                job_id=job_id,
+                status=None,
+            ) from exc
+        if status.status.upper() not in {"COMPLETE", "COMPLETED"}:
+            raise FlightIncompleteStreamError(
+                f"Flight stream ended before job {job_id!r} reached COMPLETED "
+                f"(status={status.status!r})",
+                job_id=job_id,
+                status=status.status,
+            )
+
     def create_inline_job(
         self,
         dataset_urn: str,
         *,
         format_hint: Optional[str] = None,
-        credential_override: Optional[str] = None,
+        credential_override: str | SecretStr | None = None,
         **options,
     ) -> RetrievalJob:
+        credential = credential_override
+        if isinstance(credential, str):
+            credential = SecretStr(credential)
         request = RetrievalRequest(
             dataset_urn=dataset_urn,
             transport="inline",
             format_hint=format_hint,
-            credential_override=credential_override,
+            credential_override=credential,
             options=options or None,
         )
         return self.create_job(request)

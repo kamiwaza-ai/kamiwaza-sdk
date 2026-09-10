@@ -61,7 +61,9 @@ def build_render_context(
     major = __version__.split(".")[0]
     next_major = str(int(major) + 1)
     py_pin, ts_pin = _runtime_lib_pins()
-    effective_description = description if description else f"A Kamiwaza {type_} extension"
+    effective_description = (
+        description if description else f"A Kamiwaza {type_} extension"
+    )
     return {
         "{{name}}": name,
         "{{version}}": version,
@@ -85,26 +87,19 @@ def _runtime_lib_pins() -> tuple[str, str]:
     M4: fallback ranges aligned to the current bundle so a corrupt-bundle
     fallback doesn't render stricter pins than ``kz-ext doctor`` enforces.
     """
-    # Floor at 0.4 so the corrupt-bundle path still renders a pin that
-    # resolves to a lib version with the public ``url`` module the
-    # scaffolded ``backend/app/main.py`` imports (round-9 codex P1: a
-    # 0.2/0.3 fallback would resolve to a lib without
-    # ``backend_runtime_base`` and break the scaffold's first
-    # ``uv run uvicorn`` boot).
-    fallback_py = ">=0.4,<0.5"
+    # Runtime-path relocation is a 0.5 contract. Falling back to an older
+    # series would render a scaffold whose Dockerfile expects APIs and
+    # packaged runtime scripts that the resolved library does not provide.
+    fallback_py = ">=0.5,<0.6"
     # npm semver uses whitespace (not comma) for AND between bounds. Rendered
     # directly into a scaffolded ``frontend/package.json``; a comma here makes
     # ``npm install`` fail to parse the spec (round-5 ultrareview C1).
-    # Floor at 0.4 so the corrupt-bundle path still renders a pin that
-    # resolves to a lib version with the ``/local-dev-auth`` subpath
-    # the scaffolded ``middleware.ts`` imports (PR #87 round-7 codex
-    # observation: a 0.2/0.3 fallback would resolve to a lib without
-    # the export and break the scaffold's first ``next build``).
-    fallback_ts = ">=0.4 <0.5"
+    fallback_ts = ">=0.5 <0.6"
     try:
         bundle = json.loads(
-            (importlib_resources.files("kamiwaza_extensions") / "compatibility.json")
-            .read_text(encoding="utf-8")
+            (
+                importlib_resources.files("kamiwaza_extensions") / "compatibility.json"
+            ).read_text(encoding="utf-8")
         )
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return (fallback_py, fallback_ts)
@@ -138,13 +133,23 @@ def hash_text(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+CLEAN_TRACKED_MERGE_FILES = frozenset(
+    {
+        "backend/requirements.txt",
+        "frontend/package.json",
+    }
+)
+
+
 def compute_rendered_hashes(shape: str, context: Dict[str, str]) -> Dict[str, str]:
-    """Hash every ``preserve_if_modified`` file in the shape's manifest,
-    rendered with the given context.
+    """Hash every clean-tracked text file in the shape's manifest.
 
     Keys are manifest ``relative_path`` strings; values are
     ``sha256:<hex>``. Binary template files are skipped (no
     preserve-if-modified semantics — they have no diff/merge concept).
+    Dependency merge files are also tracked so a pristine file can receive the
+    complete next template before edited files fall back to the
+    dependency-preserving merge.
 
     Used by ``Scaffolder.create()`` to seed
     ``kamiwaza.json.template_file_hashes`` so that the *next* ``kz-ext
@@ -157,7 +162,10 @@ def compute_rendered_hashes(shape: str, context: Dict[str, str]) -> Dict[str, st
     )
     hashes: Dict[str, str] = {}
     for owned in manifest.files:
-        if owned.strategy != "preserve_if_modified":
+        if (
+            owned.strategy != "preserve_if_modified"
+            and owned.relative_path not in CLEAN_TRACKED_MERGE_FILES
+        ):
             continue
         path = template_root / owned.relative_path
         if not path.exists():
@@ -176,7 +184,9 @@ class Scaffolder:
 
     def create(self, *, type_: str, name: str) -> Path:
         if type_ not in VALID_TYPES:
-            raise ValueError(f"Invalid type '{type_}'. Must be one of: {', '.join(VALID_TYPES)}")
+            raise ValueError(
+                f"Invalid type '{type_}'. Must be one of: {', '.join(VALID_TYPES)}"
+            )
 
         name = self._validate_name(name, type_)
         cwd = Path.cwd()
@@ -214,7 +224,7 @@ class Scaffolder:
                         f"Choose a different name or empty the directory."
                     )
             else:
-                target.mkdir()
+                self._create_directory(target)
         else:
             target = cwd
 
@@ -253,9 +263,7 @@ class Scaffolder:
         data["template_shape"] = shape
         # Build the same context the scaffolder used so the hashes match
         # what's actually on disk byte-for-byte.
-        context = build_render_context(
-            name=data.get("name", "extension"), type_=shape
-        )
+        context = build_render_context(name=data.get("name", "extension"), type_=shape)
         data["template_file_hashes"] = compute_rendered_hashes(shape, context)
         meta_path.write_text(
             json.dumps(data, indent=4) + "\n",
@@ -271,12 +279,18 @@ class Scaffolder:
             )
 
         # Auto-apply convention prefix if missing
-        if type_ == "tool" and not (name.startswith("tool-") or name.startswith("mcp-")):
+        if type_ == "tool" and not (
+            name.startswith("tool-") or name.startswith("mcp-")
+        ):
             name = f"tool-{name}"
-            console.print(f"[dim]Auto-prefixed name to '{name}' per tool naming convention[/dim]")
+            console.print(
+                f"[dim]Auto-prefixed name to '{name}' per tool naming convention[/dim]"
+            )
         elif type_ == "service" and not name.startswith("service-"):
             name = f"service-{name}"
-            console.print(f"[dim]Auto-prefixed name to '{name}' per service naming convention[/dim]")
+            console.print(
+                f"[dim]Auto-prefixed name to '{name}' per service naming convention[/dim]"
+            )
 
         return name
 
@@ -291,27 +305,98 @@ class Scaffolder:
         # importlib_resources returns a Traversable; convert to Path
         return Path(str(pkg))
 
-    def _render_template(self, template_dir: Path, target: Path, context: Dict[str, str]) -> None:
+    def _render_template(
+        self, template_dir: Path, target: Path, context: Dict[str, str]
+    ) -> None:
         if not template_dir.exists():
             raise FileNotFoundError(f"Template directory not found: {template_dir}")
 
         for src in sorted(template_dir.rglob("*")):
             if src.is_dir():
                 continue
+            self._render_template_file(src, template_dir, target, context)
 
-            rel = src.relative_to(template_dir)
-            dest = target / substitute(str(rel), context)
+    def _render_template_file(
+        self, src: Path, template_dir: Path, target: Path, context: Dict[str, str]
+    ) -> None:
+        """Render one template file into the target and pin its shareable mode.
 
-            dest.parent.mkdir(parents=True, exist_ok=True)
+        Templated text files get variable substitution; binary assets are
+        preserved byte-for-byte. Either way the file's mode is normalized so
+        the output is umask-independent (see ``_normalize_mode``).
+        """
+        rel = src.relative_to(template_dir)
+        dest = target / substitute(str(rel), context)
 
-            # Render templated text files and preserve binary assets byte-for-byte.
-            try:
-                content = src.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                dest.write_bytes(src.read_bytes())
-                continue
+        self._create_directory(dest.parent)
 
-            dest.write_text(substitute(content, context), encoding="utf-8")
+        # Render templated text files and preserve binary assets byte-for-byte.
+        try:
+            content = src.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            dest.write_bytes(src.read_bytes())
+            self._normalize_mode(src, dest)
+            return
+
+        dest.write_text(substitute(content, context), encoding="utf-8")
+        self._normalize_mode(src, dest)
+
+    def _create_directory(self, directory: Path) -> None:
+        """Create missing parents and pin only directories we actually create.
+
+        Existing directories (including symlink targets) retain their modes.
+        Directory creation is umask-masked, so new build-context directories
+        need 0755 for the image's non-root runtime to traverse them.
+        """
+        if directory.is_dir():
+            return
+        self._create_directory(directory.parent)
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            # Another creator may have won the race; we do not own its mode.
+            if not directory.is_dir():
+                raise
+        else:
+            self._set_mode(directory, 0o755)
+
+    @staticmethod
+    def _set_mode(dest: Path, mode: int) -> None:
+        """Warn and continue when the filesystem cannot apply POSIX modes."""
+        if dest.is_symlink():
+            return
+        try:
+            dest.chmod(mode)
+        except OSError as exc:
+            console.print(
+                f"Warning: could not set permissions to {mode:04o} on {dest}: "
+                f"{exc}. Non-root container access may require a filesystem "
+                "that supports POSIX permissions.",
+                style="yellow",
+                markup=False,
+            )
+
+    def _normalize_mode(self, src: Path, dest: Path) -> None:
+        """Pin scaffolded files to shareable modes regardless of host umask.
+
+        ``write_text``/``write_bytes`` create files as ``0666 & ~umask`` and
+        ``mkdir`` creates directories as ``0777 & ~umask``. On hardened
+        hosts (umask 077) every scaffolded file lands 0600 and every
+        directory 0700, and the app shape's files become a Docker build
+        context: ``COPY`` preserves those modes, the Next.js standalone
+        runtime runs as a non-root user, and the boot-time relocation dies
+        with ``EACCES`` — first opening a root-owned ``package.json``
+        through a staging symlink, then failing to ``scandir`` the
+        image's ``public`` directory (both proven live as uid 1001
+        against ``-rw------- root root`` context files).
+        Normalizing to 0644 files / 0755 directories (0755 for executable
+        templates, preserving their executable intent) makes newly created
+        output modes independent of umask on POSIX filesystems. Executable
+        templates explicitly receive execute bits, which write_text alone
+        would not preserve even on a default 022 host.
+        """
+        mode = 0o755 if src.stat().st_mode & 0o111 else 0o644
+        self._set_mode(dest, mode)
 
     def _git_init(self, target: Path) -> None:
         try:

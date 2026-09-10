@@ -1,6 +1,6 @@
 [project]
 name = "kamiwaza-sdk"
-version = "1.0.0"
+version = "1.1.0"
 description = "Python client library for the Kamiwaza AI Platform"
 readme = "README.md"
 license = "Apache-2.0"
@@ -21,17 +21,35 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "requests",
+    # Direct security floors keep loose installers from resolving vulnerable
+    # transitives. urllib3 enforces the GHSA-mf9v-mfxr-j63j / GHSA-qccp-gfcp-xxvc
+    # fix in published package metadata, not just uv.lock (a lockfile-only bump
+    # doesn't reach consumers who install the wheel directly).
+    "requests>=2.33.0,<3.0.0",
+    "urllib3>=2.7.0,<3.0.0",
+    "idna>=3.15,<4.0.0",
     "pydantic[email]>=2.11",
     "httpx",
+    "filelock>=3.20",
     "openai>=1.0",
     "huggingface_hub>=0.23",
-    "typer>=0.9.0",
+    "typer>=0.24.1,<1.0.0",
+    # click is pulled in transitively via typer; pin a security floor so the
+    # fix for PYSEC-2026-2132 (command injection in click.edit()) reaches SDK
+    # consumers (ENG-10102, 1.2.1 vuln remediation).
+    "click>=8.3.3,<9.0.0",
     "pyyaml>=6.0",
     "packaging>=23.0",
-    "fastapi>=0.100.0",
+    "fastapi>=0.136.3,<1.0.0",
+    # Security floor for CVE-2026-54283 / GHSA-wqp7-x3pw-xc5r.
+    "starlette>=1.3.1,<2.0.0",
     "rich>=13.0",
-    "kamiwaza-extensions-lib>=0.4,<0.5",
+    "pygments>=2.20.0,<3.0.0",
+    # Security floor for the ENG-11024 advisory set. Keep this in published
+    # metadata so SDK consumers cannot resolve an older transitive wheel.
+    "cryptography>=50.0.1,<51.0.0",
+    "kamiwaza-extensions-lib>=0.5,<0.6",
+    "PyJWT[crypto]>=2.8",
 ]
 
 [project.optional-dependencies]
@@ -43,12 +61,17 @@ convert = [
 ]
 # Install contract for connector repos building against kamiwaza_sdk.connectors.
 connector = [
-    "fastapi>=0.100.0",
+    "fastapi>=0.136.3,<1.0.0",
+    "starlette>=1.3.1,<2.0.0",
     "pydantic[email]>=2.11",
+]
+flight = [
+    "pyarrow>=17.0",
 ]
 all = [
     "boto3>=1.28.0",
     "anthropic>=0.30.0",
+    "pyarrow>=17.0",
 ]
 
 [project.urls]
@@ -59,12 +82,17 @@ Issues = "https://github.com/kamiwaza-ai/kamiwaza-sdk/issues"
 [build-system]
 # setuptools>=77 supports PEP 639 SPDX `license = "Apache-2.0"` in [project]
 # and auto-discovers a top-level LICENSE file into the wheel's dist-info.
-requires = ["setuptools>=77", "wheel"]
+requires = ["setuptools>=77", "wheel>=0.46.2"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
 kz-ext = "kamiwaza_extensions.cli:app"
 kamiwaza-seed = "kamiwaza_sdk.seeding.cli:main"
+kamiwaza-federation = "kamiwaza_sdk.seeding.federation.cli:main"
+kamiwaza-validate-inference = "kamiwaza_sdk.validation.inference_provider:main"
+kamiwaza-validate-federation = "kamiwaza_sdk.validation.federation_provider:main"
+kamiwaza-validate-model-mesh = "kamiwaza_sdk.validation.model_mesh_provider:main"
+kamiwaza-validate-delegated-workload = "kamiwaza_sdk.validation.delegated_workload_provider:main"
 
 # `kamiwaza-extensions-lib` is published as its own PyPI distribution
 # from `kamiwaza_extensions_lib/pyproject.toml`. For local dev / tests we
@@ -98,31 +126,40 @@ include = [
 exclude = ["tests*", "examples*", "kamiwaza_extensions_lib*"]
 
 [tool.setuptools.package-data]
-kamiwaza_sdk = ["py.typed"]
-kamiwaza_extensions = ["templates/**/*", "templates/**/.*", "compatibility.json", "agent_guidance.md"]
+kamiwaza_sdk = ["py.typed", "validation/schemas/*.schema.json"]
+kamiwaza_extensions = ["templates/**/*", "templates/**/.*", "validators/*.json", "compatibility.json", "agent_guidance.md"]
 
 [tool.mypy]
 python_version = "3.10"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.1",  # __wrapped__ on FixtureFunctionDefinition required by tests/unit/test_live_server_available_fixture.py (ENG-6504)
+    "pytest>=9.0.3,<10.0.0",  # __wrapped__ on FixtureFunctionDefinition required by tests/unit/test_live_server_available_fixture.py (ENG-6504)
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.0",
     "pytest-responses>=0.5",
     "pytest-httpx>=0.30",
+    "jsonschema>=4.26.0,<5.0.0",
     "boto3>=1.34",
     "numpy>=1.26",
     "pandas>=2.2",
     "pyarrow>=17.0",
-    "black>=23.0",
+    "black>=26.5.1",  # GHSA-3936-cmfr-pm3m / PYSEC-2026-2120 / PYSEC-2026-2121 (ENG-10102, 1.2.1 vuln remediation)
+    # Kept in step with the [project.dependencies] floor (ENG-11024). A
+    # dev-group pin below that floor would make the workspace unresolvable.
+    "cryptography>=50.0.1,<51.0.0",
     "isort>=5.12",
     "ruff>=0.1",
     "mypy>=1.0",
+    # `requests` ships no inline types, and the SDK type-checks modules that
+    # import it directly; without the stubs mypy fails those files on
+    # import-untyped rather than on anything about the code.
+    "types-requests>=2.31",
     "build>=1.0",
     "twine>=4.0",
     "radon>=5.1",
     "pdoc>=14.0",
+    "tomli>=2.0; python_version < '3.11'",
     # Used by tests/e2e/extension_contract/echo-check/backend/tests/test_helpers.py
     # to mint test JWTs; previously only declared in the nested backend's optional
     # `test` extra, which the root `uv sync --group dev` doesn't install.
@@ -139,11 +176,16 @@ markers = [
     "contract: schema/contract tests with recorded HTTP interactions",
     "integration: tests with local Docker/MinIO dependencies",
     "live: tests that talk to a running Kamiwaza deployment",
+    "diffusion: live tests that deploy a DiffusionEngine and generate images through the OpenAI-compatible SDK client",
     "e2e: full workflow tests",
     "slow: intentionally slow tests",
     "withoutresponses: tests needing real network access",
-    "requires_embedding_model: live tests that require an active platform embedding deployment",
+    "requires_embedding_model: live tests that require a platform embedding deployment that can generate embeddings",
     "requires_two_clusters: live tests that require a federation peer cluster reachable via KAMIWAZA_PEER_BASE_URL / KAMIWAZA_PEER_API_KEY (ENG-5784)",
+    "requires_receiver_realm: live federation tests for the deferred receiver_realm trust posture; skipped unless KAMIWAZA_TEST_RECEIVER_REALM=1 (ENG-10585 / ENG-9808)",
+    "requires_shared_idp: live federation tests exercising the shared_idp (Alt C) trust posture — receiver validates a shared-realm token against a trusted issuer (ENG-8213). Required two-cluster lanes carry this together with requires_two_clusters and must provision their shared-identity prerequisites before selection.",
+    "requires_owned_shared_realm: live shared_idp tests that require an independently provisioned realm, ROPC client, clearance-bearing personas, and ownership-guarded teardown (ENG-10050)",
+    "requires_delegated_workload: live federation tests that require the release/1.2.0 delegated RayJob boundary, receiver package catalog, and private package repository (ENG-8454)",
     "requires_deployable_model: live tests that require the host to deploy the integration test model; skips on hosts without compatible inference capacity (e.g. x86 CPU smoke vs an MLX model)",
     "extension_regression: D210 12-issue regression checklist (UAC-17 / EDX-OPS-2). See tests/unit/extensions/regression/inventory.yaml.",
     "live_extension: live extension-contract tests against a real cluster (relocated from kamiwaza, env-gated by RUN_LIVE_EXTENSION_TESTS=1)",

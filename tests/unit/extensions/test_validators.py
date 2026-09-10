@@ -23,6 +23,7 @@ def _valid_metadata() -> dict:
         "description": "A test extension",
         "risk_tier": 0,
         "verified": False,
+        "kz_ext_version": ">=0.2.0,<1.0.0",
     }
 
 
@@ -189,6 +190,17 @@ class TestMetadataValidator:
         result = validator.validate(f)
         assert result.passed
 
+    def test_incompatible_kz_ext_version_is_an_error(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["kz_ext_version"] = ">=0.1.0,<0.2.0"
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f)
+
+        assert not result.passed
+        assert any("CLI version 0.2.0" in error for error in result.errors)
+
     def test_invalid_json_file(self, tmp_path, validator):
         f = tmp_path / "kamiwaza.json"
         f.write_text("{bad json")
@@ -218,6 +230,97 @@ class TestMetadataValidator:
         assert not result.passed
 
     # ── services.<name>.healthCheck (ENG-4832) ────────────────────────
+
+    def test_services_healthcheck_requires_0_2_floor(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["kz_ext_version"] = ">=0.1.0,<1.0.0"
+        data["services"] = {
+            "tool": {"healthCheck": {"httpGet": {"path": "/health", "port": 8000}}}
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f)
+
+        assert not result.passed
+        assert any(
+            "requires kz_ext_version '>=0.2.0'" in error for error in result.errors
+        )
+
+    def test_services_healthcheck_requires_declared_cli_range(
+        self, tmp_path, validator
+    ):
+        data = _valid_metadata()
+        del data["kz_ext_version"]
+        data["services"] = {
+            "tool": {"healthCheck": {"httpGet": {"path": "/health", "port": 8000}}}
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f)
+
+        assert not result.passed
+        assert any("declared range is missing" in error for error in result.errors)
+
+    def test_null_healthcheck_does_not_require_0_2_floor(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["kz_ext_version"] = ">=0.1.0,<1.0.0"
+        data["services"] = {"tool": {"healthCheck": None}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f)
+
+        assert result.passed, result.errors
+
+    @pytest.mark.parametrize(
+        ("service", "capability"),
+        [
+            (
+                {"x-kamiwaza": {"healthCheck": {"tcpSocket": {"port": 8000}}}},
+                "compose.services.*.x-kamiwaza.healthCheck",
+            ),
+            (
+                {"x-kamiwaza": {"primary": True}},
+                "compose.services.*.x-kamiwaza.primary",
+            ),
+            ({"entrypoint": ["python"]}, "compose.services.*.entrypoint"),
+            ({"command": ["-m", "server"]}, "compose.services.*.command"),
+        ],
+    )
+    def test_compose_runtime_capabilities_require_0_2_floor(
+        self, tmp_path, validator, service, capability
+    ):
+        data = _valid_metadata()
+        data["kz_ext_version"] = ">=0.1.0,<1.0.0"
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f, compose_data={"services": {"app": service}})
+
+        assert not result.passed
+        assert any(capability in error for error in result.errors)
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {"x-kamiwaza": {"healthCheck": None}},
+            {"x-kamiwaza": {"primary": False}},
+            {"entrypoint": None, "command": None},
+        ],
+    )
+    def test_null_or_inactive_compose_fields_do_not_require_0_2_floor(
+        self, tmp_path, validator, service
+    ):
+        data = _valid_metadata()
+        data["kz_ext_version"] = ">=0.1.0,<1.0.0"
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+
+        result = validator.validate(f, compose_data={"services": {"app": service}})
+
+        assert result.passed, result.errors
 
     def test_services_healthcheck_httpget_passes(self, tmp_path, validator):
         data = _valid_metadata()

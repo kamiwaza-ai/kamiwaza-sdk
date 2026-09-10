@@ -5,7 +5,9 @@
 Kaizen runs as a per-workroom extension behind its own ingress, so every call
 takes an explicit ``base_url`` (the Kaizen instance API root). Resolve it once
 from the platform extensions API with :func:`resolve_base_url`, then pass it to
-``agents.create`` / ``conversations.create``.
+the agent / conversation services. Two Kaizen products ship side by side and
+speak different contracts; select with :func:`agent_contract_for_extension`
+rather than by hand (see :class:`AgentService` and :class:`ConversationService`).
 
 Workroom scope is carried as the ``X-Workroom-Id`` header. The authoritative
 scope is the caller's identity; with a global PAT (no workroom claim) the
@@ -13,17 +15,101 @@ platform honors this header. A workroom-scoped token is the durable fix
 (tracked for the nightly-seeding work).
 """
 
+import json
 import math
+import re
 import time
-from typing import Any, Dict, List, Optional, Union
+import uuid
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
-from ..exceptions import APIError, KamiwazaError, NotFoundError
-from ..schemas.kaizen import Agent, Conversation, LLMConfig
+import requests
+
+from ..exceptions import APIError, AuthorizationError, KamiwazaError, NotFoundError
+from ..schemas.kaizen import (
+    Agent,
+    AgentDefinition,
+    CanonicalConversation,
+    Conversation,
+    ConversationInputAccepted,
+    LLMConfig,
+)
 from .base_service import BaseService
 
-# Kaizen route prefixes, relative to the extension's ingress root.
-_AGENTS_PATH = "api/agents/"
-_CONVERSATIONS_PATH = "api/conversations/"
+# Kaizen route prefixes, relative to the extension's ingress root. The collection
+# routes are canonical without a trailing slash. Kaizen redirects slash-suffixed
+# requests with 307, and that ingress redirect loses the platform bearer before
+# the request reaches the canonical route.
+_AGENTS_PATH = "api/agents"
+_CONVERSATIONS_PATH = "api/conversations"
+_OPS_MODELS_PATH = "api/ops/models"
+_OPS_CHAT_MODEL_PATH = "api/ops/models/chat"
+_OPS_EMBEDDING_MODEL_PATH = "api/ops/models/embedding"
+
+# Canonical Kaizen's Idempotency-Key bounds, mirrored from the member API's
+# Header(min_length=1, max_length=200) so a bad key fails here — with the fix in
+# the message — instead of as an opaque HTTP 422 from the server.
+_IDEMPOTENCY_KEY_MAX_LEN = 200
+
+# Pause before reopening a dropped event stream. The server ends the stream
+# immediately when its live bus is unavailable, so an unthrottled reopen would
+# turn an extension-side outage into a request storm against that same
+# extension — each reopen costs it a journal replay and an authorization
+# resolve — for the whole wait budget.
+_RECONNECT_BACKOFF_SECONDS = 1.0
+
+# Canonical Kaizen journal event types that end a turn. `assistant_message`
+# carries the reply text; the run is only over once one of these lands, so an
+# interim narration is never mistaken for the final answer.
+_CANONICAL_REPLY_EVENT = "assistant_message"
+_CANONICAL_TERMINAL_OK = "agent_run_completed"
+# A salvaged run recovered partial output after a runtime fault: terminal, but
+# only a success if it actually carried a reply.
+_CANONICAL_TERMINAL_SALVAGED = "agent_run_salvaged"
+_CANONICAL_TERMINAL_EVENTS = frozenset(
+    {
+        _CANONICAL_TERMINAL_OK,
+        _CANONICAL_TERMINAL_SALVAGED,
+        "agent_run_failed",
+        "agent_run_cancelled",
+    }
+)
+
+# Catalog identities. Two Kaizen products ship side by side and answer different
+# agent-create contracts, so the identity — not the ingress, which looks the same
+# either way — is what selects the body shape.
+CANONICAL_EXTENSION_NAME = "kaizen"
+LEGACY_EXTENSION_NAME = "kaizen-legacy"
+
+# Agent-create contracts, keyed by the catalog identity that speaks them.
+AGENT_CONTRACT_CANONICAL = "canonical"
+AGENT_CONTRACT_LEGACY = "legacy"
+
+_AGENT_CONTRACT_BY_EXTENSION = {
+    CANONICAL_EXTENSION_NAME: AGENT_CONTRACT_CANONICAL,
+    LEGACY_EXTENSION_NAME: AGENT_CONTRACT_LEGACY,
+}
+
+
+def agent_contract_for_extension(extension_name: str) -> str:
+    """Map a Kaizen catalog identity to the agent-create contract it speaks.
+
+    Fail-closed on purpose: an unrecognized identity raises rather than falling
+    back to either contract. Guessing wrong is silent in the request and only
+    surfaces as a schema rejection at the server, which is exactly the failure
+    this mapping exists to remove.
+
+    Raises:
+        ValueError: when ``extension_name`` is not a known Kaizen identity.
+    """
+    try:
+        return _AGENT_CONTRACT_BY_EXTENSION[extension_name]
+    except KeyError:
+        known = ", ".join(sorted(_AGENT_CONTRACT_BY_EXTENSION))
+        raise ValueError(
+            f"'{extension_name}' is not a known Kaizen catalog identity "
+            f"(expected one of: {known}); cannot choose an agent-create contract."
+        ) from None
 
 
 class AmbiguousExtensionError(KamiwazaError):
@@ -42,6 +128,191 @@ class ConversationError(KamiwazaError):
     callers must NOT keep polling for a reply — distinct from the transient
     "no reply yet" state that resolves on a later poll.
     """
+
+
+def _idempotency_headers(
+    workroom_id: Optional[Union[str, object]],
+    idempotency_key: Optional[str],
+) -> Dict[str, str]:
+    """Build the workroom + Idempotency-Key headers canonical Kaizen requires.
+
+    A fresh UUID4 is generated per call when the caller supplies no key, so two
+    separate creates never collapse into one conversation server-side. Callers
+    retrying a single logical operation should pass their own stable key.
+
+    Raises:
+        ValueError: when a supplied key is blank or longer than the server's
+            200-character bound.
+    """
+    if idempotency_key is None:
+        key = str(uuid.uuid4())
+    else:
+        key = idempotency_key.strip()
+        if not key:
+            raise ValueError("Idempotency-Key must be a non-empty string.")
+        if len(key) > _IDEMPOTENCY_KEY_MAX_LEN:
+            raise ValueError(
+                f"Idempotency-Key must be at most {_IDEMPOTENCY_KEY_MAX_LEN} "
+                f"characters (got {len(key)})."
+            )
+    headers = _workroom_headers(workroom_id)
+    headers["Idempotency-Key"] = key
+    return headers
+
+
+def _sse_line(raw: Any) -> str:
+    """Normalize one line off ``iter_lines`` to text (it may yield bytes)."""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw or ""
+
+
+def _apply_sse_field(line: str, event: str, data_lines: List[str]) -> str:
+    """Fold one ``event:``/``data:`` field into the frame being accumulated.
+
+    Returns the frame's event name, which a ``data:`` line leaves unchanged.
+    """
+    if line.startswith("event: "):
+        return line[7:]
+    if line.startswith("data: "):
+        data_lines.append(line[6:])
+    return event
+
+
+def _iter_sse_events(response: Any) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    """Yield ``(event, payload)`` pairs from a Kaizen SSE response.
+
+    Frames are blank-line delimited with ``event:`` / ``data:`` fields. A frame
+    whose data is not a JSON object is skipped rather than raised on: the stream
+    also carries transient keepalive and presence frames that a chat caller has
+    no interest in, and one unparseable frame must not abort the turn.
+    """
+    event = "message"
+    data_lines: List[str] = []
+    for raw in response.iter_lines(decode_unicode=True):
+        line = _sse_line(raw)
+        if line:
+            event = _apply_sse_field(line, event, data_lines)
+            continue
+        # Blank line terminates the frame.
+        payload = _sse_payload(data_lines)
+        if payload is not None:
+            yield event, payload
+        event = "message"
+        data_lines = []
+
+
+def _sse_payload(data_lines: List[str]) -> Optional[Dict[str, Any]]:
+    """Decode an SSE frame's data lines into a dict, or None if undecodable."""
+    if not data_lines:
+        return None
+    try:
+        value = json.loads("\n".join(data_lines))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _canonical_event_text(payload: Dict[str, Any]) -> Optional[str]:
+    """Pull the assistant reply text out of a durable ``assistant_message``."""
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    text = data.get("text")
+    return text if isinstance(text, str) and text else None
+
+
+def _canonical_failure_reason(payload: Dict[str, Any]) -> str:
+    """Describe why a canonical run ended without a reply."""
+    data = payload.get("data")
+    reason = data.get("reason") if isinstance(data, dict) else None
+    return str(reason) if reason else str(payload.get("event", "unknown"))
+
+
+def _is_turn_event(payload: Dict[str, Any], input_id: str) -> bool:
+    """Is this durable event part of the turn we submitted?
+
+    A shared conversation replays other members' turns onto the same stream, so
+    matching the ``input_id`` is what keeps a stale reply from being returned as
+    this turn's. Events with no ``input_id`` are conversation-level (presence,
+    keepalive) and belong to no turn.
+    """
+    return payload.get("input_id") == input_id
+
+
+def _canonical_terminal_reply(
+    event: str,
+    payload: Dict[str, Any],
+    reply: Optional[str],
+) -> Optional[str]:
+    """Resolve a terminal turn event into a reply, or raise if the run failed.
+
+    A salvaged run is terminal but only counts as a reply when it actually
+    carried one; treating it as success unconditionally would report an empty
+    answer as a passing chat verification.
+    """
+    if event == _CANONICAL_TERMINAL_OK:
+        return reply
+    if event == _CANONICAL_TERMINAL_SALVAGED and reply:
+        return reply
+    raise ConversationError(
+        f"Kaizen agent run ended as '{event}': {_canonical_failure_reason(payload)}"
+    )
+
+
+def _append_reply_text(reply: Optional[str], payload: Dict[str, Any]) -> Optional[str]:
+    """Accumulate an assistant_message chunk; a turn may emit more than one."""
+    text = _canonical_event_text(payload)
+    if not text:
+        return reply
+    return text if reply is None else f"{reply}\n{text}"
+
+
+def _event_position(payload: Dict[str, Any], fallback: int) -> int:
+    """Journal position of a durable frame, for resuming a dropped stream."""
+    position = payload.get("position")
+    return position if isinstance(position, int) else fallback
+
+
+def _pause_before_reconnect(deadline: float) -> None:
+    """Throttle a stream reopen, never sleeping past the caller's budget."""
+    time.sleep(max(0.0, min(_RECONNECT_BACKOFF_SECONDS, deadline - time.monotonic())))
+
+
+def _safe_sse_events(
+    response: Any,
+    turn: "_CanonicalTurn",
+) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    """Iterate SSE events, mapping transport faults onto this service's contract.
+
+    ``requests`` timeouts derive from ``RequestException``/``OSError``, not from
+    the builtin ``TimeoutError``, so an unwrapped read timeout would bypass both
+    the documented ``Raises`` of :meth:`ConversationService.chat_canonical` and
+    the seeder CLI's handler — surfacing as a raw traceback instead of the clean
+    non-zero exit every other seeder command produces.
+    """
+    try:
+        yield from _iter_sse_events(response)
+    except requests.exceptions.Timeout as exc:
+        raise TimeoutError(
+            f"Timed out reading the event stream for conversation "
+            f"{turn.conversation_id} (input {turn.input_id}): {exc}"
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        raise ConversationError(
+            f"Event stream for conversation {turn.conversation_id} failed "
+            f"(input {turn.input_id}): {exc}"
+        ) from exc
+
+
+@dataclass(frozen=True)
+class _CanonicalTurn:
+    """Everything needed to route one canonical turn's event stream."""
+
+    conversation_id: str
+    input_id: str
+    base_url: str
+    workroom_id: Optional[Union[str, object]]
 
 
 def _workroom_headers(workroom_id: Optional[Union[str, object]]) -> Dict[str, str]:
@@ -65,9 +336,12 @@ def _endpoint_from_extension(extension, *, public: bool) -> Optional[str]:
         else ("external", "api_url", "public_api_url")
     )
     for attr in order:
-        value = getattr(endpoints, attr, None)
-        if value:
-            return str(value).rstrip("/")
+        # An endpoint of "/" rstrips to "", which downstream reads as an
+        # unusable root rather than an absent one; a route published before its
+        # path is stamped clears on its own, so it must stay "not published".
+        root = str(getattr(endpoints, attr, None) or "").rstrip("/")
+        if root:
+            return root
     return None
 
 
@@ -76,10 +350,10 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
 
     The operator names a per-workroom CR ``<extension_name>-<hash>`` and stamps it
     with its ``workroom_id``, so we match on both: the exact ``workroom_id`` (never
-    another workroom's instance) and the ``<extension_name>-`` prefix (the kaizen,
-    not milvus/omniparse). ``workroom_id`` is the strong discriminator; the
-    ambiguity guard below is the backstop if more than one ever matches — so the
-    prefix check doesn't need to over-anchor on the hash shape. Requires the client
+    another workroom's instance) and the complete operator name. The suffix is one
+    to sixteen lowercase alphanumeric characters, depending on the workroom ID.
+    Matching the whole shape prevents ``kaizen`` from adopting ``kaizen-next-*``.
+    Requires the client
     to be scoped into the workroom — the platform only lists a workroom's
     extensions to a caller scoped into it.
 
@@ -89,12 +363,12 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
         AmbiguousExtensionError: when more than one matches (a workroom should
             hold one) — deterministic, callers must not retry.
     """
-    prefix = f"{extension_name}-"
+    operator_name = re.compile(rf"^{re.escape(extension_name)}-[a-z0-9]{{1,16}}$")
     matches = [
         ext
         for ext in client.extensions.list_extensions(workroom_id=workroom_id)
         if str(getattr(ext, "workroom_id", "")) == str(workroom_id)
-        and ext.name.startswith(prefix)
+        and operator_name.fullmatch(ext.name)
     ]
     if not matches:
         raise ValueError(
@@ -174,6 +448,68 @@ def _is_serving(client, base_url: str, *, workroom_id) -> bool:
     return True
 
 
+# Which of the two startup stages the last attempt died in. The stage prefixes
+# the terminal TimeoutError so a nightly log alone separates "the extension's URL
+# could not be determined" from "the URL is known and the backend is not up".
+_URL_STAGE = "could not determine the extension's URL"
+_SERVING_STAGE = "extension not ready"
+
+
+# Statuses that are retryable regardless of resolve scope. The full policy
+# (no-status, 5xx, scoped 403) lives in _is_transient_resolve_error.
+_TRANSIENT_RESOLVE_STATUSES = frozenset({429})
+
+
+def _is_transient_resolve_error(exc: KamiwazaError, *, workroom_scoped: bool) -> bool:
+    """True if an error from ``resolve_base_url`` is a transient startup state.
+
+    Transient: no status (transport error before any response), any 5xx
+    (gateway/upstream not ready), 429 (rate limited), and — only when the
+    resolve is scoped to a workroom — 403 (the workroom's rebac grant may
+    still be propagating on a fresh box). On the unscoped path a 403 is a
+    genuine permission denial that can't clear on its own, so it propagates
+    instead of burning the timeout into an opaque ``TimeoutError``.
+
+    Accepts any ``KamiwazaError`` because a rebac 403 surfaces as an
+    ``AuthorizationError`` subclass rather than ``APIError``; both carry
+    ``status_code`` from the response boundary.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        return True
+    if 500 <= status <= 599:
+        return True
+    if status == 403:
+        return workroom_scoped
+    return status in _TRANSIENT_RESOLVE_STATUSES
+
+
+def _resolve_url_and_probe(
+    client,
+    extension_name: str,
+    *,
+    workroom_id: Optional[Union[str, object]],
+    public: bool,
+) -> Tuple[str, str]:
+    """Resolve the URL to return and the URL to probe for readiness.
+
+    The readiness probe rides the credentialed platform client, which refuses
+    off-host URLs so it cannot leak the bearer. A public endpoint may be
+    off-host (it is browser-facing), so readiness is probed against the
+    same-host ingress — the route the backend actually serves on — while the
+    caller still gets whichever URL it asked for.
+    """
+    url = resolve_base_url(
+        client, extension_name, workroom_id=workroom_id, public=public
+    )
+    if not public:
+        return url, url
+    probe_url = resolve_base_url(
+        client, extension_name, workroom_id=workroom_id, public=False
+    )
+    return url, probe_url
+
+
 def wait_for_base_url(
     client,
     extension_name: str = "kaizen",
@@ -196,6 +532,10 @@ def wait_for_base_url(
        upstream`` (ENG-7111). :func:`_is_serving` probes the backend and we keep
        polling until it answers, so the returned URL is immediately usable.
 
+    Only the resolve stage is retried on ``ValueError``; an
+    ``OffHostBaseURLError`` out of the probe means the credential guard refused
+    the URL, which no amount of waiting fixes.
+
     Mirrors ``serving.wait_deployment_ready``'s wait contract. A deterministic
     ``AmbiguousExtensionError`` is NOT retried — it propagates immediately rather
     than burning the full timeout on something that will never resolve.
@@ -214,33 +554,49 @@ def wait_for_base_url(
 
     Raises:
         TimeoutError: If the extension isn't serving within ``timeout_seconds``.
+            The message names which stage stalled — see :data:`_URL_STAGE` /
+            :data:`_SERVING_STAGE`.
+        OffHostBaseURLError: If the resolved endpoint is off-host, so the
+            readiness probe would send the platform bearer somewhere it cannot
+            be confirmed safe. Deterministic, so it surfaces at once rather than
+            after the full timeout.
     """
     deadline = time.monotonic() + timeout_seconds
     attempts = 0
-    last_err: object = "not resolvable yet"
+    last_err: object = f"{_URL_STAGE}: not resolvable yet"
     while True:
         attempts += 1
         try:
-            url = resolve_base_url(
+            url, probe_url = _resolve_url_and_probe(
                 client, extension_name, workroom_id=workroom_id, public=public
             )
-            # The readiness probe rides the credentialed platform client, which
-            # refuses off-host URLs (it won't leak the bearer). The public URL
-            # may be off-host (browser-facing), so probe the same-host ingress
-            # endpoint — the route the backend actually serves on — and return
-            # whichever URL the caller asked for.
-            probe_url = (
-                url
-                if not public
-                else resolve_base_url(
-                    client, extension_name, workroom_id=workroom_id, public=False
-                )
-            )
+        except (ValueError, NotFoundError) as exc:
+            last_err = f"{_URL_STAGE}: {exc}"
+        except (APIError, AuthorizationError) as exc:
+            # resolve_base_url lists the workroom's extensions on the platform
+            # API; on a freshly-installed box that call can transiently fail
+            # while the cluster settles — a 5xx/no-response from the gateway or a
+            # 403 before the workroom's rebac grant lands (ENG-7111 sibling).
+            # The 403 arrives either as a plain APIError or, when the body
+            # carries a recognized detail.reason, as an AuthorizationError
+            # subclass (a SIBLING of APIError — e.g.
+            # BrokeredUserNotAllowlistedError while the grant propagates), so
+            # both are caught and classified by status code.
+            # Treat transient ones as "not ready yet" and keep polling; a
+            # non-transient error (401 bad token, 400 bad request) can't clear
+            # on its own, so surface it now instead of burning the whole timeout.
+            if not _is_transient_resolve_error(
+                exc, workroom_scoped=workroom_id is not None
+            ):
+                raise
+            last_err = f"{_URL_STAGE}: {exc}"
+        else:
             if _is_serving(client, probe_url, workroom_id=workroom_id):
                 return url
-            last_err = "ingress published but backend not serving yet (503)"
-        except (ValueError, NotFoundError) as exc:
-            last_err = exc
+            last_err = (
+                f"{_SERVING_STAGE}: ingress '{probe_url}' published but the backend "
+                "is not serving yet (5xx or no response)"
+            )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError(
@@ -253,7 +609,69 @@ def wait_for_base_url(
 
 
 class AgentService(BaseService):
-    """Create and list Kaizen agents within a workroom."""
+    """Create and list Kaizen agents within a workroom.
+
+    Two create paths, one per catalog identity — pick with
+    :func:`agent_contract_for_extension` rather than by hand:
+
+    * :meth:`create_canonical` — ``kaizen`` (canonical). Posts a ``content``
+      envelope; the agent carries no model binding.
+    * :meth:`create` — ``kaizen-legacy`` (v3) only. Posts the flat body with
+      ``agent_config.llm``.
+    """
+
+    def create_canonical(
+        self,
+        definition: AgentDefinition,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Agent:
+        """Create an agent on canonical Kaizen via the ``content`` contract.
+
+        Canonical Kaizen has no per-agent model binding — a model is resolved
+        instance-wide from the ops chat-model setting (see
+        :meth:`KaizenOpsService.set_chat_model`) or chosen per turn by the
+        caller. Bind the model there; passing one here is rejected server-side.
+
+        Args:
+            definition: The agent definition sent as the ``content`` body.
+            base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
+            workroom_id: Workroom to scope the agent to (X-Workroom-Id header).
+
+        Returns:
+            Agent: carries the new agent's ``id`` and content ``version``.
+        """
+        response = self.client._request(
+            "POST",
+            _AGENTS_PATH,
+            base_url=base_url,
+            json={"content": definition.to_content()},
+            headers=_workroom_headers(workroom_id),
+        )
+        return Agent.model_validate(response)
+
+    def delete(
+        self,
+        agent_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> None:
+        """Delete an agent the caller owns (canonical Kaizen; owner-only).
+
+        ``expect_json=False`` guards the 200-with-empty-body case: a 204 is
+        already handled upstream, but an empty 200 would raise a JSON-parse
+        error out of a call whose result is discarded — typically a cleanup
+        ``finally``, where it would mask the caller's real failure.
+        """
+        self.client._request(
+            "DELETE",
+            f"{_AGENTS_PATH}/{agent_id}",
+            base_url=base_url,
+            headers=_workroom_headers(workroom_id),
+            expect_json=False,
+        )
 
     def create(
         self,
@@ -269,6 +687,10 @@ class AgentService(BaseService):
         workroom_id: Optional[Union[str, object]] = None,
     ) -> Agent:
         """Create an agent bound to a model via ``agent_config.llm``.
+
+        This is the **legacy** contract and only ``kaizen-legacy`` accepts it.
+        Canonical Kaizen rejects this body outright (its schema forbids extra
+        fields and requires ``content``); use :meth:`create_canonical` there.
 
         Args:
             base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
@@ -469,7 +891,263 @@ def _reply_from_events(events: List[Dict[str, Any]]) -> Optional[str]:
 
 
 class ConversationService(BaseService):
-    """Create Kaizen conversations (auto-starts the agent sandbox)."""
+    """Drive Kaizen conversations.
+
+    Two turn contracts, one per catalog identity — pick with
+    :func:`agent_contract_for_extension` rather than by hand. They diverge
+    across the whole turn, not just at create:
+
+    * **canonical** (``kaizen``) — :meth:`create_canonical` (no body, an
+      ``Idempotency-Key`` header), :meth:`send_input_canonical` (one
+      ``/inputs`` route replacing send+run, agent selected per input), and an
+      SSE event stream. :meth:`chat_canonical` wraps all three.
+    * **legacy** (``kaizen-legacy``, v3) — :meth:`create` (flat body),
+      :meth:`send_message` + :meth:`run`, and paginated JSON events.
+      :meth:`chat` wraps those.
+
+    The canonical routes do not exist on legacy and vice versa, so crossing the
+    contracts is an HTTP 422 or 404 rather than a degraded success.
+    """
+
+    def create_canonical(
+        self,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> CanonicalConversation:
+        """Open a conversation on canonical Kaizen.
+
+        The route declares no body parameter and requires an ``Idempotency-Key``
+        header; the legacy body fields (``agent_id``, ``max_iterations``,
+        ``stuck_detection``, ``ephemeral``) are rejected outright. No agent is
+        bound here — canonical Kaizen selects one per input, so pass ``agent``
+        to :meth:`send_input_canonical` instead.
+
+        Args:
+            base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
+            workroom_id: Workroom to scope the conversation to.
+            idempotency_key: Stable key for retrying one logical create; a fresh
+                UUID4 is used when omitted.
+
+        Returns:
+            CanonicalConversation: carries the new conversation's ``id``.
+        """
+        response = self.client._request(
+            "POST",
+            _CONVERSATIONS_PATH,
+            base_url=base_url,
+            headers=_idempotency_headers(workroom_id, idempotency_key),
+        )
+        return CanonicalConversation.model_validate(response)
+
+    def send_input_canonical(
+        self,
+        conversation_id: str,
+        message: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        agent: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> ConversationInputAccepted:
+        """Submit a member message and start the agent's run (canonical Kaizen).
+
+        Replaces legacy's :meth:`send_message` + :meth:`run` pair: canonical
+        Kaizen has a single ``/inputs`` route that both enqueues and schedules.
+
+        Returns:
+            ConversationInputAccepted: the ``input_id`` identifying this turn and
+            the ``accepted_position`` to replay the event stream from.
+        """
+        body: Dict[str, Any] = {"kind": "message", "message": message}
+        if agent is not None:
+            body["agent"] = agent
+        response = self.client._request(
+            "POST",
+            f"{_CONVERSATIONS_PATH}/{conversation_id}/inputs",
+            base_url=base_url,
+            json=body,
+            headers=_idempotency_headers(workroom_id, idempotency_key),
+        )
+        return ConversationInputAccepted.model_validate(response)
+
+    def stream_events_canonical(
+        self,
+        conversation_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        after: Optional[int] = None,
+        read_timeout_seconds: float = 30.0,
+    ) -> Any:
+        """Open canonical Kaizen's SSE event stream for a conversation.
+
+        Returns the raw streamed response; the caller owns closing it. ``after``
+        replays durable events from that journal position, which is what makes
+        reading a reply race-free — an agent that finishes before the stream is
+        open still delivers, because the events are replayed rather than missed.
+        """
+        params: Dict[str, Any] = {}
+        if after is not None:
+            params["after"] = after
+        return self.client._request(
+            "GET",
+            f"{_CONVERSATIONS_PATH}/{conversation_id}/events",
+            base_url=base_url,
+            params=params,
+            headers=_workroom_headers(workroom_id),
+            expect_json=False,
+            stream=True,
+            timeout=read_timeout_seconds,
+        )
+
+    def chat_canonical(
+        self,
+        conversation_id: str,
+        message: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        agent: Optional[str] = None,
+        timeout_seconds: Optional[float] = 60.0,
+        idempotency_key: Optional[str] = None,
+    ) -> Optional[str]:
+        """Send a message on canonical Kaizen and return the agent's reply.
+
+        Wraps :meth:`send_input_canonical` and then reads the SSE stream from
+        the accepted position until this turn reaches a terminal event. Used to
+        exercise an agent end to end (proving a freshly seeded agent actually
+        responds, not merely that it was created).
+
+        ``timeout_seconds`` is the wait budget; ``None`` is fire-and-forget —
+        the input is submitted and the method returns ``None`` without opening
+        the stream. Only this turn's events count, so a replayed reply from an
+        earlier turn in a shared conversation is never returned as this one's.
+
+        Raises:
+            ConversationError: the run reached a terminal non-success event.
+            TimeoutError: no terminal event arrived within the budget.
+        """
+        accepted = self.send_input_canonical(
+            conversation_id,
+            message,
+            base_url=base_url,
+            workroom_id=workroom_id,
+            agent=agent,
+            idempotency_key=idempotency_key,
+        )
+        if timeout_seconds is None:
+            return None
+        turn = _CanonicalTurn(
+            conversation_id=conversation_id,
+            input_id=accepted.input_id,
+            base_url=base_url,
+            workroom_id=workroom_id,
+        )
+        return self._await_canonical_reply(
+            turn,
+            after=accepted.accepted_position,
+            deadline=time.monotonic() + timeout_seconds,
+        )
+
+    def _await_canonical_reply(
+        self,
+        turn: "_CanonicalTurn",
+        *,
+        after: int,
+        deadline: float,
+    ) -> Optional[str]:
+        """Read this turn's events until it ends, reconnecting if the stream drops.
+
+        A canonical event stream can close before the turn finishes — an ingress
+        idle timeout, a proxy drop, or the server's own degraded-fanout path.
+        That is recoverable rather than fatal precisely because the stream
+        replays from a journal position, so reopen from the last position seen
+        and keep going while budget remains.
+        """
+        reply: Optional[str] = None
+        cursor = after
+        open_error: Optional[Exception] = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                response = self.stream_events_canonical(
+                    turn.conversation_id,
+                    base_url=turn.base_url,
+                    workroom_id=turn.workroom_id,
+                    after=cursor,
+                    # Floor the socket read so a zero/near-zero budget never
+                    # reads as "no timeout" to the transport.
+                    read_timeout_seconds=max(remaining, 1.0),
+                )
+            except APIError as exc:
+                # The client maps every transport fault at connect time onto
+                # APIError, so a blip while (re)opening arrives here rather than
+                # out of the iterator. It is retryable while budget remains;
+                # aborting the turn on it would make a momentary blip
+                # indistinguishable from a dead agent.
+                open_error = exc
+                _pause_before_reconnect(deadline)
+                continue
+            open_error = None
+            try:
+                done, reply, cursor = self._read_turn_events(
+                    response, turn, reply=reply, cursor=cursor, deadline=deadline
+                )
+            finally:
+                response.close()
+            if done:
+                return reply
+            _pause_before_reconnect(deadline)
+        if open_error is not None:
+            # Budget ran out while the stream could not even be opened: report
+            # the transport cause rather than an unqualified timeout.
+            raise ConversationError(
+                f"Could not read the event stream for conversation "
+                f"{turn.conversation_id} (input {turn.input_id}): {open_error}"
+            ) from open_error
+        raise TimeoutError(
+            f"No agent reply on conversation {turn.conversation_id} within the "
+            f"wait budget (input {turn.input_id} never reached a terminal event)."
+        )
+
+    def _read_turn_events(
+        self,
+        response: Any,
+        turn: "_CanonicalTurn",
+        *,
+        reply: Optional[str],
+        cursor: int,
+        deadline: float,
+    ) -> Tuple[bool, Optional[str], int]:
+        """Consume one event stream; return (turn_finished, reply, next cursor).
+
+        Returning instead of raising on a dropped stream is what lets the caller
+        reconnect. Transport failures are re-raised as the two exception types
+        this service's contract documents, so a caller catching those does not
+        get a bare ``requests`` error through the seeder CLI.
+        """
+        for event, payload in _safe_sse_events(response, turn):
+            cursor = _event_position(payload, cursor)
+            if _is_turn_event(payload, turn.input_id):
+                if event == _CANONICAL_REPLY_EVENT:
+                    reply = _append_reply_text(reply, payload)
+                elif event in _CANONICAL_TERMINAL_EVENTS:
+                    return True, _canonical_terminal_reply(event, payload, reply), cursor
+            # The budget check runs on EVERY frame, not just this turn's: the
+            # stream also carries conversation-level keepalive and presence
+            # frames, and gating the check behind the turn filter would let a
+            # stalled run hold the loop open for as long as the server keeps
+            # sending them. Checking after the frame is handled also means a
+            # terminal event that arrived inside the budget is never discarded
+            # for being dequeued a hair past it.
+            if time.monotonic() >= deadline:
+                return False, reply, cursor
+        # Stream ended without a terminal event — recoverable, not a timeout.
+        return False, reply, cursor
 
     def create(
         self,
@@ -550,8 +1228,7 @@ class ConversationService(BaseService):
         """
         if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(
-                "timeout_seconds must be a finite zero or positive number "
-                "of seconds."
+                "timeout_seconds must be a finite zero or positive number of seconds."
             )
 
         deadline = time.monotonic() + timeout_seconds
@@ -695,8 +1372,7 @@ class ConversationService(BaseService):
         """
         if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(
-                "timeout_seconds must be a finite zero or positive number "
-                "of seconds."
+                "timeout_seconds must be a finite zero or positive number of seconds."
             )
         if not math.isfinite(poll_interval_seconds) or poll_interval_seconds < 0:
             raise ValueError(
@@ -833,3 +1509,115 @@ class ConversationService(BaseService):
             # max(0, …) keeps zero poll intervals bounded by the timeout rather
             # than raising from time.sleep().
             time.sleep(max(0.0, min(poll_interval_seconds, remaining)))
+
+
+class KaizenOpsService(BaseService):
+    """Operator settings on a canonical Kaizen instance."""
+
+    def _set_role_model(
+        self,
+        path: str,
+        deployment_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]],
+    ) -> Dict[str, Any]:
+        """PUT one model-role binding and return the settings view it answers with.
+
+        Kaizen resolves the endpoint and display metadata from the deployment
+        itself — only the deployment id crosses the wire, never an endpoint or
+        a credential. Every role route takes the same selector body, so the
+        role is carried entirely by ``path``.
+        """
+        return self.client._request(
+            "PUT",
+            path,
+            base_url=base_url,
+            json={"deployment_id": deployment_id},
+            headers=_workroom_headers(workroom_id),
+        )
+
+    def set_chat_model(
+        self,
+        deployment_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Dict[str, Any]:
+        """Point the instance's chat role at a Kamiwaza model deployment.
+
+        Canonical Kaizen binds models per instance, not per agent, so this is
+        how a caller gives its agents a backing model.
+
+        Requires an admin-ranked caller and an instance started with its config
+        store enabled; without either, Kaizen answers 4xx rather than silently
+        leaving the previous binding in place.
+
+        Args:
+            deployment_id: Kamiwaza deployment to serve chat.
+            base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
+            workroom_id: Workroom scope (X-Workroom-Id header).
+
+        Returns:
+            The instance's model-settings view after the update.
+        """
+        return self._set_role_model(
+            _OPS_CHAT_MODEL_PATH,
+            deployment_id,
+            base_url=base_url,
+            workroom_id=workroom_id,
+        )
+
+    def set_embedding_model(
+        self,
+        deployment_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Dict[str, Any]:
+        """Point the instance's embedding role at a Kamiwaza model deployment.
+
+        Binding chat alone is not enough: with no embedding endpoint selected,
+        Kaizen answers semantic search by falling back to lexical matching and
+        logs a warning, so an instance that looks healthy quietly retrieves
+        worse. Selecting an embedding deployment is what turns semantic
+        retrieval on.
+
+        Same admin-and-config-store requirements as :meth:`set_chat_model`.
+
+        Args:
+            deployment_id: Kamiwaza deployment to serve embeddings. It must
+                advertise the embeddings capability; Kaizen answers 4xx when it
+                does not, rather than binding a model that cannot embed.
+            base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
+            workroom_id: Workroom scope (X-Workroom-Id header).
+
+        Returns:
+            The instance's model-settings view after the update.
+        """
+        return self._set_role_model(
+            _OPS_EMBEDDING_MODEL_PATH,
+            deployment_id,
+            base_url=base_url,
+            workroom_id=workroom_id,
+        )
+
+    def get_model_settings(
+        self,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Dict[str, Any]:
+        """Read the instance's current model-role settings.
+
+        Same view :meth:`set_chat_model` returns, so it doubles as a read-back
+        when a write answers without a body (a 204 is a perfectly ordinary
+        answer to a settings PUT) and the caller still needs to confirm what
+        got bound.
+        """
+        return self.client._request(
+            "GET",
+            _OPS_MODELS_PATH,
+            base_url=base_url,
+            headers=_workroom_headers(workroom_id),
+        )

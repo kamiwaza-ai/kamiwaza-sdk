@@ -548,6 +548,12 @@ class TestRunnerEnvPassthroughOverlay:
         monkeypatch.setenv("KZ_EXT_DEV_LOCAL_AUTH", "1")
         monkeypatch.setenv("KAMIWAZA_BEARER_TOKEN", "stale-token-from-shell")
         monkeypatch.setenv("KAMIWAZA_DEV_WORKROOM_ID", "stale-workroom")
+        monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
+        monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/apps/deployed")
+        monkeypatch.setenv(
+            "KAMIWAZA_APP_PATH_URL",
+            "https://cluster.test/runtime/apps/deployed",
+        )
 
         compose_data = {"services": {"frontend": {"build": "./frontend"}}}
         compose_path = tmp_path / "docker-compose.yml"
@@ -601,6 +607,9 @@ class TestRunnerEnvPassthroughOverlay:
         assert "KZ_EXT_DEV_LOCAL_AUTH" not in captured_env
         assert "KAMIWAZA_BEARER_TOKEN" not in captured_env
         assert "KAMIWAZA_DEV_WORKROOM_ID" not in captured_env
+        assert captured_env["KAMIWAZA_ROUTING_MODE"] == "port"
+        assert captured_env["KAMIWAZA_APP_PATH"] == ""
+        assert captured_env["KAMIWAZA_APP_PATH_URL"] == ""
 
 
 @pytest.mark.unit
@@ -695,6 +704,25 @@ class TestRunnerLocalComposeOverride:
         # developer's file would be a nasty surprise.
         assert override_path.is_file(), "user's override file was deleted in cleanup"
 
+    def test_runner_loads_template_dev_overlay_before_developer_override(
+        self, tmp_path, monkeypatch
+    ):
+        info = self._make_info(tmp_path, "docker-compose.yml")
+        template_override = tmp_path / "kamiwaza-compose.dev.yml"
+        template_override.write_text(
+            "services:\n  frontend:\n    build:\n      target: dev\n"
+        )
+        developer_override = tmp_path / "docker-compose.override.yml"
+        developer_override.write_text("services:\n  frontend:\n    environment: []\n")
+
+        runner, captured = self._make_runner(monkeypatch, info)
+        assert runner.run(detach=False, auth=False) == 0
+
+        cmd = captured["cmd"]
+        assert cmd.index(str(info.compose_path)) < cmd.index(str(template_override))
+        assert cmd.index(str(template_override)) < cmd.index(str(developer_override))
+        assert developer_override.is_file()
+
     def test_runner_does_not_add_override_when_absent(self, tmp_path, monkeypatch):
         info = self._make_info(tmp_path, "docker-compose.yml")
         # No override file written.
@@ -705,6 +733,35 @@ class TestRunnerLocalComposeOverride:
         # Exactly one `-f` (the base compose file) — no phantom override.
         assert cmd.count("-f") == 1, f"expected only the base `-f`. cmd={cmd!r}"
         assert str(info.compose_path) in cmd
+
+    def test_template_dev_overlay_adapts_renamed_and_removed_services(self, tmp_path):
+        from pathlib import Path
+
+        import yaml as _yaml
+
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        info = self._make_info(tmp_path, "docker-compose.yml")
+        info.compose_data["services"] = {
+            "web": {"build": "./frontend", "ports": ["3000"]},
+        }
+        (tmp_path / "kamiwaza-compose.dev.yml").write_text(
+            "services:\n"
+            "  frontend:\n"
+            "    build:\n"
+            "      target: dev\n"
+            "  backend:\n"
+            "    command: [python, -m, app]\n"
+        )
+        temporary_files = []
+
+        override = DevLocalRunner._prepare_template_dev_override(info, temporary_files)
+
+        assert override is not None
+        adapted = _yaml.safe_load(Path(override).read_text())
+        assert adapted == {"services": {"web": {"build": {"target": "dev"}}}}
+        assert temporary_files == [override]
+        Path(override).unlink()
 
     def test_runner_loads_override_for_compose_yml_base(self, tmp_path, monkeypatch):
         """PR #131 review High #1 — the override name must mirror the
@@ -893,7 +950,7 @@ class TestParsePortMapping:
     def test_container_only(self):
         # Bare container-port spec — host port is auto-assigned by Docker.
         # (ENG-3889 P2: scaffolded compose now uses bare specs to avoid
-        # host-port collisions with the kind-cluster control plane.)
+        # host-port collisions with the local cluster control plane.)
         assert parse_port_mapping("3000") == (None, 3000)
 
     def test_with_protocol(self):
@@ -912,16 +969,22 @@ class TestParsePortMapping:
 @pytest.mark.unit
 class TestIsPortAvailable:
     def test_available_port(self):
-        # High ephemeral port should be available
-        assert is_port_available(59123) is True
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("0.0.0.0", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        assert is_port_available(port) is True
 
     def test_occupied_port_via_bind(self):
         import socket
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("0.0.0.0", 59124))
+        sock.bind(("0.0.0.0", 0))
         try:
-            assert is_port_available(59124) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -930,10 +993,10 @@ class TestIsPortAvailable:
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", 59125))
+        sock.bind(("0.0.0.0", 0))
         sock.listen(1)
         try:
-            assert is_port_available(59125) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -959,9 +1022,12 @@ class TestIsPortAvailable:
         except (AttributeError, OSError):
             pass
         try:
-            sock.bind(("::1", 59126))
+            try:
+                sock.bind(("::1", 0))
+            except OSError as exc:
+                pytest.skip(f"IPv6 loopback bind unavailable: {exc}")
             sock.listen(1)
-            assert is_port_available(59126) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -988,9 +1054,12 @@ class TestIsPortAvailable:
         except (AttributeError, OSError):
             pass
         try:
-            sock.bind(("::1", 59127))
+            try:
+                sock.bind(("::1", 0))
+            except OSError as exc:
+                pytest.skip(f"IPv6 loopback bind unavailable: {exc}")
             # No listen() — connect probe will get ECONNREFUSED.
-            assert is_port_available(59127) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -1069,18 +1138,19 @@ class TestResolvePortConflicts:
         import socket
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("0.0.0.0", 59302))
+        sock.bind(("0.0.0.0", 0))
         try:
+            occupied_port = sock.getsockname()[1]
             compose = {
                 "services": {
-                    "frontend": {"ports": ["59302:3000"]},
+                    "frontend": {"ports": [f"{occupied_port}:3000"]},
                 }
             }
             remaps = resolve_port_conflicts(compose)
             assert "frontend" in remaps
             orig, new = remaps["frontend"]
-            assert orig == 59302
-            assert new > 59302
+            assert orig == occupied_port
+            assert new > occupied_port
         finally:
             sock.close()
 

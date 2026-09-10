@@ -33,6 +33,11 @@ class UserInfo(BaseModel):
     sub: str
 
 
+def _split_header_list(headers: Mapping[str, str], key: str) -> List[str]:
+    raw = headers.get(key, "") or ""
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 class ValidationHeaders(BaseModel):
     """Structured representation of ForwardAuth validation headers."""
 
@@ -40,25 +45,45 @@ class ValidationHeaders(BaseModel):
     user_email: Optional[str] = Field(default=None, alias="x-user-email")
     user_name: Optional[str] = Field(default=None, alias="x-user-name")
     user_roles: List[str] = Field(default_factory=list, alias="x-user-roles")
+    user_groups: List[str] = Field(default_factory=list, alias="x-user-groups")
+    user_attributes_hash: Optional[str] = Field(
+        default=None, alias="x-user-attributes-hash"
+    )
+    user_system_high: Optional[str] = Field(default=None, alias="x-user-system-high")
+    workroom_id: Optional[str] = Field(default=None, alias="x-workroom-id")
+    user_workroom_id: Optional[str] = Field(default=None, alias="x-user-workroom-id")
+    user_workroom_role: Optional[str] = Field(
+        default=None, alias="x-user-workroom-role"
+    )
     auth_token: Optional[str] = Field(default=None, alias="x-auth-token")
+    auth_azp: Optional[str] = Field(default=None, alias="x-auth-azp")
     request_id: Optional[str] = Field(default=None, alias="x-request-id")
     signature: Optional[str] = Field(default=None, alias="x-user-signature")
+    signature_stable: Optional[str] = Field(
+        default=None, alias="x-user-signature-stable"
+    )
     signature_ts: Optional[str] = Field(default=None, alias="x-user-signature-ts")
 
     @classmethod
     def from_headers(cls, headers: Mapping[str, str]) -> "ValidationHeaders":
         # Normalise header keys to lower-case for lookup
         lowered = {key.lower(): value for key, value in headers.items()}
-        roles_raw = lowered.get("x-user-roles", "") or ""
-        roles = [role.strip() for role in roles_raw.split(",") if role.strip()]
         data: Dict[str, Any] = {
             "x-user-id": lowered.get("x-user-id"),
             "x-user-email": lowered.get("x-user-email"),
             "x-user-name": lowered.get("x-user-name"),
-            "x-user-roles": roles,
+            "x-user-roles": _split_header_list(lowered, "x-user-roles"),
+            "x-user-groups": _split_header_list(lowered, "x-user-groups"),
+            "x-user-attributes-hash": lowered.get("x-user-attributes-hash"),
+            "x-user-system-high": lowered.get("x-user-system-high"),
+            "x-workroom-id": lowered.get("x-workroom-id"),
+            "x-user-workroom-id": lowered.get("x-user-workroom-id"),
+            "x-user-workroom-role": lowered.get("x-user-workroom-role"),
             "x-auth-token": lowered.get("x-auth-token"),
+            "x-auth-azp": lowered.get("x-auth-azp"),
             "x-request-id": lowered.get("x-request-id"),
             "x-user-signature": lowered.get("x-user-signature"),
+            "x-user-signature-stable": lowered.get("x-user-signature-stable"),
             "x-user-signature-ts": lowered.get("x-user-signature-ts"),
         }
         return cls.model_validate(data)

@@ -9,24 +9,31 @@ open string the platform resolves against the catalog, and ``config`` is an opaq
 dict the platform validates against the connector's manifest config_schema, so new
 connectors need no SDK change. The per-user OAuth connection is a separate
 interactive flow and is intentionally not wrapped here.
+
+The workroom-scoped *runtime* surface an ordinary member uses — surface catalog,
+connection verification, browse, search, and content fetch — is composed in from
+:class:`~kamiwaza_sdk.services.connector_surfaces.ConnectorSurfaceMixin`.
 """
 
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
 from .base_service import BaseService
+from .connector_surfaces import ConnectorSurfaceMixin
 from ..exceptions import APIError, NotFoundError
 from ..schemas.connectors import (
     AvailableConnector,
+    CatalogConnector,
     Connector,
+    ConnectorCatalogRegister,
     ConnectorCreate,
     ConnectorSubscriptionCreate,
     ConnectorUpdate,
 )
 
 
-class ConnectorService(BaseService):
-    """Manage cluster-wide connector registrations."""
+class ConnectorService(BaseService, ConnectorSurfaceMixin):
+    """Manage cluster-wide connector registrations and read their surfaces."""
 
     def list(self) -> List[Connector]:
         """List registered connectors."""
@@ -89,6 +96,21 @@ class ConnectorService(BaseService):
             "/connectors", json=request.model_dump(mode="json")
         )
         return Connector.model_validate(response)
+
+    def register_type(self, request: ConnectorCatalogRegister) -> CatalogConnector:
+        """Register a connector *type* in the cluster's DB-backed catalog (admin).
+
+        Parity with registering an app template: stores the connector's manifest so
+        it surfaces in ``GET /connectors/catalog`` as a configurable entry the admin
+        can then set up (fill config + create the instance). Idempotent per
+        ``connector_type`` — re-registering updates the stored manifest. Registers
+        the type only; it deploys no workload and stores no config.
+        """
+        response = self.client.post(
+            "/connectors/catalog",
+            json=request.model_dump(mode="json", exclude_none=True),
+        )
+        return CatalogConnector.model_validate(response)
 
     def subscribe(
         self,

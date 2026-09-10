@@ -1,4 +1,5 @@
 import { ENVELOPE_AUTH_HEADERS } from "../_shared/envelopeHeaders";
+import { resolveRuntimeRouting, withAppPath } from "../runtime/shared";
 import type { ProxyConfig } from "./types";
 
 /** Headers to forward from the incoming request to the backend.
@@ -32,8 +33,9 @@ const FORWARD_REQUEST_HEADERS = new Set<string>([
     // (``x-user-id`` + ``authorization``/``x-auth-token``); ``cookie``
     // is forwarded only because some backend services use the platform
     // session cookie for compatibility with the legacy SDK proxy. The
-    // response side strips ``set-cookie`` (DENY_RESPONSE_HEADERS), so a
-    // backend service cannot mint or rotate cookies through this proxy.
+    // response side strips ``set-cookie`` unless a proxy instance explicitly
+    // opts a trusted session route in, where cookies are rebased to the
+    // deployment path.
     // If your extension doesn't need cookie passthrough, override
     // ``FORWARD_REQUEST_HEADERS`` in your ProxyConfig — round-6 H4
     // tracks tightening this default in a follow-up once the legacy
@@ -81,6 +83,30 @@ function filterResponseHeaders(headers: Headers): Record<string, string> {
     return out;
 }
 
+const DEFAULT_SET_COOKIE_PATHS: readonly string[] = [];
+
+/**
+ * Resolve the deployment's runtime app path from the same fail-closed
+ * environment contract used by the runtime-config route.
+ */
+function resolveRuntimeAppPath(): string {
+    return resolveRuntimeRouting(process.env).appPath;
+}
+
+/** Remove at most one leading, segment-boundary occurrence of prefix. */
+function stripOnce(path: string, prefix: string): string {
+    if (prefix === "") return path;
+    if (path === prefix) return "/";
+    if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length);
+    return path;
+}
+
+/** Normalize a route for exact matching while tolerating a trailing slash. */
+function normalizeExactPath(path: string): string {
+    const normalized = path.replace(/\/+$/, "");
+    return normalized || "/";
+}
+
 /**
  * Validate and resolve the proxy target URL.
  *
@@ -114,8 +140,13 @@ function resolveTarget(target: string, path: string, search: string): string {
     // Normalize: ensure path starts with /
     const safePath = path.startsWith("/") ? path : `/${path}`;
 
-    const targetOrigin = new URL(target).origin;
-    const resolved = new URL(`${targetOrigin}${safePath}${search}`);
+    const configuredTarget = new URL(target);
+    const targetOrigin = configuredTarget.origin;
+    const basePath = configuredTarget.pathname.replace(/\/+$/, "");
+    const resolved = new URL(configuredTarget);
+    resolved.pathname = `${basePath}${safePath}`;
+    resolved.search = search;
+    resolved.hash = "";
 
     // Final origin check — resolved URL must match the configured target
     if (resolved.origin !== targetOrigin) {
@@ -125,22 +156,95 @@ function resolveTarget(target: string, path: string, search: string): string {
     return resolved.toString();
 }
 
-function makeHandler(method: string, config: ProxyConfig): RouteHandler {
+function scopeSetCookie(cookie: string, appPath: string): string {
+    const cookiePath = appPath || "/";
+    const [pair, ...rawAttributes] = cookie.split(";");
+    const equals = pair.indexOf("=");
+    const cookieName = (equals === -1 ? pair : pair.slice(0, equals)).trim();
+    if (cookiePath !== "/" && cookieName.startsWith("__Host-")) {
+        throw new Error(
+            `cannot scope ${cookieName} to ${cookiePath}: __Host- cookies require Path=/`,
+        );
+    }
+    // Attribute names are whitespace-trimmed by browsers. Parse them before
+    // filtering so forms such as `Domain =example.com` cannot bypass scope
+    // hardening, then append one authoritative deployment Path.
+    const safeAttributes = rawAttributes
+        .map((attribute) => attribute.trim())
+        .filter((attribute) => {
+            const separator = attribute.indexOf("=");
+            const name = (separator === -1 ? attribute : attribute.slice(0, separator))
+                .trim()
+                .toLowerCase();
+            return name !== "path" && name !== "domain";
+        })
+        .filter(Boolean);
+    return [pair.trim(), ...safeAttributes, `Path=${cookiePath}`].join("; ");
+}
+
+function rebaseLocation(
+    headers: Headers,
+    appPath: string,
+    configuredTarget: URL,
+    upstreamTarget: URL,
+): boolean {
+    const location = headers.get("location");
+    if (location == null) {
+        return true;
+    }
+    if (location.startsWith("//")) {
+        return false;
+    }
+    if (/[\s\\]/.test(location)) {
+        return false;
+    }
+    const targetPath = configuredTarget.pathname.replace(/\/+$/, "");
+    let redirected: URL;
+    try {
+        redirected = new URL(location, upstreamTarget);
+    } catch {
+        return false;
+    }
+    if (redirected.origin !== configuredTarget.origin) {
+        return false;
+    }
+    const redirectPath = stripOnce(redirected.pathname, targetPath).replace(/^\/+/, "/");
+    const local = `${redirectPath}${redirected.search}${redirected.hash}`;
+    headers.set("location", withAppPath(local, appPath));
+    return true;
+}
+
+function makeHandler(
+    method: string,
+    config: ProxyConfig,
+    runtimeAppPath: string,
+): RouteHandler {
     // Pre-parse the target to fail fast on bad config
-    const targetOrigin = new URL(config.target).origin;
+    const configuredTarget = new URL(config.target);
 
     return async (request: NextRequest) => {
         const url = new URL(request.url);
-        let path = url.pathname;
+        // Prefer Next's normalized URL (basePath already removed) when the
+        // handler runs inside Next; fall back to the raw request URL.
+        const nextUrl = (request as { nextUrl?: URL }).nextUrl;
+        let path = nextUrl?.pathname ?? url.pathname;
+        const search = nextUrl?.search ?? url.search;
+
+        // Strip the deployment's runtime app path (default on). Next's own
+        // basePath routing usually strips it first, making this a no-op; the
+        // raw-URL path covers everything else.
+        if (config.stripRuntimeAppPath !== false) {
+            path = stripOnce(path, runtimeAppPath);
+        }
 
         // Strip the configured prefix so the backend sees clean paths.
-        if (config.pathPrefix && path.startsWith(config.pathPrefix)) {
-            path = path.slice(config.pathPrefix.length) || "/";
+        if (config.pathPrefix) {
+            path = stripOnce(path, config.pathPrefix.replace(/\/+$/, ""));
         }
 
         let target: string;
         try {
-            target = resolveTarget(config.target, path, url.search);
+            target = resolveTarget(config.target, path, search);
         } catch {
             return new Response("Bad Request", { status: 400 });
         }
@@ -162,10 +266,55 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
         const upstream = await fetch(target, init);
 
         // Stream the response back, filtering sensitive headers.
+        const responseHeaders = new Headers(filterResponseHeaders(upstream.headers));
+        if (
+            !rebaseLocation(
+                responseHeaders,
+                runtimeAppPath,
+                configuredTarget,
+                new URL(target),
+            )
+        ) {
+            return new Response("Bad Gateway: untrusted upstream redirect", {
+                status: 502,
+                headers: { "cache-control": "no-store" },
+            });
+        }
+
+        // Set-Cookie passes through only for the explicit session-route
+        // allowlist (matched on the backend-facing path), and only from the
+        // configured trusted backend.
+        const cookiePaths = config.setCookiePaths ?? DEFAULT_SET_COOKIE_PATHS;
+        const normalizedPath = normalizeExactPath(path);
+        if (
+            cookiePaths.some(
+                (cookiePath) => normalizeExactPath(cookiePath) === normalizedPath,
+            )
+        ) {
+            try {
+                for (const cookie of upstream.headers.getSetCookie()) {
+                    responseHeaders.append(
+                        "set-cookie",
+                        scopeSetCookie(cookie, runtimeAppPath),
+                    );
+                }
+            } catch (error) {
+                console.error(
+                    "[kamiwaza-runtime] rejected an upstream cookie that cannot " +
+                        "be scoped to this deployment",
+                    error,
+                );
+                return new Response("Bad Gateway: incompatible upstream cookie", {
+                    status: 502,
+                    headers: { "cache-control": "no-store" },
+                });
+            }
+        }
+
         return new Response(upstream.body, {
             status: upstream.status,
             statusText: upstream.statusText,
-            headers: filterResponseHeaders(upstream.headers),
+            headers: responseHeaders,
         });
     };
 }
@@ -186,12 +335,13 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
  * ```
  */
 export function createProxyHandlers(config: ProxyConfig) {
+    const runtimeAppPath = resolveRuntimeAppPath();
     return {
-        GET: makeHandler("GET", config),
-        POST: makeHandler("POST", config),
-        PUT: makeHandler("PUT", config),
-        DELETE: makeHandler("DELETE", config),
-        PATCH: makeHandler("PATCH", config),
+        GET: makeHandler("GET", config, runtimeAppPath),
+        POST: makeHandler("POST", config, runtimeAppPath),
+        PUT: makeHandler("PUT", config, runtimeAppPath),
+        DELETE: makeHandler("DELETE", config, runtimeAppPath),
+        PATCH: makeHandler("PATCH", config, runtimeAppPath),
     };
 }
 

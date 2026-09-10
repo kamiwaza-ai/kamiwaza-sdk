@@ -135,7 +135,7 @@ class TestDoctorRegistryChecks:
         assert "https://registry.kamiwaza.test/v2/" in result.message
 
     def test_registry_endpoint_loopback_uses_http_first_and_skips_verify(self):
-        """Loopback dev registries (k0s/kind) speak plain HTTP and almost
+        """Loopback development registries speak plain HTTP and almost
         always present a self-signed cert if HTTPS is even reachable. Probe
         order is HTTP-first, and the HTTPS fallback must pass ``verify=False``
         without leaking ``InsecureRequestWarning`` to stderr."""
@@ -537,9 +537,8 @@ class TestDoctorRegistryChecks:
         assert insecure_check.status == "fail"
 
     @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
-    @patch("kamiwaza_extensions.registry_resolution.detect_kind_registry")
     def test_registry_readiness_checks_non_split_docker_insecure_registry(
-        self, mock_kind, mock_core, tmp_path
+        self, mock_core, tmp_path
     ):
         """Doctor must catch same-registry insecure Docker pushes too.
 
@@ -548,7 +547,6 @@ class TestDoctorRegistryChecks:
         insecure-registry configuration before it will push HTTP to that host."""
 
         mock_core.return_value = None
-        mock_kind.return_value = None
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         checker._conn_mgr.get_active_connection = MagicMock(
             return_value=MagicMock(
@@ -717,16 +715,45 @@ class TestDoctorExtensionChecks:
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_cli_version(">=99.0.0")
         assert result.status == "fail"
+        assert "bundles a compatible kz-ext capability" in result.fix
+        assert "kamiwaza-sdk>=99.0.0" not in result.fix
+
+    def test_extension_context_rejects_undeclared_compose_capability(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "kamiwaza.json").write_text(
+            json.dumps(
+                {
+                    "name": "capability-test",
+                    "kz_ext_version": ">=0.1.0,<1.0.0",
+                }
+            )
+        )
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n  app:\n    command: [serve]\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+
+        results = checker._check_extension_context()
+
+        compatibility = next(
+            result
+            for result in results
+            if result.name == "CLI version compatibility"
+        )
+        assert compatibility.status == "fail"
+        assert "compose.services.*.command requires kz_ext_version '>=0.2.0'" in (
+            compatibility.message
+        )
+        assert "Raise kz_ext_version" in compatibility.fix
 
     def test_python_runtime_lib_found(self, tmp_path):
         req_file = tmp_path / "requirements.txt"
         # Use a range that fits the current compat bundle window
-        # (`>=0.4,<0.5` for Python at time of writing — round-9 raised
-        # the floor when ``_url`` was promoted to a public ``url``
-        # module that scaffolded extensions import). PR-86 H7/M6 made
-        # this check range-vs-range accurate — anything below 0.4 will
-        # now correctly warn as below the floor.
-        req_file.write_text("kamiwaza-extensions-lib>=0.4.0,<0.5\nfastapi\n")
+        # (`>=0.5,<0.6` for Python at time of writing) so generated apps
+        # can rely on the runtime relocation helpers.
+        req_file.write_text("kamiwaza-extensions-lib>=0.5.0,<0.6\nfastapi\n")
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_python_runtime_lib(req_file)
         assert result.status == "pass"
@@ -741,7 +768,7 @@ class TestDoctorExtensionChecks:
     def test_ts_runtime_lib_found(self, tmp_path):
         pkg_file = tmp_path / "package.json"
         pkg_file.write_text(
-            json.dumps({"dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"}})
+            json.dumps({"dependencies": {"@kamiwaza-ai/extensions-lib": "^0.5.0"}})
         )
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_ts_runtime_lib(pkg_file)

@@ -9,6 +9,7 @@ M0 establishes the shared pytest scaffolding so every feature ships with determi
 - `contract` – schema/fixture verification against recorded API responses.
 - `integration` – exercises local dependencies (Docker/MinIO, seeded fixtures).
 - `live` – talks to a running Kamiwaza deployment (defaults to `https://localhost/api`).
+- `diffusion` – deploys a DiffusionEngine and generates real images through the SDK's OpenAI-compatible client.
 - `e2e` – multi-step workflows spanning ingest → catalog → retrieval, typically live.
 
 Enable strict marker checking via `pytest.ini`, so new suites must opt into at least one layer.
@@ -28,16 +29,70 @@ pytest -m "integration and not live"
 
 # Live smoke tests (needs running Kamiwaza server)
 pytest -m "integration and live" --live-base-url https://localhost/api --live-username admin --live-password kamiwaza
+
+# Run only the cross-platform DiffusionEngine proof.
+make test-diffusion-live
+
+# Explicitly omit diffusion from a full integration run.
+pytest -m integration --skip-diffusion
 ```
 
 `--live-base-url`, `--live-api-key`, `--live-username`, and `--live-password` override the defaults pulled from `KAMIWAZA_BASE_URL`, `KAMIWAZA_API_KEY`, `KAMIWAZA_USERNAME`, and `KAMIWAZA_PASSWORD`. When no API key is provided the fixtures fall back to password auth (defaulting to `admin` / `kamiwaza`, which may not match your local deployment). Live/integration tests automatically skip when container runtime access, server health, or credentials are missing, so CI can include them as optional jobs.
 
 Some live integration tests exercise admin-only mutation paths. For those tests, prefer supplying an admin-scoped PAT via `KAMIWAZA_API_KEY` instead of relying on the default session PAT minted from username/password bootstrap.
 
+Diffusion coverage is included in `pytest -m integration` by default. The
+portable fail-closed lane deploys `dg845/tiny-random-stable-diffusion`; the
+accelerated lane deploys Qwen Image and Qwen Image Edit, including a real
+source PNG and mask; and a two-NVIDIA-GPU lane deploys the Qwen DFloat11 target
+and requires an API-observable split device map. Qwen runs on an Apple Silicon
+runner or reported NVIDIA/AMD capacity. The split lane skips with the standard
+capability reason unless the cluster reports at least two NVIDIA GPUs. Use
+`--skip-diffusion` or `KAMIWAZA_SKIP_DIFFUSION=1` only as an explicit operator
+choice.
+
+`make test-diffusion-live` first sources `scripts/prepare_diffusion_live.sh`.
+On macOS the default `auto`/Metal path creates the checked-out platform's
+user-space `diffusion-venv` and verifies MPS. Explicit CPU or NVIDIA backends on
+macOS, and the auto-detected NVIDIA or CPU backend on Linux, build the current
+runtime source, push it to the KZUAT registry, and export the cluster-pullable image. Set
+`KAMIWAZA_PLATFORM_ROOT` when the platform checkout is not the SDK's sibling.
+An explicit `KAMIWAZA_TEST_DIFFUSION_IMAGE` remains available for ROCm, Intel,
+Spark, or fleet-specific images. Container builds automatically use the
+chainlogin-managed Docker config when present; override it with
+`KAMIWAZA_DIFFUSION_DOCKER_CONFIG`. Kubernetes selects images from its trusted
+operator catalog rather than model configuration, so preparation temporarily
+installs the selected image into `core-config` and rolls the scheduler.
+`make test-diffusion-live` restores the prior catalog through an exit trap,
+including after failure. Manual runs must call `cleanup_diffusion_live`.
+Agents can use `scripts/run_diffusion_live.sh` directly; extra arguments replace
+the targeted pytest defaults, so passing `-m integration ...` runs the full
+suite inside the same prepare/cleanup lifecycle. Each run advertises a
+timestamped `/tmp/kzsdk-diffusion-evidence-*` directory. It contains generated
+PNGs (plus masked-edit source and mask PNGs) and a redacted JSON manifest with
+model/runtime identity, request controls, dimensions, and SHA-256 hashes.
+
+The inference tests choose one model/engine/quantization target from the live
+cluster inventory. NVIDIA selects vLLM, complete Apple Silicon inventory selects
+MLX, and CPU-only, mixed, or incomplete inventory selects llamacpp/GGUF. Override
+the entire target explicitly with `KAMIWAZA_TEST_LLM_REPO` plus
+`KAMIWAZA_TEST_LLM_ENGINE` and optional `KAMIWAZA_TEST_LLM_QUANT`; this takes
+precedence over hardware selection and is the fleet/topology integration seam.
+An explicit target is required: download or deployment failure fails the suite
+instead of being reported as a capability skip.
+Override only the automatically selected repositories with `KAMIWAZA_TEST_MLX_LLM_REPO`,
+`KAMIWAZA_TEST_VLLM_LLM_REPO`, or `KAMIWAZA_TEST_GGUF_LLM_REPO`. Context tests
+also accept `KAMIWAZA_CONTEXT_LLM_REPO`, `KAMIWAZA_CONTEXT_LLM_ENGINE`, and
+`KAMIWAZA_CONTEXT_LLM_QUANTIZATION`; the latter defaults to `q6_k` for an
+explicit context repository and otherwise inherits the shared target. An
+explicit context repository is also required and fails closed.
+
 ## Shared Fixtures
 - `dummy_client` – lightweight HTTP stub for unit tests (records calls, replays canned responses).
 - `client_factory` – builds real `KamiwazaClient` instances with consistent defaults.
-- `qwen_model_id` – canonical `mlx-community/Qwen3-4B-4bit` identifier for download/deploy tests; keep plumbing ready for a GGUF mirror.
+- `deployable_model_target` – platform-compatible, overrideable model repository,
+  engine, and quantization used by the deployability probe, serving workflow,
+  and CLI deployment test.
 - `ingestion_environment` – spins up the MinIO docker stack and seeds sample parquet data for ingest/retrieval tests.
 - `live_kamiwaza_client` – asserts a live server is reachable (`/ping`), then authenticates using either `KAMIWAZA_API_KEY` or username/password credentials.
 

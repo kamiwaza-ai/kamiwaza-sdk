@@ -1,12 +1,28 @@
 """Tests for Scaffolder."""
 
+import errno
 import json
+import os
+import re
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
-from kamiwaza_extensions.scaffolder import Scaffolder
+from kamiwaza_extensions.scaffolder import Scaffolder, _runtime_lib_pins
+
+
+@pytest.fixture
+def restrictive_umask():
+    if sys.platform == "win32":
+        pytest.skip("POSIX permission modes are not supported on Windows")
+    old_umask = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(old_umask)
 
 
 @pytest.mark.unit
@@ -20,6 +36,60 @@ class TestScaffolder:
         d = tmp_path / name
         d.mkdir()
         return d
+
+    def test_runtime_pin_fallback_preserves_relocation_contract(self):
+        """A corrupt compatibility bundle must not regress a new scaffold
+        to the pre-relocation 0.4 runtime series."""
+
+        class MissingBundle:
+            def __truediv__(self, _name):
+                return self
+
+            def read_text(self, **_kwargs):
+                raise FileNotFoundError
+
+        with patch(
+            "kamiwaza_extensions.scaffolder.importlib_resources.files",
+            return_value=MissingBundle(),
+        ):
+            _runtime_lib_pins.cache_clear()
+            assert _runtime_lib_pins() == (">=0.5,<0.6", ">=0.5 <0.6")
+
+    def test_next_pin_matches_runtime_and_canary(self):
+        """The scaffold pin cannot move without moving the validated gate."""
+        repo_root = Path(__file__).resolve().parents[3]
+
+        def package(path: str) -> dict:
+            return json.loads((repo_root / path).read_text())
+
+        scaffold_next = package(
+            "kamiwaza_extensions/templates/app/frontend/package.json"
+        )["dependencies"]["next"]
+        runtime_next = package("kamiwaza-ai-extensions-lib/package.json")[
+            "devDependencies"
+        ]["next"]
+        canary_next = package("tests/next-runtime-canary/frontend/package.json")[
+            "dependencies"
+        ]["next"]
+        wrapper = (
+            repo_root
+            / "kamiwaza-ai-extensions-lib"
+            / "src"
+            / "next-config"
+            / "index.ts"
+        ).read_text()
+        supported = re.search(
+            r"SUPPORTED_NEXT_VERSIONS[^=]*=\s*\[\"([^\"]+)\"\]",
+            wrapper,
+        )
+
+        assert supported is not None
+        assert {
+            scaffold_next,
+            runtime_next,
+            canary_next,
+            supported.group(1),
+        } == {"15.5.24"}
 
     def test_create_app(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)
@@ -43,7 +113,9 @@ class TestScaffolder:
         assert meta["type"] == "app"
         assert meta["version"] == "0.1.0"
 
-    def test_binary_template_assets_are_copied_without_rendering(self, tmp_path, monkeypatch, scaffolder):
+    def test_binary_template_assets_are_copied_without_rendering(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
         d = self._empty_dir(tmp_path)
         monkeypatch.chdir(d)
         with patch("subprocess.run"):
@@ -61,6 +133,117 @@ class TestScaffolder:
         scaffolded_logo = d / "frontend" / "public" / "kmza-icon.png"
 
         assert scaffolded_logo.read_bytes() == source_logo.read_bytes()
+
+    @pytest.mark.usefixtures("restrictive_umask")
+    def test_create_pins_shareable_modes_regardless_of_host_umask(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
+        """Scaffolded files must be readable by the image's non-root runtime.
+
+        ``write_text``/``write_bytes`` honor the process umask, so on hardened
+        hosts (umask 077) every scaffolded file would land 0600. Those files
+        are a Docker build context: ``COPY`` preserves the mode, the Next.js
+        standalone runtime runs as uid 1001, and the boot-time relocation
+        dies with ``EACCES`` opening a root-owned ``package.json`` through a
+        staging symlink. The scaffold must stay deterministic and
+        umask-independent instead.
+        """
+        cwd = self._empty_dir(tmp_path)
+        (cwd / "README.md").write_text("workspace")
+        monkeypatch.chdir(cwd)
+        d = cwd / "umask-app"
+        assert not d.exists()
+        with patch("subprocess.run"):
+            assert scaffolder.create(type_="app", name="umask-app") == d
+        assert cwd.stat().st_mode & 0o777 == 0o700
+
+        regular_files = [
+            d / "kamiwaza.json",
+            d / "docker-compose.yml",
+            d / "frontend" / "Dockerfile",
+            d / "frontend" / "package.json",
+            d / "backend" / "Dockerfile",
+            d / "frontend" / "public" / "kmza-icon.png",
+        ]
+        for path in regular_files:
+            assert path.exists(), path
+            assert path.stat().st_mode & 0o777 == 0o644, (
+                f"{path} should be 0644 regardless of umask, "
+                f"got {oct(path.stat().st_mode & 0o777)}"
+            )
+
+        directories = [
+            d,
+            d / "frontend",
+            d / "frontend" / "public",
+            d / "backend",
+        ]
+        for path in directories:
+            assert path.is_dir(), path
+            assert path.stat().st_mode & 0o777 == 0o755, (
+                f"{path} should be 0755 regardless of umask, "
+                f"got {oct(path.stat().st_mode & 0o777)}"
+            )
+
+    @pytest.mark.usefixtures("restrictive_umask")
+    @pytest.mark.parametrize("in_place", [True, False])
+    def test_create_preserves_existing_private_directories(
+        self, tmp_path, monkeypatch, scaffolder, in_place
+    ):
+        cwd = self._empty_dir(tmp_path)
+        target = cwd if in_place else self._empty_dir(cwd, "private-app")
+        private = target / ".private"
+        nested = private / "inner"
+        nested.mkdir(parents=True)
+        git_dir = target / ".git"
+        git_dir.mkdir()
+        external = self._empty_dir(tmp_path, "external")
+        secret = external / "secret.txt"
+        secret.write_text("private")
+        link = target / ".linked"
+        link.symlink_to(external, target_is_directory=True)
+        directories = [cwd, target, private, nested, git_dir, external]
+        assert all(p.stat().st_mode & 0o777 == 0o700 for p in directories)
+
+        monkeypatch.chdir(cwd)
+        with patch("subprocess.run"):
+            assert scaffolder.create(type_="app", name="private-app") == target
+
+        for directory in directories:
+            assert directory.stat().st_mode & 0o777 == 0o700, directory
+        assert link.is_symlink()
+        assert secret.stat().st_mode & 0o777 == 0o600
+        assert secret.read_text() == "private"
+        assert (target / "frontend" / "public").stat().st_mode & 0o777 == 0o755
+
+    @pytest.mark.parametrize("error_number", [errno.EPERM, errno.ENOTSUP])
+    def test_create_warns_and_finishes_when_chmod_fails(
+        self, tmp_path, monkeypatch, scaffolder, capsys, error_number
+    ):
+        cwd = self._empty_dir(tmp_path)
+        (cwd / "README.md").write_text("workspace")
+        monkeypatch.chdir(cwd)
+        with (
+            patch("subprocess.run"),
+            patch.object(Path, "chmod", side_effect=OSError(error_number, "denied")),
+        ):
+            target = scaffolder.create(type_="app", name="limited-fs")
+
+        metadata = json.loads((target / "kamiwaza.json").read_text())
+        assert metadata["template_shape"] == "app"
+        assert (target / "frontend" / "public" / "kmza-icon.png").read_bytes()
+        warnings = capsys.readouterr().err
+        assert "Warning: could not set permissions to 0755" in warnings
+        assert "Warning: could not set permissions to 0644" in warnings
+        assert "Non-root container access" in warnings
+
+    def test_create_does_not_hide_write_errors(self, tmp_path, monkeypatch, scaffolder):
+        monkeypatch.chdir(self._empty_dir(tmp_path))
+        with (
+            patch.object(Path, "write_text", side_effect=OSError("disk full")),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            scaffolder.create(type_="app", name="failed-write")
 
     def test_create_tool_auto_prefix(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)
@@ -108,9 +291,7 @@ class TestScaffolder:
         # The pre-existing file in the workspace root is untouched.
         assert (d / "existing-file.txt").read_text() == "hello"
 
-    def test_non_empty_target_subdir_errors(
-        self, tmp_path, monkeypatch, scaffolder
-    ):
+    def test_non_empty_target_subdir_errors(self, tmp_path, monkeypatch, scaffolder):
         # Pre-existing target subdir with content must not be silently
         # overwritten — error early.
         d = self._empty_dir(tmp_path)
@@ -189,17 +370,47 @@ class TestScaffolder:
         assert "AGENTS.md" in readme
         assert "CLAUDE.md" in readme
 
-    def test_app_template_uses_standalone_frontend_runtime(self, tmp_path, monkeypatch, scaffolder):
+    def test_app_template_uses_standalone_frontend_runtime(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
+        """The frontend ships the dual-artifact runtime contract: no
+        spawn-time `next build` (start.mjs is gone), a Dockerfile that
+        builds both variants and indexes the path artifact, and the
+        wrapper-owned next.config."""
         d = self._empty_dir(tmp_path)
         monkeypatch.chdir(d)
         with patch("subprocess.run"):
             scaffolder.create(type_="app", name="test-app")
 
-        start_mjs = (d / "frontend" / "start.mjs").read_text()
-        assert "const STANDALONE_SERVER = path.join(STANDALONE_DIR, \"server.js\");" in start_mjs
-        assert "await prepareStandaloneRuntime();" in start_mjs
-        assert "startExitCode = await runNodeArgs(" in start_mjs
-        assert 'HOSTNAME: "0.0.0.0"' in start_mjs
+        assert not (d / "frontend" / "start.mjs").exists()
+        dockerfile = (d / "frontend" / "Dockerfile").read_text()
+        dockerignore = (d / "frontend" / ".dockerignore").read_text().splitlines()
+        assert "node_modules" in dockerignore
+        assert ".next" in dockerignore
+        assert ".env*" in dockerignore
+        assert ".git" in dockerignore
+        backend_requirements = (d / "backend" / "requirements.txt").read_text()
+        assert "fastapi>=0.115.0" in backend_requirements
+        assert "uvicorn[standard]>=0.30.0" in backend_requirements
+        assert "KZ_NEXT_BUILD_VARIANT=port" in dockerfile
+        assert "KZ_NEXT_BUILD_VARIANT=path" in dockerfile
+        assert "index-next-runtime.mjs" in dockerfile
+        assert "start-next-runtime.mjs" in dockerfile
+        assert "start-next-runtime.mjs --validate-only" in dockerfile
+        assert "resolveRoutingMode" in dockerfile
+        assert "--chown=1001:1001 /app/runtime" not in dockerfile
+        assert "replace(/\\/+$/" not in dockerfile
+        assert (
+            "npm run build" not in dockerfile.split("FROM node:20-alpine AS runner")[1]
+        )
+        next_config = (d / "frontend" / "next.config.js").read_text()
+        assert "withKamiwazaAppGarden" in next_config
+        manifest = json.loads((d / "kamiwaza.json").read_text())
+        assert manifest["strip_path_prefix"] is False
+        local_override = yaml.safe_load((d / "kamiwaza-compose.dev.yml").read_text())
+        assert local_override["services"]["frontend"]["build"]["target"] == "dev"
+        assert local_override["services"]["backend"]["command"][-1] == "--reload"
+        assert not (d / "docker-compose.override.yml").exists()
 
     def test_git_init_called(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

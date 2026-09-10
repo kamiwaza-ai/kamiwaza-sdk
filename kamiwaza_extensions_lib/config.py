@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import os
+import ssl
 from dataclasses import dataclass
+
+from .errors import UnexpectedContextError
+from .runtime import RuntimeRouting
 
 
 def _read_verify_ssl() -> bool:
@@ -42,21 +46,41 @@ class AuthConfig:
     origin: str = ""
     api_key: str = ""
     verify_ssl: bool = True
+    ca_bundle: str = ""
 
     @classmethod
     def from_env(cls) -> AuthConfig:
-        """Read configuration from environment variables."""
+        """Read configuration and fail closed on invalid runtime routing."""
+        # Every consumer gets the same validation, including bare uvicorn and
+        # author-defined entrypoints that bypass the shared ASGI launcher. A
+        # malformed path/public URL must never degrade to request.base_url for
+        # browser-visible login/logout redirects.
+        routing = RuntimeRouting.from_env()
         return cls(
             api_url=os.environ.get("KAMIWAZA_API_URL", ""),
             public_api_url=os.environ.get("KAMIWAZA_PUBLIC_API_URL", ""),
             openai_base=os.environ.get("KAMIWAZA_ENDPOINT", "")
             or os.environ.get("KAMIWAZA_MODEL_URL", ""),
-            app_url=os.environ.get("KAMIWAZA_APP_URL", ""),
-            app_path=os.environ.get("KAMIWAZA_APP_PATH", ""),
+            app_url=routing.app_url,
+            app_path=routing.app_path,
             app_name=os.environ.get("KAMIWAZA_APP_NAME", ""),
             use_auth=os.environ.get("KAMIWAZA_USE_AUTH", "true").lower()
             not in ("false", "0", "no"),
             origin=os.environ.get("KAMIWAZA_ORIGIN", ""),
             api_key=os.environ.get("KAMIWAZA_API_KEY", ""),
             verify_ssl=_read_verify_ssl(),
+            ca_bundle=os.environ.get("KAMIWAZA_CA_BUNDLE", "").strip(),
         )
+
+    def httpx_verify(self) -> bool | ssl.SSLContext:
+        """Return explicit TLS verification state for proxy-isolated clients."""
+        if not self.verify_ssl:
+            return False
+        if self.ca_bundle:
+            try:
+                return ssl.create_default_context(cafile=self.ca_bundle)
+            except OSError as exc:
+                raise UnexpectedContextError(
+                    "KAMIWAZA_CA_BUNDLE is not a readable PEM trust bundle"
+                ) from exc
+        return True

@@ -51,9 +51,11 @@ def _validate_manifest(info: ExtensionInfo) -> dict[str, Any]:
     if not manifest.get("connector_type"):
         _fail(f"{info.name}: manifest.connector_type is required.")
     deployment = manifest.get("deployment")
-    missing = (
-        [k for k in _REQUIRED_DEPLOYMENT_KEYS if not (isinstance(deployment, dict) and deployment.get(k))]
-    )
+    missing = [
+        k
+        for k in _REQUIRED_DEPLOYMENT_KEYS
+        if not (isinstance(deployment, dict) and deployment.get(k))
+    ]
     if missing:
         _fail(
             f"{info.name}: manifest.deployment must include "
@@ -159,6 +161,21 @@ def publish_connector(
     from kamiwaza_extensions.profile_manager import ProfileManager
 
     manifest = _validate_manifest(info)
+    # A supplied revision is the build's canonical image tag and overrides the
+    # manifest's deployment.image_tag, which is only the static authoring default
+    # (e.g. "develop"). Without this, a publish for any stage would resolve and
+    # pin that authoring-default image rather than the one the build produced.
+    # Applied before digest resolution so both the pinned digest and the
+    # published catalog entry reflect the revision tag (matching how the app
+    # publish path rewrites its compose image refs).
+    if revision and manifest["deployment"].get("image_tag") != revision:
+        # The revision changes the tag, so any digest the manifest authored
+        # against the old tag no longer applies; drop it (a fresh digest is
+        # resolved below). A manifest already rendered with this exact tag needs
+        # no change — it keeps its tag and its matching digest.
+        deployment = {**manifest["deployment"], "image_tag": revision}
+        deployment.pop("image_digest", None)
+        manifest = {**manifest, "deployment": deployment}
     image_ref = _image_ref(manifest["deployment"])
 
     dry_label = " [DRY RUN]" if dry_run else ""
@@ -179,11 +196,17 @@ def publish_connector(
 
     # Pin the pre-pushed image so the catalog entry is immutable. kz-ext doesn't
     # build connector images, so the image must already be in the registry (pushed
-    # by the connector's CI); resolution doubles as an existence gate. Skipped on
-    # dry-run / --no-push (no registry round-trip). A supplied --digest is verified
-    # against the registry rather than trusted blind, mirroring the app path.
+    # by the connector's CI); resolution doubles as an existence gate. Resolution
+    # is a read-only registry lookup, so --no-push (don't re-push an
+    # already-pushed image) must NOT skip it on its own — otherwise the entry is
+    # written tag-only and mutable. The four cases mirror the app publish path:
+    #   - dry run: skip (no registry round-trip).
+    #   - --no-push WITH an explicit --digest: publish-only escape hatch — trust
+    #     the precomputed digest, no buildx/registry needed.
+    #   - --digest without --no-push: verify the supplied digest against the registry.
+    #   - otherwise (incl. --no-push without --digest): resolve from the registry.
     pinned = digest
-    if not dry_run and not no_push:
+    if not dry_run and not (no_push and digest is not None):
         from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
 
         try:

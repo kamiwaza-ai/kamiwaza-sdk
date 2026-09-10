@@ -120,6 +120,35 @@ class TestCompatibilityBundleResource:
             "build time) so the doctor probe reports the correct CLI version."
         )
 
+    def test_manifest_capabilities_are_explicit_and_supported(self, bundle):
+        """Manifest contracts require a deliberate kz-ext capability floor."""
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+
+        from kamiwaza_extensions.validators.metadata import (
+            COMPOSE_CAPABILITY_FLOORS,
+            MANIFEST_CAPABILITY_FLOORS,
+        )
+
+        expected_capabilities = {
+            capability: f">={floor}"
+            for capability, floor in MANIFEST_CAPABILITY_FLOORS.items()
+        }
+        assert bundle["manifest_capabilities"] == expected_capabilities
+        expected_compose_capabilities = {
+            capability: f">={floor}"
+            for capability, floor in COMPOSE_CAPABILITY_FLOORS.items()
+        }
+        assert bundle["compose_capabilities"] == expected_compose_capabilities
+        cli_version = Version(bundle["cli_version"])
+        assert all(
+            cli_version in SpecifierSet(required)
+            for required in (
+                *bundle["manifest_capabilities"].values(),
+                *bundle["compose_capabilities"].values(),
+            )
+        )
+
 
 # ---------------------------------------------------------------------------
 # TS-M2-38: Python runtime-lib version probe + warn on out-of-range.
@@ -133,10 +162,10 @@ class TestPythonRuntimeLibCheck:
         return DoctorChecker(config_dir=tmp_path / ".kamiwaza")
 
     def test_in_range_version_passes(self, checker, tmp_path):
-        # Round-9: compat floor moved to >=0.4,<0.5; >=0.4,<0.5 is the
-        # canonical "fully inside the supported window" pin.
+        # Runtime-lib 0.5 adds the relocation contract; its exact minor
+        # window is the canonical fully-supported pin.
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib>=0.4,<0.5\nfastapi>=0.100\n")
+        req.write_text("kamiwaza-extensions-lib>=0.5,<0.6\nfastapi>=0.100\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
@@ -195,12 +224,12 @@ class TestPythonRuntimeLibCheck:
         assert "not found" in result.message
 
     def test_pep508_extras_are_handled(self, checker, tmp_path):
-        """PR-86 H7 — `kamiwaza-extensions-lib[fastapi]>=0.4,<0.5` parses
+        """`kamiwaza-extensions-lib[fastapi]>=0.5,<0.6` parses
         cleanly via packaging.requirements.Requirement.
-        (Round-9: bumped to >=0.4 to match the new compat floor.)
+        (The 0.5 floor ensures the runtime relocation helpers are present.)
         """
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.4,<0.5\n")
+        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.5,<0.6\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
@@ -213,59 +242,59 @@ class TestPythonRuntimeLibCheck:
         assert result.status == "warn"
 
     def test_upper_bound_only_below_supported_warns(self, checker, tmp_path):
-        """Round-3 H1 — an upper-bound-only pin like `<0.4` slips past
+        """Round-3 H1 — an upper-bound-only pin like `<0.5` slips past
         the lower-bound probe (no >=/> in the spec) but every allowed
-        version is below the supported floor of `>=0.4`. Must warn.
-        (Round-9: floor moved to >=0.4 with the public-url-helpers bump.)
+        version is below the supported floor of `>=0.5`. Must warn.
         """
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib<0.4\n")
+        req.write_text("kamiwaza-extensions-lib<0.5\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn"
 
     @pytest.mark.parametrize(
         "spec",
         [
-            "kamiwaza-extensions-lib>=0.4",  # bare lower, unbounded above
-            "kamiwaza-extensions-lib~=0.4",  # ~=0.4 = >=0.4,<1.0 (admits 0.5+)
-            "kamiwaza-extensions-lib>0.4",  # strict lower, no upper
-            "kamiwaza-extensions-lib>=0.4,<0.6",  # upper above supported's 0.5
+            "kamiwaza-extensions-lib>=0.5",  # bare lower, unbounded above
+            "kamiwaza-extensions-lib~=0.5",  # ~=0.5 = >=0.5,<1.0 (admits 0.6+)
+            "kamiwaza-extensions-lib>0.5",  # strict lower, no upper
+            "kamiwaza-extensions-lib>=0.5,<0.7",  # above supported's 0.6 ceiling
         ],
     )
     def test_open_ended_or_too_wide_specs_warn(self, checker, tmp_path, spec):
         """Round-4 H2 — open-ended specs (no upper bound, or upper above
         supported's ceiling) admit versions outside the supported window.
-        Pip can legally resolve a future 0.5+ release for these declared
+        Pip can legally resolve a future 0.6+ release for these declared
         ranges; the doctor must surface the drift.
-        (Round-9: floor moved to >=0.4 with the public-url-helpers bump.)
+        The 0.5 floor also excludes all earlier releases.
         """
         req = tmp_path / "requirements.txt"
         req.write_text(spec + "\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn", (
-            f"declared {spec!r} extends beyond supported `>=0.4,<0.5` but "
+            f"declared {spec!r} extends beyond supported `>=0.5,<0.6` but "
             f"the doctor reported {result.status} (false-negative — could "
-            f"resolve a 0.5+ version that's outside the CLI's compat window)"
+            f"resolve a 0.6+ version that's outside the CLI's compat window)"
         )
 
     @pytest.mark.parametrize(
         "spec,expected",
         [
-            ("kamiwaza-extensions-lib~=0.4.0", "pass"),  # >=0.4.0,<0.5 ⊂ supported
-            ("kamiwaza-extensions-lib~=0.4.5", "pass"),  # >=0.4.5,<0.5 ⊂ supported
-            # Below the new floor — admits 0.3.x which lacks the public ``url`` module.
+            ("kamiwaza-extensions-lib~=0.5.0", "pass"),  # >=0.5.0,<0.6
+            ("kamiwaza-extensions-lib~=0.5.5", "pass"),  # >=0.5.5,<0.6
+            # Below the 0.5 floor — these ranges lack relocation support.
+            ("kamiwaza-extensions-lib~=0.4.5", "warn"),
             ("kamiwaza-extensions-lib~=0.3.0", "warn"),  # >=0.3.0,<0.4 — below floor
             ("kamiwaza-extensions-lib~=0.2.0", "warn"),  # >=0.2.0,<0.3 — below floor
-            # X.Y form expands to <(X+1), still warns: admits 0.5+.
-            ("kamiwaza-extensions-lib~=0.4", "warn"),  # >=0.4,<1.0 — too wide
+            # X.Y form expands to <(X+1), still warns: admits 0.6+.
+            ("kamiwaza-extensions-lib~=0.5", "warn"),  # >=0.5,<1.0 — too wide
         ],
     )
     def test_tilde_eq_upper_bound_derived(self, checker, tmp_path, spec, expected):
         """Round-5 H2 — ``~=X.Y.Z`` is a *compatible-release* operator with
-        an implied upper bound at ``<X.(Y+1)``. ``~=0.4.0`` (= ``>=0.4.0,<0.5``
-        and fully inside the supported window) passes; ``~=0.3.0`` is below
-        the round-9 floor and warns. ``~=X.Y`` form still expands to
-        ``<(X+1)`` so ``~=0.4`` admits 0.5+ and must continue to warn.
+        an implied upper bound at ``<X.(Y+1)``. ``~=0.5.0`` and
+        ``~=0.5.5`` remain fully contained. ``~=0.4.5`` is below the floor,
+        and the ``~=X.Y`` form expands to ``<(X+1)`` so ``~=0.5`` admits
+        0.6+ and must warn.
         """
         req = tmp_path / "requirements.txt"
         req.write_text(spec + "\n")
@@ -314,7 +343,7 @@ class TestTypeScriptRuntimeLibCheck:
         pkg.write_text(
             json.dumps(
                 {
-                    "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"},
+                    "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.5.0"},
                 }
             )
         )
@@ -353,12 +382,15 @@ class TestTypeScriptRuntimeLibCheck:
             ),  # caret 0.3 below supported floor (PR #87 round-6 codex P2)
             ("~0.3.0", "warn"),  # tilde 0.3 below supported floor
             (
-                "^0.4.0",
+                "^0.5.0",
                 "pass",
-            ),  # caret 0.4.0 = >=0.4.0,<0.5.0 ⊂ supported (ENG-4318 release)
-            ("~0.4.0", "pass"),  # tilde 0.4.0 = >=0.4.0,<0.5.0 ⊂ supported
+            ),  # caret 0.5.0 = >=0.5.0,<0.6.0
+            ("~0.5.0", "pass"),  # tilde 0.5.0 = >=0.5.0,<0.6.0
             ("0.3.5", "warn"),  # exact pin below supported floor
-            ("0.4.0", "pass"),  # exact pin in window
+            ("^0.4.3", "warn"),  # pre-relocation runtime window
+            ("~0.4.3", "warn"),  # pre-relocation runtime window
+            ("0.4.3", "warn"),  # exact pre-relocation release
+            ("0.5.0", "pass"),  # exact pin in window
         ],
     )
     def test_full_containment_check_for_npm_specs(
@@ -367,13 +399,8 @@ class TestTypeScriptRuntimeLibCheck:
         """Round-4 H3 — TS check uses full-containment (was: lower-only
         probe). Open-ended specs (no upper, or upper above the supported
         ceiling) warn. Caret/tilde/exact specs that are fully contained
-        pass. Round-6 (ENG-4318): TS supported window moved to
-        ``>=0.4,<0.5`` to ensure the new /local-dev-auth subpath is
-        always present in installed lib copies — without this gate,
-        a fresh scaffold's ``middleware.ts`` import would fail
-        resolution against an older 0.2/0.3 install. Existing 0.2/0.3
-        users now warn (correct: they need to upgrade for the new
-        features and to stay on the supported window).
+        pass. The supported window is ``>=0.5,<0.6`` because 0.5 adds the
+        dual-artifact runtime relocation contract required by generated apps.
         """
         pkg = tmp_path / "package.json"
         pkg.write_text(
@@ -386,7 +413,7 @@ class TestTypeScriptRuntimeLibCheck:
         result = checker._check_ts_runtime_lib(pkg)
         assert result.status == expected, (
             f"declared {spec!r} expected={expected} actual={result.status} "
-            f"(supported window is `>=0.4,<0.5`)"
+            f"(supported window is `>=0.4.3,<0.5`)"
         )
 
     def test_fresh_scaffold_ts_pin_passes_doctor(self, checker, tmp_path):

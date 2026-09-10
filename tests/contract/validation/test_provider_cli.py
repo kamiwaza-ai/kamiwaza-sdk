@@ -1,0 +1,982 @@
+"""JSON-on-disk command contract for scenario providers."""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from kamiwaza_sdk.validation import (
+    CleanupEvidence,
+    FixtureState,
+    RuntimeContext,
+    ScenarioEvidence,
+    ScenarioPlan,
+)
+from kamiwaza_sdk.validation.cli import _fsync_directory, provider_main
+from kamiwaza_sdk.validation import cli as provider_cli
+from kamiwaza_sdk.validation.golden_provider import GoldenProvider
+from kamiwaza_sdk.validation.provider import ProviderContractError
+from kamiwaza_sdk.validation.testkit import RecordingFixtureStateWriter
+
+from .support import profile_payload
+
+pytestmark = pytest.mark.contract
+
+
+@dataclass(frozen=True)
+class EvidenceFailure:
+    command: str
+    provider: GoldenProvider
+    expected_error: str
+
+
+@dataclass(frozen=True)
+class ArtifactFailure:
+    path: Path
+    expected_error: str
+    retained: bool = False
+
+
+@dataclass(frozen=True)
+class PrepareFailure:
+    provider: GoldenProvider
+    expected_error: str
+    retained: bool = False
+    journal_entries: int | None = None
+    forbidden_text: str | None = None
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _runtime_payload() -> dict[str, object]:
+    return {
+        "schema": "kamiwaza.runtime-context/v1",
+        "run_id": "run-123",
+        "clusters": [
+            {
+                "id": "evo-x2-2",
+                "base_url": "https://evo-x2-2.example.test/api",
+                "api_key_ref": "secret://evo-x2-2/admin-pat",
+                "kubeconfig_ref": "file:///run/secrets/evo-x2-2.kubeconfig",
+            }
+        ],
+    }
+
+
+def _assert_provider_command(provider: GoldenProvider, *args: str) -> None:
+    assert provider_main(provider, list(args)) == 0
+
+
+def _assert_provider_failure(
+    provider: GoldenProvider,
+    args: list[str],
+    capsys: pytest.CaptureFixture[str],
+    artifact: ArtifactFailure,
+) -> str:
+    assert provider_main(provider, args) == 2
+    stderr = capsys.readouterr().err
+    assert artifact.expected_error in stderr
+    assert artifact.path.exists() is artifact.retained
+    return stderr
+
+
+def _write_golden_profile(tmp_path: Path) -> Path:
+    profile_path = tmp_path / "profile.json"
+    payload = profile_payload()
+    payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
+    _write_json(profile_path, payload)
+    return profile_path
+
+
+def _write_prepare_inputs(
+    tmp_path: Path, provider: GoldenProvider
+) -> tuple[Path, Path, Path]:
+    profile_path = tmp_path / "profile.json"
+    plan_path = tmp_path / "plan.json"
+    runtime_path = tmp_path / "runtime.json"
+    state_path = tmp_path / "state.json"
+    payload = profile_payload()
+    payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
+    _write_json(profile_path, payload)
+    _write_json(runtime_path, _runtime_payload())
+    _assert_provider_command(
+        provider,
+        "resolve",
+        "--profile",
+        str(profile_path),
+        "--plan",
+        str(plan_path),
+    )
+    return plan_path, runtime_path, state_path
+
+
+def _write_prepared_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
+    provider = GoldenProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+    _assert_provider_command(
+        provider,
+        "prepare",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+    )
+    return plan_path, runtime_path, state_path
+
+
+def test_golden_provider_cli_runs_the_full_json_file_lifecycle(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile_path = tmp_path / "profile.json"
+    plan_path = tmp_path / "plan.json"
+    runtime_path = tmp_path / "runtime.json"
+    state_path = tmp_path / "state.json"
+    evidence_path = tmp_path / "evidence.json"
+    cleanup_path = tmp_path / "cleanup.json"
+    payload = profile_payload()
+    payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
+    _write_json(profile_path, payload)
+    _write_json(runtime_path, _runtime_payload())
+    provider = GoldenProvider()
+
+    _assert_provider_command(provider, "describe", "--json")
+    described = json.loads(capsys.readouterr().out)
+    assert described[0]["scenario_id"] == "sdk.golden.echo/v1"
+
+    _assert_provider_command(
+        provider, "resolve", "--profile", str(profile_path), "--plan", str(plan_path)
+    )
+    _assert_provider_command(
+        provider,
+        "prepare",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+    )
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+    _assert_provider_command(
+        provider,
+        "run",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+        "--evidence",
+        str(evidence_path),
+    )
+    _assert_provider_command(
+        provider,
+        "teardown",
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+        "--evidence",
+        str(cleanup_path),
+    )
+
+    ScenarioPlan.model_validate_json(plan_path.read_text())
+    RuntimeContext.model_validate_json(runtime_path.read_text())
+    FixtureState.model_validate_json(state_path.read_text())
+    ScenarioEvidence.model_validate_json(evidence_path.read_text())
+    cleanup = CleanupEvidence.model_validate_json(cleanup_path.read_text())
+    assert cleanup.status == "passed"
+
+
+def test_cli_invalid_input_fails_without_leaking_values_or_writing_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile_path = tmp_path / "profile.json"
+    plan_path = tmp_path / "plan.json"
+    payload = profile_payload()
+    payload["api_key"] = "sensitive-token-value"
+    _write_json(profile_path, payload)
+
+    exit_code = provider_main(
+        GoldenProvider(),
+        ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "protocol input validation failed" in captured.err
+    assert "api_key" in captured.err
+    assert "sensitive-token-value" not in captured.err
+    assert not plan_path.exists()
+
+
+def test_golden_provider_module_is_an_executable_provider_command() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "kamiwaza_sdk.validation.golden_provider",
+            "describe",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    described = json.loads(completed.stdout)
+    assert described[0]["scenario_id"] == "sdk.golden.echo/v1"
+
+
+def test_describe_requires_explicit_json_output() -> None:
+    with pytest.raises(SystemExit) as error:
+        provider_main(GoldenProvider(), ["describe"])
+
+    assert error.value.code == 2
+
+
+class PartialPrepareFailureProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        class FailAfterFirstMutation:
+            def write(self, state: FixtureState) -> None:
+                state_writer.write(state)
+                if state.journal:
+                    raise ProviderContractError("simulated partial prepare failure")
+
+        return super().prepare(plan, runtime, FailAfterFirstMutation())
+
+
+class NonJournalingProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        return super().prepare(plan, runtime, RecordingFixtureStateWriter())
+
+
+class WrongResolveOutputProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        return profile
+
+
+class SensitiveInvalidResolveOutputProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        payload = super().resolve(profile).model_dump(mode="python", by_alias=True)
+        payload["sensitive-provider-value"] = "not allowed"
+        return payload
+
+
+class WrongResolveDigestProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        return (
+            super()
+            .resolve(profile)
+            .model_copy(update={"profile_digest": "sha256:" + "0" * 64})
+        )
+
+
+class ForeignResolveTargetProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        plan = super().resolve(profile)
+        selected = plan.selected[0].model_copy(update={"target_id": "foreign-target"})
+        return plan.model_copy(update={"selected": (selected,)})
+
+
+class EmptyResolvePlanProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        return super().resolve(profile).model_copy(update={"selected": ()})
+
+
+class DowngradedRequiredResolveProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        plan = super().resolve(profile)
+        selected = plan.selected[0].model_copy(update={"required": False})
+        return plan.model_copy(update={"selected": (selected,)})
+
+
+class DowngradedClusterResolveProvider(GoldenProvider):
+    def describe(self):  # type: ignore[no-untyped-def]
+        descriptor = super().describe()[0]
+        matcher = descriptor.applies_when[0].model_copy(
+            update={
+                "path": ("cluster", "roles"),
+                "operator": "contains",
+                "value": "controller",
+            }
+        )
+        return (
+            descriptor.model_copy(
+                update={"target_scope": "cluster", "applies_when": (matcher,)}
+            ),
+        )
+
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        plan = super().resolve(profile)
+        selected = plan.selected[0].model_copy(
+            update={
+                "target_id": profile.clusters[0].id,
+                "cluster_id": profile.clusters[0].id,
+                "required": False,
+            }
+        )
+        return plan.model_copy(update={"selected": (selected,)})
+
+
+class InvalidMatcherDescribeProvider(GoldenProvider):
+    def describe(self):  # type: ignore[no-untyped-def]
+        descriptor = super().describe()[0]
+        matcher = descriptor.applies_when[0].model_copy(
+            update={"path": ("target", "model_dump")}
+        )
+        return (descriptor.model_copy(update={"applies_when": (matcher,)}),)
+
+
+class UndescribedResolveCaseProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        plan = super().resolve(profile)
+        selected = plan.selected[0].model_copy(update={"case_ids": ("other",)})
+        return plan.model_copy(update={"selected": (selected,)})
+
+
+class ExplodingResolveProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        raise RuntimeError("sensitive-provider-value")
+
+
+class ContractExplodingResolveProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        raise ProviderContractError("credential=sensitive-provider-value")
+
+
+class ValidationExplodingResolveProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        raise ValidationError.from_exception_data(
+            "provider",
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("sensitive-provider-location",),
+                    "input": None,
+                    "ctx": {"error": ValueError("sensitive-provider-value")},
+                }
+            ],
+        )
+
+
+class WrongRunOutputProvider(GoldenProvider):
+    def run(self, plan, runtime, state):  # type: ignore[no-untyped-def]
+        return state
+
+
+class WrongRunDigestProvider(GoldenProvider):
+    def run(self, plan, runtime, state):  # type: ignore[no-untyped-def]
+        return (
+            super()
+            .run(plan, runtime, state)
+            .model_copy(update={"plan_digest": "sha256:" + "0" * 64})
+        )
+
+
+class WrongRunStateDigestProvider(GoldenProvider):
+    def run(self, plan, runtime, state):  # type: ignore[no-untyped-def]
+        return (
+            super()
+            .run(plan, runtime, state)
+            .model_copy(update={"state_digest": "sha256:" + "0" * 64})
+        )
+
+
+class IncompleteRunEvidenceProvider(GoldenProvider):
+    def run(self, plan, runtime, state):  # type: ignore[no-untyped-def]
+        return super().run(plan, runtime, state).model_copy(update={"results": ()})
+
+
+class WrongTeardownOutputProvider(GoldenProvider):
+    def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
+        return state
+
+
+class EmptyCleanupProvider(GoldenProvider):
+    def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
+        return super().teardown(runtime, state).model_copy(update={"results": ()})
+
+
+class WrongCleanupDigestProvider(GoldenProvider):
+    def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
+        return (
+            super()
+            .teardown(runtime, state)
+            .model_copy(update={"state_digest": "sha256:" + "0" * 64})
+        )
+
+
+class FailedCleanupProvider(GoldenProvider):
+    def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
+        cleanup = super().teardown(runtime, state)
+        failed = cleanup.results[0].model_copy(update={"status": "failed"})
+        return cleanup.model_copy(update={"status": "failed", "results": (failed,)})
+
+
+class WrongSnapshotOutputProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state_writer.write(plan)
+        return super().prepare(plan, runtime, state_writer)
+
+
+class RegressiveSnapshotProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
+        initial = state.model_copy(update={"journal": ()})
+        for snapshot in (initial, state, initial, state):
+            state_writer.write(snapshot)
+        return state
+
+
+class RegressiveSnapshotThenFailureProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
+        initial = state.model_copy(update={"journal": ()})
+        for snapshot in (initial, state, initial):
+            state_writer.write(snapshot)
+        raise ProviderContractError("credential=sensitive-provider-value")
+
+
+class SwallowedRegressiveSnapshotProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, state_writer)
+        try:
+            state_writer.write(state.model_copy(update={"journal": ()}))
+        except ProviderContractError:
+            pass
+        return state
+
+
+class InvalidPartialIdentityProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
+        state_writer.write(state.model_copy(update={"run_id": "foreign-run"}))
+        raise ProviderContractError("simulated invalid partial state")
+
+
+class SwallowedPersistenceFailureProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        recorder = RecordingFixtureStateWriter()
+        state = super().prepare(plan, runtime, recorder)
+        state_writer.write(recorder.snapshots[0])
+        try:
+            state_writer.write(state)
+        except Exception:
+            pass
+        return recorder.snapshots[0]
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_error"),
+    [
+        (WrongResolveOutputProvider(), "provider contract failed"),
+        (WrongResolveDigestProvider(), "plan profile digest mismatch"),
+        (ForeignResolveTargetProvider(), "undeclared target"),
+        (UndescribedResolveCaseProvider(), "undescribed case"),
+        (
+            EmptyResolvePlanProvider(),
+            "requested scenario resolved to zero selected cases",
+        ),
+        (
+            DowngradedRequiredResolveProvider(),
+            "plan downgraded a required target",
+        ),
+        (
+            DowngradedClusterResolveProvider(),
+            "plan downgraded a cluster scenario",
+        ),
+    ],
+)
+def test_cli_rejects_invalid_or_detached_plans(
+    provider: GoldenProvider,
+    expected_error: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile_path = _write_golden_profile(tmp_path)
+    plan_path = tmp_path / "plan.json"
+    _assert_provider_failure(
+        provider,
+        ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
+        capsys,
+        ArtifactFailure(plan_path, expected_error),
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        EvidenceFailure("run", WrongRunOutputProvider(), "provider contract failed"),
+        EvidenceFailure(
+            "teardown", WrongTeardownOutputProvider(), "provider contract failed"
+        ),
+        EvidenceFailure(
+            "teardown",
+            EmptyCleanupProvider(),
+            "cleanup resource inventory mismatch",
+        ),
+        EvidenceFailure(
+            "run", WrongRunDigestProvider(), "evidence plan digest mismatch"
+        ),
+        EvidenceFailure(
+            "run", WrongRunStateDigestProvider(), "evidence state digest mismatch"
+        ),
+        EvidenceFailure(
+            "teardown",
+            WrongCleanupDigestProvider(),
+            "cleanup state digest mismatch",
+        ),
+    ],
+)
+def test_cli_rejects_invalid_or_detached_evidence(
+    case: EvidenceFailure,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan_path, runtime_path, state_path = _write_prepared_inputs(tmp_path)
+    evidence_path = tmp_path / "evidence.json"
+    args = [case.command, "--runtime", str(runtime_path), "--state", str(state_path)]
+    if case.command == "run":
+        args.extend(["--plan", str(plan_path)])
+    args.extend(["--evidence", str(evidence_path)])
+
+    _assert_provider_failure(
+        case.provider, args, capsys, ArtifactFailure(evidence_path, case.expected_error)
+    )
+
+
+def test_cli_rejects_state_detached_from_runtime_before_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan_path, runtime_path, state_path = _write_prepared_inputs(tmp_path)
+    evidence_path = tmp_path / "evidence.json"
+    state = FixtureState.model_validate_json(state_path.read_text())
+    state_path.write_text(
+        state.model_copy(update={"run_id": "foreign-run"}).model_dump_json(
+            by_alias=True
+        ),
+        encoding="utf-8",
+    )
+
+    _assert_provider_failure(
+        GoldenProvider(),
+        [
+            "run",
+            "--plan",
+            str(plan_path),
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+            "--evidence",
+            str(evidence_path),
+        ],
+        capsys,
+        ArtifactFailure(evidence_path, "fixture state run identity mismatch"),
+    )
+
+
+def test_cli_rejects_runtime_content_changed_after_prepare(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan_path, runtime_path, state_path = _write_prepared_inputs(tmp_path)
+    evidence_path = tmp_path / "evidence.json"
+    runtime = RuntimeContext.model_validate_json(runtime_path.read_text())
+    changed_cluster = runtime.clusters[0].model_copy(
+        update={
+            "base_url": "https://other.example.test/api",
+            "api_key_ref": "secret://other/admin-pat",
+        }
+    )
+    runtime_path.write_text(
+        runtime.model_copy(update={"clusters": (changed_cluster,)}).model_dump_json(
+            by_alias=True
+        ),
+        encoding="utf-8",
+    )
+
+    _assert_provider_failure(
+        GoldenProvider(),
+        [
+            "run",
+            "--plan",
+            str(plan_path),
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+            "--evidence",
+            str(evidence_path),
+        ],
+        capsys,
+        ArtifactFailure(evidence_path, "fixture state runtime digest mismatch"),
+    )
+
+
+def test_cli_rejects_runtime_without_the_selected_target_cluster(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = GoldenProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+    runtime = RuntimeContext.model_validate_json(runtime_path.read_text())
+    foreign_cluster = runtime.clusters[0].model_copy(
+        update={"id": "completely-foreign-cluster"}
+    )
+    runtime_path.write_text(
+        runtime.model_copy(update={"clusters": (foreign_cluster,)}).model_dump_json(
+            by_alias=True
+        ),
+        encoding="utf-8",
+    )
+
+    _assert_provider_failure(
+        provider,
+        [
+            "prepare",
+            "--plan",
+            str(plan_path),
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+        ],
+        capsys,
+        ArtifactFailure(state_path, "runtime missing a selected cluster"),
+    )
+
+
+def test_cli_rejects_state_detached_from_plan_before_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan_path, runtime_path, state_path = _write_prepared_inputs(tmp_path)
+    evidence_path = tmp_path / "evidence.json"
+    plan = ScenarioPlan.model_validate_json(plan_path.read_text())
+    plan_path.write_text(
+        plan.model_copy(
+            update={"install_requirements": {"tampered": True}}
+        ).model_dump_json(by_alias=True),
+        encoding="utf-8",
+    )
+
+    _assert_provider_failure(
+        GoldenProvider(),
+        [
+            "run",
+            "--plan",
+            str(plan_path),
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+            "--evidence",
+            str(evidence_path),
+        ],
+        capsys,
+        ArtifactFailure(evidence_path, "fixture state plan digest mismatch"),
+    )
+
+
+def test_cli_invalid_utf8_input_fails_without_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile_path = tmp_path / "profile.json"
+    plan_path = tmp_path / "plan.json"
+    profile_path.write_bytes(b"\xff")
+
+    _assert_provider_failure(
+        GoldenProvider(),
+        ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
+        capsys,
+        ArtifactFailure(plan_path, "protocol input/output failed"),
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        PrepareFailure(WrongSnapshotOutputProvider(), "provider contract failed"),
+        PrepareFailure(
+            PartialPrepareFailureProvider(),
+            "provider contract failed",
+            retained=True,
+            journal_entries=1,
+        ),
+        PrepareFailure(
+            NonJournalingProvider(),
+            "did not persist fixture state",
+        ),
+        PrepareFailure(
+            RegressiveSnapshotProvider(),
+            "fixture journal snapshot regressed",
+            retained=True,
+            journal_entries=1,
+        ),
+        PrepareFailure(
+            InvalidPartialIdentityProvider(), "fixture state run identity mismatch"
+        ),
+        PrepareFailure(
+            RegressiveSnapshotThenFailureProvider(),
+            "provider contract failed",
+            retained=True,
+            journal_entries=1,
+            forbidden_text="sensitive-provider-value",
+        ),
+        PrepareFailure(
+            SwallowedRegressiveSnapshotProvider(),
+            "fixture journal snapshot regressed",
+            retained=True,
+            journal_entries=1,
+        ),
+    ],
+)
+def test_cli_rejects_invalid_fixture_state_snapshots(
+    case: PrepareFailure,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, case.provider)
+    args = [
+        "prepare",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+    ]
+
+    stderr = _assert_provider_failure(
+        case.provider,
+        args,
+        capsys,
+        ArtifactFailure(state_path, case.expected_error, case.retained),
+    )
+    if case.forbidden_text is not None:
+        assert case.forbidden_text not in stderr
+    if case.journal_entries is not None:
+        assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+        state = FixtureState.model_validate_json(state_path.read_text())
+        assert len(state.journal) == case.journal_entries
+
+
+def test_cli_latches_a_provider_swallowed_state_persistence_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = SwallowedPersistenceFailureProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+    original_write_model = provider_cli._write_model
+    writes = 0
+
+    def fail_second_write(path, model, *, private=False):  # type: ignore[no-untyped-def]
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise OSError("sensitive-provider-value")
+        return original_write_model(path, model, private=private)
+
+    monkeypatch.setattr(provider_cli, "_write_model", fail_second_write)
+
+    stderr = _assert_provider_failure(
+        provider,
+        [
+            "prepare",
+            "--plan",
+            str(plan_path),
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+        ],
+        capsys,
+        ArtifactFailure(
+            state_path,
+            "fixture state persistence failed",
+            retained=True,
+        ),
+    )
+
+    assert "sensitive-provider-value" not in stderr
+    state = FixtureState.model_validate_json(state_path.read_text())
+    assert state.journal == ()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        EvidenceFailure(
+            "run",
+            IncompleteRunEvidenceProvider(),
+            "provider evidence failed exact coverage",
+        ),
+        EvidenceFailure(
+            "teardown", FailedCleanupProvider(), "provider semantic cleanup failed"
+        ),
+    ],
+)
+def test_cli_semantic_failure_returns_nonzero_with_evidence(
+    case: EvidenceFailure,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan_path, runtime_path, state_path = _write_prepared_inputs(tmp_path)
+    evidence_path = tmp_path / "evidence.json"
+    args = [case.command, "--runtime", str(runtime_path), "--state", str(state_path)]
+    if case.command == "run":
+        args.extend(["--plan", str(plan_path)])
+    args.extend(["--evidence", str(evidence_path)])
+
+    _assert_provider_failure(
+        case.provider,
+        args,
+        capsys,
+        ArtifactFailure(evidence_path, case.expected_error, retained=True),
+    )
+    if case.command == "run":
+        assert (
+            ScenarioEvidence.model_validate_json(evidence_path.read_text()).results
+            == ()
+        )
+    else:
+        assert (
+            CleanupEvidence.model_validate_json(evidence_path.read_text()).status
+            == "failed"
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_error"),
+    [
+        (ExplodingResolveProvider(), "provider execution failed"),
+        (ContractExplodingResolveProvider(), "provider contract failed"),
+        (ValidationExplodingResolveProvider(), "provider contract failed"),
+        (SensitiveInvalidResolveOutputProvider(), "provider contract failed"),
+    ],
+)
+def test_cli_sanitizes_provider_failures(
+    provider: GoldenProvider,
+    expected_error: str,
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile_path = _write_golden_profile(tmp_path)
+    plan_path = tmp_path / "plan.json"
+
+    assert (
+        provider_main(
+            provider,
+            ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert expected_error in captured.err
+    assert "sensitive-provider-value" not in captured.err
+    assert "sensitive-provider-location" not in captured.err
+    assert not plan_path.exists()
+
+
+def test_cli_rejects_an_invalid_matcher_during_describe(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert provider_main(InvalidMatcherDescribeProvider(), ["describe", "--json"]) == 2
+
+    captured = capsys.readouterr()
+    assert "provider contract failed" in captured.err
+    assert "model_dump" not in captured.err
+
+
+def test_fixture_state_write_fsyncs_file_and_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = GoldenProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+    fsync_targets: list[str] = []
+
+    def record_fsync(descriptor: int) -> None:
+        mode = os.fstat(descriptor).st_mode
+        fsync_targets.append("directory" if stat.S_ISDIR(mode) else "file")
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+
+    _assert_provider_command(
+        provider,
+        "prepare",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+    )
+
+    assert fsync_targets == ["file", "directory", "file", "directory"]
+
+
+def test_file_writes_do_not_require_posix_fchmod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = GoldenProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+    monkeypatch.delattr(os, "fchmod")
+
+    _assert_provider_command(
+        provider,
+        "prepare",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+    )
+
+
+def test_directory_sync_is_skipped_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(
+        os,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("Windows must not open directories"),
+    )
+
+    _fsync_directory(tmp_path)
+
+
+def test_fixture_state_write_does_not_reuse_another_attempts_temporary_file(
+    tmp_path: Path,
+) -> None:
+    provider = GoldenProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+    stale_temporary = state_path.with_name(f".{state_path.name}.tmp")
+    stale_temporary.write_text("another writer", encoding="utf-8")
+
+    _assert_provider_command(
+        provider,
+        "prepare",
+        "--plan",
+        str(plan_path),
+        "--runtime",
+        str(runtime_path),
+        "--state",
+        str(state_path),
+    )
+
+    assert stale_temporary.read_text(encoding="utf-8") == "another writer"

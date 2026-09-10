@@ -23,6 +23,7 @@ class TestExitCode:
         assert ExitCode.UNEXPECTED_CONTEXT == 11
         assert ExitCode.OUT_OF_ENVELOPE_ACCESS == 12
         assert ExitCode.PLATFORM_OUTAGE == 13
+        assert ExitCode.PLATFORM_REDIRECT == 15
 
     def test_cluster_and_registry_codes(self):
         from kamiwaza_extensions.exit_codes import ExitCode
@@ -56,6 +57,11 @@ class TestExitCodeFor:
         from kamiwaza_extensions.exit_codes import ExitCode, exit_code_for
 
         assert exit_code_for("platform_outage") == ExitCode.PLATFORM_OUTAGE
+
+    def test_platform_redirect(self):
+        from kamiwaza_extensions.exit_codes import ExitCode, exit_code_for
+
+        assert exit_code_for("platform_redirect") == ExitCode.PLATFORM_REDIRECT
 
     def test_unknown_class_returns_failure(self):
         from kamiwaza_extensions.exit_codes import ExitCode, exit_code_for

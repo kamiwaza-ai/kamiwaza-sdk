@@ -4,6 +4,79 @@ Versions follow semver. Published to npm as a standalone package
 (`@kamiwaza-ai/extensions-lib`) and versioned independently from
 `kamiwaza-sdk`.
 
+## [0.5.0] — 2026-09-01
+
+### Added
+
+* Dual-artifact Next.js runtime support: `withKamiwazaAppGarden()` builds
+  native port and sentinel-path variants, while the packaged index and boot
+  scripts relocate the path artifact to `KAMIWAZA_APP_PATH` without running
+  `next build` at container start.
+* Fail-closed relocation validation for hashes, occurrence counts, JSON and
+  RSC payloads, symlinks, source maps, runtime paths, and residual sentinel
+  bytes. Literal and percent-encoded base-path forms are both relocated.
+* Runtime bootstrap, same-app fetch, asset URL, runtime-config response, and
+  server-side path helpers under the new `runtime`, `runtime/server`, and
+  `next-config` exports.
+
+### Changed
+
+* Next.js production scaffolds must use exactly `15.5.24`, the version covered
+  by the relocation manifest and canary. The package peer now names that exact
+  validated version and no longer advertises unvalidated Next releases.
+* The 0.5 line carries forward the 0.4.4 security floors for Next.js, PostCSS,
+  nanoid, sharp, esbuild, form-data, and ws while retaining the exact Next.js
+  pin required by the relocation contract.
+* Proxy responses drop `Set-Cookie` by default, including on scaffolded
+  session/logout routes. Custom trusted routes may opt in with
+  `setCookiePaths`, which rebases accepted cookies to the deployment path. An
+  incompatible path-mode `__Host-` cookie produces a diagnostic 502 instead
+  of an unhandled route exception.
+* Proxy targets now preserve a configured backend path prefix instead of
+  silently discarding it; consumers that previously compensated in route paths
+  should remove that workaround when upgrading. Upstream redirects must be
+  root-relative or use that configured backend origin; untrusted `Location`
+  values now produce a no-store 502 response.
+* Path-mode public URLs are always scoped to the deployment prefix when the
+  explicit `KAMIWAZA_APP_PATH_URL` is absent, and runtime path segments are
+  limited to the regex-safe platform alphabet `[A-Za-z0-9_-]+`. Boot and
+  request-time auth configuration now apply the same fail-closed public-URL
+  validation.
+
+## [0.4.4] — 2026-08-28 (ENG-11065)
+
+### Security
+
+* Raised the development dependency floors and lockfile resolutions for Next.js,
+  PostCSS, nanoid, sharp, esbuild, form-data, and ws so the package tooling
+  installs without known npm audit findings.
+
+## [0.4.3] — 2026-07-27 (ENG-9199)
+
+### Fixed
+
+* The Next.js proxy and local-development auth bridge now share the complete
+  signed ForwardAuth envelope introduced by the platform AuthZ rollout,
+  including groups, attributes hash, authorized party, and stable signature.
+  This prevents the default frontend-to-backend proxy from stripping fields
+  before Python's guarded `platform_request()` forwards the request to a
+  platform API.
+
+## [0.4.2] — 2026-07-16 (ENG-8753)
+
+### Fixed
+
+* **Ships the Next.js 15 `RouteHandler` fix to npm.** The ENG-1734 migration
+  (PR #191, merged 2026-06-22) rewrote the proxy `RouteHandler` type so
+  `createProxyHandlers()` handlers type-check under Next 15's build-time
+  route validation (Next 15 made dynamic-route `params` a `Promise`; the
+  published type still declared the Next-14 sync `Record` shape). PR #191
+  landed on `main` without a version bump, so the 2026-07-13 release could
+  not publish it over the existing `0.4.1` — every fresh
+  `kz-ext create -t app` scaffold (which installs `next ^15` and this lib
+  from npm) failed `next build` at container startup and crash-looped.
+  This release publishes that fix; no code changes beyond ENG-1734's.
+
 ## [0.4.1] — 2026-06-14 (ENG-6911)
 
 ### Fixed

@@ -116,7 +116,7 @@ class TestPublishProfileListSubcommand:
 
 # ---------------------------------------------------------------------------
 # P3, P7, B2 — Developer Guide gains a "What runs where" section, a
-# `kz-ext dev local` no-hot-reload note, and an extension-author-targeted
+# `kz-ext dev local` runtime note, and an extension-author-targeted
 # `.ai/extensions/` redirect (TS-M2-46).
 # ---------------------------------------------------------------------------
 
@@ -139,11 +139,11 @@ class TestDeveloperGuide:
             "surfaces they populate."
         )
 
-    def test_has_dev_local_no_hot_reload_note(self, text):
-        # P3 — current behavior: kz-ext dev local uses next build && next start.
-        assert "next build" in text and "next start" in text, (
-            "Developer Guide must explicitly document that `kz-ext dev local` "
-            "uses `next build && next start` (P3 §4.8) — there is no hot-reload."
+    def test_has_dev_local_hot_reload_note(self, text):
+        # Runtime-path scaffolds select the dev image target for local iteration.
+        assert "next dev" in text and "hot-reload" in text, (
+            "Developer Guide must document that `kz-ext dev local` selects "
+            "the scaffold's `next dev` target with frontend hot reload."
         )
 
     def test_has_ai_extensions_redirect(self, text):

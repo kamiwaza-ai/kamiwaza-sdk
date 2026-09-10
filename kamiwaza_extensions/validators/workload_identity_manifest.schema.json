@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kamiwaza.ai/extensions/delegated-workload-identity-v1.json",
+  "title": "Delegated workload identity extension manifest",
+  "description": "Extension-operator adapter declaration for the platform-neutral delegated workload contract. Absence preserves existing extension behavior; non-extension clients use other registrar adapters.",
+  "type": "object",
+  "properties": {
+    "workload_identity": {
+      "$ref": "#/$defs/workload_identity"
+    }
+  },
+  "$defs": {
+    "workload_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_versions",
+        "required_capabilities",
+        "roles"
+      ],
+      "properties": {
+        "contract_versions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^v[1-9][0-9]*$"
+          }
+        },
+        "required_capabilities": {
+          "description": "The complete mandatory delegated-workload v1 family set. An extension may not select a subset.",
+          "type": "array",
+          "minItems": 20,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "automation_grants",
+              "immutable_workload_revisions",
+              "resource_registration",
+              "atomic_queue_claims",
+              "run_capabilities",
+              "run_lifecycle",
+              "effect_capabilities",
+              "effect_lifecycle",
+              "dpop",
+              "durable_revocation",
+              "durable_audit",
+              "dual_principal_rebac",
+              "model_attribution",
+              "member_workload_quota",
+              "brokered_credentials",
+              "exact_effect_approval",
+              "registrar_registration",
+              "workload_attestation",
+              "platform_consent",
+              "protected_resource_guard"
+            ]
+          },
+          "allOf": [
+            {"contains": {"const": "automation_grants"}, "minContains": 1},
+            {"contains": {"const": "immutable_workload_revisions"}, "minContains": 1},
+            {"contains": {"const": "resource_registration"}, "minContains": 1},
+            {"contains": {"const": "atomic_queue_claims"}, "minContains": 1},
+            {"contains": {"const": "run_capabilities"}, "minContains": 1},
+            {"contains": {"const": "run_lifecycle"}, "minContains": 1},
+            {"contains": {"const": "effect_capabilities"}, "minContains": 1},
+            {"contains": {"const": "effect_lifecycle"}, "minContains": 1},
+            {"contains": {"const": "dpop"}, "minContains": 1},
+            {"contains": {"const": "durable_revocation"}, "minContains": 1},
+            {"contains": {"const": "durable_audit"}, "minContains": 1},
+            {"contains": {"const": "dual_principal_rebac"}, "minContains": 1},
+            {"contains": {"const": "model_attribution"}, "minContains": 1},
+            {"contains": {"const": "member_workload_quota"}, "minContains": 1},
+            {"contains": {"const": "brokered_credentials"}, "minContains": 1},
+            {"contains": {"const": "exact_effect_approval"}, "minContains": 1},
+            {"contains": {"const": "registrar_registration"}, "minContains": 1},
+            {"contains": {"const": "workload_attestation"}, "minContains": 1},
+            {"contains": {"const": "platform_consent"}, "minContains": 1},
+            {"contains": {"const": "protected_resource_guard"}, "minContains": 1}
+          ]
+        },
+        "required_resource_contracts": {
+          "description": "Compatibility requirements only. This does not authorize the extension to register or alter a resource contract.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/resource_contract_requirement"
+          }
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/role"
+          }
+        }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "service",
+        "attestation",
+        "platform_operations"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "control_plane",
+            "executor",
+            "resource_server"
+          ]
+        },
+        "service": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$",
+          "description": "Must name exactly one service declared by the extension."
+        },
+        "attestation": {
+          "$ref": "#/$defs/attestation"
+        },
+        "platform_operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "intent:create",
+              "intent:read",
+              "run:reserve",
+              "run:claim",
+              "run:start",
+              "run:heartbeat",
+              "run:cancel-observe",
+              "run:transition",
+              "effect:reserve",
+              "effect:execute",
+              "effect:transition",
+              "credential:use",
+              "readiness:read"
+            ]
+          }
+        }
+      }
+    },
+    "resource_contract_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource_type", "descriptor_versions", "guard_versions"],
+      "properties": {
+        "resource_type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,127}$"
+        },
+        "descriptor_versions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^v[1-9][0-9]*$"}
+        },
+        "guard_versions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^v[1-9][0-9]*$"}
+        }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profiles"
+      ],
+      "properties": {
+        "profiles": {
+          "description": "Ordered preference list. Readiness requires one healthy entry; v1 portability requires the offline baseline.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "kubernetes-offline-v1",
+              "kubernetes-tokenreview-v1"
+            ]
+          },
+          "contains": {
+            "const": "kubernetes-offline-v1"
+          },
+          "minContains": 1
+        },
+        "audience": {
+          "type": "string",
+          "const": "kamiwaza-workload-sts",
+          "default": "kamiwaza-workload-sts"
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 600,
+          "default": 600
+        }
+      }
+    }
+  }
+}

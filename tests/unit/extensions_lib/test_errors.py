@@ -18,6 +18,7 @@ class TestPackageExports:
             "UnexpectedContextError",
             "OutOfEnvelopeAccessError",
             "PlatformOutageError",
+            "PlatformRedirectError",
             "extract_identity",
             "anonymous_identity",
         }
@@ -75,6 +76,55 @@ class TestRuntimeErrorHierarchy:
         err = PlatformOutageError("5xx from platform")
         assert isinstance(err, KamiwazaRuntimeError)
         assert err.class_name == "platform_outage"
+
+    def test_platform_redirect_error_is_typed_unexpected_context(self):
+        from kamiwaza_extensions_lib.errors import (
+            PlatformRedirectError,
+            UnexpectedContextError,
+        )
+
+        err = PlatformRedirectError(
+            307,
+            "/api/catalog/datasets",
+            "/api/catalog/datasets/",
+        )
+
+        assert isinstance(err, UnexpectedContextError)
+        assert err.class_name == "platform_redirect"
+        assert err.status_code == 307
+        assert err.path == "/api/catalog/datasets"
+        assert err.location == "/api/catalog/datasets/"
+        assert "redirect target path" in str(err)
+        assert "canonical platform path" in str(err)
+
+    def test_platform_redirect_error_does_not_label_external_target_canonical(self):
+        from kamiwaza_extensions_lib.errors import PlatformRedirectError
+
+        err = PlatformRedirectError(
+            302,
+            "/api/catalog/datasets",
+            "https://unexpected.example/admin",
+        )
+
+        assert err.location == "/admin"
+        assert err.location_origin == "https://unexpected.example"
+        assert "origin is 'https://unexpected.example'" in str(err)
+        assert "path is '/admin'" in str(err)
+        assert "canonical location" not in str(err)
+
+    def test_platform_redirect_error_redacts_userinfo_from_origin(self):
+        from kamiwaza_extensions_lib.errors import PlatformRedirectError
+
+        err = PlatformRedirectError(
+            302,
+            "/api/catalog/datasets",
+            "https://user:secret@unexpected.example:8443/admin?token=also-secret",
+        )
+
+        assert err.location_origin == "https://unexpected.example:8443"
+        assert "user" not in str(err)
+        assert "secret" not in str(err)
+        assert "token" not in str(err)
 
 
 @pytest.mark.unit

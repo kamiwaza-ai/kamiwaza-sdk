@@ -17,8 +17,8 @@ services:
       # into the AppGarden artifact too, not just the local docker-compose.
       # Without it, `trusted_routed_workroom_context()` always returns False
       # in the live deployment and identity-header forwarding is suppressed
-      # → live contract tests fail with 403. The platform's routing layer
-      # (Traefik / istio ingress) is responsible for injecting the matching
+      # → live contract tests fail with 403. The provider-owned platform
+      # ingress is responsible for injecting the matching
       # `x-kamiwaza-trusted-proxy` header on routed traffic.
       KAMIWAZA_TRUSTED_PROXY_SECRET: ${KAMIWAZA_TRUSTED_PROXY_SECRET:-}
       SESSION_MAX_SECONDS: ${SESSION_MAX_SECONDS:-28800}

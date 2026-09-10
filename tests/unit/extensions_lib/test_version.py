@@ -17,22 +17,18 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 LIB_DIR = REPO_ROOT / "kamiwaza_extensions_lib"
 CHANGELOG_PATH = LIB_DIR / "CHANGELOG.md"
 LIB_PYPROJECT_PATH = LIB_DIR / "pyproject.toml"
+SDK_PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
+RELEASE_SCRIPT_PATH = REPO_ROOT / "release.sh"
 
 
-def test_version_is_0_4_2():
-    # M3 / PR #87 round-9 promoted the round-8 ``_url`` helpers to a
-    # public ``url`` module (and re-exported ``backend_runtime_base`` /
-    # ``public_base_url`` from the package root). Scaffolded extensions
-    # now import the public path, so the compat floor in
-    # ``compatibility.json`` was raised to ``>=0.4,<0.5`` to keep older
-    # versions without the helpers from resolving. 0.4.1 (ENG-6911)
-    # fixed the session router's logout to proxy core's front-channel
-    # logout URL; 0.4.2 (ENG-6911) corrected that fix to build the
-    # front-channel URL from the browser base directly, since the
-    # server-side proxy POST is unreachable in-cluster under ``kz-ext
-    # dev`` — still within the ``>=0.4,<0.5`` compat range.
-    assert kamiwaza_extensions_lib.__version__ == "0.4.2", (
-        "Runtime lib is 0.4.2 (ENG-6911 logout front-channel fix). "
+def test_version_is_0_5_0():
+    # Runtime 0.5 adds the canonical path-routing helpers and ASGI launcher
+    # required by the dual-artifact Next.js scaffold. The compatibility
+    # floor moves with it so every freshly generated app has both sides of the
+    # runtime-relocation contract plus the patched FastAPI/Starlette floors
+    # inherited from 0.4.4 release hardening.
+    assert kamiwaza_extensions_lib.__version__ == "0.5.0", (
+        "Runtime lib is 0.5.0 (dual-artifact path relocation contract). "
         "Update both __version__ and CHANGELOG.md if the version is "
         "intentionally changing."
     )
@@ -64,4 +60,66 @@ def test_pyproject_version_matches_dunder_version():
         f"({pyproject_version!r}) and kamiwaza_extensions_lib.__version__ "
         f"({kamiwaza_extensions_lib.__version__!r}) disagree. Bump both, "
         f"or only bump the source of truth and the other auto-derives."
+    )
+
+
+def test_sdk_dependency_requires_current_runtime_release():
+    with SDK_PYPROJECT_PATH.open("rb") as f:
+        pyproject = tomllib.load(f)
+
+    assert (
+        "kamiwaza-extensions-lib>=0.5,<0.6" in pyproject["project"]["dependencies"]
+    ), (
+        "kamiwaza-sdk must require runtime-lib 0.5 so a fresh install "
+        "cannot resolve a version without the path-relocation contract"
+    )
+
+
+def test_asgi_launcher_declares_uvicorn_optional_dependency():
+    with LIB_PYPROJECT_PATH.open("rb") as f:
+        pyproject = tomllib.load(f)
+
+    assert not any(
+        dependency.startswith("uvicorn")
+        for dependency in pyproject["project"]["dependencies"]
+    ), "pure SDK clients must not install an ASGI server transitively"
+
+    assert any(
+        dependency.startswith("uvicorn>=0.30")
+        for dependency in pyproject["project"]["optional-dependencies"]["asgi"]
+    ), "the optional ASGI launcher extra must declare a compatible uvicorn runtime"
+
+    assert any(
+        dependency.startswith("fastapi>=0.136.3")
+        for dependency in pyproject["project"]["dependencies"]
+    ), "ASGI root_path routing requires the compatible FastAPI/Starlette floor"
+
+    assert any(
+        dependency.startswith("starlette>=1.3.1")
+        for dependency in pyproject["project"]["dependencies"]
+    ), "the standalone runtime must preserve the patched Starlette floor"
+
+
+def test_runtime_lib_dependency_enforces_starlette_floor():
+    # ENG-11047 lock, carried forward from release/1.2.1: the independently
+    # published runtime wheel must keep the patched Starlette floor so
+    # standalone extension installs cannot resolve a vulnerable release.
+    with LIB_PYPROJECT_PATH.open("rb") as f:
+        pyproject = tomllib.load(f)
+
+    assert "starlette>=1.3.1,<2.0.0" in pyproject["project"]["dependencies"]
+
+
+def test_release_publishes_required_npm_runtime_before_sdk():
+    script = RELEASE_SCRIPT_PATH.read_text()
+
+    npm_publish = script.index("npm publish --access public")
+    npm_gate = script.index("if [[ $NPM_READY -eq 0 ]]")
+    sdk_publish = script.index(
+        "uv publish --check-url https://pypi.org/simple/ dist/sdk/*"
+    )
+
+    assert npm_publish < npm_gate < sdk_publish, (
+        "release.sh must publish or verify the required TypeScript runtime "
+        "before publishing an SDK whose generated scaffold requires it"
     )

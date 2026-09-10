@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Sequence
 
 from .schemas.guide import ModelGuide, ModelVariant
 from .schemas.serving.serving import UIModelDeployment
+from .utils.model_file_readiness import model_file_download_satisfied
 
 if TYPE_CHECKING:  # pragma: no cover
     from .services.models.base import ModelService
@@ -263,6 +264,6 @@ class ModelAutoSelector:
         index: Dict[str, bool] = {}
         for model in models:
             files = getattr(model, "m_files", None) or []
-            if any(getattr(f, "download", False) for f in files):
+            if any(model_file_download_satisfied(f) for f in files):
                 index[model.repo_modelId] = True
         return index

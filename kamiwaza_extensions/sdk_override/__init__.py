@@ -21,45 +21,22 @@ from __future__ import annotations
 
 from kamiwaza_extensions.sdk_override.build import (
     BuildOverride,
-    _PYTHON_OVERLAY,
-    _PYTHON_PIP_INSTALL_PATTERN,
-    _PYTHON_PRE_INSTALL_STRIP,
-    _TS_BUILD_PATTERNS,
-    _TS_NPM_CI_LINE_PATTERN,
-    _TS_NPM_INSTALL_PATTERN,
-    _TS_OVERLAY,
-    _TS_PRE_INSTALL_STRIP,
-    _find_active_user,
-    _insert_before_install_pattern,
-    _restore_user_block,
     apply_build_overlay,
     generate_build_overrides,
     generate_local_build_dockerfile_patches,
 )
 from kamiwaza_extensions.sdk_override.classification import (
-    _detect_build_service_runtime,
-    _image_basename,
-    _read_dockerfile_stage_bases,
-    _read_final_base_image,
-    _resolve_dockerfile,
     detect_service_runtime,
     detect_service_type,
 )
 from kamiwaza_extensions.sdk_override.compose import (
-    _SDK_BIND_TARGET,
-    _TS_LIB_NODE_MODULES_TARGET,
-    _TS_LIB_PACKAGE_DIR,
     generate_compose_override,
 )
 from kamiwaza_extensions.sdk_override.spec import (
     SdkOverrideSpec,
     ValidationResult,
-    _CONFIG_DIR,
-    _CONFIG_FILE,
-    _newest_mtime,
     build_typescript_lib,
     check_buildkit_available,
-    console,
     is_typescript_dist_stale,
     print_override_diagnostics,
     resolve_sdk_override,

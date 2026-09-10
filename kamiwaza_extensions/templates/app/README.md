@@ -73,6 +73,18 @@ npm run build
 
 This catches template and runtime-library mismatches before you deploy.
 
+### Production Routing Runtime
+
+The frontend production image contains two prebuilt Next.js artifacts: one
+for port routing and one indexed with a reserved path sentinel. Container
+startup selects the port artifact or relocates the indexed bytes to the
+deployment's `KAMIWAZA_APP_PATH` under `/tmp`; it never runs `next build`.
+
+Keep `withKamiwazaAppGarden()` in `frontend/next.config.js`, retain the exact
+scaffolded Next.js version, and do not add `basePath`, `assetPrefix`, or
+`NEXT_PUBLIC_APP_BASE_PATH`. Those values are owned by the runtime contract.
+Use `kz-ext update` when a newer SDK scaffold changes that contract.
+
 ## Customization
 
 ### Frontend
@@ -82,6 +94,33 @@ The frontend uses Tailwind CSS with a Kamiwaza dark theme. Theme colors are defi
 ### Backend
 
 The backend includes session management (`/session`, `/auth/login-url`, `/auth/logout`), model access (`/api/models`), and a deployment-aware chat endpoint (`/api/chat`). Add your own endpoints in `backend/app/main.py`.
+
+When a backend endpoint needs to call a platform API on behalf of the current
+user, use the runtime library's guarded transport and the route's exact
+canonical path:
+
+```python
+from kamiwaza_extensions_lib import platform_request
+
+response = await platform_request(request, "GET", "/api/catalog/datasets/")
+response.raise_for_status()
+```
+
+`platform_request()` requires the container-routable `KAMIWAZA_API_URL`; route
+paths must include the platform `/api` prefix. It forwards the
+platform-authenticated request envelope, rejects absolute destinations, and
+raises `PlatformRedirectError` (a specialized `UnexpectedContextError`) rather
+than following a redirect. Set `timeout=` in seconds when the 30-second default
+is unsuitable. Invalid caller input raises `ValueError`, missing or invalid
+runtime configuration raises `UnexpectedContextError`, and transport failures
+raise `PlatformOutageError`. Caller headers cannot replace authentication,
+routing, framing, or `X-Request-Id` correlation fields from the envelope.
+This keeps auth attached to the original platform request and makes a missing
+canonical slash an immediate development error.
+
+User-bound clients ignore proxy and CA environment defaults. If the platform
+uses a private CA, mount its PEM bundle in the backend container and set
+`KAMIWAZA_CA_BUNDLE` to that path.
 
 ### Authentication
 
