@@ -768,7 +768,7 @@ def _entry_has_shell_ref(entry: Any) -> bool:
 # from the hostname so a sibling name in a username is never rewritten.
 _URL_HOST_RE = re.compile(
     r"(?P<prefix>[A-Za-z][A-Za-z0-9+.-]*://(?:[^/@?#\s]*@)?)"
-    r"(?P<host>[A-Za-z][A-Za-z0-9_-]*)(?::(?P<port>[0-9]{1,5}))?"
+    r"(?P<host>[A-Za-z][A-Za-z0-9_-]*)(?::(?P<port>[0-9]{0,5}))?"
     r"(?P<suffix>[/?#]\S*)?"
 )
 _BARE_ENDPOINT_RE = re.compile(
@@ -779,7 +779,8 @@ _BARE_ENDPOINT_RE = re.compile(
 # query, fragment, and credentials may contain commas or host:port-shaped data.
 # Quotes/braces terminate URLs embedded in serialized configuration values.
 _URL_REF_RE = re.compile(
-    r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://"
+    r"(?<![A-Za-z0-9+.-])(?P<quote>['\"])?"
+    r"(?P<url>[A-Za-z][A-Za-z0-9+.-]*://"
     # RFC 3986 userinfo permits apostrophes and commas. Consume it through @
     # before considering surrounding serialized-value quote delimiters.
     r"(?:[A-Za-z0-9._~!$&'()*+,;=:%-]*@)?"
@@ -789,7 +790,9 @@ _URL_REF_RE = re.compile(
     r"(?:\[[^\]\s]+\](?::[0-9]+)?|[^/?#\s,;|()\[\]<>\"'{}]+|(?=[/?#]))"
     # A list separator followed by a full URL starts another entry;
     # ordinary punctuation inside components remains part of this URL.
-    r"(?:[/?#](?:(?![,;|][A-Za-z][A-Za-z0-9+.-]*://)[^\s\"{}])*)?"
+    # A surrounding quote delimits serialized URLs; without it, apostrophes
+    # remain valid path/query/fragment characters.
+    r"(?:[/?#](?:(?!(?P=quote)|[,;|][A-Za-z][A-Za-z0-9+.-]*://)[^\s\"{}])*)?)"
 )
 
 _IMAGE_ENV_KEYS = IMAGE_ENV_NAMES | IMAGE_PREFIX_ENV_NAMES
@@ -1020,11 +1023,11 @@ def _rewrite_url_hosts(
     for match in _URL_REF_RE.finditer(value):
         parts.append(
             _rewrite_bare_endpoint_list(
-                value[offset : match.start()], hostnames, allow_bare
+                value[offset : match.start("url")], hostnames, allow_bare
             )
         )
-        parts.append(_rewrite_endpoint_token(match.group(), hostnames))
-        offset = match.end()
+        parts.append(_rewrite_endpoint_token(match.group("url"), hostnames))
+        offset = match.end("url")
     parts.append(_rewrite_bare_endpoint_list(value[offset:], hostnames, allow_bare))
     new_value = "".join(parts)
     return new_value if new_value != value else None
@@ -1048,7 +1051,7 @@ def _rewrite_endpoint_token(token: str, hostnames: Dict[str, str]) -> str:
     if match is None:
         return token
     port = match.group("port")
-    if port is not None and not 1 <= int(port) <= 65535:
+    if port and not 1 <= int(port) <= 65535:
         return token
     replacement = hostnames.get(match.group("host"))
     if replacement is None:

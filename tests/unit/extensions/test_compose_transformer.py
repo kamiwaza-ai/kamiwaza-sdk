@@ -1317,6 +1317,10 @@ class TestDetectServiceUrlRewrites:
             "etcd:2379.0",
             "http://external/path/etcd:2379",
             "file:///tmp/a,etcd:2379",
+            "http://etcd:2379&x=1",
+            "http://etcd:2379=1",
+            "http://etcd:2379%20",
+            "http://etcd:2379.",
             "etcd:2379@external",
         ],
     )
@@ -1361,6 +1365,8 @@ class TestDetectServiceUrlRewrites:
                 "postgresql://postgres:123secret@ext-etcd:2379/app",
             ),
             ("redis://etcd:6379/0", "redis://ext-etcd:6379/0"),
+            ("http://etcd:", "http://ext-etcd:"),
+            ("http://etcd:/health", "http://ext-etcd:/health"),
             ("http://etcd/path?foo=bar#frag", "http://ext-etcd/path?foo=bar#frag"),
             (" etcd:1, backup:65535/path ", " ext-etcd:1, ext-backup:65535/path "),
             ("etcd:2379/path", "ext-etcd:2379/path"),
@@ -1464,6 +1470,15 @@ class TestDetectServiceUrlRewrites:
                 "connect http://ext-etcd:2379 then https://ext-backup/health",
             ),
             ('{"url":"http://external/path,etcd:2379"}', None),
+            (
+                "['http://etcd:2379/','http://backup:2380/']",
+                "['http://ext-etcd:2379/','http://ext-backup:2380/']",
+            ),
+            (
+                "{'first': 'http://etcd:2379/', 'second': 'http://backup:2380/'}",
+                "{'first': 'http://ext-etcd:2379/', 'second': 'http://ext-backup:2380/'}",
+            ),
+            ("['http://external/path/a,etcd:2379']", None),
         ],
     )
     def test_preserves_embedded_url_support(self, value, expected):

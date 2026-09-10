@@ -885,6 +885,46 @@ class TestServiceRefRewritesAnnotation:
             "frontend": {"API_URL": {"from": source_url, "to": expected}}
         }
 
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            (
+                "['http://etcd:2379/','http://backup:2380/']",
+                "['http://deploy-etcd:2379/','http://deploy-backup:2380/']",
+            ),
+            (
+                "{'first': 'http://etcd:2379/', 'second': 'http://backup:2380/'}",
+                "{'first': 'http://deploy-etcd:2379/', 'second': 'http://deploy-backup:2380/'}",
+            ),
+            (
+                "['http://external/path/a,etcd:2379']",
+                "['http://external/path/a,etcd:2379']",
+            ),
+        ],
+        ids=["list", "mapping", "external-path"],
+    )
+    def test_payload_preserves_single_quoted_serialized_url_structure(
+        self, builder, metadata, transformed_compose, connection, source, expected
+    ):
+        services = transformed_compose["services"]
+        for sibling in ["etcd", "backup"]:
+            services[sibling] = {"image": f"reg/{sibling}:1", "ports": ["2379"]}
+        services["frontend"]["environment"] = {"UPSTREAM_CONFIG": source}
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        assert env["UPSTREAM_CONFIG"] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        if source == expected:
+            assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
+        else:
+            rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+            assert rewrites == {
+                "frontend": {"UPSTREAM_CONFIG": {"from": source, "to": expected}}
+            }
+
     def test_bare_endpoints_baked_into_payload_env(
         self,
         builder,
