@@ -59,6 +59,10 @@ sets both from the selected connection and its TLS override. The legacy
 locally but is excluded from serialized requests: the current platform rejects
 that retired integration field with HTTP 422.
 
+Compose URLs referencing the service itself are scoped to its deployed Service
+name, just like references from another service. Kubernetes does not provide
+the unprefixed Compose alias, including for self-callbacks.
+
 ```python
 from kamiwaza_sdk.schemas.extensions import CreateExtension, ExtensionServiceSpec
 
