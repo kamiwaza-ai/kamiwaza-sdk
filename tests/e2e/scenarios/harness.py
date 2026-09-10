@@ -339,6 +339,13 @@ def run_scenario(
     and ``capability_ids`` is copied from the required runbook field.
     """
     resolved_build = resolve_build_identity(build)
+    # Resolved here, before any handler runs, for the same reason the build
+    # identity is: a run that cannot produce a joinable record must fail
+    # before it executes side-effecting deploy steps, not after them
+    # (ENG-11522). load_runbook already refuses an absent or empty value;
+    # this keeps a hand-built runbook from getting halfway through a
+    # scenario and then raising KeyError on the way out.
+    capability_ids = list(runbook["capability_ids"])
     provenance = _resolve_provenance(evidence_provenance)
     started = datetime.now(timezone.utc)
     t0 = time.monotonic()
@@ -354,11 +361,7 @@ def run_scenario(
         ci_job_url=ci_job_url or os.environ.get("CI_JOB_URL"),
         build=resolved_build,
         method="automated",
-        # Direct indexing on purpose: load_runbook refuses an absent or
-        # empty value, so a `.get(...) or []` fallback here could only mask
-        # a runbook that bypassed validation -- which is how the orphaned
-        # records happened in the first place (ENG-11522).
-        capability_ids=list(runbook["capability_ids"]),
+        capability_ids=capability_ids,
         evidence_provenance=provenance,
         status=derive_status(results),
         steps=results,

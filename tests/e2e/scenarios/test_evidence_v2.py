@@ -92,6 +92,7 @@ def _synthetic_v2_record(**overrides):
         "ci_job_url": None,
         "build": "kamiwaza-1.2.3+build.777",
         "method": "manual",
+        "arm": "ui",
         "capability_ids": ["workrooms.create", "workroom-app-launch"],
         "evidence_provenance": "pre-existing",
         "status": "passed_with_notes",
@@ -429,6 +430,7 @@ class TestEvidenceValidation:
             ({"method": "auto"}, "method"),
             ({"status": "green"}, "status"),
             ({"evidence_provenance": "unknown"}, "evidence_provenance"),
+            ({"capability_ids": []}, "capability_ids"),
             ({"capability_ids": ["Not_Kebab"]}, "capability_ids"),
             ({"capability_ids": "workrooms.create"}, "capability_ids"),
             ({"steps": []}, "steps"),
@@ -579,7 +581,7 @@ class TestSchemaFileSync:
         # Every required field must actually be emitted. Subset rather than
         # equality since ENG-11522 added `arm`, which is emitted but
         # deliberately optional so records predating it stay valid.
-        assert set(schema["required"]) <= emitted_keys
+        assert set(schema["required"]) == emitted_keys - {"arm"}
         # ...and nothing is emitted that the schema does not declare.
         assert set(schema["properties"]) == emitted_keys
         assert "arm" in emitted_keys and "arm" not in set(schema["required"])

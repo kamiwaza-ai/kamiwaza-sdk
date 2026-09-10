@@ -175,3 +175,30 @@ class TestZeroExecutionRunsAreNotRecorded:
         )
         with pytest.raises(ValueError, match="status"):
             record_run(result)
+
+    def test_a_runbook_without_capability_ids_fails_before_any_handler_runs(self):
+        """Fail-fast ordering, not merely fail-eventually.
+
+        ``run_scenario`` resolves the capability mapping up front for the
+        same reason it resolves the build identity there: a scenario step
+        can deploy an app or mutate a cluster, so a run that cannot produce
+        a joinable record must be refused *before* those side effects, not
+        on the way out of the function.
+        """
+        fired = []
+
+        def deploy():
+            fired.append("deployed")
+            return "ok"
+
+        runbook = {
+            "id": "S1",
+            "name": "Test scenario S1",
+            "sign_off_actor": "SDK team",
+            "uacs": ["UAC-16"],
+            "expected_outcomes": ["something demonstrable"],
+            "steps": [{"name": "deploy", "description": "..."}],
+        }  # no capability_ids: the case load_runbook would have refused
+        with pytest.raises(KeyError):
+            run_scenario(runbook, {"deploy": deploy})
+        assert fired == [], "a handler ran before the mapping was resolved"
