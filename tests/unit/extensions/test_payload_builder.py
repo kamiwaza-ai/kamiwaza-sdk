@@ -1,6 +1,8 @@
 """Tests for PayloadBuilder."""
 
 import hashlib
+import json
+from copy import deepcopy
 
 import pytest
 
@@ -576,6 +578,95 @@ class TestServiceRefRewritesAnnotation:
     verbatim with no annotation consumer, so the payload env ALSO
     carries the baked-in rewrite."""
 
+    @pytest.mark.parametrize(
+        "environment",
+        [
+            {"BACKEND_URL": "http://backend:8000"},
+            ["BACKEND_URL=http://backend:8000"],
+            [{"name": "BACKEND_URL", "value": "http://backend:8000"}],
+            [{"BACKEND_URL": "http://backend:8000"}],
+        ],
+        ids=["mapping", "string-list", "name-value-list", "mapping-fragment-list"],
+    )
+    def test_repeat_builds_preserve_compose_and_original_refs(
+        self, builder, metadata, transformed_compose, connection, environment
+    ):
+        transformed_compose["services"]["frontend"]["environment"] = environment
+        original = deepcopy(transformed_compose)
+
+        for dev_name in ["first-deployment", "first-deployment", "second-deployment"]:
+            payload = builder.build(metadata, transformed_compose, connection, dev_name)
+
+            assert transformed_compose == original
+            frontend = next(s for s in payload.services if s.name == "frontend")
+            env = {entry["name"]: entry.get("value") for entry in frontend.env}
+            expected = f"http://{dev_name}-backend:8000"
+            assert env["BACKEND_URL"] == expected
+            annotations = (payload.model_extra or {})["annotations"]
+            rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+            assert rewrites == {
+                "frontend": {
+                    "BACKEND_URL": {"from": "http://backend:8000", "to": expected}
+                }
+            }
+
+    def test_mapping_fragment_rewrites_each_endpoint_in_payload(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        transformed_compose["services"]["frontend"]["environment"] = [
+            {
+                "BACKEND_URL": "http://backend:8000",
+                "BACKEND_ENDPOINT": "backend:8000",
+                "UNRELATED": "kept",
+            }
+        ]
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        assert env["BACKEND_URL"] == "http://deploy-backend:8000"
+        assert env["BACKEND_ENDPOINT"] == "deploy-backend:8000"
+        assert env["UNRELATED"] == "kept"
+
+    def test_payload_preserves_image_references_and_url_credentials(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        services = transformed_compose["services"]
+        for sibling in ["registry", "redis", "postgres"]:
+            services[sibling] = {"image": f"reg/{sibling}:1", "ports": ["5000"]}
+        source_env = {
+            "AGENT_SERVER_IMAGE": "registry:5000/repo/agent:1",
+            "SANDBOX_ALLOWED_IMAGE_PREFIXES": "registry:5000/repo",
+            "OTHER_IMAGE": "redis:7",
+            "PASSWORD": "backend:8000",
+            "EXTERNAL_DATABASE_URL": (
+                "postgresql://postgres:123secret@db.example.com:5432/app"
+            ),
+            "DATABASE_URL": "postgresql://postgres:123@backend:8000/app",
+        }
+        services["frontend"]["environment"] = source_env
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected = {
+            **source_env,
+            "DATABASE_URL": "postgresql://postgres:123@deploy-backend:8000/app",
+        }
+        assert {key: env[key] for key in source_env} == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {
+            "frontend": {
+                "DATABASE_URL": {
+                    "from": source_env["DATABASE_URL"],
+                    "to": expected["DATABASE_URL"],
+                }
+            }
+        }
+
     def test_bare_endpoints_baked_into_payload_env(
         self,
         builder,
@@ -610,10 +701,7 @@ class TestServiceRefRewritesAnnotation:
         standalone_env = {
             entry["name"]: entry.get("value") for entry in (standalone.env or [])
         }
-        assert (
-            standalone_env["ETCD_ENDPOINTS"]
-            == "service-milvus-dev-3da53c-etcd:2379"
-        )
+        assert standalone_env["ETCD_ENDPOINTS"] == "service-milvus-dev-3da53c-etcd:2379"
 
         # The annotation still ships the exact from/to for the operator path.
         annotations = (payload.model_extra or {}).get("annotations") or {}

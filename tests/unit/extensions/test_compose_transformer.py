@@ -162,7 +162,9 @@ class TestStripBindMounts:
 class TestBuildContextRemoval:
     def test_removes_build_adds_image(self, transformer):
         compose = {"services": {"api": {"build": "./backend"}}}
-        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test", purpose="publish")
+        result = transformer.transform(
+            compose, "my-app", "1.0.0-dev", "registry.test", purpose="publish"
+        )
         svc = result["services"]["api"]
         assert "build" not in svc
         assert svc["image"] == "registry.test/my-app-api:1.0.0-dev"
@@ -182,7 +184,9 @@ class TestBuildContextRemoval:
                 }
             }
         }
-        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test", purpose="publish")
+        result = transformer.transform(
+            compose, "my-app", "1.0.0-dev", "registry.test", purpose="publish"
+        )
         assert result["services"]["api"]["image"] == (
             "ghcr.io/kamiwazaai/my-app-api:1.0.0-dev"
         )
@@ -284,7 +288,9 @@ class TestBuildContextRemoval:
                 "web": {"build": {"context": ".", "dockerfile": "frontend/Dockerfile"}}
             }
         }
-        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         assert "build" not in result["services"]["web"]
         assert result["services"]["web"]["image"] == "reg/my-app-web:v1"
 
@@ -292,12 +298,16 @@ class TestBuildContextRemoval:
 class TestExternalImages:
     def test_postgres_preserved(self, transformer):
         compose = {"services": {"db": {"image": "postgres:15"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         assert result["services"]["db"]["image"] == "postgres:15"
 
     def test_redis_preserved(self, transformer):
         compose = {"services": {"cache": {"image": "redis:7-alpine"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         assert result["services"]["cache"]["image"] == "redis:7-alpine"
 
 
@@ -354,7 +364,9 @@ class TestNonBuildableInternalImages:
 class TestResourceLimits:
     def test_adds_default_limits(self, transformer):
         compose = {"services": {"api": {"image": "my-app/api:1"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         limits = result["services"]["api"]["deploy"]["resources"]["limits"]
         assert limits["cpus"] == "1.0"
         assert limits["memory"] == "1G"
@@ -370,13 +382,17 @@ class TestResourceLimits:
                 }
             }
         }
-        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         limits = result["services"]["api"]["deploy"]["resources"]["limits"]
         assert limits["cpus"] == "2.0"
 
     def test_postgres_gets_smaller_limits(self, transformer):
         compose = {"services": {"db": {"image": "postgres:15"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
+        result = transformer.transform(
+            compose, "my-app", "v1", "reg", purpose="publish"
+        )
         limits = result["services"]["db"]["deploy"]["resources"]["limits"]
         assert limits["cpus"] == "0.5"
         assert limits["memory"] == "512M"
@@ -465,9 +481,7 @@ class TestFullTransform:
 class TestResolveEnvPlaceholders:
     """Direct deploy resolves Compose env values and drops platform keys."""
 
-    def test_process_resolution_handles_unbraced_defaults_and_escape(
-        self, monkeypatch
-    ):
+    def test_process_resolution_handles_unbraced_defaults_and_escape(self, monkeypatch):
         monkeypatch.setenv("KZ_TEST_PROCESS", "serve")
         monkeypatch.delenv("KZ_TEST_MISSING", raising=False)
 
@@ -478,15 +492,10 @@ class TestResolveEnvPlaceholders:
 
         assert resolved == "serve fallback $(LITERAL)"
 
-    def test_process_resolution_rejects_missing_unbraced_variable(
-        self, monkeypatch
-    ):
+    def test_process_resolution_rejects_missing_unbraced_variable(self, monkeypatch):
         monkeypatch.delenv("KZ_TEST_MISSING", raising=False)
 
-        assert (
-            resolve_compose_value("$KZ_TEST_MISSING", resolve_unbraced=True)
-            is None
-        )
+        assert resolve_compose_value("$KZ_TEST_MISSING", resolve_unbraced=True) is None
 
     def test_resolves_default_substitution_dict_form(self, transformer, monkeypatch):
         monkeypatch.delenv("KZ_TEST_BACKEND_URL", raising=False)
@@ -1156,60 +1165,6 @@ class TestDetectServiceUrlRewrites:
         rewrites = detect_service_url_rewrites(services, "ext")
         assert rewrites["app"]["MIXED"]["to"] == "http://ext-etcd:2379,ext-backup:2379"
 
-
-class TestApplyServiceRefRewrites:
-    """The native direct runtime applies ``service.env`` verbatim with no
-    annotation consumer, so ``PayloadBuilder`` bakes the rewrite map into
-    the payload env. The map is applied EXACTLY (from -> to), never
-    re-derived, for both Compose environment shapes."""
-
-    def test_applies_to_mapping_and_list_env(self):
-        from kamiwaza_extensions.compose_transformer import (
-            apply_service_ref_rewrites,
-            detect_service_url_rewrites,
-        )
-
-        services = {
-            "standalone": {
-                "environment": ["ETCD_ENDPOINTS=etcd:2379", "MINIO_ADDRESS=seaweedfs:9000"],
-            },
-            "proxy": {
-                "environment": {"UPSTREAM": "http://standalone:19530"},
-            },
-            "etcd": {"environment": []},
-            "seaweedfs": {"environment": []},
-        }
-        rewrites = detect_service_url_rewrites(services, "ext")
-        apply_service_ref_rewrites(services, rewrites)
-        assert services["standalone"]["environment"] == [
-            "ETCD_ENDPOINTS=ext-etcd:2379",
-            "MINIO_ADDRESS=ext-seaweedfs:9000",
-        ]
-        assert services["proxy"]["environment"] == {
-            "UPSTREAM": "http://ext-standalone:19530"
-        }
-
-    def test_exact_match_only(self):
-        from kamiwaza_extensions.compose_transformer import (
-            apply_service_ref_rewrites,
-        )
-
-        services = {
-            "app": {"environment": {"URL": "http://backend:9000"}},
-        }
-        apply_service_ref_rewrites(
-            services,
-            {
-                "app": {
-                    "URL": {"from": "http://backend:8000", "to": "http://ext-backend:8000"},
-                    "GONE": {"from": "x", "to": "y"},
-                }
-            },
-        )
-        # The value drifted from the recorded map -> left verbatim, never
-        # guessed; missing keys and missing services are no-ops.
-        assert services == {"app": {"environment": {"URL": "http://backend:9000"}}}
-
     def test_handles_https_and_path(self):
         from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
 
@@ -1343,6 +1298,167 @@ class TestApplyServiceRefRewrites:
 
         services = {"backend": {}, "frontend": {}}
         assert detect_service_url_rewrites(services, "ext") == {}
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "ghcr.io/my-org/images/agent:1.8.13",
+            "postgres:16-alpine",
+            "redis:7.2",
+            "quay.io/coreos/etcd:3.6",
+            "postgresql://postgres:123secret@db.example.com:5432/app",
+            "http://postgres:123@db.example.com:5432/app",
+            "0 2 * * * web:80",
+            "etcd:0",
+            "etcd:65536",
+            "etcd:999999",
+            "etcd:2379suffix",
+            "etcd:2379-alpine",
+            "etcd:2379.0",
+            "http://external/path/etcd:2379",
+            "etcd:2379@external",
+        ],
+    )
+    def test_preserves_non_endpoint_values(self, value):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {name: {} for name in ("agent", "postgres", "redis", "etcd", "web")}
+        services["app"] = {"environment": {"VALUE": value}}
+        assert detect_service_url_rewrites(services, "ext") == {}
+
+    @pytest.mark.parametrize(
+        "key,value",
+        [
+            ("AGENT_SERVER_IMAGE", "registry:5000/repo/agent:1"),
+            ("SANDBOX_ALLOWED_IMAGE_PREFIXES", "registry:5000/repo,agent:1"),
+            ("CACHE_IMAGE", "redis:7"),
+            ("IMAGE", "postgres:16"),
+            ("DB_PASSWORD", "postgres:123"),
+            ("API_TOKEN", "etcd:2379"),
+        ],
+    )
+    def test_preserves_image_and_credential_env(self, key, value):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            name: {} for name in ("registry", "agent", "redis", "postgres", "etcd")
+        }
+        services["app"] = {"environment": {key: value}}
+        assert detect_service_url_rewrites(services, "ext") == {}
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (
+                "postgresql://postgres:123secret@etcd:2379/app",
+                "postgresql://postgres:123secret@ext-etcd:2379/app",
+            ),
+            ("redis://etcd:6379/0", "redis://ext-etcd:6379/0"),
+            ("http://etcd/path?foo=bar#frag", "http://ext-etcd/path?foo=bar#frag"),
+            (" etcd:1, backup:65535/path ", " ext-etcd:1, ext-backup:65535/path "),
+            ("etcd:2379/path", "ext-etcd:2379/path"),
+        ],
+    )
+    def test_rewrites_only_endpoint_host(self, value, expected):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {name: {} for name in ("etcd", "backup", "postgres")}
+        services["app"] = {"environment": {"ENDPOINTS": value}}
+        assert detect_service_url_rewrites(services, "ext")["app"]["ENDPOINTS"] == {
+            "from": value,
+            "to": expected,
+        }
+
+
+class TestApplyServiceRefRewrites:
+    """The native direct runtime applies ``service.env`` verbatim with no
+    annotation consumer, so ``PayloadBuilder`` bakes the rewrite map into
+    the payload env. The map is applied EXACTLY (from -> to), never
+    re-derived, for both Compose environment shapes."""
+
+    def test_applies_to_mapping_and_list_env(self):
+        from kamiwaza_extensions.compose_transformer import (
+            apply_service_ref_rewrites,
+            detect_service_url_rewrites,
+        )
+
+        services = {
+            "standalone": {
+                "environment": [
+                    "ETCD_ENDPOINTS=etcd:2379",
+                    "MINIO_ADDRESS=seaweedfs:9000",
+                ],
+            },
+            "proxy": {
+                "environment": {"UPSTREAM": "http://standalone:19530"},
+            },
+            "etcd": {"environment": []},
+            "seaweedfs": {"environment": []},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        apply_service_ref_rewrites(services, rewrites)
+        assert services["standalone"]["environment"] == [
+            "ETCD_ENDPOINTS=ext-etcd:2379",
+            "MINIO_ADDRESS=ext-seaweedfs:9000",
+        ]
+        assert services["proxy"]["environment"] == {
+            "UPSTREAM": "http://ext-standalone:19530"
+        }
+
+    def test_exact_match_only(self):
+        from kamiwaza_extensions.compose_transformer import (
+            apply_service_ref_rewrites,
+        )
+
+        services = {
+            "app": {"environment": {"URL": "http://backend:9000"}},
+        }
+        apply_service_ref_rewrites(
+            services,
+            {
+                "app": {
+                    "URL": {
+                        "from": "http://backend:8000",
+                        "to": "http://ext-backend:8000",
+                    },
+                    "GONE": {"from": "x", "to": "y"},
+                }
+            },
+        )
+        # The value drifted from the recorded map -> left verbatim, never
+        # guessed; missing keys and missing services are no-ops.
+        assert services == {"app": {"environment": {"URL": "http://backend:9000"}}}
+
+    @pytest.mark.parametrize(
+        "environment,expected",
+        [
+            (
+                [{"ETCD_ENDPOINTS": "etcd:2379", "PLAIN": "kept"}],
+                [{"ETCD_ENDPOINTS": "ext-etcd:2379", "PLAIN": "kept"}],
+            ),
+            (
+                [{"name": 17, "value": "etcd:2379"}],
+                [{"name": 17, "value": "ext-etcd:2379"}],
+            ),
+            (
+                [{"name": ["X"], "value": "etcd:2379"}],
+                [{"name": ["X"], "value": "ext-etcd:2379"}],
+            ),
+            ({17: "etcd:2379"}, {17: "ext-etcd:2379"}),
+        ],
+    )
+    def test_applies_supported_mapping_shapes(self, environment, expected):
+        from kamiwaza_extensions.compose_transformer import (
+            apply_service_ref_rewrites,
+            detect_service_url_rewrites,
+        )
+
+        services = {"app": {"environment": environment}, "etcd": {}}
+        rewrites = detect_service_url_rewrites(services, "ext")
+        apply_service_ref_rewrites(services, rewrites)
+        assert services["app"]["environment"] == expected
+        apply_service_ref_rewrites(services, rewrites)
+        assert services["app"]["environment"] == expected
 
 
 class TestLooksRegistryQualified:
@@ -1485,7 +1601,9 @@ class TestCanonicalBuildRefDevPurpose:
         return self._call(image=image, purpose="dev", **kw)
 
     def test_qualified_ref_relocated_to_dev_registry(self):
-        assert self._dev("ghcr.io/my-org/api:1.0") == "registry.test/my-org/api:2.0.0-dev"
+        assert (
+            self._dev("ghcr.io/my-org/api:1.0") == "registry.test/my-org/api:2.0.0-dev"
+        )
 
     def test_declared_repository_path_preserved(self):
         # The full repo path survives the host swap. Flattening to the legacy
@@ -1819,8 +1937,13 @@ class TestComputeCanonicalRefsDevPurpose:
         # controller/backend/frontend at ghcr.io, agent at the dev registry.
         ns = "ghcr.io/kamiwaza-internal/kamiwaza-extensions-kaizen/images"
         source = {
-            "postgres": {"image": "ghcr.io/kamiwaza-internal/containers/images/postgres:v18.4"},
-            "sandbox-controller": {"build": ".", "image": f"{ns}/kaizen-controller:2.0.2"},
+            "postgres": {
+                "image": "ghcr.io/kamiwaza-internal/containers/images/postgres:v18.4"
+            },
+            "sandbox-controller": {
+                "build": ".",
+                "image": f"{ns}/kaizen-controller:2.0.2",
+            },
             "agent": {
                 "build": ".",
                 "image": f"{ns}/kaizen-agent:2.0.2",

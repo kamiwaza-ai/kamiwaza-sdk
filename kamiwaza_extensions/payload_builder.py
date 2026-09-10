@@ -7,8 +7,9 @@ import json
 import re
 import shlex
 import socket
+from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from kamiwaza_extensions.compose_ports import (
     default_service_port_name,
@@ -152,25 +153,9 @@ class PayloadBuilder:
         # ``tlsRejectUnauthorized`` spec field so the deployed
         # extension's in-cluster callbacks match the developer's intent.
         verify_ssl = connection.effective_verify_ssl()
-        # Cross-service endpoint rewrites: scan each service's env for
-        # references to sibling services by compose short name — URLs
-        # (``http://backend:8000``) and bare endpoints (``etcd:2379``) —
-        # and bake the deployment-prefixed K8s service names into the
-        # payload env BEFORE serialization. The native direct runtime
-        # applies ``service.env`` verbatim and has no annotation consumer
-        # (KZUAT live evidence: the milvus extension's bare
-        # ``ETCD_ENDPOINTS=etcd:2379`` crashed its standalone workload
-        # with DNS resolution failures), so the payload itself must carry
-        # the translated values. The ``service-ref-rewrites`` annotation
-        # is still emitted for the operator/compose-adapter path and
-        # ships only when at least one rewrite is needed.
-        rewrites = detect_service_url_rewrites(
-            transformed_compose.get("services") or {}, dev_name
+        transformed_compose, rewrites = self._prepare_compose_for_payload(
+            transformed_compose, dev_name
         )
-        if rewrites:
-            apply_service_ref_rewrites(
-                transformed_compose.get("services") or {}, rewrites
-            )
         services = self._build_services(
             transformed_compose,
             app_path=app_path,
@@ -220,6 +205,23 @@ class PayloadBuilder:
             kwargs["annotations"] = annotations
 
         return CreateExtension(**kwargs)
+
+    @staticmethod
+    def _prepare_compose_for_payload(
+        transformed_compose: Dict[str, Any], dev_name: str
+    ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Dict[str, str]]]]:
+        """Bake service references into a private copy for this deployment.
+
+        The direct runtime consumes env values without reading annotations,
+        so URLs and bare endpoints must already use deployment-prefixed names.
+        Preserve the caller's source references for repeat builds, including
+        builds for a different deployment, and the operator's from/to annotation.
+        """
+        prepared = deepcopy(transformed_compose)
+        services = prepared.get("services") or {}
+        rewrites = detect_service_url_rewrites(services, dev_name)
+        apply_service_ref_rewrites(services, rewrites)
+        return prepared, rewrites
 
     @staticmethod
     def build_annotations(

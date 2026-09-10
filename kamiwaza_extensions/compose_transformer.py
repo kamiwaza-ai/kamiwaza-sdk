@@ -7,6 +7,8 @@ import os
 import re
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
+from kamiwaza_extensions.env_names import IMAGE_ENV_NAMES, IMAGE_PREFIX_ENV_NAMES
+
 # Reuse the validator's bind-mount detection so the "stripped at deploy"
 # info message ComposeValidator emits stays in sync with what the
 # transformer actually strips (ENG-4956).
@@ -759,35 +761,33 @@ def _entry_has_shell_ref(entry: Any) -> bool:
 
 
 # ------------------------------------------------------------------
-# Cross-service URL detection (for ``service-ref-rewrites`` annotation)
+# Cross-service endpoint detection and payload env rewriting
 # ------------------------------------------------------------------
 
 
-# Captures a ``http(s)://<host>`` reference. The trailing lookahead
-# requires the host to be terminated by a port (``:``), path (``/``),
-# query (``?``), fragment (``#``), or end-of-string — so ``http://api``
-# and ``http://api:8000/path`` match a sibling named ``api``, but
-# ``http://api.openai.com/v1`` does NOT (the ``.`` is not a valid
-# host-terminator). ``\b`` was previously used here but treats ``.``
-# as a word boundary, which falsely rewrites external URLs sharing a
-# leading subdomain with a sibling service name (iter-8 review repro:
-# sibling ``api`` would hijack ``api.openai.com``).
+# Match complete endpoint tokens, never arbitrary host:digits substrings in
+# image paths, credentials, commands, or URL paths. Keep URL userinfo separate
+# from the hostname so a sibling name in a username is never rewritten.
 _URL_HOST_RE = re.compile(
-    r"(?P<scheme>https?://)(?P<host>[A-Za-z][A-Za-z0-9_-]*)(?=[:/?#]|$)"
+    r"(?P<prefix>[A-Za-z][A-Za-z0-9+.-]*://(?:[^/@?#\s]*@)?)"
+    r"(?P<host>[A-Za-z][A-Za-z0-9_-]*)(?::(?P<port>[0-9]{1,5}))?"
+    r"(?P<suffix>[/?#]\S*)?"
+)
+_BARE_ENDPOINT_RE = re.compile(
+    r"(?P<host>[A-Za-z][A-Za-z0-9_-]*):(?P<port>[0-9]{1,5})(?P<suffix>[/?#]\S*)?"
 )
 
-# Bare ``<host>:<port>`` endpoint references (``etcd:2379``) — the other
-# shape Compose's per-service DNS alias makes resolvable. The lookbehind
-# rejects hosts embedded in longer tokens (``myetcd:2379``) and hosts
-# already rewritten by ``_URL_HOST_RE`` (``...-etcd:2379``); the port must
-# be digits so ``name:value`` pairs that merely look like endpoints are
-# left alone. KZUAT live evidence: the milvus extension's
-# ``ETCD_ENDPOINTS=etcd:2379`` / ``MINIO_ADDRESS=seaweedfs:9000`` deploy
-# verbatim through the native direct runtime and crash the workload with
-# DNS resolution failures.
-_BARE_ENDPOINT_RE = re.compile(
-    r"(?<![\w.:-])(?P<host>[A-Za-z][A-Za-z0-9_-]*):(?P<port>[0-9]+)(?![0-9])"
-)
+
+def _is_protected_env_key(key: str) -> bool:
+    """Image references and credentials must retain their literal values."""
+    normalized = key.strip().upper()
+    if normalized in IMAGE_ENV_NAMES | IMAGE_PREFIX_ENV_NAMES:
+        return True
+    parts = set(normalized.split("_"))
+    return bool(
+        parts
+        & {"IMAGE", "IMAGES", "PASSWORD", "SECRET", "TOKEN", "KEY", "USER", "USERNAME"}
+    )
 
 
 def detect_service_url_rewrites(
@@ -806,10 +806,9 @@ def detect_service_url_rewrites(
 
     This function walks each transformed service's env and finds values
     referencing a SIBLING service by its compose short name. The
-    returned map is consumed by ``PayloadBuilder`` and serialized into
-    the ``extensions.kamiwaza.io/service-ref-rewrites`` annotation; the
-    operator reads that annotation and rewrites the env value at deploy
-    time:
+    returned map is baked into a copy of the payload env by ``PayloadBuilder``
+    and serialized into the ``extensions.kamiwaza.io/service-ref-rewrites``
+    annotation for operator compatibility:
 
         {
           "<service_name>": {
@@ -820,8 +819,10 @@ def detect_service_url_rewrites(
           }
         }
 
-    Self-references and references to non-sibling hostnames are
-    ignored.
+    Only complete endpoint tokens (optionally comma-separated) are rewritten.
+    URL credentials are preserved, ports must be in 1..65535, and image- or
+    credential-bearing env keys are excluded. Self-references and references
+    to non-sibling hostnames are ignored.
     """
     sibling_names = set(transformed_services.keys())
     rewrites: Dict[str, Dict[str, Dict[str, str]]] = {}
@@ -831,6 +832,8 @@ def detect_service_url_rewrites(
         if not env:
             continue
         for key, value in _iter_env_entries(env):
+            if _is_protected_env_key(key):
+                continue
             new_value = _rewrite_url_hosts(value, sibling_names, svc_name, dev_name)
             if new_value is None or new_value == value:
                 continue
@@ -871,8 +874,9 @@ def _rewrite_env_mapping(
     env: Dict[str, Any], per_key: Dict[str, Dict[str, str]]
 ) -> None:
     """Apply EXACT rewrites to a mapping-shaped ``environment`` in place."""
-    for key, rule in per_key.items():
-        if key in env and str(env[key]) == rule["from"]:
+    for key, value in env.items():
+        rule = per_key.get(str(key))
+        if rule is not None and str(value) == rule["from"]:
             env[key] = rule["to"]
 
 
@@ -907,8 +911,11 @@ def _rewrite_env_list_string_entry(
 def _rewrite_env_list_dict_entry(
     entry: Dict[str, Any], per_key: Dict[str, Dict[str, str]]
 ) -> None:
-    """Rewrite a name/value dict entry in place when the value matches."""
-    rule = per_key.get(entry.get("name"))
+    """Rewrite a name/value entry or mapping fragment by exact equality."""
+    if "name" not in entry:
+        _rewrite_env_mapping(entry, per_key)
+        return
+    rule = per_key.get(str(entry["name"]))
     if rule is None:
         return
     if str(entry.get("value")) == rule["from"]:
@@ -956,30 +963,30 @@ def _rewrite_url_hosts(
     self_name: str,
     dev_name: str,
 ) -> Optional[str]:
-    """Rewrite each ``http(s)://<sibling>`` host and each bare
-    ``<sibling>:<port>`` endpoint in *value* to the deployment-prefixed
-    K8s service name. Returns the rewritten value or None when there's
-    nothing to rewrite."""
-
-    def _sub(match: re.Match) -> str:
-        host = match.group("host")
-        if host == self_name or host not in sibling_names:
-            return match.group(0)
-        return f"{match.group('scheme')}{dev_name}-{host}"
-
-    new_value = _URL_HOST_RE.sub(_sub, value)
-
-    def _sub_bare(match: re.Match) -> str:
-        host = match.group("host")
-        if host == self_name or host not in sibling_names:
-            return match.group(0)
-        return f"{dev_name}-{host}:{match.group('port')}"
-
-    # Runs AFTER the URL pass: its lookbehind keeps it off hosts the URL
-    # pass already prefixed (``...-<host>:<port>``), so the two passes are
-    # order-safe on mixed values (``http://etcd:2379,backup:2379``).
-    new_value = _BARE_ENDPOINT_RE.sub(_sub_bare, new_value)
+    """Rewrite sibling hosts in complete URL or bare endpoint CSV tokens."""
+    hostnames = {name: f"{dev_name}-{name}" for name in sibling_names - {self_name}}
+    new_value = ",".join(
+        _rewrite_endpoint_token(token, hostnames) for token in value.split(",")
+    )
     return new_value if new_value != value else None
+
+
+def _rewrite_endpoint_token(token: str, hostnames: Dict[str, str]) -> str:
+    """Preserve token formatting and credentials while replacing its host."""
+    stripped = token.strip()
+    match = _URL_HOST_RE.fullmatch(stripped) or _BARE_ENDPOINT_RE.fullmatch(stripped)
+    if match is None:
+        return token
+    port = match.group("port")
+    if port is not None and not 1 <= int(port) <= 65535:
+        return token
+    replacement = hostnames.get(match.group("host"))
+    if replacement is None:
+        return token
+    # Use offsets rather than URL reserialization to preserve every other byte.
+    start = len(token) - len(token.lstrip()) + match.start("host")
+    end = start + len(match.group("host"))
+    return token[:start] + replacement + token[end:]
 
 
 def _strip_host_ports(ports: List[Any]) -> List[Any]:
