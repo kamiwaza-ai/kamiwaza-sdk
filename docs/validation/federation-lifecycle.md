@@ -10,6 +10,12 @@ mesh-edge: three clearance retrievals, three tenant-negative retrievals,
 authorized dataset listing, a receiver job marker, and an unonboarded-user
 denial. Required cases fail; they are never silently skipped.
 
+Positive retrieval cases first perform a receiver dataset read. This triggers
+first-ingress grant seeding and waits up to 30 seconds for an explicit
+authorization-unavailable 503 to clear while SpiceDB projects the grants.
+Authorization denials and unrelated failures are not retried. The negative
+identity cases retain their direct rejection checks.
+
 ## Inputs
 
 Create a `profile.json` describing both existing clusters and their edge:
