@@ -1335,6 +1335,9 @@ class TestDetectServiceUrlRewrites:
             ("IMAGE", "postgres:16"),
             ("DB_PASSWORD", "postgres:123"),
             ("API_TOKEN", "etcd:2379"),
+            ("cache-image", "redis:7"),
+            ("api-token", "etcd:2379"),
+            ("AGENT_SERVER_IMAGE", "docker://postgres:16"),
         ],
     )
     def test_preserves_image_and_credential_env(self, key, value):
@@ -1376,6 +1379,11 @@ class TestDetectServiceUrlRewrites:
             "USER_SERVICE_URL",
             "IMAGE_SERVICE_ENDPOINT",
             "SECRET_STORE_ADDRESS",
+            "IMAGE_SERVICE",
+            "USER_SERVICE",
+            "TOKEN_SERVICE",
+            "SECRET_STORE",
+            "KEY_SERVER",
         ],
     )
     def test_endpoint_key_takes_precedence_over_protected_word(self, key):
@@ -1441,6 +1449,76 @@ class TestDetectServiceUrlRewrites:
             assert rewrites == {}
         else:
             assert rewrites["app"]["CONFIG"]["to"] == expected
+
+    @pytest.mark.parametrize("separator", [";", "|"])
+    @pytest.mark.parametrize("path", ["", "/health"])
+    def test_rewrites_delimited_url_lists(self, separator, path):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        value = f"http://etcd:2379{path}{separator}http://backup:2380{path}"
+        expected = f"http://ext-etcd:2379{path}{separator}http://ext-backup:2380{path}"
+        services = {"app": {"environment": {"URL": value}}, "etcd": {}, "backup": {}}
+        assert (
+            detect_service_url_rewrites(services, "ext")["app"]["URL"]["to"] == expected
+        )
+
+    @pytest.mark.parametrize("opening,closing", [("(", ")"), ("[", "]"), ("<", ">")])
+    def test_rewrites_wrapped_url(self, opening, closing):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        value = f"{opening}http://etcd:2379{closing}"
+        services = {"app": {"environment": {"URL": value}}, "etcd": {}}
+        assert detect_service_url_rewrites(services, "ext")["app"]["URL"]["to"] == (
+            f"{opening}http://ext-etcd:2379{closing}"
+        )
+
+    def test_host_only_values_remain_out_of_scope(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"app": {"environment": {"DB_HOST": "etcd"}}, "etcd": {}}
+        assert detect_service_url_rewrites(services, "ext") == {}
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("http://external/path/O'Reilly,etcd:2379", None),
+            (
+                "http://etcd/path/O'Reilly,backup:2380",
+                "http://ext-etcd/path/O'Reilly,backup:2380",
+            ),
+            ("postgresql://postgres:123'secret@db.example.com:5432/app", None),
+            (
+                "postgresql://postgres:123'secret@etcd:2379/app",
+                "postgresql://postgres:123'secret@ext-etcd:2379/app",
+            ),
+            (
+                "http://etcd:2379/,http://backup:2380/",
+                "http://ext-etcd:2379/,http://ext-backup:2380/",
+            ),
+            (
+                "http://external.example/,http://backup:2380/",
+                "http://external.example/,http://ext-backup:2380/",
+            ),
+            (
+                "postgresql://u:p'ass,word@etcd:2379/db,http://backup:2380/",
+                "postgresql://u:p'ass,word@ext-etcd:2379/db,http://ext-backup:2380/",
+            ),
+        ],
+    )
+    def test_url_credentials_and_complete_url_lists(self, value, expected):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "app": {"environment": {"DATABASE_URL": value}},
+            "postgres": {},
+            "etcd": {},
+            "backup": {},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        if expected is None:
+            assert rewrites == {}
+        else:
+            assert rewrites["app"]["DATABASE_URL"] == {"from": value, "to": expected}
 
 
 class TestApplyServiceRefRewrites:

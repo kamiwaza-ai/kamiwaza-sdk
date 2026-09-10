@@ -779,15 +779,22 @@ _BARE_ENDPOINT_RE = re.compile(
 # query, fragment, and credentials may contain commas or host:port-shaped data.
 # Quotes/braces terminate URLs embedded in serialized configuration values.
 _URL_REF_RE = re.compile(
-    r"[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#\s\"'{}]*@)?"
-    r"[^/?#\s,\"'{}]+(?:[/?#][^\s\"'{}]*)?"
+    r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://"
+    # RFC 3986 userinfo permits apostrophes and commas. Consume it through @
+    # before considering surrounding serialized-value quote delimiters.
+    r"(?:[A-Za-z0-9._~!$&'()*+,;=:%-]*@)?[^/?#\s,;|()\[\]<>\"'{}]+"
+    # A list separator followed by a full URL starts another entry;
+    # ordinary punctuation inside components remains part of this URL.
+    r"(?:[/?#](?:(?![,;|][A-Za-z][A-Za-z0-9+.-]*://)[^\s\"{}])*)?"
 )
+
+_IMAGE_ENV_KEYS = IMAGE_ENV_NAMES | IMAGE_PREFIX_ENV_NAMES
 
 
 def _is_protected_env_key(key: str) -> bool:
-    """Image references and credentials must retain their literal values."""
+    """Avoid interpreting ambiguous bare tokens as image or credential hosts."""
     normalized = key.strip().upper()
-    if normalized in IMAGE_ENV_NAMES | IMAGE_PREFIX_ENV_NAMES:
+    if normalized in _IMAGE_ENV_KEYS:
         return True
     # A TOKEN_URL or USER_SERVICE_ENDPOINT names a location, not a secret.
     if normalized.endswith(
@@ -806,7 +813,7 @@ def _is_protected_env_key(key: str) -> bool:
         )
     ):
         return False
-    parts = set(normalized.split("_"))
+    parts = set(re.split(r"[^A-Z0-9]+", normalized))
     return bool(
         parts
         & {"IMAGE", "IMAGES", "PASSWORD", "SECRET", "TOKEN", "KEY", "USER", "USERNAME"}
@@ -843,9 +850,11 @@ def detect_service_url_rewrites(
         }
 
     URLs retain their surrounding text; bare endpoints must be complete
-    tokens (optionally comma-separated). URL credentials are preserved, ports must be in 1..65535, and image- or
-    credential-bearing env keys are excluded. Self-references and references
-    to non-sibling hostnames are ignored.
+    tokens (optionally comma-separated). URL credentials are preserved and
+    ports must be in 1..65535. Known image env keys are excluded; broader image
+    or credential key names exclude only ambiguous bare endpoints, retaining
+    existing scheme-bearing URL behavior. Host-only values, self-references,
+    and references to non-sibling hostnames are ignored.
     """
     sibling_names = set(transformed_services.keys())
     rewrites: Dict[str, Dict[str, Dict[str, str]]] = {}
@@ -855,9 +864,15 @@ def detect_service_url_rewrites(
         if not env:
             continue
         for key, value in _iter_env_entries(env):
-            if _is_protected_env_key(key):
+            if key.strip().upper() in _IMAGE_ENV_KEYS:
                 continue
-            new_value = _rewrite_url_hosts(value, sibling_names, svc_name, dev_name)
+            new_value = _rewrite_url_hosts(
+                value,
+                sibling_names,
+                svc_name,
+                dev_name,
+                allow_bare=not _is_protected_env_key(key),
+            )
             if new_value is None or new_value == value:
                 continue
             rewrites.setdefault(svc_name, {})[key] = {
@@ -879,7 +894,11 @@ def apply_service_ref_rewrites(
     would apply from the annotation. The native direct runtime applies
     ``service.env`` verbatim and has no annotation consumer, so
     ``PayloadBuilder`` bakes these rewrites into the payload env directly;
-    the annotation remains the transport for the compose-adapter path.
+    the annotation remains compatible with the compose-adapter path. Already
+    baked values skip the operator's exact ``from`` match; its hostname lookup
+    recognizes deployment-prefixed aliases and resolves them without prefixing
+    them again. The map records at most one rewrite per env key, so duplicate
+    list keys retain their existing last-rewrite behavior.
     Both shapes of Compose ``environment`` (mapping and list) are handled.
     """
     for svc_name, per_key in rewrites.items():
@@ -985,6 +1004,8 @@ def _rewrite_url_hosts(
     sibling_names: set,
     self_name: str,
     dev_name: str,
+    *,
+    allow_bare: bool = True,
 ) -> Optional[str]:
     """Rewrite sibling hosts in complete URL or bare endpoint CSV tokens."""
     hostnames = {name: f"{dev_name}-{name}" for name in sibling_names - {self_name}}
@@ -992,17 +1013,23 @@ def _rewrite_url_hosts(
     offset = 0
     for match in _URL_REF_RE.finditer(value):
         parts.append(
-            _rewrite_bare_endpoint_list(value[offset : match.start()], hostnames)
+            _rewrite_bare_endpoint_list(
+                value[offset : match.start()], hostnames, allow_bare
+            )
         )
         parts.append(_rewrite_endpoint_token(match.group(), hostnames))
         offset = match.end()
-    parts.append(_rewrite_bare_endpoint_list(value[offset:], hostnames))
+    parts.append(_rewrite_bare_endpoint_list(value[offset:], hostnames, allow_bare))
     new_value = "".join(parts)
     return new_value if new_value != value else None
 
 
-def _rewrite_bare_endpoint_list(value: str, hostnames: Dict[str, str]) -> str:
+def _rewrite_bare_endpoint_list(
+    value: str, hostnames: Dict[str, str], allow_bare: bool = True
+) -> str:
     """Only complete comma-separated tokens outside URLs can be endpoints."""
+    if not allow_bare:
+        return value
     return ",".join(
         _rewrite_endpoint_token(token, hostnames) for token in value.split(",")
     )
