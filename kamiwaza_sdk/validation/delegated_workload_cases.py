@@ -18,6 +18,7 @@ from kamiwaza_sdk.validation.federation_common import (
     required_text,
     token_client,
 )
+from kamiwaza_sdk.validation.federation_readiness import authorized_datasets
 from kamiwaza_sdk.validation.models import CaseResult
 
 _CLASSIFICATION = "U"
@@ -75,6 +76,7 @@ def _run_approved_package_case(context: RunContext) -> None:
     delegated_access = {"datasets": [{"urn": dataset, "operations": ["discover"]}]}
     baseline_marker = f"kz-delegated-base-{uuid.uuid4().hex}"
     try:
+        authorized_datasets(persona, target)
         baseline = _submit(
             persona,
             _JobRequest(

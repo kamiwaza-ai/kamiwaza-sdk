@@ -224,6 +224,9 @@ class _Persona:
         self._results = iter(results)
         self.session = SimpleNamespace(verify=True)
         self.jobs = SimpleNamespace(run=self._run)
+        self.catalog = SimpleNamespace(
+            datasets=SimpleNamespace(list=lambda **kwargs: [])
+        )
         self.requests: list[tuple[str, str]] = []
 
     def _run(self, **kwargs: Any) -> Any:
