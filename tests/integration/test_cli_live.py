@@ -9,7 +9,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import jwt
 import pytest
@@ -247,29 +247,42 @@ class _CliResources:
     deployment_id: str | None = None
 
 
+def _stop_cli_deployment(resources: _CliResources) -> None:
+    stopped = resources.cleanup_client.serving.stop_deployment(
+        deployment_id=resources.deployment_id, force=True
+    )
+    if stopped is False:
+        raise RuntimeError("stop_deployment returned False")
+
+
+def _cleanup_error(
+    action: Callable[[], object], secrets: tuple[str, ...]
+) -> str | None:
+    try:
+        action()
+    except Exception as exc:
+        return _scrub_output(str(exc), secrets)[:500]
+    return None
+
+
 def _cleanup_cli_resources(resources: _CliResources) -> None:
     """Attempt every owned cleanup step, then report sanitized failures."""
-    failures: list[str] = []
+    actions: list[tuple[str, Callable[[], object]]] = []
     if resources.deployment_id:
-        try:
-            stopped = resources.cleanup_client.serving.stop_deployment(
-                deployment_id=resources.deployment_id, force=True
-            )
-            if stopped is False:
-                raise RuntimeError("stop_deployment returned False")
-        except Exception as exc:
-            failures.append(f"stop: {_scrub_output(str(exc), resources.secrets)[:500]}")
+        actions.append(("stop", lambda: _stop_cli_deployment(resources)))
     if resources.pat_jti:
-        try:
-            resources.cleanup_client.auth.revoke_pat(resources.pat_jti)
-        except Exception as exc:
-            failures.append(
-                f"revoke: {_scrub_output(str(exc), resources.secrets)[:500]}"
+        actions.append(
+            (
+                "revoke",
+                lambda: resources.cleanup_client.auth.revoke_pat(resources.pat_jti),
             )
-    try:
-        FileTokenStore(resources.token_path).clear()
-    except Exception as exc:
-        failures.append(f"cache: {_scrub_output(str(exc), resources.secrets)[:500]}")
+        )
+    actions.append(("cache", FileTokenStore(resources.token_path).clear))
+    failures = [
+        f"{name}: {message}"
+        for name, action in actions
+        if (message := _cleanup_error(action, resources.secrets)) is not None
+    ]
     if failures:
         # Raise outside the except blocks: raw credential-bearing exceptions
         # must not appear as chained tracebacks in pytest/JUnit output.
