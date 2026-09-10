@@ -92,6 +92,13 @@ REQUIRED_STEP_FIELDS = ("name", "description")
 # All allowed step statuses. Anything else in result.steps is a harness bug.
 STEP_STATUSES = frozenset({"passed", "failed", "skipped", "pending", "not_reached"})
 
+# The step statuses that constitute a claim about the capability. The other
+# three record that a step did *not* run: `pending` (no handler registered),
+# `skipped` (a handler ran and declined) and `not_reached` (an earlier step
+# failed hard). A record built only from those asserts something the run
+# never established -- see `is_evidence` (ENG-11717).
+EVIDENCED_STEP_STATUSES = frozenset({"passed", "failed"})
+
 
 @dataclass
 class StepResult:
@@ -288,6 +295,26 @@ def derive_status(steps: list[StepResult]) -> str:
     return "passed_with_notes"
 
 
+def is_evidence(steps: list[StepResult]) -> bool:
+    """True when at least one step actually made a claim about the capability.
+
+    ``derive_status`` answers *what status* a recorded run carries.  This
+    answers the prior question: whether the run should be recorded at all.
+    A scenario whose driver registers no handlers produces an all-``pending``
+    run, and scoring that ``failed`` -- while honest about the status -- still
+    publishes an affirmative "we exercised this capability and it broke" over
+    a capability nobody touched.  The truthful artifact is no artifact.
+
+    The sibling producer for the pre-existing suite reaches the same
+    conclusion independently: ``_evidence_emitter.py::_is_evidence`` refuses
+    an empty-or-all-skipped step list because ``derive_status`` "would score
+    that green-with-notes -- an affirmative claim over a capability the run
+    never exercised".  Keeping the two producers in agreement is the point
+    (ENG-11717); they share ``derive_status`` already.
+    """
+    return any(s.status in EVIDENCED_STEP_STATUSES for s in steps)
+
+
 def run_scenario(
     runbook: dict,
     handlers: dict[str, Callable[[], str | None]],
@@ -436,8 +463,16 @@ def _not_reached(steps: list[dict]) -> list[StepResult]:
     ]
 
 
-def record_run(result: ScenarioResult) -> Path:
+def record_run(result: ScenarioResult) -> Path | None:
     """Persist a scenario result as JSON under ``runs/`` and return the path.
+
+    Returns ``None`` without writing anything when the run evidenced
+    nothing — no step ``passed`` or ``failed``.  A driver awaiting
+    implementation registers no handlers, every step comes back
+    ``pending``, and publishing a record for that run makes a claim about a
+    capability the run never touched.  See :func:`is_evidence` (ENG-11717).
+    Callers that interpolate the return value into a message must handle
+    ``None``; the scenario drivers do.
 
     The record is validated against the ``scenario-evidence.v2`` contract
     *before* writing — an invalid record (empty ``build``, unknown
@@ -450,6 +485,8 @@ def record_run(result: ScenarioResult) -> Path:
     microseconds (rare; only if ``finished_at`` was hand-set), a numeric
     suffix disambiguates.
     """
+    if not is_evidence(result.steps):
+        return None
     record = asdict(result)
     validate_evidence_record(record)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
@@ -590,10 +627,7 @@ def _check_arm(record: dict) -> list[str]:
     if "arm" not in record:
         return []
     if record["arm"] not in EVIDENCE_ARMS:
-        return [
-            f"arm must be one of {sorted(EVIDENCE_ARMS)} "
-            f"(got {record['arm']!r})"
-        ]
+        return [f"arm must be one of {sorted(EVIDENCE_ARMS)} (got {record['arm']!r})"]
     return []
 
 

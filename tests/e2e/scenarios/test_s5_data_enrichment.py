@@ -37,9 +37,19 @@ def test_s5_full_loop(staging_url, build_id):
         )
     if result.pending_steps:
         pending = [s.name for s in result.pending_steps]
+        # `artifact` is None when the run evidenced nothing -- every
+        # step `pending` means no handler ran, so `record_run` writes
+        # no record rather than claim this capability was exercised
+        # (ENG-11717). A partly-implemented driver still records what
+        # it ran, so both outcomes are reachable here.
+        recorded = (
+            f"evidence record at {artifact}"
+            if artifact is not None
+            else "no evidence record written (the run evidenced nothing)"
+        )
         pytest.skip(
             f"S5 driver has unimplemented steps: {pending}. "
-            f"Runbook + sign-off scaffolding rendered at {artifact}, {sign_off}."
+            f"{recorded}; sign-off scaffolding at {sign_off}."
         )
     assert result.passed, (
         f"S5 unexpected non-passing result: artifact={artifact}, sign-off={sign_off}, "
