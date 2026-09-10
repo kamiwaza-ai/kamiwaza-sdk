@@ -1,8 +1,10 @@
 """Tests for Scaffolder."""
 
+import errno
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +12,17 @@ import pytest
 import yaml
 
 from kamiwaza_extensions.scaffolder import Scaffolder, _runtime_lib_pins
+
+
+@pytest.fixture
+def restrictive_umask():
+    if sys.platform == "win32":
+        pytest.skip("POSIX permission modes are not supported on Windows")
+    old_umask = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(old_umask)
 
 
 @pytest.mark.unit
@@ -121,6 +134,7 @@ class TestScaffolder:
 
         assert scaffolded_logo.read_bytes() == source_logo.read_bytes()
 
+    @pytest.mark.usefixtures("restrictive_umask")
     def test_create_pins_shareable_modes_regardless_of_host_umask(
         self, tmp_path, monkeypatch, scaffolder
     ):
@@ -134,14 +148,14 @@ class TestScaffolder:
         staging symlink. The scaffold must stay deterministic and
         umask-independent instead.
         """
-        d = self._empty_dir(tmp_path)
-        monkeypatch.chdir(d)
-        old_umask = os.umask(0o077)
-        try:
-            with patch("subprocess.run"):
-                scaffolder.create(type_="app", name="umask-app")
-        finally:
-            os.umask(old_umask)
+        cwd = self._empty_dir(tmp_path)
+        (cwd / "README.md").write_text("workspace")
+        monkeypatch.chdir(cwd)
+        d = cwd / "umask-app"
+        assert not d.exists()
+        with patch("subprocess.run"):
+            assert scaffolder.create(type_="app", name="umask-app") == d
+        assert cwd.stat().st_mode & 0o777 == 0o700
 
         regular_files = [
             d / "kamiwaza.json",
@@ -170,6 +184,66 @@ class TestScaffolder:
                 f"{path} should be 0755 regardless of umask, "
                 f"got {oct(path.stat().st_mode & 0o777)}"
             )
+
+    @pytest.mark.usefixtures("restrictive_umask")
+    @pytest.mark.parametrize("in_place", [True, False])
+    def test_create_preserves_existing_private_directories(
+        self, tmp_path, monkeypatch, scaffolder, in_place
+    ):
+        cwd = self._empty_dir(tmp_path)
+        target = cwd if in_place else self._empty_dir(cwd, "private-app")
+        private = target / ".private"
+        nested = private / "inner"
+        nested.mkdir(parents=True)
+        git_dir = target / ".git"
+        git_dir.mkdir()
+        external = self._empty_dir(tmp_path, "external")
+        secret = external / "secret.txt"
+        secret.write_text("private")
+        link = target / ".linked"
+        link.symlink_to(external, target_is_directory=True)
+        directories = [cwd, target, private, nested, git_dir, external]
+        assert all(p.stat().st_mode & 0o777 == 0o700 for p in directories)
+
+        monkeypatch.chdir(cwd)
+        with patch("subprocess.run"):
+            assert scaffolder.create(type_="app", name="private-app") == target
+
+        for directory in directories:
+            assert directory.stat().st_mode & 0o777 == 0o700, directory
+        assert link.is_symlink()
+        assert secret.stat().st_mode & 0o777 == 0o600
+        assert secret.read_text() == "private"
+        assert (target / "frontend" / "public").stat().st_mode & 0o777 == 0o755
+
+    @pytest.mark.parametrize("error_number", [errno.EPERM, errno.ENOTSUP])
+    def test_create_warns_and_finishes_when_chmod_fails(
+        self, tmp_path, monkeypatch, scaffolder, capsys, error_number
+    ):
+        cwd = self._empty_dir(tmp_path)
+        (cwd / "README.md").write_text("workspace")
+        monkeypatch.chdir(cwd)
+        with (
+            patch("subprocess.run"),
+            patch.object(Path, "chmod", side_effect=OSError(error_number, "denied")),
+        ):
+            target = scaffolder.create(type_="app", name="limited-fs")
+
+        metadata = json.loads((target / "kamiwaza.json").read_text())
+        assert metadata["template_shape"] == "app"
+        assert (target / "frontend" / "public" / "kmza-icon.png").read_bytes()
+        warnings = capsys.readouterr().err
+        assert "Warning: could not set permissions to 0755" in warnings
+        assert "Warning: could not set permissions to 0644" in warnings
+        assert "Non-root container access" in warnings
+
+    def test_create_does_not_hide_write_errors(self, tmp_path, monkeypatch, scaffolder):
+        monkeypatch.chdir(self._empty_dir(tmp_path))
+        with (
+            patch.object(Path, "write_text", side_effect=OSError("disk full")),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            scaffolder.create(type_="app", name="failed-write")
 
     def test_create_tool_auto_prefix(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

@@ -224,7 +224,7 @@ class Scaffolder:
                         f"Choose a different name or empty the directory."
                     )
             else:
-                target.mkdir()
+                self._create_directory(target)
         else:
             target = cwd
 
@@ -269,7 +269,6 @@ class Scaffolder:
             json.dumps(data, indent=4) + "\n",
             encoding="utf-8",
         )
-        meta_path.chmod(0o644)
 
     def _validate_name(self, name: str, type_: str) -> str:
         name = name.lower().strip()
@@ -317,8 +316,6 @@ class Scaffolder:
                 continue
             self._render_template_file(src, template_dir, target, context)
 
-        self._normalize_directory_modes(target)
-
     def _render_template_file(
         self, src: Path, template_dir: Path, target: Path, context: Dict[str, str]
     ) -> None:
@@ -331,7 +328,7 @@ class Scaffolder:
         rel = src.relative_to(template_dir)
         dest = target / substitute(str(rel), context)
 
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        self._create_directory(dest.parent)
 
         # Render templated text files and preserve binary assets byte-for-byte.
         try:
@@ -344,23 +341,42 @@ class Scaffolder:
         dest.write_text(substitute(content, context), encoding="utf-8")
         self._normalize_mode(src, dest)
 
-    @staticmethod
-    def _normalize_directory_modes(target: Path) -> None:
-        """Pin the scaffolded directory tree to 0755 regardless of host umask.
+    def _create_directory(self, directory: Path) -> None:
+        """Create missing parents and pin only directories we actually create.
 
-        ``mkdir()`` is umask-masked too: on umask 077 hosts every scaffolded
-        directory lands 0700, ``COPY`` preserves it, and the non-root
-        Next.js runtime cannot even scandir the image's ``public`` dir
-        (proven live). Normalize the directory tree so scaffold output
-        matches a default-umask host byte-for-byte.
+        Existing directories (including symlink targets) retain their modes.
+        Directory creation is umask-masked, so new build-context directories
+        need 0755 for the image's non-root runtime to traverse them.
         """
-        for directory in sorted(target.rglob("*"), reverse=True):
-            if directory.is_dir():
-                directory.chmod(0o755)
-        target.chmod(0o755)
+        if directory.is_dir():
+            return
+        self._create_directory(directory.parent)
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            # Another creator may have won the race; we do not own its mode.
+            if not directory.is_dir():
+                raise
+        else:
+            self._set_mode(directory, 0o755)
 
     @staticmethod
-    def _normalize_mode(src: Path, dest: Path) -> None:
+    def _set_mode(dest: Path, mode: int) -> None:
+        """Warn and continue when the filesystem cannot apply POSIX modes."""
+        if dest.is_symlink():
+            return
+        try:
+            dest.chmod(mode)
+        except OSError as exc:
+            console.print(
+                f"Warning: could not set permissions to {mode:04o} on {dest}: "
+                f"{exc}. Non-root container access may require a filesystem "
+                "that supports POSIX permissions.",
+                style="yellow",
+                markup=False,
+            )
+
+    def _normalize_mode(self, src: Path, dest: Path) -> None:
         """Pin scaffolded files to shareable modes regardless of host umask.
 
         ``write_text``/``write_bytes`` create files as ``0666 & ~umask`` and
@@ -374,12 +390,13 @@ class Scaffolder:
         image's ``public`` directory (both proven live as uid 1001
         against ``-rw------- root root`` context files).
         Normalizing to 0644 files / 0755 directories (0755 for executable
-        templates, preserving the git-executable bit) makes scaffolded
-        output deterministic and umask-independent, matching what the
-        same checkout produces on a default 022 host.
+        templates, preserving their executable intent) makes newly created
+        output modes independent of umask on POSIX filesystems. Executable
+        templates explicitly receive execute bits, which write_text alone
+        would not preserve even on a default 022 host.
         """
         mode = 0o755 if src.stat().st_mode & 0o111 else 0o644
-        dest.chmod(mode)
+        self._set_mode(dest, mode)
 
     def _git_init(self, target: Path) -> None:
         try:
