@@ -719,6 +719,50 @@ class TestServiceRefRewritesAnnotation:
                 "frontend": {"API_URL": {"from": source_url, "to": expected}}
             }
 
+    @pytest.mark.parametrize("userinfo", ["", "user:secret@"])
+    @pytest.mark.parametrize(
+        "component",
+        ["/path,etcd:2379", "/?targets=a,etcd:2379", "/#section,etcd:2379"],
+        ids=["path", "query", "fragment"],
+    )
+    def test_payload_preserves_endpoint_text_in_ipv6_url_components(
+        self, builder, metadata, transformed_compose, connection, userinfo, component
+    ):
+        services = transformed_compose["services"]
+        services["etcd"] = {"image": "reg/etcd:1", "ports": ["2379"]}
+        source_url = f"http://{userinfo}[2001:db8::1]{component}"
+        services["frontend"]["environment"] = {"API_URL": source_url}
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        assert env["API_URL"] == source_url
+        annotations = (payload.model_extra or {})["annotations"]
+        assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
+
+    @pytest.mark.parametrize("userinfo", ["", "user:secret@"])
+    def test_payload_rewrites_sibling_url_after_ipv6_url(
+        self, builder, metadata, transformed_compose, connection, userinfo
+    ):
+        services = transformed_compose["services"]
+        services["etcd"] = {"image": "reg/etcd:1", "ports": ["2379"]}
+        external_url = f"http://{userinfo}[2001:db8::1]/?targets=a,etcd:2379"
+        source_urls = f"{external_url},http://etcd:2379/"
+        services["frontend"]["environment"] = {"API_URLS": source_urls}
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected = f"{external_url},http://deploy-etcd:2379/"
+        assert env["API_URLS"] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {
+            "frontend": {"API_URLS": {"from": source_urls, "to": expected}}
+        }
+
     def test_payload_preserves_image_references_and_url_credentials(
         self, builder, metadata, transformed_compose, connection
     ):

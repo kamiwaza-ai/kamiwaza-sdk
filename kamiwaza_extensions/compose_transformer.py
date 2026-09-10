@@ -782,7 +782,11 @@ _URL_REF_RE = re.compile(
     r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://"
     # RFC 3986 userinfo permits apostrophes and commas. Consume it through @
     # before considering surrounding serialized-value quote delimiters.
-    r"(?:[A-Za-z0-9._~!$&'()*+,;=:%-]*@)?[^/?#\s,;|()\[\]<>\"'{}]+"
+    r"(?:[A-Za-z0-9._~!$&'()*+,;=:%-]*@)?"
+    # IPv6 authorities cannot be siblings, but their URL components must still
+    # be protected from bare-endpoint scanning. Brackets around a sibling URL
+    # remain surrounding text rather than part of its authority.
+    r"(?:\[[^\]\s]+\](?::[0-9]+)?|[^/?#\s,;|()\[\]<>\"'{}]+|(?=[/?#]))"
     # A list separator followed by a full URL starts another entry;
     # ordinary punctuation inside components remains part of this URL.
     r"(?:[/?#](?:(?![,;|][A-Za-z][A-Za-z0-9+.-]*://)[^\s\"{}])*)?"
@@ -809,10 +813,16 @@ def _is_protected_env_key(key: str) -> bool:
             "HOSTS",
             "ADDRESS",
             "ADDRESSES",
+            "ADDR",
+            "ADDRS",
             "DSN",
         )
     ):
         return False
+    if normalized.endswith(
+        ("PASSWORD", "PASSWD", "TOKEN", "SECRET", "APIKEY", "USERPASS")
+    ):
+        return True
     parts = set(re.split(r"[^A-Z0-9]+", normalized))
     return bool(
         parts
@@ -863,14 +873,13 @@ def detect_service_url_rewrites(
         env = svc.get("environment")
         if not env:
             continue
+        hostnames = {name: f"{dev_name}-{name}" for name in sibling_names - {svc_name}}
         for key, value in _iter_env_entries(env):
             if key.strip().upper() in _IMAGE_ENV_KEYS:
                 continue
             new_value = _rewrite_url_hosts(
                 value,
-                sibling_names,
-                svc_name,
-                dev_name,
+                hostnames,
                 allow_bare=not _is_protected_env_key(key),
             )
             if new_value is None or new_value == value:
@@ -1001,14 +1010,11 @@ def _iter_env_list_entry(entry: Any) -> List[Tuple[str, str]]:
 
 def _rewrite_url_hosts(
     value: str,
-    sibling_names: set,
-    self_name: str,
-    dev_name: str,
+    hostnames: Dict[str, str],
     *,
     allow_bare: bool = True,
 ) -> Optional[str]:
     """Rewrite sibling hosts in complete URL or bare endpoint CSV tokens."""
-    hostnames = {name: f"{dev_name}-{name}" for name in sibling_names - {self_name}}
     parts: List[str] = []
     offset = 0
     for match in _URL_REF_RE.finditer(value):

@@ -52,14 +52,12 @@ ANNOTATION_BUILD_HOST = "kamiwaza.io/build-host"
 ANNOTATION_REVISION = "kamiwaza.io/revision"
 ANNOTATION_DEPLOYED_AT = "kamiwaza.io/deployed-at"
 
-# The kamiwaza-extension-operator reads this annotation at deploy time
-# and rewrites cross-service URL env values from the compose short name
-# (``http://backend:8000``) to the deployment-prefixed K8s service name
-# (``http://my-app-dev-abc-backend:8000``). Without this annotation,
-# bare ``backend`` doesn't resolve in K8s DNS — the frontend's API
-# proxy fails with ENOTFOUND. Namespace is ``extensions.kamiwaza.io/*``
-# (different from the ``kamiwaza.io/*`` deploy-metadata namespace
-# above). The operator recognizes both.
+# Compatibility metadata retains original compose references and their baked
+# payload values. The operator's exact-match path skips already-baked values;
+# its subsequent hostname lookup recognizes deployment-prefixed aliases.
+# The direct runtime reads payload env without consuming this annotation.
+# The operator recognizes both this ``extensions.kamiwaza.io/*`` namespace
+# and the ``kamiwaza.io/*`` deploy-metadata namespace above.
 ANNOTATION_SERVICE_REF_REWRITES = "extensions.kamiwaza.io/service-ref-rewrites"
 
 

@@ -1316,6 +1316,7 @@ class TestDetectServiceUrlRewrites:
             "etcd:2379-alpine",
             "etcd:2379.0",
             "http://external/path/etcd:2379",
+            "file:///tmp/a,etcd:2379",
             "etcd:2379@external",
         ],
     )
@@ -1338,6 +1339,9 @@ class TestDetectServiceUrlRewrites:
             ("cache-image", "redis:7"),
             ("api-token", "etcd:2379"),
             ("AGENT_SERVER_IMAGE", "docker://postgres:16"),
+            ("PGPASSWORD", "postgres:123"),
+            ("APIKEY", "etcd:2379"),
+            ("SECRETTOKEN", "etcd:2379"),
         ],
     )
     def test_preserves_image_and_credential_env(self, key, value):
@@ -1393,6 +1397,28 @@ class TestDetectServiceUrlRewrites:
         assert (
             detect_service_url_rewrites(services, "ext")["app"][key]["to"]
             == "http://ext-etcd:2379/token"
+        )
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "TOKEN_ADDR",
+            "TOKEN_ADDRS",
+            "TOKEN_URL",
+            "USER_SERVICE_URL",
+            "IMAGE_SERVICE_ENDPOINT",
+            "SECRET_STORE_ADDRESS",
+            "DB_HOST",
+            "DB_DSN",
+        ],
+    )
+    def test_address_suffix_identifies_bare_endpoint(self, key):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"app": {"environment": {key: "etcd:2379"}}, "etcd": {}}
+        assert (
+            detect_service_url_rewrites(services, "ext")["app"][key]["to"]
+            == "ext-etcd:2379"
         )
 
     @pytest.mark.parametrize(
@@ -1477,6 +1503,26 @@ class TestDetectServiceUrlRewrites:
 
         services = {"app": {"environment": {"DB_HOST": "etcd"}}, "etcd": {}}
         assert detect_service_url_rewrites(services, "ext") == {}
+
+    @pytest.mark.parametrize("userinfo", ["", "user:p'ass,word@"])
+    @pytest.mark.parametrize(
+        "component", ["/path/a,etcd:2379", "/?targets=a,etcd:2379", "/#a,etcd:2379"]
+    )
+    def test_preserves_ipv6_url_components(self, userinfo, component):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        value = f"http://{userinfo}[2001:db8::1]:8080{component}"
+        services = {"app": {"environment": {"URL": value}}, "etcd": {}}
+        assert detect_service_url_rewrites(services, "ext") == {}
+
+    def test_ipv6_and_sibling_url_list(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        value = "http://[2001:db8::1]/,http://etcd:2379/"
+        services = {"app": {"environment": {"URL": value}}, "etcd": {}}
+        assert detect_service_url_rewrites(services, "ext")["app"]["URL"]["to"] == (
+            "http://[2001:db8::1]/,http://ext-etcd:2379/"
+        )
 
     @pytest.mark.parametrize(
         "value,expected",
