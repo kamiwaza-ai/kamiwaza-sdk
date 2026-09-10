@@ -14,6 +14,7 @@ from kamiwaza_extensions.sdk_override import (
     resolve_sdk_override,
     validate_sdk_override,
 )
+from kamiwaza_extensions.sdk_override.build import _TS_OVERLAY
 
 
 def _write_runtime_dockerfiles(tmp_path: Path, compose: dict) -> Path:
@@ -535,6 +536,26 @@ class TestGenerateBuildOverrides:
         )
         assert "COPY --from=sdk" in overrides[0].overlay_steps
         assert "USER root" in overrides[0].overlay_steps
+
+    def test_ts_overlay_tarball_install_skips_audit_and_fund(self):
+        """The tarball install must not run npm audit/fund reporting.
+
+        npm's audit/fund reporting wedges indefinitely in some network
+        conditions (bulk audit request hangs after all package GETs return
+        200; process parks in ep_poll with no sockets). The template's
+        deps-stage install already carries --no-audit --no-fund; the SDK
+        override's tarball install must match so a kz-ext image build can
+        never stall on a network round-trip the build does not need
+        (observed live wedging a --no-cache engine probe for 5+ minutes
+        until manually interrupted).
+        """
+        install_lines = [
+            line
+            for line in _TS_OVERLAY.splitlines()
+            if "npm install" in line
+        ]
+        assert install_lines, "TS overlay lost its npm install step"
+        assert '--no-audit --no-fund "/tmp/$TARBALL"' in install_lines[0]
 
     def test_python_overlay_resolves_site_packages_without_importing_runtime_lib(
         self, tmp_path
