@@ -1369,6 +1369,79 @@ class TestDetectServiceUrlRewrites:
             "to": expected,
         }
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "TOKEN_URL",
+            "USER_SERVICE_URL",
+            "IMAGE_SERVICE_ENDPOINT",
+            "SECRET_STORE_ADDRESS",
+        ],
+    )
+    def test_endpoint_key_takes_precedence_over_protected_word(self, key):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"app": {"environment": {key: "http://etcd:2379/token"}}, "etcd": {}}
+        assert (
+            detect_service_url_rewrites(services, "ext")["app"][key]["to"]
+            == "http://ext-etcd:2379/token"
+        )
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("http://external.example/search?targets=x,etcd:2379", None),
+            ("http://external.example/path/a,etcd:2379", None),
+            (
+                "http://etcd:2379/path/a,etcd:2379",
+                "http://ext-etcd:2379/path/a,etcd:2379",
+            ),
+            (
+                "http://etcd:2379/?targets=a,backup:2380",
+                "http://ext-etcd:2379/?targets=a,backup:2380",
+            ),
+            ("http://etcd:2379/#a,backup:2380", "http://ext-etcd:2379/#a,backup:2380"),
+            (
+                "postgresql://user,etcd:2379@backup:2380/db",
+                "postgresql://user,etcd:2379@ext-backup:2380/db",
+            ),
+            (
+                "http://etcd:2379,backup:2380/path",
+                "http://ext-etcd:2379,ext-backup:2380/path",
+            ),
+        ],
+    )
+    def test_csv_detection_preserves_url_components(self, value, expected):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"app": {"environment": {"URL": value}}, "etcd": {}, "backup": {}}
+        rewrites = detect_service_url_rewrites(services, "ext")
+        if expected is None:
+            assert rewrites == {}
+        else:
+            assert rewrites["app"]["URL"] == {"from": value, "to": expected}
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ('{"url":"http://etcd:2379/path"}', '{"url":"http://ext-etcd:2379/path"}'),
+            (
+                "connect http://etcd:2379 then https://backup/health",
+                "connect http://ext-etcd:2379 then https://ext-backup/health",
+            ),
+            ('{"url":"http://external/path,etcd:2379"}', None),
+        ],
+    )
+    def test_preserves_embedded_url_support(self, value, expected):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"app": {"environment": {"CONFIG": value}}, "etcd": {}, "backup": {}}
+        rewrites = detect_service_url_rewrites(services, "ext")
+        if expected is None:
+            assert rewrites == {}
+        else:
+            assert rewrites["app"]["CONFIG"]["to"] == expected
+
 
 class TestApplyServiceRefRewrites:
     """The native direct runtime applies ``service.env`` verbatim with no

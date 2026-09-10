@@ -629,6 +629,60 @@ class TestServiceRefRewritesAnnotation:
         assert env["BACKEND_ENDPOINT"] == "deploy-backend:8000"
         assert env["UNRELATED"] == "kept"
 
+    @pytest.mark.parametrize("env_key", ["TOKEN_URL", "USER_SERVICE_URL"])
+    def test_credential_related_url_names_rewrite_in_payload(
+        self, builder, metadata, transformed_compose, connection, env_key
+    ):
+        source_url = "http://backend:8000/auth"
+        transformed_compose["services"]["frontend"]["environment"] = {
+            env_key: source_url
+        }
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected = "http://deploy-backend:8000/auth"
+        assert env[env_key] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {"frontend": {env_key: {"from": source_url, "to": expected}}}
+
+    @pytest.mark.parametrize(
+        "url_template",
+        [
+            "http://{host}:8000/path,backend:8000",
+            "http://{host}:8000?next=ok,backend:8000",
+            "http://{host}:8000#section,backend:8000",
+            "http://user:abc,backend:8000@{host}:8000/path",
+        ],
+        ids=["path", "query", "fragment", "userinfo"],
+    )
+    @pytest.mark.parametrize("host", ["external.example.com", "backend"])
+    def test_payload_preserves_commas_in_url_components(
+        self, builder, metadata, transformed_compose, connection, url_template, host
+    ):
+        source_url = url_template.format(host=host)
+        transformed_compose["services"]["frontend"]["environment"] = {
+            "API_URL": source_url
+        }
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected_host = "deploy-backend" if host == "backend" else host
+        expected = url_template.format(host=expected_host)
+        assert env["API_URL"] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        if source_url == expected:
+            assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
+        else:
+            rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+            assert rewrites == {
+                "frontend": {"API_URL": {"from": source_url, "to": expected}}
+            }
+
     def test_payload_preserves_image_references_and_url_credentials(
         self, builder, metadata, transformed_compose, connection
     ):
