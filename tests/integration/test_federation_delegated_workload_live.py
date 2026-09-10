@@ -14,6 +14,7 @@ from urllib.parse import quote
 import pytest
 
 from kamiwaza_sdk.schemas.delegated_jobs import normalize_python_packages
+from kamiwaza_sdk.validation.federation_readiness import authorized_datasets
 
 from .test_federation_shared_idp_gated_retrieval_live import (
     _receiver_prereqs,  # noqa: F401 - dependency of imported live fixture
@@ -146,6 +147,7 @@ def test_shared_idp_delegated_job_installs_approved_package(
             }
         ]
     }
+    authorized_datasets(persona, wiring["name"])
     baseline_marker = f"eng8454-base-{uuid.uuid4().hex}"
     baseline_script = (
         "import importlib.metadata, json\n"
