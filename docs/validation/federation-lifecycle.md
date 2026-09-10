@@ -190,8 +190,11 @@ the reported ownership or connectivity problem before retrying.
 ### Paired integration readiness
 
 The paired SDK live tests use the same bounded authorization readiness read as
-the scenario provider before positive retrieval or job submission. Only an
+the scenario provider before positive retrieval and delegated job submission. Only an
 explicit `503 authorization_unavailable` is retried for up to 30 seconds.
-Negative tenant and onboarding cases remain direct calls; job submissions are
-never replayed by the readiness barrier. Run both paths when qualifying a
-provisioned federation smoke.
+Negative tenant and onboarding cases remain direct calls. Delegated submission
+separately retries only the exact `503 delegated_access_unavailable` response
+for up to 30 seconds: Core emits it before recording or dispatching a job.
+Once a job ID is accepted, polling occurs outside that retry boundary. Denials,
+other 503 reasons and ambiguous transport failures propagate without resubmission.
+Run both paths when qualifying a provisioned federation smoke.

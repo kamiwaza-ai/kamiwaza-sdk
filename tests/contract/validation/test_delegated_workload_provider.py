@@ -223,19 +223,23 @@ class _Persona:
     def __init__(self, results: list[dict[str, Any]]) -> None:
         self._results = iter(results)
         self.session = SimpleNamespace(verify=True)
-        self.jobs = SimpleNamespace(run=self._run)
+        self.jobs = SimpleNamespace(submit_async=self._submit, wait=self._wait)
         self.catalog = SimpleNamespace(
             datasets=SimpleNamespace(list=lambda **kwargs: [])
         )
         self.requests: list[tuple[str, str]] = []
 
-    def _run(self, **kwargs: Any) -> Any:
+    def _submit(self, **kwargs: Any) -> str:
         assert kwargs["delegated_access"]["datasets"]
         if kwargs.get("python_packages") is not None:
             assert kwargs["python_packages"] == [
                 "humanize==4.13.0",
                 "kamiwaza-sdk==1.1.0",
             ]
+        return "job-1"
+
+    def _wait(self, job_id: str, **kwargs: Any) -> Any:
+        assert job_id == "job-1"
         payload = next(self._results)
         return SimpleNamespace(
             status="SUCCEEDED",

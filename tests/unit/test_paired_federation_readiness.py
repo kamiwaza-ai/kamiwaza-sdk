@@ -45,6 +45,7 @@ def test_unready_authority_prevents_remote_mutations(monkeypatch, case):
     assert caught.value is denied
     listing.assert_called_once_with(target_cluster="receiver")
     persona.jobs.run.assert_not_called()
+    persona.jobs.submit_async.assert_not_called()
     retrieve.assert_not_called()
 
 
