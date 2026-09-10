@@ -7,6 +7,8 @@ import os
 import re
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
+from kamiwaza_extensions.env_names import IMAGE_ENV_NAMES, IMAGE_PREFIX_ENV_NAMES
+
 # Reuse the validator's bind-mount detection so the "stripped at deploy"
 # info message ComposeValidator emits stays in sync with what the
 # transformer actually strips (ENG-4956).
@@ -700,9 +702,7 @@ def _resolve_compose_substitution(
         )
     if operator in (":?", "?"):
         return None
-    return resolve_compose_value(
-        fallback, depth + 1, resolve_unbraced=resolve_unbraced
-    )
+    return resolve_compose_value(fallback, depth + 1, resolve_unbraced=resolve_unbraced)
 
 
 def _resolve_list_entry(entry: Any) -> Optional[Any]:
@@ -759,42 +759,99 @@ def _entry_has_shell_ref(entry: Any) -> bool:
 
 
 # ------------------------------------------------------------------
-# Cross-service URL detection (for ``service-ref-rewrites`` annotation)
+# Cross-service endpoint detection and payload env rewriting
 # ------------------------------------------------------------------
 
 
-# Captures a ``http(s)://<host>`` reference. The trailing lookahead
-# requires the host to be terminated by a port (``:``), path (``/``),
-# query (``?``), fragment (``#``), or end-of-string — so ``http://api``
-# and ``http://api:8000/path`` match a sibling named ``api``, but
-# ``http://api.openai.com/v1`` does NOT (the ``.`` is not a valid
-# host-terminator). ``\b`` was previously used here but treats ``.``
-# as a word boundary, which falsely rewrites external URLs sharing a
-# leading subdomain with a sibling service name (iter-8 review repro:
-# sibling ``api`` would hijack ``api.openai.com``).
+# Match complete endpoint tokens, never arbitrary host:digits substrings in
+# image paths, credentials, commands, or URL paths. Keep URL userinfo separate
+# from the hostname so a sibling name in a username is never rewritten.
 _URL_HOST_RE = re.compile(
-    r"(?P<scheme>https?://)(?P<host>[A-Za-z][A-Za-z0-9_-]*)(?=[:/?#]|$)"
+    r"(?P<prefix>[A-Za-z][A-Za-z0-9+.-]*://(?:[^/@?#\s]*@)?)"
+    r"(?P<host>[A-Za-z][A-Za-z0-9_-]*)(?::(?P<port>[0-9]{0,5}))?"
+    r"(?P<suffix>[/?#]\S*)?"
 )
+_BARE_ENDPOINT_RE = re.compile(
+    r"(?P<host>[A-Za-z][A-Za-z0-9_-]*):(?P<port>[0-9]{1,5})(?P<suffix>[/?#]\S*)?"
+)
+
+# Consume each URL as one span before looking for bare endpoints. Its path,
+# query, fragment, and credentials may contain commas or host:port-shaped data.
+# Quotes/braces terminate URLs embedded in serialized configuration values.
+_URL_REF_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])(?P<quote>['\"])?"
+    r"(?P<url>[A-Za-z][A-Za-z0-9+.-]*://"
+    # RFC 3986 userinfo permits apostrophes and commas. Consume it through @
+    # before considering surrounding serialized-value quote delimiters.
+    r"(?:[A-Za-z0-9._~!$&'()*+,;=:%-]*@)?"
+    # IPv6 authorities cannot be siblings, but their URL components must still
+    # be protected from bare-endpoint scanning. Brackets around a sibling URL
+    # remain surrounding text rather than part of its authority.
+    r"(?:\[[^\]\s]+\](?::[0-9]*)?|[^/?#\s,;|()\[\]<>\"'{}]+|(?=[/?#]))"
+    # A list separator followed by a full URL starts another entry;
+    # ordinary punctuation inside components remains part of this URL.
+    # A surrounding quote delimits serialized URLs; without it, apostrophes
+    # remain valid path/query/fragment characters.
+    r"(?:[/?#](?:(?!(?P=quote)|[,;|][A-Za-z][A-Za-z0-9+.-]*://)[^\s\"{}])*)?)"
+)
+
+_IMAGE_ENV_KEYS = IMAGE_ENV_NAMES | IMAGE_PREFIX_ENV_NAMES
+
+
+def _is_protected_env_key(key: str) -> bool:
+    """Avoid interpreting ambiguous bare tokens as image or credential hosts."""
+    normalized = key.strip().upper()
+    if normalized in _IMAGE_ENV_KEYS:
+        return True
+    # A TOKEN_URL or USER_SERVICE_ENDPOINT names a location, not a secret.
+    if normalized.endswith(
+        (
+            "URL",
+            "URLS",
+            "URI",
+            "URIS",
+            "ENDPOINT",
+            "ENDPOINTS",
+            "HOST",
+            "HOSTS",
+            "ADDRESS",
+            "ADDRESSES",
+            "ADDR",
+            "ADDRS",
+            "DSN",
+        )
+    ):
+        return False
+    if normalized.endswith(
+        ("PASSWORD", "PASSWD", "TOKEN", "SECRET", "APIKEY", "USERPASS")
+    ):
+        return True
+    parts = set(re.split(r"[^A-Z0-9]+", normalized))
+    return bool(
+        parts
+        & {"IMAGE", "IMAGES", "PASSWORD", "SECRET", "TOKEN", "KEY", "USER", "USERNAME"}
+    )
 
 
 def detect_service_url_rewrites(
     transformed_services: Dict[str, Any],
     dev_name: str,
 ) -> Dict[str, Dict[str, Dict[str, str]]]:
-    """Detect cross-service URL references in env values.
+    """Detect cross-service endpoint references in env values.
 
-    Compose-style cross-service URLs (``http://backend:8000``) work in
-    docker-compose because compose creates a DNS alias for each service
-    short name. In Kubernetes the operator prefixes service names with
-    the deployment ID (``my-app-dev-abc-backend``), so the bare alias
+    Compose-style cross-service references work in docker-compose because
+    compose creates a DNS alias for each service short name. Both shapes
+    are detected: URLs with a scheme (``http://backend:8000``) and bare
+    ``host:port`` endpoints (``etcd:2379``, including comma-separated
+    endpoint lists). In Kubernetes the operator prefixes service names
+    with the deployment ID (``my-app-dev-abc-backend``), so the bare alias
     doesn't resolve.
 
     This function walks each transformed service's env and finds values
     referencing a SIBLING service by its compose short name. The
-    returned map is consumed by ``PayloadBuilder`` and serialized into
-    the ``extensions.kamiwaza.io/service-ref-rewrites`` annotation; the
-    operator reads that annotation and rewrites the env value at deploy
-    time:
+    returned map is baked into a copy of the payload env by ``PayloadBuilder``
+    and serialized into the ``extensions.kamiwaza.io/service-ref-rewrites``
+    annotation for operator compatibility:
 
         {
           "<service_name>": {
@@ -805,8 +862,12 @@ def detect_service_url_rewrites(
           }
         }
 
-    Self-references and references to non-sibling hostnames are
-    ignored.
+    URLs retain their surrounding text; bare endpoints must be complete
+    tokens (optionally comma-separated). URL credentials are preserved and
+    ports must be in 1..65535. Known image env keys are excluded; broader image
+    or credential key names exclude only ambiguous bare endpoints, retaining
+    existing scheme-bearing URL behavior. Host-only values, self-references,
+    and references to non-sibling hostnames are ignored.
     """
     sibling_names = set(transformed_services.keys())
     rewrites: Dict[str, Dict[str, Dict[str, str]]] = {}
@@ -815,8 +876,15 @@ def detect_service_url_rewrites(
         env = svc.get("environment")
         if not env:
             continue
+        hostnames = {name: f"{dev_name}-{name}" for name in sibling_names - {svc_name}}
         for key, value in _iter_env_entries(env):
-            new_value = _rewrite_url_hosts(value, sibling_names, svc_name, dev_name)
+            if key.strip().upper() in _IMAGE_ENV_KEYS:
+                continue
+            new_value = _rewrite_url_hosts(
+                value,
+                hostnames,
+                allow_bare=not _is_protected_env_key(key),
+            )
             if new_value is None or new_value == value:
                 continue
             rewrites.setdefault(svc_name, {})[key] = {
@@ -824,6 +892,88 @@ def detect_service_url_rewrites(
                 "to": new_value,
             }
     return rewrites
+
+
+def apply_service_ref_rewrites(
+    transformed_services: Dict[str, Any],
+    rewrites: Dict[str, Dict[str, Dict[str, str]]],
+) -> None:
+    """Apply a ``detect_service_url_rewrites`` map to the transformed
+    services' env, in place.
+
+    The map is applied EXACTLY (``value == from`` -> ``to``), never
+    re-derived: the payload must carry precisely the values the operator
+    would apply from the annotation. The native direct runtime applies
+    ``service.env`` verbatim and has no annotation consumer, so
+    ``PayloadBuilder`` bakes these rewrites into the payload env directly;
+    the annotation remains compatible with the compose-adapter path. Already
+    baked values skip the operator's exact ``from`` match; its hostname lookup
+    recognizes deployment-prefixed aliases and resolves them without prefixing
+    them again. The map records at most one rewrite per env key, so duplicate
+    list keys retain their existing last-rewrite behavior.
+    Both shapes of Compose ``environment`` (mapping and list) are handled.
+    """
+    for svc_name, per_key in rewrites.items():
+        svc = transformed_services.get(svc_name)
+        if svc is None:
+            continue
+        env = svc.get("environment")
+        if isinstance(env, dict):
+            _rewrite_env_mapping(env, per_key)
+        elif isinstance(env, list):
+            _rewrite_env_list(env, per_key)
+
+
+def _rewrite_env_mapping(
+    env: Dict[str, Any], per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Apply EXACT rewrites to a mapping-shaped ``environment`` in place."""
+    for key, value in env.items():
+        rule = per_key.get(str(key))
+        if rule is not None and str(value) == rule["from"]:
+            env[key] = rule["to"]
+
+
+def _rewrite_env_list(env: List[Any], per_key: Dict[str, Dict[str, str]]) -> None:
+    """Apply EXACT rewrites to a list-shaped ``environment`` in place."""
+    for idx, entry in enumerate(env):
+        _rewrite_env_list_entry(env, idx, entry, per_key)
+
+
+def _rewrite_env_list_entry(
+    env: List[Any], idx: int, entry: Any, per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Apply one list entry's rewrite: ``KEY=from`` string or name/value dict."""
+    if isinstance(entry, str):
+        _rewrite_env_list_string_entry(env, idx, entry, per_key)
+    elif isinstance(entry, dict):
+        _rewrite_env_list_dict_entry(entry, per_key)
+
+
+def _rewrite_env_list_string_entry(
+    env: List[Any], idx: int, entry: str, per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Rewrite a ``KEY=value`` string entry in place when the value matches."""
+    if "=" not in entry:
+        return
+    key, _, value = entry.partition("=")
+    rule = per_key.get(key)
+    if rule is not None and value == rule["from"]:
+        env[idx] = f"{key}={rule['to']}"
+
+
+def _rewrite_env_list_dict_entry(
+    entry: Dict[str, Any], per_key: Dict[str, Dict[str, str]]
+) -> None:
+    """Rewrite a name/value entry or mapping fragment by exact equality."""
+    if "name" not in entry:
+        _rewrite_env_mapping(entry, per_key)
+        return
+    rule = per_key.get(str(entry["name"]))
+    if rule is None:
+        return
+    if str(entry.get("value")) == rule["from"]:
+        entry["value"] = rule["to"]
 
 
 def _iter_env_entries(env: Any) -> List[Tuple[str, str]]:
@@ -863,22 +1013,53 @@ def _iter_env_list_entry(entry: Any) -> List[Tuple[str, str]]:
 
 def _rewrite_url_hosts(
     value: str,
-    sibling_names: set,
-    self_name: str,
-    dev_name: str,
+    hostnames: Dict[str, str],
+    *,
+    allow_bare: bool = True,
 ) -> Optional[str]:
-    """Rewrite each ``http(s)://<sibling>`` host in *value* to the
-    deployment-prefixed K8s service name. Returns the rewritten value
-    or None when there's nothing to rewrite."""
-
-    def _sub(match: re.Match) -> str:
-        host = match.group("host")
-        if host == self_name or host not in sibling_names:
-            return match.group(0)
-        return f"{match.group('scheme')}{dev_name}-{host}"
-
-    new_value = _URL_HOST_RE.sub(_sub, value)
+    """Rewrite sibling hosts in complete URL or bare endpoint CSV tokens."""
+    parts: List[str] = []
+    offset = 0
+    for match in _URL_REF_RE.finditer(value):
+        parts.append(
+            _rewrite_bare_endpoint_list(
+                value[offset : match.start("url")], hostnames, allow_bare
+            )
+        )
+        parts.append(_rewrite_endpoint_token(match.group("url"), hostnames))
+        offset = match.end("url")
+    parts.append(_rewrite_bare_endpoint_list(value[offset:], hostnames, allow_bare))
+    new_value = "".join(parts)
     return new_value if new_value != value else None
+
+
+def _rewrite_bare_endpoint_list(
+    value: str, hostnames: Dict[str, str], allow_bare: bool = True
+) -> str:
+    """Only complete comma-separated tokens outside URLs can be endpoints."""
+    if not allow_bare:
+        return value
+    return ",".join(
+        _rewrite_endpoint_token(token, hostnames) for token in value.split(",")
+    )
+
+
+def _rewrite_endpoint_token(token: str, hostnames: Dict[str, str]) -> str:
+    """Preserve token formatting and credentials while replacing its host."""
+    stripped = token.strip()
+    match = _URL_HOST_RE.fullmatch(stripped) or _BARE_ENDPOINT_RE.fullmatch(stripped)
+    if match is None:
+        return token
+    port = match.group("port")
+    if port and not 1 <= int(port) <= 65535:
+        return token
+    replacement = hostnames.get(match.group("host"))
+    if replacement is None:
+        return token
+    # Use offsets rather than URL reserialization to preserve every other byte.
+    start = len(token) - len(token.lstrip()) + match.start("host")
+    end = start + len(match.group("host"))
+    return token[:start] + replacement + token[end:]
 
 
 def _strip_host_ports(ports: List[Any]) -> List[Any]:

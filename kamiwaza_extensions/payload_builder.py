@@ -7,14 +7,16 @@ import json
 import re
 import shlex
 import socket
+from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from kamiwaza_extensions.compose_ports import (
     default_service_port_name,
     extract_container_port,
 )
 from kamiwaza_extensions.compose_transformer import (
+    apply_service_ref_rewrites,
     detect_service_url_rewrites,
     resolve_compose_value,
 )
@@ -50,14 +52,12 @@ ANNOTATION_BUILD_HOST = "kamiwaza.io/build-host"
 ANNOTATION_REVISION = "kamiwaza.io/revision"
 ANNOTATION_DEPLOYED_AT = "kamiwaza.io/deployed-at"
 
-# The kamiwaza-extension-operator reads this annotation at deploy time
-# and rewrites cross-service URL env values from the compose short name
-# (``http://backend:8000``) to the deployment-prefixed K8s service name
-# (``http://my-app-dev-abc-backend:8000``). Without this annotation,
-# bare ``backend`` doesn't resolve in K8s DNS — the frontend's API
-# proxy fails with ENOTFOUND. Namespace is ``extensions.kamiwaza.io/*``
-# (different from the ``kamiwaza.io/*`` deploy-metadata namespace
-# above). The operator recognizes both.
+# Compatibility metadata retains original compose references and their baked
+# payload values. The operator's exact-match path skips already-baked values;
+# its subsequent hostname lookup recognizes deployment-prefixed aliases.
+# The direct runtime reads payload env without consuming this annotation.
+# The operator recognizes both this ``extensions.kamiwaza.io/*`` namespace
+# and the ``kamiwaza.io/*`` deploy-metadata namespace above.
 ANNOTATION_SERVICE_REF_REWRITES = "extensions.kamiwaza.io/service-ref-rewrites"
 
 
@@ -151,6 +151,9 @@ class PayloadBuilder:
         # ``tlsRejectUnauthorized`` spec field so the deployed
         # extension's in-cluster callbacks match the developer's intent.
         verify_ssl = connection.effective_verify_ssl()
+        transformed_compose, rewrites = self._prepare_compose_for_payload(
+            transformed_compose, dev_name
+        )
         services = self._build_services(
             transformed_compose,
             app_path=app_path,
@@ -189,14 +192,6 @@ class PayloadBuilder:
 
         annotations = self.build_annotations(deployer=deployer, revision=revision)
 
-        # Cross-service URL rewrites: scan each service's env for
-        # references to sibling services by short name and emit the
-        # operator-consumed ``service-ref-rewrites`` annotation. Ships
-        # only when at least one rewrite is needed (no annotation when
-        # there are no cross-service URLs).
-        rewrites = detect_service_url_rewrites(
-            transformed_compose.get("services") or {}, dev_name
-        )
         if rewrites:
             annotations[ANNOTATION_SERVICE_REF_REWRITES] = json.dumps(
                 rewrites, sort_keys=True, separators=(",", ":")
@@ -208,6 +203,23 @@ class PayloadBuilder:
             kwargs["annotations"] = annotations
 
         return CreateExtension(**kwargs)
+
+    @staticmethod
+    def _prepare_compose_for_payload(
+        transformed_compose: Dict[str, Any], dev_name: str
+    ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Dict[str, str]]]]:
+        """Bake service references into a private copy for this deployment.
+
+        The direct runtime consumes env values without reading annotations,
+        so URLs and bare endpoints must already use deployment-prefixed names.
+        Preserve the caller's source references for repeat builds, including
+        builds for a different deployment, and the operator's from/to annotation.
+        """
+        prepared = deepcopy(transformed_compose)
+        services = prepared.get("services") or {}
+        rewrites = detect_service_url_rewrites(services, dev_name)
+        apply_service_ref_rewrites(services, rewrites)
+        return prepared, rewrites
 
     @staticmethod
     def build_annotations(
