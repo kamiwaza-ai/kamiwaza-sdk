@@ -79,7 +79,15 @@ class KamiwazaIntegrationSpec(BaseModel):
     public_api_url: Optional[str] = None
     origin: Optional[str] = None
     use_auth: str = Field(default="true")
-    tls_reject_unauthorized: Optional[str] = None
+    tls_reject_unauthorized: Optional[str] = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Legacy local compatibility attribute, omitted from API requests. "
+            "Configure TLS through each service's KAMIWAZA_VERIFY_SSL and "
+            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED environment values."
+        ),
+    )
 
 
 class NetworkingSpec(BaseModel):

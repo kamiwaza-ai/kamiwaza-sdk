@@ -52,6 +52,13 @@ print(ext.endpoints)      # ExtensionEndpoints(external="https://...", internal=
 
 Create a new extension from a specification.
 
+TLS verification is configured in each service's environment through
+`KAMIWAZA_VERIFY_SSL` and `KAMIWAZA_TLS_REJECT_UNAUTHORIZED`. The extension CLI
+sets both from the selected connection and its TLS override. The legacy
+`KamiwazaIntegrationSpec.tls_reject_unauthorized` attribute remains readable
+locally but is excluded from serialized requests: the current platform rejects
+that retired integration field with HTTP 422.
+
 ```python
 from kamiwaza_sdk.schemas.extensions import CreateExtension, ExtensionServiceSpec
 
