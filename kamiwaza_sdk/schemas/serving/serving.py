@@ -20,10 +20,14 @@ class CpuResourceQuantities(BaseModel):
     @field_validator("cpu")
     @classmethod
     def _valid_cpu_quantity(cls, value: str) -> str:
-        if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[numkMGTPE]|[eE][+-]?[0-9]+)?", value):
+        match = re.fullmatch(
+            r"([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))([numkMGTPE]|[eE][+-]?[0-9]+)?",
+            value,
+        )
+        if match is None:
             raise ValueError("cpu must be a Kubernetes decimal quantity")
         try:
-            number, suffix = re.fullmatch(r"([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))([numkMGTPE]|[eE][+-]?[0-9]+)?", value).groups()
+            number, suffix = match.groups()
             exponent = {None: 0, "n": -9, "u": -6, "m": -3, "k": 3, "M": 6, "G": 9, "T": 12, "P": 15, "E": 18}.get(suffix)
             exponent = int(suffix[1:]) if exponent is None else exponent
             with localcontext() as context:
