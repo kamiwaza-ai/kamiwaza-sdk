@@ -690,13 +690,11 @@ class TestBuildPatchKwargsCarriesAnnotations:
         patch = PatchExtension(**kwargs)
         assert (patch.model_extra or {}).get("annotations") == {"k": "v"}
 
-    def test_carries_kamiwaza_spec_so_patch_refreshes_tls_settings(self):
-        """PR #92 iter-7: the existing CR persists from the original
-        CREATE. If the developer flips TLS verify on the host (or
-        upgrades SDK so dev-TLD auto-disable kicks in), PATCH must
-        carry the new ``kamiwaza`` spec or the deployed
-        ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED`` stays stuck at the stale
-        value forever."""
+    def test_carries_kamiwaza_spec_so_patch_refreshes_integration_settings(self):
+        """Refresh API URLs, origin, and auth settings on the existing CR.
+
+        TLS policy is carried separately by each patched service's env.
+        """
         from kamiwaza_extensions.commands.dev import _build_patch_kwargs
 
         # Sentinel object — _build_patch_kwargs doesn't introspect it.

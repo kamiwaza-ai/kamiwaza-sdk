@@ -161,7 +161,11 @@ class TestBuild:
         env = []
         builder._append_platform_env(env, app_path="", verify_ssl=True)
 
-        assert env == [{"name": "KAMIWAZA_ROUTING_MODE", "value": "port"}]
+        assert env == [
+            {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
+            {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"},
+            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"},
+        ]
 
     def test_platform_env_replaces_author_duplicates(self, builder):
         env = [
@@ -199,6 +203,8 @@ class TestBuild:
         assert env == [
             {"name": "AUTHOR_VALUE", "value": "kept"},
             {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
+            {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"},
+            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"},
         ]
 
     def test_kamiwaza_integration(
@@ -476,14 +482,45 @@ class TestAnnotations:
         assert ANNOTATION_DEPLOYED_AT in out
 
 
+def _assert_emitted_tls_policy(payload, verify_ssl):
+    for service in payload.model_dump()["services"]:
+        env = {entry["name"]: entry["value"] for entry in service["env"]}
+        assert env["KAMIWAZA_VERIFY_SSL"] == str(verify_ssl).lower()
+        assert env["KAMIWAZA_TLS_REJECT_UNAUTHORIZED"] == ("1" if verify_ssl else "0")
+
+
 class TestVerifySslPropagation:
-    """The deployed extension's ``tlsRejectUnauthorized`` must reflect
-    the developer's intent. Three independent inputs collapse here via
+    """Each service's emitted TLS policy must reflect the developer's intent.
+    Three independent inputs collapse here via
     ``ConnectionInfo.effective_verify_ssl``:
     1. ``KAMIWAZA_VERIFY_SSL`` env var (per-session override)
     2. URL hostname (dev TLDs auto-disable)
     3. Persisted ``connection.verify_ssl`` from ``kz-ext login``
     """
+
+    @pytest.mark.parametrize("verify_ssl", [True, False])
+    def test_serialized_request_uses_service_tls_environment_only(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
+        monkeypatch,
+        verify_ssl,
+    ):
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", str(verify_ssl).lower())
+        payload = builder.build(metadata, transformed_compose, connection, "ext")
+        serialized = payload.model_dump()
+        assert "tls_reject_unauthorized" not in serialized["kamiwaza"]
+        primary_env = next(s for s in serialized["services"] if s["primary"])["env"]
+        assert {
+            "name": "KAMIWAZA_VERIFY_SSL",
+            "value": str(verify_ssl).lower(),
+        } in primary_env
+        assert {
+            "name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED",
+            "value": "1" if verify_ssl else "0",
+        } in primary_env
 
     def test_env_false_overrides_connection_verify_true(
         self,
@@ -526,6 +563,7 @@ class TestVerifySslPropagation:
 
         payload = builder.build(metadata, transformed_compose, conn, "ext")
         assert payload.kamiwaza.tls_reject_unauthorized == "0"
+        _assert_emitted_tls_policy(payload, verify_ssl=False)
 
     def test_env_true_re_enables_against_dev_tld(
         self,
@@ -547,6 +585,7 @@ class TestVerifySslPropagation:
 
         payload = builder.build(metadata, transformed_compose, conn, "ext")
         assert payload.kamiwaza.tls_reject_unauthorized == "1"
+        _assert_emitted_tls_policy(payload, verify_ssl=True)
 
     def test_production_url_keeps_strict(
         self,
@@ -567,6 +606,7 @@ class TestVerifySslPropagation:
 
         payload = builder.build(metadata, transformed_compose, conn, "ext")
         assert payload.kamiwaza.tls_reject_unauthorized == "1"
+        _assert_emitted_tls_policy(payload, verify_ssl=True)
 
 
 class TestServiceRefRewritesAnnotation:

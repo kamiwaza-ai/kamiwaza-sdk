@@ -146,10 +146,10 @@ class PayloadBuilder:
         )
         # ``effective_verify_ssl`` centralizes the SSL precedence:
         # KAMIWAZA_VERIFY_SSL env var > dev-TLD auto-disable > persisted
-        # connection.verify_ssl. Drives both the per-service env
-        # injection (``_build_services``) and the
-        # ``tlsRejectUnauthorized`` spec field so the deployed
-        # extension's in-cluster callbacks match the developer's intent.
+        # connection.verify_ssl. Drives the per-service env
+        # injection (``_build_services``) so in-cluster callbacks match
+        # the developer's intent. The legacy integration attribute is
+        # retained for external Python callers but never serialized into a request.
         verify_ssl = connection.effective_verify_ssl()
         transformed_compose, rewrites = self._prepare_compose_for_payload(
             transformed_compose, dev_name
@@ -409,22 +409,16 @@ class PayloadBuilder:
     ) -> None:
         platform_values = {
             "KAMIWAZA_ROUTING_MODE": "path" if app_path else "port",
+            "KAMIWAZA_VERIFY_SSL": "true" if verify_ssl else "false",
+            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED": "1" if verify_ssl else "0",
         }
         if app_path:
             platform_values["KAMIWAZA_APP_PATH"] = app_path
         # Explicit env shadows ConfigMap envFrom in both modes. Without an
         # explicit port value, a stale KAMIWAZA_APP_PATH can trigger legacy
         # path-mode inference and make an otherwise valid deployment 404.
-        if not verify_ssl:
-            # Explicit env wins over ConfigMap envFrom. Emit both Python and
-            # Node conventions so every extension runtime receives one TLS
-            # policy.
-            platform_values.update(
-                {
-                    "KAMIWAZA_VERIFY_SSL": "false",
-                    "KAMIWAZA_TLS_REJECT_UNAUTHORIZED": "0",
-                }
-            )
+        # Emit both TLS conventions in both modes. Otherwise re-enabling
+        # verification can inherit a stale insecure ConfigMap value.
         platform_owned_names = set(platform_values)
         # Port mode must also remove an author-supplied path. The explicit mode
         # makes it inert at runtime, but emitting both values is contradictory

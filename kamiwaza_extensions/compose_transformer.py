@@ -848,7 +848,7 @@ def detect_service_url_rewrites(
     doesn't resolve.
 
     This function walks each transformed service's env and finds values
-    referencing a SIBLING service by its compose short name. The
+    referencing any declared service, including itself, by its Compose name. The
     returned map is baked into a copy of the payload env by ``PayloadBuilder``
     and serialized into the ``extensions.kamiwaza.io/service-ref-rewrites``
     annotation for operator compatibility:
@@ -866,17 +866,19 @@ def detect_service_url_rewrites(
     tokens (optionally comma-separated). URL credentials are preserved and
     ports must be in 1..65535. Known image env keys are excluded; broader image
     or credential key names exclude only ambiguous bare endpoints, retaining
-    existing scheme-bearing URL behavior. Host-only values, self-references,
-    and references to non-sibling hostnames are ignored.
+    existing scheme-bearing URL behavior. Self-references use the same scoped
+    Service as calls from siblings.
+    Host-only values and references to external hostnames are ignored.
     """
-    sibling_names = set(transformed_services.keys())
+    # Loopback must stay local even if Compose declares a namesake service.
+    service_names = set(transformed_services) - {"localhost"}
+    hostnames = {name: f"{dev_name}-{name}" for name in service_names}
     rewrites: Dict[str, Dict[str, Dict[str, str]]] = {}
 
     for svc_name, svc in transformed_services.items():
         env = svc.get("environment")
         if not env:
             continue
-        hostnames = {name: f"{dev_name}-{name}" for name in sibling_names - {svc_name}}
         for key, value in _iter_env_entries(env):
             if key.strip().upper() in _IMAGE_ENV_KEYS:
                 continue

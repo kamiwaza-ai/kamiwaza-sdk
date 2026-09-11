@@ -45,12 +45,10 @@ def _build_patch_kwargs(
        map joined later (PR #92 iter-6) for the same reason — without
        it, an extension first CREATE'd by the old SDK keeps its empty
        annotations forever even after the user upgrades.
-    2. ``kamiwaza`` integration spec — ``tlsRejectUnauthorized``,
-       ``apiUrl``, ``origin``, ``useAuth``. Same problem class:
-       changing TLS verify on the host (or upgrading SDK so dev-TLD
-       auto-disable kicks in) doesn't take effect until the user
-       deletes the existing extension. CRs are long-lived; PATCH must
-       carry these or iterative dev silently runs against stale config.
+    2. ``kamiwaza`` integration spec — API URLs, origin, and auth mode.
+       CRs are long-lived; PATCH must refresh these on iterative deploys.
+       TLS policy travels separately in each patched service's environment;
+       the legacy local TLS integration attribute is never serialized.
     """
     kwargs: Dict[str, Any] = {"services": patch_services}
     extra = payload.model_extra or {}

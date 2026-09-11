@@ -1135,7 +1135,7 @@ class TestDetectServiceUrlRewrites:
                     "PREFIXED": "myetcd:2379",
                     # Non-numeric suffixes are not endpoints.
                     "FORMAT": "etcd:debug",
-                    # Self-references stay untouched (documented contract).
+                    # Self-references use the same scoped service DNS as peers.
                     "SELF": "app:8000",
                     # Unknown hosts stay untouched.
                     "OTHER": "db:5432",
@@ -1150,7 +1150,8 @@ class TestDetectServiceUrlRewrites:
                 "LIST": {
                     "from": "etcd:2379,backup:2380",
                     "to": "ext-etcd:2379,ext-backup:2380",
-                }
+                },
+                "SELF": {"from": "app:8000", "to": "ext-app:8000"},
             }
         }
 
@@ -1222,7 +1223,7 @@ class TestDetectServiceUrlRewrites:
             },
         }
 
-    def test_ignores_self_reference(self):
+    def test_rewrites_self_reference_to_the_same_scoped_service(self):
         from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
 
         services = {
@@ -1231,7 +1232,14 @@ class TestDetectServiceUrlRewrites:
             },
         }
         rewrites = detect_service_url_rewrites(services, "ext")
-        assert rewrites == {}
+        assert rewrites == {
+            "backend": {
+                "SELF_URL": {
+                    "from": "http://backend:8000",
+                    "to": "http://ext-backend:8000",
+                }
+            }
+        }
 
     def test_ignores_external_hostnames(self):
         from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
