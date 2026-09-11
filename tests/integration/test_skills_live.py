@@ -208,6 +208,9 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         curated_row = fetch_skill_row(store, str(created.id))
         assert curated_row is not None
         assert curated_row.content_checksum == package_digest
+        assert curated_row.storage_path == row.storage_path, (
+            "curation relocated the package; the guarantee is edit-in-place"
+        )
         assert read_package_bytes(store, curated_row.storage_path) == package_bytes
 
         # --- publication lifecycle, confirmed in the store ----------------
@@ -250,19 +253,25 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         assert created.id in matching_ids
 
         # Inclusion alone proves nothing: on a cluster whose first page is
-        # short, a server ignoring every filter still returns this skill. Flip
-        # one filter at a time to a non-matching value and require absence -
-        # one query per filter, because a single query that flips several
-        # cannot say which one did the excluding.
-        for label, kwargs in (
-            ("category", {"category": "analysis"}),
-            ("tag", {"tag": "no-such-tag"}),
-            ("status", {"status": "archived"}),
-            ("q", {"q": f"{skill_name}-nomatch"}),
+        # short, a server ignoring every filter still returns this skill. So
+        # supply ONE filter at a time - a query carrying several cannot say
+        # which one excluded - and pair each non-matching value with a
+        # matching control. Without the control, a server that returned an
+        # empty page for any single-filter query would pass all four.
+        for label, miss, hit in (
+            ("category", {"category": "analysis"}, {"category": "export"}),
+            ("tag", {"tag": "no-such-tag"}, {"tag": "integration"}),
+            ("status", {"status": "archived"}, {"status": "published"}),
+            ("q", {"q": f"{skill_name}-nomatch"}, {"q": skill_name}),
         ):
-            excluded = service.list_skills(page_size=100, **kwargs)
+            excluded = service.list_skills(page_size=100, **miss)
             assert created.id not in {item.id for item in excluded.items}, (
                 f"{label} filter did not exclude a non-matching skill"
+            )
+            included = service.list_skills(page_size=100, **hit)
+            assert created.id in {item.id for item in included.items}, (
+                f"{label} filter returned nothing for a matching value, so its "
+                "exclusion above proves nothing"
             )
 
         # Each export is compared against the uploaded bytes, not merely
@@ -298,9 +307,17 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         with pytest.raises(NotFoundError):
             service.get_skill(deleted_id)
         # The guarantee is "absent to every later read", not just to get_skill.
+        # `deleted_id` is a str and SkillLibraryListItem.id is a UUID, so the
+        # ids must be compared in one type - a str is never `in` a set of
+        # UUIDs, and this assertion silently could not fail.
         assert deleted_id not in {
-            item.id for item in service.list_skills(q=skill_name, page_size=100).items
+            str(item.id)
+            for item in service.list_skills(q=skill_name, page_size=100).items
         }
+        with pytest.raises(APIError):
+            service.export_skill_package(deleted_id)
+        with pytest.raises(APIError):
+            service.download_skill_package(deleted_id)
         # "Deleting an already-deleted skill succeeds rather than 404ing" is a
         # stated guarantee with no other coverage.
         assert service.delete_skill(deleted_id) is True
@@ -323,8 +340,16 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
             assert reimported.name == skill_name
             assert reimported.id != created_id_for_reimport_check
         finally:
-            service.delete_skill(reimported.id)
+            try:
+                service.delete_skill(reimported.id)
+            except APIError as exc:
+                logging.getLogger(__name__).warning(
+                    "cleanup failed for re-imported skill %s: %s", reimported.id, exc
+                )
 
+        assert retained.storage_path == row.storage_path, (
+            "the artifact was relocated; the guarantee is that it is left in place"
+        )
         surviving_keys = list_package_objects(store, retained.storage_path)
         assert any(key.endswith("/package.zip") for key in surviving_keys), (
             "the package artifact was destroyed on delete"
@@ -332,9 +357,6 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         # Retained has to mean the bytes survived. A delete that left the key
         # but truncated or replaced its body would satisfy an existence check
         # while the history the capability promises is gone.
-        assert retained.storage_path == row.storage_path, (
-            "the artifact was relocated; the guarantee is that it is left in place"
-        )
         surviving_package = read_package_bytes(store, retained.storage_path)
         assert hashlib.sha256(surviving_package).hexdigest() == package_digest
 
