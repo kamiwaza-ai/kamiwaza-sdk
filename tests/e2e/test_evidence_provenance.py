@@ -8,9 +8,10 @@ distinction -- its ``scripts/sdk_reference.py`` surfaces it per method and its
 The capability map was built to harvest coverage that already existed, so
 ``pre-existing`` stays the default. But an entry may name a test written
 inside the cycle *to* evidence a capability, and stamping that
-``pre-existing`` misreports its origin. These tests pin all three halves of
-that: the declaration is honoured, the default is unchanged, and a value
-outside the schema's set is refused rather than passed through.
+``pre-existing`` misreports its origin. These tests pin that: the declaration
+is honoured, the default is unchanged, a value outside the schema's set is
+refused, a present-but-empty declaration is refused rather than defaulted, and
+the ``sign_off_actor`` prose beside the field agrees with it.
 
 Kept separate from ``test_evidence_emitter.py`` deliberately -- that module
 pins the emitter's own contract and is already large; provenance is its own
@@ -139,7 +140,7 @@ def test_sign_off_actor_agrees_with_the_records_provenance(pytester, evidence_ou
 def test_default_sign_off_actor_is_unchanged(pytester, evidence_out):
     """Byte-identical to the literal every already-collected record carries.
 
-    Deriving the actor must not silently reword 22 records' worth of corpus.
+    Deriving the actor must not silently reword the already-collected corpus.
     """
     pytester.makepyfile(test_mapped="def test_a():\n    pass\n")
     result = _run_emitting(

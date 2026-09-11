@@ -202,11 +202,18 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
                 f"{stored_row.status}"
             )
 
+        # Re-publish so the status="published" listing filter below matches.
+        # Confirmed in the store like the transitions above: a PUT that reports
+        # `published` while the row stays `draft` would otherwise be invisible
+        # at exactly the transition the listing assertion leans on.
         published = service.update_skill_metadata(
             created.id,
             SkillLibraryUpdateRequest(status="published"),
         )
         assert published.status == "published"
+        republished_row = fetch_skill_row(store, str(created.id))
+        assert republished_row is not None
+        assert republished_row.status == "published"
 
         listing = service.list_skills(
             q=skill_name,
@@ -222,6 +229,9 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         # asserted non-empty. A wrong-but-truthy payload would otherwise
         # satisfy this test, and the emitter would publish it as passing
         # evidence that export works.
+        # `/skills/{id}/package` serves the PUBLISHED package, so this depends
+        # on the re-publish above; without it the call is a bare NotFoundError
+        # with nothing pointing at publication as the cause.
         package_download = service.download_skill_package(created.id)
         assert package_download.filename == f"{skill_name}.zip"
         assert package_download.content_type == "application/zip"
