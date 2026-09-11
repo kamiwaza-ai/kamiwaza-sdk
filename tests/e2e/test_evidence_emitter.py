@@ -686,3 +686,76 @@ def test_emitter_evidence_predicate_delegates_to_the_harness_rule():
 
     passed = [harness.StepResult(name="a", status="passed", duration_s=0.0)]
     assert _evidence_emitter._is_evidence(passed) is True
+
+
+# --- ENG-11524: an entry may declare where its evidence came from ---------
+
+
+MAP_CYCLE_AUTHORED = """
+- pattern: "test_mapped.py::*"
+  capability_ids: [workrooms.create]
+  scenario_name: "Mapped scenario"
+  evidence_provenance: cycle-authored
+"""
+
+MAP_BAD_PROVENANCE = """
+- pattern: "test_mapped.py::*"
+  capability_ids: [workrooms.create]
+  scenario_name: "Mapped scenario"
+  evidence_provenance: invented-yesterday
+"""
+
+
+def test_entry_can_declare_cycle_authored_provenance(pytester, evidence_out):
+    """A test written to evidence a capability is not "pre-existing".
+
+    The map harvests existing coverage by default, but an entry naming a test
+    authored within the cycle must be able to say so: the kit consumes this
+    field, so a wrong value misreports the corpus rather than merely reading
+    oddly.
+    """
+    pytester.makepyfile(test_mapped="def test_a():\n    pass\n")
+    result = _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        TEST_BUILD,
+        map_yaml=MAP_CYCLE_AUTHORED,
+    )
+    result.assert_outcomes(passed=1)
+
+    record = _records(evidence_out)[0]
+    harness.validate_evidence_record(record)
+    assert record["evidence_provenance"] == "cycle-authored"
+
+
+def test_entry_without_a_declaration_stays_pre_existing(pytester, evidence_out):
+    """The default is unchanged, so every existing entry keeps its meaning."""
+    pytester.makepyfile(test_mapped="def test_a():\n    pass\n")
+    result = _run_emitting(
+        pytester, evidence_out, "--emit-evidence", "--build", TEST_BUILD
+    )
+    result.assert_outcomes(passed=1)
+
+    record = _records(evidence_out)[0]
+    assert record["evidence_provenance"] == "pre-existing"
+
+
+def test_unknown_provenance_is_refused(pytester, evidence_out):
+    """A value outside the schema's set is a refusal, not a silent passthrough.
+
+    The accepted set is read from ``harness.EVIDENCE_PROVENANCES``, so this
+    cannot drift from what ``validate_evidence_record`` will accept.
+    """
+    pytester.makepyfile(test_mapped="def test_a():\n    pass\n")
+    result = _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        TEST_BUILD,
+        map_yaml=MAP_BAD_PROVENANCE,
+    )
+    result.stderr.fnmatch_lines(["*evidence_provenance must be one of*"])
+    assert not evidence_out.exists()

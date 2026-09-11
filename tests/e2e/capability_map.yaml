@@ -27,7 +27,11 @@
 # With `--emit-evidence` (and a --build/KAMIWAZA_BUILD identity) the
 # emitter in tests/e2e/_evidence_emitter.py writes one scenario-evidence.v2
 # record per entry that had at least one matched test actually run, with
-# evidence_provenance "pre-existing".
+# evidence_provenance "pre-existing" unless the entry declares otherwise.
+# An entry may set `evidence_provenance: cycle-authored` when the test it
+# names was written within the cycle to evidence the capability rather than
+# harvested from coverage that already existed. The accepted values are the
+# schema's own (harness.EVIDENCE_PROVENANCES); anything else is a refusal.
 #
 # DELIBERATELY UNMAPPED (reviewed 2026-08-10; empty mapping is the honest
 # answer — do not "fix" without new tests):
@@ -335,3 +339,33 @@
 - pattern: "tests/integration/test_federation_two_cluster_live.py::TestFederationTwoClusterWalkthrough::test_federated_job_audit_actor_round_trip"
   capability_ids: [federation.remote-jobs]
   scenario_name: "Federated job execution via mesh"
+
+# Justification: test_skills_library_lifecycle_and_backing_store (ENG-11524)
+# imports a real skill package, curates it, walks the full publication
+# lifecycle (draft -> published -> archived -> draft), exports both the single
+# package and a bundle, and soft-deletes — then reads BOTH backing stores
+# directly to confirm what the API cannot show. Specifically: the skill_library
+# row's content_checksum equals the sha256 of the bytes uploaded, the
+# package.zip under that row's storage_path is byte-identical to them, and
+# after DELETE the row is RETAINED with deleted_at set rather than destroyed.
+# That last assertion is the only proof of the document's "deletion is soft"
+# guarantee — DELETE answers success and later reads 404 either way.
+#
+# The pattern names that one test rather than the module. The module's other
+# two tests are rejection assertions (invalid package -> 400, duplicate import
+# -> 409); under the per-test rule, running either alone must never be able to
+# emit a passing record for this capability. Naming the single test is stronger
+# than an exclude glob, which could rot unnoticed as siblings are added.
+#
+# The test carries requires_platform_store and skips as a unit when the store
+# settings are absent, so an unconfigured host emits nothing rather than a
+# passed_with_notes record claiming the store was verified. The lifecycle and
+# store assertions are fused into one test for exactly that reason.
+# This entry is cycle-authored, not harvested: the store verification it
+# relies on was written for ENG-11524 to evidence this capability. The
+# pre-existing module covered the API lifecycle only, and never read either
+# backing store.
+- pattern: "tests/integration/test_skills_live.py::test_skills_library_lifecycle_and_backing_store"
+  capability_ids: [skills.skills-library]
+  scenario_name: "Skills Library import, curation, export and soft delete"
+  evidence_provenance: cycle-authored

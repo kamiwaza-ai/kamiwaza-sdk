@@ -7,8 +7,11 @@ test outcomes by the reviewed entries in ``tests/e2e/capability_map.yaml``
 and, after the session, writes one ``scenario-evidence.v2`` record per
 entry that saw at least one matched test run to a non-skipped outcome,
 into ``tests/e2e/evidence-out/`` (gitignored). Records carry
-``evidence_provenance: "pre-existing"`` — they harvest what the existing
-suite already demonstrates; they do not author new coverage.
+``evidence_provenance: "pre-existing"`` by default — the map exists to
+harvest what the existing suite already demonstrates. An entry may override
+it with ``evidence_provenance: cycle-authored`` where the test it names was
+written within the cycle *to* evidence the capability; stamping such a test
+"pre-existing" would misreport where the evidence came from.
 
 Guarantees:
 
@@ -74,7 +77,7 @@ MARKER_PREFIX = "marker:"
 SIGN_OFF_ACTOR = "automated e2e suite (pre-existing evidence)"
 
 _REQUIRED_ENTRY_KEYS = frozenset({"pattern", "capability_ids", "scenario_name"})
-_OPTIONAL_ENTRY_KEYS = frozenset({"exclude"})
+_OPTIONAL_ENTRY_KEYS = frozenset({"exclude", "evidence_provenance"})
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 # Exit codes that mean the run did not finish the work it was asked to do.
@@ -110,6 +113,7 @@ class MapEntry:
     scenario_name: str
     capability_ids: tuple[str, ...]
     exclude: tuple[str, ...] = ()
+    evidence_provenance: str = "pre-existing"
 
     @property
     def scenario_id(self) -> str:
@@ -176,6 +180,9 @@ def _parse_entry(item: object, i: int, *, source: str) -> MapEntry:
         scenario_name=item["scenario_name"],
         capability_ids=cap_ids,
         exclude=_parse_exclude(item.get("exclude", []), i, source=source),
+        evidence_provenance=_parse_provenance(
+            item.get("evidence_provenance"), i, source=source
+        ),
     )
     if not entry.scenario_id:
         # Caught here rather than at session finish, where the whole run would
@@ -207,6 +214,31 @@ def _require_entry_keys(item: dict, i: int, *, source: str) -> None:
             f"{sorted(_REQUIRED_ENTRY_KEYS)} (optionally "
             f"{sorted(_OPTIONAL_ENTRY_KEYS)}); got {sorted(keys)}"
         )
+
+
+def _parse_provenance(value: object, i: int, *, source: str) -> str:
+    """Validate an entry's declared provenance, defaulting to ``pre-existing``.
+
+    The map was built to harvest evidence that pre-dates the cycle, and that
+    stays the default. But an entry may name a test authored *within* the
+    cycle specifically to evidence a capability, and stamping that
+    ``pre-existing`` misreports where the evidence came from — a distinction
+    the kit consumes (``scripts/sdk_reference.py`` surfaces it per method,
+    ``scripts/render_sign_off.py`` reads it).
+
+    The accepted set is :data:`harness.EVIDENCE_PROVENANCES` rather than a
+    local copy, so this cannot drift from the schema the record is validated
+    against.
+    """
+
+    if value is None:
+        return "pre-existing"
+    if not isinstance(value, str) or value not in harness.EVIDENCE_PROVENANCES:
+        raise ValueError(
+            f"{source}: entry[{i}].evidence_provenance must be one of "
+            f"{sorted(harness.EVIDENCE_PROVENANCES)}; got {value!r}"
+        )
+    return value
 
 
 def _parse_exclude(value: object, i: int, *, source: str) -> tuple[str, ...]:
@@ -426,7 +458,7 @@ class EvidenceEmitterPlugin:
             "method": "automated",
             "arm": "sdk",
             "capability_ids": list(entry.capability_ids),
-            "evidence_provenance": "pre-existing",
+            "evidence_provenance": entry.evidence_provenance,
             "status": harness.derive_status(steps),
             "steps": [asdict(s) for s in steps],
             # Traceability extra (schema allows additionalProperties).
