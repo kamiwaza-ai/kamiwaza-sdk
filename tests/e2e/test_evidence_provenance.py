@@ -102,6 +102,12 @@ def test_unknown_provenance_is_refused(pytester, evidence_out):
         TEST_BUILD,
         map_yaml=MAP_ONE_ENTRY + "  evidence_provenance: invented-yesterday\n",
     )
+    # The message alone does not pin the layer: harness.validate_evidence_record
+    # emits the same sentence at session end. Without the exit code this test
+    # passes even with the map-load guard removed - verified by mutation - and
+    # a typo would then surface only after a full live run instead of before
+    # the first test.
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
     result.stderr.fnmatch_lines(["*evidence_provenance must be one of*"])
     assert not evidence_out.exists()
 
@@ -162,5 +168,6 @@ def test_present_but_empty_provenance_is_refused(pytester, evidence_out):
         TEST_BUILD,
         map_yaml=MAP_ONE_ENTRY + "  evidence_provenance:\n",
     )
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
     result.stderr.fnmatch_lines(["*evidence_provenance is present but empty*"])
     assert not evidence_out.exists()

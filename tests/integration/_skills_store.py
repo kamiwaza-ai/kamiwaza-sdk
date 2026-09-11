@@ -118,10 +118,14 @@ def fetch_skill_row(config: StoreConfig, skill_id: str) -> SkillRow | None:
         FROM skill_library
         WHERE id = %s
     """
-    # libpq waits indefinitely by default, so a port-forward that died mid-run
-    # would hang the live lane rather than failing it. connect_timeout only
-    # bounds the connect; statement_timeout bounds a forward that dies after
-    # one, which is the more likely shape.
+    # libpq waits indefinitely by default, so a port-forward that died before
+    # the connect would hang the live lane rather than failing it -
+    # connect_timeout bounds that. statement_timeout additionally bounds a
+    # query the *server* is slow to finish (lock contention on
+    # `skill_library`). It is enforced server-side, so it cannot rescue a
+    # forward that is silently blackholed mid-query: that cancellation would
+    # have to travel back over the same dead socket. Bounding that case needs
+    # libpq keepalives, which this does not attempt.
     with (
         psycopg.connect(
             config.dsn,
@@ -139,11 +143,13 @@ def fetch_skill_row(config: StoreConfig, skill_id: str) -> SkillRow | None:
     # Coerced, not merely annotated: the driver decides what a column comes
     # back as, and an unenforced ``: str`` is a claim rather than a guarantee.
     #
-    # No None-handling here on purpose. Every column below is NOT NULL in
-    # `skill_library`, so `str()` cannot turn a NULL into the truthy string
-    # "None" and defeat the caller's emptiness guard - the reachable failure
-    # is an empty string, which stays falsy. Adding a NULL branch would be a
-    # fallback for a state the schema forbids.
+    # No None-handling here on purpose. Every column *coerced* below is NOT
+    # NULL in `skill_library`, so `str()` cannot turn a NULL into the truthy
+    # string "None" and defeat the caller's emptiness guard - the reachable
+    # failure is an empty string, which stays falsy. Adding a NULL branch
+    # would be a fallback for a state the schema forbids. `deleted_at` is
+    # nullable by design and is deliberately left uncoerced: its None is the
+    # signal `is_soft_deleted` reads.
     return SkillRow(
         id=str(record[0]),
         name=str(record[1]),
