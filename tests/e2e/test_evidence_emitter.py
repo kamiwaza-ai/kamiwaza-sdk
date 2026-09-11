@@ -691,21 +691,6 @@ def test_emitter_evidence_predicate_delegates_to_the_harness_rule():
 # --- ENG-11524: an entry may declare where its evidence came from ---------
 
 
-MAP_CYCLE_AUTHORED = """
-- pattern: "test_mapped.py::*"
-  capability_ids: [workrooms.create]
-  scenario_name: "Mapped scenario"
-  evidence_provenance: cycle-authored
-"""
-
-MAP_BAD_PROVENANCE = """
-- pattern: "test_mapped.py::*"
-  capability_ids: [workrooms.create]
-  scenario_name: "Mapped scenario"
-  evidence_provenance: invented-yesterday
-"""
-
-
 def test_entry_can_declare_cycle_authored_provenance(pytester, evidence_out):
     """A test written to evidence a capability is not "pre-existing".
 
@@ -721,7 +706,7 @@ def test_entry_can_declare_cycle_authored_provenance(pytester, evidence_out):
         "--emit-evidence",
         "--build",
         TEST_BUILD,
-        map_yaml=MAP_CYCLE_AUTHORED,
+        map_yaml=MAP_ONE_ENTRY + "  evidence_provenance: cycle-authored\n",
     )
     result.assert_outcomes(passed=1)
 
@@ -755,7 +740,7 @@ def test_unknown_provenance_is_refused(pytester, evidence_out):
         "--emit-evidence",
         "--build",
         TEST_BUILD,
-        map_yaml=MAP_BAD_PROVENANCE,
+        map_yaml=MAP_ONE_ENTRY + "  evidence_provenance: invented-yesterday\n",
     )
     result.stderr.fnmatch_lines(["*evidence_provenance must be one of*"])
     assert not evidence_out.exists()
