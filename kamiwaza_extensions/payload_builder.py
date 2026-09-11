@@ -149,7 +149,7 @@ class PayloadBuilder:
         # connection.verify_ssl. Drives both the per-service env
         # injection (``_build_services``) so in-cluster callbacks match
         # the developer's intent. The legacy integration attribute is
-        # retained locally but never serialized into an API request.
+        # retained for external Python callers but never serialized into a request.
         verify_ssl = connection.effective_verify_ssl()
         transformed_compose, rewrites = self._prepare_compose_for_payload(
             transformed_compose, dev_name

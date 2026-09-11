@@ -1233,9 +1233,12 @@ class TestDetectServiceUrlRewrites:
         }
         rewrites = detect_service_url_rewrites(services, "ext")
         assert rewrites == {
-            "backend": {"SELF_URL": {
-                "from": "http://backend:8000", "to": "http://ext-backend:8000"
-            }}
+            "backend": {
+                "SELF_URL": {
+                    "from": "http://backend:8000",
+                    "to": "http://ext-backend:8000",
+                }
+            }
         }
 
     def test_ignores_external_hostnames(self):
