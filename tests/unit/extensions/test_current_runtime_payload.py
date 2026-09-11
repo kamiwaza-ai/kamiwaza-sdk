@@ -173,3 +173,25 @@ def test_loopback_callbacks_stay_in_pod(compose, host):
     assert {"name": "CALLBACK_URL", "value": url} in backend["env"]
     assert {"name": "CALLBACK_ENDPOINT", "value": endpoint} in backend["env"]
     assert ANNOTATION_SERVICE_REF_REWRITES not in body["annotations"]
+
+
+def test_declared_localhost_does_not_capture_loopback(compose):
+    compose["services"]["localhost"] = deepcopy(compose["services"]["backend"])
+    for name in ("backend", "localhost"):
+        compose["services"][name]["environment"] = {
+            "CALLBACK_URL": "http://localhost:8000/callback",
+            "CALLBACK_ENDPOINT": "localhost:8000",
+        }
+
+    body = _http_body(_build_payload(compose), "create")
+
+    for name in ("backend", "localhost"):
+        service = next(s for s in body["services"] if s["name"] == name)
+        assert {
+            "name": "CALLBACK_URL",
+            "value": "http://localhost:8000/callback",
+        } in service["env"]
+        assert {"name": "CALLBACK_ENDPOINT", "value": "localhost:8000"} in service[
+            "env"
+        ]
+    assert ANNOTATION_SERVICE_REF_REWRITES not in body["annotations"]

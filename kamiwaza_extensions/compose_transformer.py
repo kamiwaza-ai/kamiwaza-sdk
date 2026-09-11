@@ -870,14 +870,15 @@ def detect_service_url_rewrites(
     Service as calls from siblings.
     Host-only values and references to external hostnames are ignored.
     """
-    sibling_names = set(transformed_services.keys())
+    # Loopback must stay local even if Compose declares a namesake service.
+    service_names = set(transformed_services) - {"localhost"}
+    hostnames = {name: f"{dev_name}-{name}" for name in service_names}
     rewrites: Dict[str, Dict[str, Dict[str, str]]] = {}
 
     for svc_name, svc in transformed_services.items():
         env = svc.get("environment")
         if not env:
             continue
-        hostnames = {name: f"{dev_name}-{name}" for name in sibling_names}
         for key, value in _iter_env_entries(env):
             if key.strip().upper() in _IMAGE_ENV_KEYS:
                 continue
