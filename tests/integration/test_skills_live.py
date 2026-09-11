@@ -225,6 +225,19 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         matching_ids = {item.id for item in listing.items}
         assert created.id in matching_ids
 
+        # Inclusion alone proves nothing: on a cluster whose first page is
+        # short, a server ignoring q/category/tag/status entirely would still
+        # return this skill. Pin that the filters discriminate by asking for a
+        # category it does not have.
+        excluded = service.list_skills(
+            q=skill_name,
+            category="analysis",
+            page_size=100,
+        )
+        assert created.id not in {item.id for item in excluded.items}, (
+            "category filter did not exclude a non-matching skill"
+        )
+
         # Each export is compared against the uploaded bytes, not merely
         # asserted non-empty. A wrong-but-truthy payload would otherwise
         # satisfy this test, and the emitter would publish it as passing
@@ -268,6 +281,11 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         assert any(key.endswith("/package.zip") for key in surviving_keys), (
             "the package artifact was destroyed on delete"
         )
+        # Retained has to mean the bytes survived. A delete that left the key
+        # but truncated or replaced its body would satisfy an existence check
+        # while the history the capability promises is gone.
+        surviving_package = read_package_bytes(store, retained.storage_path)
+        assert hashlib.sha256(surviving_package).hexdigest() == package_digest
 
     finally:
         if created is not None:
@@ -352,10 +370,19 @@ def test_duplicate_import_conflicts(live_kamiwaza_client) -> None:
         except APIError as exc:
             _require_mutation_available(exc)
 
-        with pytest.raises(APIError) as excinfo:
-            service.import_skill_package(
-                filename=f"{skill_name}.zip", file_content=package_bytes
-            )
+        duplicate = None
+        try:
+            with pytest.raises(APIError) as excinfo:
+                duplicate = service.import_skill_package(
+                    filename=f"{skill_name}.zip", file_content=package_bytes
+                )
+        except pytest.fail.Exception:
+            # Conflict handling regressed and the second import succeeded. The
+            # `finally` below only knows about the first one, so without this
+            # the duplicate stays active on a shared cluster.
+            if duplicate is not None:
+                service.delete_skill(duplicate.id)
+            raise
         assert excinfo.value.status_code == 409
 
     finally:
