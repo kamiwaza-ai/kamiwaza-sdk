@@ -40,15 +40,16 @@ def compose():
         "KAMIWAZA_TLS_REJECT_UNAUTHORIZED=0",
         "KAMIWAZA_TLS_REJECT_UNAUTHORIZED=1",
         "KEEP=unchanged",
+        "KAMIWAZA_CA_BUNDLE=/mounted/company-ca.pem",
     ]
     return {
         "services": {
             name: {
                 "image": f"registry.test/{name}:1.0.0",
-                "ports": ["8000"],
+                "ports": [] if name == "worker" else ["8000"],
                 "environment": list(environment),
             }
-            for name in ("frontend", "backend")
+            for name in ("frontend", "backend", "worker")
         }
     }
 
@@ -81,7 +82,7 @@ def _http_body(payload, operation, service_filter=None):
 
 
 @pytest.mark.parametrize("operation", ["create", "patch"])
-def test_tls_policy_replaces_conflicts_in_every_http_service(
+def test_tls_policy_replaces_conflicts_in_every_serialized_service(
     compose, tls_setting, operation
 ):
     original = deepcopy(compose)
@@ -91,7 +92,11 @@ def test_tls_policy_replaces_conflicts_in_every_http_service(
     assert payload.kamiwaza.tls_reject_unauthorized == ("1" if tls_setting else "0")
     assert "tls_reject_unauthorized" not in body["kamiwaza"]
     assert "tlsRejectUnauthorized" not in body["kamiwaza"]
-    assert {service["name"] for service in body["services"]} == {"frontend", "backend"}
+    assert {service["name"] for service in body["services"]} == {
+        "frontend",
+        "backend",
+        "worker",
+    }
     for service in body["services"]:
         env = service["env"]
         assert [e["value"] for e in env if e["name"] == "KAMIWAZA_VERIFY_SSL"] == [
@@ -101,6 +106,7 @@ def test_tls_policy_replaces_conflicts_in_every_http_service(
             e["value"] for e in env if e["name"] == "KAMIWAZA_TLS_REJECT_UNAUTHORIZED"
         ] == ["1" if tls_setting else "0"]
         assert {"name": "KEEP", "value": "unchanged"} in env
+        assert {"name": "KAMIWAZA_CA_BUNDLE", "value": "/mounted/company-ca.pem"} in env
     assert compose == original
 
 
@@ -150,3 +156,20 @@ def test_filtered_patch_refreshes_only_selected_service(compose, monkeypatch):
     assert {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"} in env
     assert {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"} in env
     assert "tls_reject_unauthorized" not in body["kamiwaza"]
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1"])
+def test_loopback_callbacks_stay_in_pod(compose, host):
+    url = f"http://{host}:8000/callback"
+    endpoint = f"{host}:8000"
+    compose["services"]["backend"]["environment"] = {
+        "CALLBACK_URL": url,
+        "CALLBACK_ENDPOINT": endpoint,
+    }
+
+    body = _http_body(_build_payload(compose), "create")
+
+    backend = next(s for s in body["services"] if s["name"] == "backend")
+    assert {"name": "CALLBACK_URL", "value": url} in backend["env"]
+    assert {"name": "CALLBACK_ENDPOINT", "value": endpoint} in backend["env"]
+    assert ANNOTATION_SERVICE_REF_REWRITES not in body["annotations"]

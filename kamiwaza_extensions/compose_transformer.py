@@ -848,7 +848,7 @@ def detect_service_url_rewrites(
     doesn't resolve.
 
     This function walks each transformed service's env and finds values
-    referencing a SIBLING service by its compose short name. The
+    referencing any declared service, including itself, by its Compose name. The
     returned map is baked into a copy of the payload env by ``PayloadBuilder``
     and serialized into the ``extensions.kamiwaza.io/service-ref-rewrites``
     annotation for operator compatibility:

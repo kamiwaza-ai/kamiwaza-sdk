@@ -61,16 +61,23 @@ is updated; run a full redeploy when changing TLS policy for the whole extension
 These are Kamiwaza-specific settings; they do not configure arbitrary third-party TLS
 clients.
 
-The legacy
-`KamiwazaIntegrationSpec.tls_reject_unauthorized` attribute remains readable
-locally but is excluded from serialized requests: the current platform rejects
+For services using the shared Python runtime with a private CA, mount a readable
+PEM bundle in the container and set `KAMIWAZA_CA_BUNDLE` to its in-container path.
+Those clients intentionally ignore `SSL_CERT_FILE` and `SSL_CERT_DIR`; trusting
+the CA on the workstation does not configure container trust. Keep verification
+enabled in production. For an intentional development-only opt-out, set
+`KAMIWAZA_VERIFY_SSL=false` in the shell running the deployment; this also
+disables verification for the CLI's own API calls.
+
+The legacy `KamiwazaIntegrationSpec.tls_reject_unauthorized` attribute remains
+readable locally but is excluded from serialized requests: the current platform rejects
 that retired integration field with HTTP 422.
 
 Compose URLs referencing the service itself are scoped to its deployed Service
 name, just like references from another service. Kubernetes does not provide
 the unprefixed Compose alias, including for self-callbacks. Scoped Service
-callbacks require a ready backend; use `localhost` or `127.0.0.1` for in-pod
-startup or readiness calls that must work before the pod becomes ready.
+callbacks can reach any ready replica. Use `localhost` or `127.0.0.1` when a
+call must stay in-pod, including startup or readiness calls before the pod is ready.
 
 ```python
 from kamiwaza_sdk.schemas.extensions import CreateExtension, ExtensionServiceSpec
