@@ -291,8 +291,11 @@ def test_import_rejects_an_invalid_package(live_kamiwaza_client) -> None:
             )
     except pytest.fail.Exception:
         # pytest.raises failed, so the platform ACCEPTED the bad package - the
-        # very defect this test guards. Clean up before reporting, or the
-        # orphan trips the duplicate-import test next.
+        # very defect this test guards. Clean up before reporting: unlike the
+        # other tests here, this one's package and filename carry no uuid, so
+        # an orphan makes the NEXT run of this same test answer 409 and fail
+        # on the wrong assertion. Best-effort - nothing pins how the platform
+        # names a package with no SKILL.md, so this may find nothing.
         for item in service.list_skills(q="not-a-skill", page_size=100).items:
             service.delete_skill(item.id)
         raise

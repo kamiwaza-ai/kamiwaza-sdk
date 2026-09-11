@@ -119,9 +119,15 @@ def fetch_skill_row(config: StoreConfig, skill_id: str) -> SkillRow | None:
         WHERE id = %s
     """
     # libpq waits indefinitely by default, so a port-forward that died mid-run
-    # would hang the live lane rather than failing it.
+    # would hang the live lane rather than failing it. connect_timeout only
+    # bounds the connect; statement_timeout bounds a forward that dies after
+    # one, which is the more likely shape.
     with (
-        psycopg.connect(config.dsn, connect_timeout=10) as conn,
+        psycopg.connect(
+            config.dsn,
+            connect_timeout=10,
+            options="-c statement_timeout=10000",
+        ) as conn,
         conn.cursor() as cur,
     ):
         cur.execute(query, (skill_id,))
@@ -132,6 +138,12 @@ def fetch_skill_row(config: StoreConfig, skill_id: str) -> SkillRow | None:
 
     # Coerced, not merely annotated: the driver decides what a column comes
     # back as, and an unenforced ``: str`` is a claim rather than a guarantee.
+    #
+    # No None-handling here on purpose. Every column below is NOT NULL in
+    # `skill_library`, so `str()` cannot turn a NULL into the truthy string
+    # "None" and defeat the caller's emptiness guard - the reachable failure
+    # is an empty string, which stays falsy. Adding a NULL branch would be a
+    # fallback for a state the schema forbids.
     return SkillRow(
         id=str(record[0]),
         name=str(record[1]),
