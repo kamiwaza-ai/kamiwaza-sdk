@@ -155,6 +155,10 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         assert created.name == skill_name
         assert created.status == "draft"
         assert created.package_summary.root_dir == skill_name
+        # root_dir falls back to the skill name when package_manifest is
+        # missing, and the fixture names the zip root the same thing - so
+        # the line above passes even if the manifest was never persisted.
+        assert created.package_summary.has_scripts is True
         assert created.content_checksum == package_digest
 
         # --- the row, as the database actually holds it -------------------
@@ -182,13 +186,33 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         assert stored_package == package_bytes
 
         detail = service.get_skill(created.id)
+        # Not just the id, which a detail route echoes from the path: pin fields
+        # that identify the row behind it.
         assert detail.id == created.id
+        assert detail.name == skill_name
+        assert detail.content_checksum == package_digest
         assert detail.tags == ["integration", "pdf"]
 
+        # --- curation, without repackaging ------------------------------
+        # The capability guarantees metadata is editable in place while the
+        # imported package stays read-only. This scenario is named for it, so
+        # it has to happen here: edit a curation field, confirm it took, and
+        # confirm the package did NOT move underneath it.
+        curated_name = f"{display_name} (curated)"
+        curated = service.update_skill_metadata(
+            created.id,
+            SkillLibraryUpdateRequest(display_name=curated_name),
+        )
+        assert curated.display_name == curated_name
+        assert service.get_skill(created.id).display_name == curated_name
+        curated_row = fetch_skill_row(store, str(created.id))
+        assert curated_row is not None
+        assert curated_row.content_checksum == package_digest
+        assert read_package_bytes(store, curated_row.storage_path) == package_bytes
+
         # --- publication lifecycle, confirmed in the store ----------------
-        # The document guarantees Draft -> Enabled -> Archived and an
-        # Archived -> Draft restore. The platform's own vocabulary for the
-        # middle state is "published"; "enabled" is not an accepted value.
+        # The document guarantees `draft` -> `published` -> `archived` and an
+        # `archived` -> `draft` restore, in the platform's own vocabulary.
         for target_status in ("published", "archived", "draft"):
             updated = service.update_skill_metadata(
                 created.id,
@@ -226,17 +250,20 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         assert created.id in matching_ids
 
         # Inclusion alone proves nothing: on a cluster whose first page is
-        # short, a server ignoring q/category/tag/status entirely would still
-        # return this skill. Pin that the filters discriminate by asking for a
-        # category it does not have.
-        excluded = service.list_skills(
-            q=skill_name,
-            category="analysis",
-            page_size=100,
-        )
-        assert created.id not in {item.id for item in excluded.items}, (
-            "category filter did not exclude a non-matching skill"
-        )
+        # short, a server ignoring every filter still returns this skill. Flip
+        # one filter at a time to a non-matching value and require absence -
+        # one query per filter, because a single query that flips several
+        # cannot say which one did the excluding.
+        for label, kwargs in (
+            ("category", {"category": "analysis"}),
+            ("tag", {"tag": "no-such-tag"}),
+            ("status", {"status": "archived"}),
+            ("q", {"q": f"{skill_name}-nomatch"}),
+        ):
+            excluded = service.list_skills(page_size=100, **kwargs)
+            assert created.id not in {item.id for item in excluded.items}, (
+                f"{label} filter did not exclude a non-matching skill"
+            )
 
         # Each export is compared against the uploaded bytes, not merely
         # asserted non-empty. A wrong-but-truthy payload would otherwise
@@ -265,10 +292,18 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         # --- deletion is soft, which only the stores can show -------------
         assert service.delete_skill(created.id) is True
         deleted_id = str(created.id)
+        created_id_for_reimport_check = created.id
         created = None
 
         with pytest.raises(NotFoundError):
             service.get_skill(deleted_id)
+        # The guarantee is "absent to every later read", not just to get_skill.
+        assert deleted_id not in {
+            item.id for item in service.list_skills(q=skill_name, page_size=100).items
+        }
+        # "Deleting an already-deleted skill succeeds rather than 404ing" is a
+        # stated guarantee with no other coverage.
+        assert service.delete_skill(deleted_id) is True
 
         retained = fetch_skill_row(store, deleted_id)
         assert retained is not None, (
@@ -277,6 +312,19 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         assert retained.is_soft_deleted
         assert retained.content_checksum == package_digest
 
+        # Soft delete and 409-on-duplicate share one mechanism: the partial
+        # unique index covers only rows with `deleted_at IS NULL`. Nothing else
+        # exercises that interlock, so a regression making soft-deleted names
+        # permanently unusable would pass every other assertion here.
+        reimported = service.import_skill_package(
+            filename=f"{skill_name}.zip", file_content=package_bytes
+        )
+        try:
+            assert reimported.name == skill_name
+            assert reimported.id != created_id_for_reimport_check
+        finally:
+            service.delete_skill(reimported.id)
+
         surviving_keys = list_package_objects(store, retained.storage_path)
         assert any(key.endswith("/package.zip") for key in surviving_keys), (
             "the package artifact was destroyed on delete"
@@ -284,6 +332,9 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         # Retained has to mean the bytes survived. A delete that left the key
         # but truncated or replaced its body would satisfy an existence check
         # while the history the capability promises is gone.
+        assert retained.storage_path == row.storage_path, (
+            "the artifact was relocated; the guarantee is that it is left in place"
+        )
         surviving_package = read_package_bytes(store, retained.storage_path)
         assert hashlib.sha256(surviving_package).hexdigest() == package_digest
 
@@ -301,7 +352,10 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
 
 
 def test_import_rejects_an_invalid_package(live_kamiwaza_client) -> None:
-    """A package with no SKILL.md is refused, not stored.
+    """A package with no SKILL.md is refused.
+
+    Says nothing about storage: this test has no store access, so "not stored"
+    would be a claim it cannot make.
 
     Excluded from the capability mapping: on its own this proves only that a
     bad upload is rejected, which is no evidence that the library works.
