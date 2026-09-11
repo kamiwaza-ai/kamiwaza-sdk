@@ -157,6 +157,44 @@ def test_cleanup_reports_failures_but_attempts_all_steps(tmp_path, stop_failure)
     assert not token_path.exists()
 
 
+def test_wait_and_cleanup_failures_preserve_sanitized_primary_error(
+    monkeypatch, tmp_path
+):
+    client, events, token_path = prepare(monkeypatch, tmp_path, "success")
+    secret = "synthetic-password"
+    client.serving.wait_deployment_ready.side_effect = TimeoutError(
+        f"readiness timeout {secret} " + "x" * 1000
+    )
+    cleanup_client = Mock()
+    cleanup_client.serving.stop_deployment.side_effect = RuntimeError(
+        f"stop failed {secret}"
+    )
+    target = SimpleNamespace(
+        repo_id="synthetic/model", engine_name="llamacpp", quantization="q6_k"
+    )
+
+    with pytest.raises(AssertionError, match="CLI cleanup failed") as caught:
+        live.test_cli_serve_deploy(
+            "https://disposable.invalid/api",
+            "user",
+            secret,
+            lambda **kw: client,
+            lambda c: object(),
+            target,
+            lambda m, q: None,
+            tmp_path,
+            cleanup_client,
+        )
+    message = str(caught.value)
+    assert "stop: stop failed ***" in message
+    assert "primary TimeoutError: readiness timeout ***" in message
+    assert secret not in message
+    assert len(message) < 650
+    assert caught.value.__suppress_context__
+    cleanup_client.auth.revoke_pat.assert_called_once_with("synthetic-pat-jti")
+    assert not token_path.exists()
+
+
 @pytest.mark.parametrize("cache_matches", [True, False])
 def test_auth_only_pat_is_revoked_even_if_cache_check_fails(
     monkeypatch, tmp_path, cache_matches

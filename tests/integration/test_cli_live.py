@@ -284,9 +284,17 @@ def _cleanup_cli_resources(resources: _CliResources) -> None:
         if (message := _cleanup_error(action, resources.secrets)) is not None
     ]
     if failures:
-        # Raise outside the except blocks: raw credential-bearing exceptions
-        # must not appear as chained tracebacks in pytest/JUnit output.
-        raise AssertionError("CLI cleanup failed: " + "; ".join(failures)) from None
+        _raise_cleanup_failures(resources, failures)
+
+
+def _raise_cleanup_failures(resources: _CliResources, failures: list[str]) -> None:
+    primary_error = sys.exc_info()[1]
+    if primary_error is not None:
+        message = _scrub_output(str(primary_error), resources.secrets)[:500]
+        failures.append(f"primary {type(primary_error).__name__}: {message}")
+    # Preserve the primary diagnostic without chaining its potentially raw
+    # credentials into pytest/JUnit output alongside the cleanup failures.
+    raise AssertionError("CLI cleanup failed: " + "; ".join(failures)) from None
 
 
 def _pat_jti(pat_token: str) -> str:
