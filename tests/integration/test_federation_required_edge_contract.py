@@ -440,7 +440,9 @@ def test_required_job_case_runs_recoverably_on_named_peer(monkeypatch) -> None:
             "source_cluster_id": "initiator-uuid",
         }
     )
-    persona = SimpleNamespace(jobs=jobs, _request=request, session=object())
+    persona = SimpleNamespace(
+        jobs=jobs, _request=request, session=object(), catalog=Mock()
+    )
     authenticator = Mock()
     authenticator.get_access_token.return_value = "opaque-test-token"
     monkeypatch.setattr(edge.uuid, "uuid4", lambda: SimpleNamespace(hex="fixed"))
@@ -613,7 +615,7 @@ def test_pairing_requires_two_distinct_cluster_identities() -> None:
 
 
 def test_required_retrieval_case_asserts_streamed_known_answer(monkeypatch) -> None:
-    persona = SimpleNamespace(session=object())
+    persona = SimpleNamespace(session=object(), catalog=Mock())
     authenticator = Mock()
     authenticator.get_access_token.return_value = "opaque-test-token"
     rows = edge.mc.records()[:3]
