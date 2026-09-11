@@ -218,22 +218,26 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         matching_ids = {item.id for item in listing.items}
         assert created.id in matching_ids
 
+        # Each export is compared against the uploaded bytes, not merely
+        # asserted non-empty. A wrong-but-truthy payload would otherwise
+        # satisfy this test, and the emitter would publish it as passing
+        # evidence that export works.
         package_download = service.download_skill_package(created.id)
         assert package_download.filename == f"{skill_name}.zip"
         assert package_download.content_type == "application/zip"
-        assert package_download.content
+        assert package_download.content == package_bytes
 
         exported = service.export_skill_package(created.id)
         assert exported.filename == f"{skill_name}.zip"
         assert exported.content_type == "application/zip"
-        assert exported.content
+        assert exported.content == package_bytes
 
         bundle = service.export_skills_bundle([created.id])
         assert bundle.filename == "skills-export.zip"
         assert bundle.content_type == "application/zip"
         with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
             assert archive.namelist() == [f"{skill_name}.zip"]
-            assert archive.read(f"{skill_name}.zip")
+            assert archive.read(f"{skill_name}.zip") == package_bytes
 
         # --- deletion is soft, which only the stores can show -------------
         assert service.delete_skill(created.id) is True
@@ -283,21 +287,23 @@ def test_import_rejects_an_invalid_package(live_kamiwaza_client) -> None:
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("not-a-skill/readme.txt", "no SKILL.md here\n")
 
+    accepted = None
     try:
         with pytest.raises(APIError) as excinfo:
-            service.import_skill_package(
+            accepted = service.import_skill_package(
                 filename="invalid-skill.zip",
                 file_content=buffer.getvalue(),
             )
     except pytest.fail.Exception:
         # pytest.raises failed, so the platform ACCEPTED the bad package - the
-        # very defect this test guards. Clean up before reporting: unlike the
-        # other tests here, this one's package and filename carry no uuid, so
-        # an orphan makes the NEXT run of this same test answer 409 and fail
-        # on the wrong assertion. Best-effort - nothing pins how the platform
-        # names a package with no SKILL.md, so this may find nothing.
-        for item in service.list_skills(q="not-a-skill", page_size=100).items:
-            service.delete_skill(item.id)
+        # very defect this test guards. Delete exactly what was created: unlike
+        # the other tests here, this one's package and filename carry no uuid,
+        # so an orphan makes the NEXT run of this same test answer 409 and fail
+        # on the wrong assertion. Searching by name instead would both miss a
+        # skill the platform named from the filename and soft-delete unrelated
+        # skills that happened to match.
+        if accepted is not None:
+            service.delete_skill(accepted.id)
         raise
 
     if excinfo.value.status_code == 403:
