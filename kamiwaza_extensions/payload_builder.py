@@ -25,6 +25,7 @@ from kamiwaza_extensions.compose_volumes import (
     build_service_volume_specs,
 )
 from kamiwaza_extensions.connections import ConnectionInfo
+from kamiwaza_extensions.sandbox_env import ensure_sandbox_host_ip_env
 from kamiwaza_extensions.validators.compose import INVALID_DEPLOY_REQUESTS_TEXT
 from kamiwaza_extensions.validators.workload_identity import (
     require_valid_declaration,
@@ -331,6 +332,7 @@ class PayloadBuilder:
         for svc_name, svc in services_dict.items():
             ports = self._parse_ports(svc.get("ports", []))
             env = self._parse_env(svc.get("environment", []))
+            ensure_sandbox_host_ip_env(env)
             resources = self._parse_resources(svc)
 
             is_primary = svc_name == primary_name
