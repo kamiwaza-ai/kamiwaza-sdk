@@ -72,9 +72,22 @@ DEFAULT_OUT_DIR = E2E_DIR / "evidence-out"
 
 PLUGIN_NAME = "kamiwaza-evidence-emitter"
 MARKER_PREFIX = "marker:"
-# The accountable actor for pre-existing automated evidence is the suite
-# itself; human sign-off happens downstream on the kit side.
-SIGN_OFF_ACTOR = "automated e2e suite (pre-existing evidence)"
+
+
+# The accountable actor for automated evidence is the suite itself; human
+# sign-off happens downstream on the kit side. The parenthetical restates the
+# record's own `evidence_provenance`, so it is derived from that value rather
+# than written twice - a `cycle-authored` record carrying a "(pre-existing
+# evidence)" actor contradicts itself, and nothing downstream would catch it:
+# both forms validate.
+def sign_off_actor(evidence_provenance: str) -> str:
+    """The actor string for a record of this provenance.
+
+    ``pre-existing`` yields exactly the literal every earlier record carries,
+    so an already-collected corpus stays byte-comparable.
+    """
+    return f"automated e2e suite ({evidence_provenance} evidence)"
+
 
 _REQUIRED_ENTRY_KEYS = frozenset({"pattern", "capability_ids", "scenario_name"})
 _OPTIONAL_ENTRY_KEYS = frozenset({"exclude", "evidence_provenance"})
@@ -180,9 +193,7 @@ def _parse_entry(item: object, i: int, *, source: str) -> MapEntry:
         scenario_name=item["scenario_name"],
         capability_ids=cap_ids,
         exclude=_parse_exclude(item.get("exclude", []), i, source=source),
-        evidence_provenance=_parse_provenance(
-            item.get("evidence_provenance"), i, source=source
-        ),
+        evidence_provenance=_parse_provenance(item, i, source=source),
     )
     if not entry.scenario_id:
         # Caught here rather than at session finish, where the whole run would
@@ -216,22 +227,35 @@ def _require_entry_keys(item: dict, i: int, *, source: str) -> None:
         )
 
 
-def _parse_provenance(value: object, i: int, *, source: str) -> str:
+def _parse_provenance(item: dict, i: int, *, source: str) -> str:
     """Validate an entry's declared provenance, defaulting to ``pre-existing``.
 
     The map was built to harvest evidence that pre-dates the cycle, and that
     stays the default. But an entry may name a test authored *within* the
     cycle specifically to evidence a capability, and stamping that
     ``pre-existing`` misreports where the evidence came from — a distinction
-    the kit consumes (``scripts/sdk_reference.py`` surfaces it per method,
-    ``scripts/render_sign_off.py`` reads it).
+    the ``capability-kit`` repo consumes (its ``scripts/sdk_reference.py``
+    surfaces it per method and its ``scripts/render_sign_off.py`` reads it;
+    neither lives here).
 
     The accepted set is :data:`harness.EVIDENCE_PROVENANCES` rather than a
     local copy, so this cannot drift from the schema the record is validated
     against.
     """
 
+    value = item.get("evidence_provenance")
     if value is None:
+        # Only an ABSENT key defaults. A present-but-empty declaration
+        # (`evidence_provenance:` or an explicit `null`) is someone reaching
+        # for the field and getting nothing - silently reading that as
+        # "pre-existing" mislabels exactly the evidence this field exists to
+        # label correctly.
+        if "evidence_provenance" in item:
+            raise ValueError(
+                f"{source}: entry[{i}].evidence_provenance is present but empty; "
+                f"omit the key to accept the default, or name one of "
+                f"{sorted(harness.EVIDENCE_PROVENANCES)}"
+            )
         return "pre-existing"
     if not isinstance(value, str) or value not in harness.EVIDENCE_PROVENANCES:
         raise ValueError(
@@ -452,7 +476,7 @@ class EvidenceEmitterPlugin:
             "started_at": self._started_at,
             "finished_at": finished_at,
             "duration_s": round(sum(s.duration_s for s in steps), 6),
-            "sign_off_actor": SIGN_OFF_ACTOR,
+            "sign_off_actor": sign_off_actor(entry.evidence_provenance),
             "ci_job_url": os.environ.get("CI_JOB_URL"),
             "build": self._build,
             "method": "automated",

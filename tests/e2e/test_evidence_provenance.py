@@ -1,9 +1,9 @@
 """Where a mapped entry's evidence came from (ENG-11524).
 
 ``scenario-evidence.v2`` distinguishes evidence that pre-dates the kit cycle
-from evidence authored within it, and the kit consumes that distinction --
-``scripts/sdk_reference.py`` surfaces it per method and
-``scripts/render_sign_off.py`` reads it.
+from evidence authored within it, and the ``capability-kit`` repo consumes that
+distinction -- its ``scripts/sdk_reference.py`` surfaces it per method and its
+``scripts/render_sign_off.py`` reads it. Neither lives in this repo.
 
 The capability map was built to harvest coverage that already existed, so
 ``pre-existing`` stays the default. But an entry may name a test written
@@ -103,4 +103,64 @@ def test_unknown_provenance_is_refused(pytester, evidence_out):
         map_yaml=MAP_ONE_ENTRY + "  evidence_provenance: invented-yesterday\n",
     )
     result.stderr.fnmatch_lines(["*evidence_provenance must be one of*"])
+    assert not evidence_out.exists()
+
+
+def test_sign_off_actor_agrees_with_the_records_provenance(pytester, evidence_out):
+    """The actor string must not contradict the field beside it.
+
+    ``sign_off_actor`` restates provenance in prose, and it was a hard-coded
+    literal reading "(pre-existing evidence)" while the record beside it said
+    ``cycle-authored``. Nothing downstream caught it: both forms validate.
+    """
+    pytester.makepyfile(test_mapped="def test_a():\n    pass\n")
+    result = _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        TEST_BUILD,
+        map_yaml=MAP_ONE_ENTRY + "  evidence_provenance: cycle-authored\n",
+    )
+    result.assert_outcomes(passed=1)
+
+    record = _records(evidence_out)[0]
+    harness.validate_evidence_record(record)
+    assert record["evidence_provenance"] == "cycle-authored"
+    assert record["sign_off_actor"] == "automated e2e suite (cycle-authored evidence)"
+
+
+def test_default_sign_off_actor_is_unchanged(pytester, evidence_out):
+    """Byte-identical to the literal every already-collected record carries.
+
+    Deriving the actor must not silently reword 22 records' worth of corpus.
+    """
+    pytester.makepyfile(test_mapped="def test_a():\n    pass\n")
+    result = _run_emitting(
+        pytester, evidence_out, "--emit-evidence", "--build", TEST_BUILD
+    )
+    result.assert_outcomes(passed=1)
+
+    record = _records(evidence_out)[0]
+    assert record["sign_off_actor"] == "automated e2e suite (pre-existing evidence)"
+
+
+def test_present_but_empty_provenance_is_refused(pytester, evidence_out):
+    """An empty declaration is a mistake, not an omission.
+
+    ``evidence_provenance:`` with no value parses to ``None`` exactly as an
+    absent key does. Defaulting it would stamp ``pre-existing`` on evidence
+    whose author was reaching for the field - the precise mislabelling this
+    field exists to prevent.
+    """
+    pytester.makepyfile(test_mapped="def test_a():\n    pass\n")
+    result = _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        TEST_BUILD,
+        map_yaml=MAP_ONE_ENTRY + "  evidence_provenance:\n",
+    )
+    result.stderr.fnmatch_lines(["*evidence_provenance is present but empty*"])
     assert not evidence_out.exists()

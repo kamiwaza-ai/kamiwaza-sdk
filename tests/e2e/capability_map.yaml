@@ -351,11 +351,13 @@
 # That last assertion is the only proof of the document's "deletion is soft"
 # guarantee — DELETE answers success and later reads 404 either way.
 #
-# The pattern names that one test rather than the module. The module's other
-# two tests are rejection assertions (invalid package -> 400, duplicate import
-# -> 409); under the per-test rule, running either alone must never be able to
-# emit a passing record for this capability. Naming the single test is stronger
-# than an exclude glob, which could rot unnoticed as siblings are added.
+# The pattern names that one test rather than the module. The module's three
+# other tests must not stand in for it: two are rejection assertions (invalid
+# package -> 400, duplicate import -> 409), and the third runs a skill's own
+# script, which is not this capability's claim. Under the per-test rule,
+# running any of them alone must never be able to emit a passing record here.
+# Naming the single test is stronger than an exclude glob, which could rot
+# unnoticed as siblings are added - as the count in this very comment did.
 #
 # The test carries requires_platform_store and skips as a unit when the store
 # settings are absent, so an unconfigured host emits nothing rather than a

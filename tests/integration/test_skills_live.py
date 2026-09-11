@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import subprocess
 import sys
 import tempfile
@@ -258,8 +259,13 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         if created is not None:
             try:
                 service.delete_skill(created.id)
-            except (APIError, NotFoundError):
-                pass
+            except APIError as exc:
+                # Cleanup failure must not mask the test's own verdict, but the
+                # workspace rule is that nothing is swallowed silently: a leaked
+                # skill explains a later duplicate-import conflict.
+                logging.getLogger(__name__).warning(
+                    "cleanup failed for skill %s: %s", created.id, exc
+                )
 
 
 def test_import_rejects_an_invalid_package(live_kamiwaza_client) -> None:
@@ -277,11 +283,19 @@ def test_import_rejects_an_invalid_package(live_kamiwaza_client) -> None:
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("not-a-skill/readme.txt", "no SKILL.md here\n")
 
-    with pytest.raises(APIError) as excinfo:
-        service.import_skill_package(
-            filename="invalid-skill.zip",
-            file_content=buffer.getvalue(),
-        )
+    try:
+        with pytest.raises(APIError) as excinfo:
+            service.import_skill_package(
+                filename="invalid-skill.zip",
+                file_content=buffer.getvalue(),
+            )
+    except pytest.fail.Exception:
+        # pytest.raises failed, so the platform ACCEPTED the bad package - the
+        # very defect this test guards. Clean up before reporting, or the
+        # orphan trips the duplicate-import test next.
+        for item in service.list_skills(q="not-a-skill", page_size=100).items:
+            service.delete_skill(item.id)
+        raise
 
     if excinfo.value.status_code == 403:
         pytest.skip("Skills mutation paths require operator/admin access")
@@ -289,7 +303,10 @@ def test_import_rejects_an_invalid_package(live_kamiwaza_client) -> None:
 
 
 def test_duplicate_import_conflicts(live_kamiwaza_client) -> None:
-    """Importing a name that is already live conflicts rather than overwriting.
+    """A second import of a name that is not soft-deleted conflicts.
+
+    "Live" here means the partial unique index's sense - `(tenant_id, name)
+    WHERE deleted_at IS NULL` - not "published". A draft conflicts too.
 
     Excluded from the capability mapping for the same reason as the invalid
     package case: a rejection assertion is not evidence the library works.
@@ -326,8 +343,13 @@ def test_duplicate_import_conflicts(live_kamiwaza_client) -> None:
         if created is not None:
             try:
                 service.delete_skill(created.id)
-            except (APIError, NotFoundError):
-                pass
+            except APIError as exc:
+                # Cleanup failure must not mask the test's own verdict, but the
+                # workspace rule is that nothing is swallowed silently: a leaked
+                # skill explains a later duplicate-import conflict.
+                logging.getLogger(__name__).warning(
+                    "cleanup failed for skill %s: %s", created.id, exc
+                )
 
 
 # --- ENG-11524: the skill itself, separately from the library -------------
@@ -409,9 +431,13 @@ payload with the sum of the values and prints `{marker}`.
 def test_exported_skill_package_executes_correctly(live_kamiwaza_client) -> None:
     """A skill survives the library byte-for-byte, and still works when run.
 
-    Deliberately unmapped - see the note above. The script is executed from the
-    bytes the library gave back, never from the local fixture: running the
-    fixture would test this module, not the round-trip.
+    Deliberately unmapped - see the note above.
+
+    The script is extracted from the bytes the library returned. The assertion
+    above already pins those bytes equal to what was uploaded, so this run does
+    not add round-trip coverage - that ordering is the point: the package is
+    known-identical to a fixture this module built, which is what makes
+    extracting it and running it under ``sys.executable`` safe.
     """
 
     service = live_kamiwaza_client.skills
@@ -476,5 +502,10 @@ def test_exported_skill_package_executes_correctly(live_kamiwaza_client) -> None
         if created is not None:
             try:
                 service.delete_skill(created.id)
-            except (APIError, NotFoundError):
-                pass
+            except APIError as exc:
+                # Cleanup failure must not mask the test's own verdict, but the
+                # workspace rule is that nothing is swallowed silently: a leaked
+                # skill explains a later duplicate-import conflict.
+                logging.getLogger(__name__).warning(
+                    "cleanup failed for skill %s: %s", created.id, exc
+                )

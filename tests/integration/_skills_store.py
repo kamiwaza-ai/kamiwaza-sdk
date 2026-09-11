@@ -7,8 +7,8 @@ The Skills Library persists an imported skill in **two** places:
 
 ``storage_path`` is deliberately not exposed by the API, so a test that only
 calls ``/skills`` cannot locate the artifact, and cannot distinguish the soft
-delete the capability document claims from a hard one — ``DELETE`` answers
-``204`` either way and subsequent reads 404 either way.
+delete the capability document claims from a hard one — ``DELETE`` reports
+success either way and subsequent reads 404 either way.
 
 This module supplies read-only access to both stores. It holds no knowledge of
 how the platform is deployed: the caller supplies a DSN and object-store
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import cache
 
 DSN_ENV = "KAMIWAZA_SKILLS_STORE_DSN"
 S3_ENDPOINT_ENV = "KAMIWAZA_SKILLS_STORE_S3_ENDPOINT_URL"
@@ -43,12 +44,10 @@ class SkillRow:
     """The persisted record, as the database actually holds it."""
 
     id: str
-    tenant_id: str
     name: str
     status: str
     storage_path: str
     content_checksum: str
-    created_by: str
     deleted_at: object | None
 
     @property
@@ -115,31 +114,38 @@ def fetch_skill_row(config: StoreConfig, skill_id: str) -> SkillRow | None:
     import psycopg
 
     query = """
-        SELECT id, tenant_id, name, status, storage_path,
-               content_checksum, created_by, deleted_at
+        SELECT id, name, status, storage_path, content_checksum, deleted_at
         FROM skill_library
         WHERE id = %s
     """
-    with psycopg.connect(config.dsn) as conn, conn.cursor() as cur:
+    # libpq waits indefinitely by default, so a port-forward that died mid-run
+    # would hang the live lane rather than failing it.
+    with (
+        psycopg.connect(config.dsn, connect_timeout=10) as conn,
+        conn.cursor() as cur,
+    ):
         cur.execute(query, (skill_id,))
         record = cur.fetchone()
 
     if record is None:
         return None
 
+    # Coerced, not merely annotated: the driver decides what a column comes
+    # back as, and an unenforced ``: str`` is a claim rather than a guarantee.
     return SkillRow(
         id=str(record[0]),
-        tenant_id=record[1],
-        name=record[2],
-        status=record[3],
-        storage_path=record[4],
-        content_checksum=record[5],
-        created_by=record[6],
-        deleted_at=record[7],
+        name=str(record[1]),
+        status=str(record[2]),
+        storage_path=str(record[3]),
+        content_checksum=str(record[4]),
+        deleted_at=record[5],
     )
 
 
+@cache
 def _s3_client(config: StoreConfig):
+    """One client per configuration — the two readers below share it."""
+
     import boto3  # type: ignore[import-untyped]  # no stubs; dev-group dep
 
     return boto3.client(

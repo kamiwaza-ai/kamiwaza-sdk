@@ -5,8 +5,8 @@ without a build identity (and without a parseable map); explicit-map-only
 matching with ``exclude`` carve-outs (unmapped, excluded, and unrun tests
 emit nothing); one conforming, schema-validated ``scenario-evidence.v2``
 record per map entry whose tests ran, with harness ``derive_status``
-composition (all passed →
-passed, skips → passed_with_notes, any failure → failed).
+composition (all passed → passed, skips → passed_with_notes, any failure →
+failed).
 
 Also pins the three rules that stop a partial run from claiming evidence:
 an incomplete test contributes no step, an aborted session writes nothing,
