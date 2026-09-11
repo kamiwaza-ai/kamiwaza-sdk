@@ -6,6 +6,7 @@ from copy import deepcopy
 
 import pytest
 
+from kamiwaza_extensions.commands.dev import _build_patch_service_specs
 from kamiwaza_extensions.compose_transformer import ComposeTransformer
 from kamiwaza_extensions.connections import ConnectionInfo
 from kamiwaza_extensions.payload_builder import (
@@ -1614,6 +1615,12 @@ class TestServiceOverrides:
 
         payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
 
+        controller_env = {entry["name"]: entry for entry in payload.services[0].env}
+        assert controller_env["SANDBOX_HOST_IP"] == {
+            "name": "SANDBOX_HOST_IP",
+            "valueFrom": {"fieldRef": {"fieldPath": "status.hostIP"}},
+        }
+
         assert (payload.model_extra or {})["sandbox"] == {
             "enabled": True,
             "service_name": "sandbox-controller",
@@ -2186,3 +2193,108 @@ class TestHealthCheckOverride:
             "path": "/sse",
             "port": 8000,
         }
+
+
+@pytest.mark.parametrize(
+    "host_env",
+    [
+        [],
+        [{"name": "SANDBOX_HOST_IP"}],
+        [{"name": "SANDBOX_HOST_IP", "value": ""}],
+        [{"name": "SANDBOX_HOST_IP", "value": "   "}],
+    ],
+    ids=["missing", "unset", "empty", "whitespace"],
+)
+def test_kubernetes_host_ip_is_in_serialized_service_payload(
+    builder, metadata, connection, host_env
+):
+    transformed = {
+        "services": {
+            "sandbox-controller": {
+                "image": "registry.test/controller:dev",
+                "environment": [
+                    {"name": "SANDBOX_BACKEND", "value": "kubernetes"},
+                    *host_env,
+                ],
+            },
+            "frontend": {"image": "registry.test/frontend:dev"},
+        }
+    }
+    original = deepcopy(transformed)
+    payload = builder.build(metadata, transformed, connection, "sandbox-test")
+    services = {svc["name"]: svc for svc in payload.model_dump(mode="json")["services"]}
+    entries = [
+        entry
+        for entry in services["sandbox-controller"]["env"]
+        if entry["name"] == "SANDBOX_HOST_IP"
+    ]
+    assert entries == [
+        {
+            "name": "SANDBOX_HOST_IP",
+            "valueFrom": {"fieldRef": {"fieldPath": "status.hostIP"}},
+        }
+    ]
+    assert all(
+        entry["name"] != "SANDBOX_HOST_IP" for entry in services["frontend"]["env"]
+    )
+    patch_services = _build_patch_service_specs(
+        payload, service_filter="sandbox-controller"
+    )
+    patch_env = patch_services[0].model_dump(mode="json")["env"]
+    assert [
+        entry for entry in patch_env if entry["name"] == "SANDBOX_HOST_IP"
+    ] == entries
+    assert transformed == original
+
+
+@pytest.mark.parametrize(
+    "host_entry",
+    [
+        {"name": "SANDBOX_HOST_IP", "value": "10.0.0.5"},
+        {
+            "name": "SANDBOX_HOST_IP",
+            "valueFrom": {"secretKeyRef": {"name": "host-config", "key": "ip"}},
+        },
+        {
+            "name": "SANDBOX_HOST_IP",
+            "valueFrom": {"fieldRef": {"fieldPath": "status.hostIP"}},
+        },
+    ],
+)
+def test_kubernetes_host_ip_preserves_explicit_configuration(
+    builder, metadata, connection, host_entry
+):
+    transformed = {
+        "services": {
+            "controller": {
+                "image": "registry.test/controller:dev",
+                "environment": [
+                    {"name": "SANDBOX_BACKEND", "value": "kubernetes"},
+                    host_entry,
+                ],
+            }
+        }
+    }
+    payload = builder.build(metadata, transformed, connection, "sandbox-test")
+    entries = [
+        entry for entry in payload.services[0].env if entry["name"] == "SANDBOX_HOST_IP"
+    ]
+    assert entries == [host_entry]
+
+
+@pytest.mark.parametrize(
+    "environment", [{}, {"SANDBOX_BACKEND": "docker"}, {"SANDBOX_BACKEND": ""}]
+)
+def test_non_kubernetes_services_do_not_gain_host_ip(
+    builder, metadata, connection, environment
+):
+    transformed = {
+        "services": {
+            "sandbox-controller": {
+                "image": "registry.test/controller:dev",
+                "environment": environment,
+            }
+        }
+    }
+    payload = builder.build(metadata, transformed, connection, "sandbox-test")
+    assert all(entry["name"] != "SANDBOX_HOST_IP" for entry in payload.services[0].env)
