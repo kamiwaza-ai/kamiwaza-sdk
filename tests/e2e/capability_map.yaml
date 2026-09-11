@@ -363,6 +363,14 @@
 # settings are absent, so an unconfigured host emits nothing rather than a
 # passed_with_notes record claiming the store was verified. The lifecycle and
 # store assertions are fused into one test for exactly that reason.
+#
+# When re-emitting this record, annotate --build with the SDK revision as well
+# as the platform's: `...; kamiwaza-sdk <ref>@<sha>`, which is what 24 of the
+# corpus's records already do. Without it the record names only the platform,
+# and nothing in it can show that the assertions cited by the capability
+# document were the ones that actually ran - a record collected before a test
+# is strengthened proves something weaker than the document then claims, and
+# only wall-clock comparison across two repos catches it.
 # This entry is cycle-authored, not harvested: the store verification it
 # relies on was written for ENG-11524 to evidence this capability. The
 # pre-existing module covered the API lifecycle only, and never read either
