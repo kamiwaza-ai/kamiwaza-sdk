@@ -314,9 +314,14 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
             str(item.id)
             for item in service.list_skills(q=skill_name, page_size=100).items
         }
-        with pytest.raises(APIError):
+        # NotFoundError, not the base APIError: the guarantee is that the skill
+        # is ABSENT, and a 403 or a 500 from these routes is not absence. The
+        # SDK translates only 404 to NotFoundError, so this is the difference
+        # between "the read failed" and "the read said it is gone" - and the
+        # get_skill check three lines up was already this precise.
+        with pytest.raises(NotFoundError):
             service.export_skill_package(deleted_id)
-        with pytest.raises(APIError):
+        with pytest.raises(NotFoundError):
             service.download_skill_package(deleted_id)
         # "Deleting an already-deleted skill succeeds rather than 404ing" is a
         # stated guarantee with no other coverage.
