@@ -490,8 +490,8 @@ def _assert_emitted_tls_policy(payload, verify_ssl):
 
 
 class TestVerifySslPropagation:
-    """The deployed extension's ``tlsRejectUnauthorized`` must reflect
-    the developer's intent. Three independent inputs collapse here via
+    """Each service's emitted TLS policy must reflect the developer's intent.
+    Three independent inputs collapse here via
     ``ConnectionInfo.effective_verify_ssl``:
     1. ``KAMIWAZA_VERIFY_SSL`` env var (per-session override)
     2. URL hostname (dev TLDs auto-disable)

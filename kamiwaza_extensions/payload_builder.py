@@ -146,7 +146,7 @@ class PayloadBuilder:
         )
         # ``effective_verify_ssl`` centralizes the SSL precedence:
         # KAMIWAZA_VERIFY_SSL env var > dev-TLD auto-disable > persisted
-        # connection.verify_ssl. Drives both the per-service env
+        # connection.verify_ssl. Drives the per-service env
         # injection (``_build_services``) so in-cluster callbacks match
         # the developer's intent. The legacy integration attribute is
         # retained for external Python callers but never serialized into a request.

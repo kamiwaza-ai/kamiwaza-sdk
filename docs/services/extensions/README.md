@@ -55,8 +55,10 @@ Create a new extension from a specification.
 TLS verification is configured in each service's environment through
 `KAMIWAZA_VERIFY_SSL` and `KAMIWAZA_TLS_REJECT_UNAUTHORIZED`. The extension CLI
 sets both on every service from the selected connection and its TLS override,
-replacing conflicting Compose values on creation and redeployment. These are
-Kamiwaza-specific settings; they do not configure arbitrary third-party TLS
+replacing conflicting Compose values in the generated payload. A full redeploy
+updates every service. With `kz-ext dev --service X`, only the selected service
+is updated; run a full redeploy when changing TLS policy for the whole extension.
+These are Kamiwaza-specific settings; they do not configure arbitrary third-party TLS
 clients.
 
 The legacy

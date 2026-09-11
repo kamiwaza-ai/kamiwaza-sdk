@@ -1,5 +1,6 @@
 """Exercise TLS and callback contracts at the SDK HTTP serialization boundary."""
 
+import json
 from copy import deepcopy
 from unittest.mock import Mock
 
@@ -17,7 +18,12 @@ from kamiwaza_extensions.payload_builder import (
 from kamiwaza_sdk.schemas.extensions import PatchExtension
 from kamiwaza_sdk.services.extensions import ExtensionService
 
-pytestmark = [pytest.mark.unit, pytest.mark.extension_regression]
+pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def clear_tls_override(monkeypatch):
+    monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
 
 
 @pytest.fixture(params=[False, True], ids=["insecure", "strict"])
@@ -57,7 +63,7 @@ def _build_payload(compose, name="extension"):
     return PayloadBuilder().build({"version": "1.0.0"}, compose, connection, name)
 
 
-def _http_body(payload, operation):
+def _http_body(payload, operation, service_filter=None):
     client = Mock()
     response = {"name": payload.name, "type": "app", "version": "1.0.0"}
     client.post.return_value = response
@@ -67,9 +73,8 @@ def _http_body(payload, operation):
         service.create_extension(payload)
         client.post.assert_called_once()
         return client.post.call_args.kwargs["json"]
-    patch = PatchExtension(
-        **_build_patch_kwargs(_build_patch_service_specs(payload), payload)
-    )
+    services = _build_patch_service_specs(payload, service_filter=service_filter)
+    patch = PatchExtension(**_build_patch_kwargs(services, payload))
     service.patch_extension(payload.name, patch)
     client.patch.assert_called_once()
     return client.patch.call_args.kwargs["json"]
@@ -113,8 +118,6 @@ def test_tls_policy_replaces_conflicts_in_every_http_service(
 def test_self_callback_reaches_http_body_without_mutating_source(
     compose, environment, operation
 ):
-    import json
-
     compose["services"]["backend"]["environment"] = environment
     original = deepcopy(compose)
     for name in ("first-deployment", "second-deployment"):
@@ -128,3 +131,22 @@ def test_self_callback_reaches_http_body_without_mutating_source(
             "to": expected,
         }
         assert compose == original
+
+
+def test_filtered_patch_refreshes_only_selected_service(compose, monkeypatch):
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+    initial = _http_body(_build_payload(compose), "create")
+    assert all(
+        {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"} in service["env"]
+        for service in initial["services"]
+    )
+
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
+    body = _http_body(_build_payload(compose), "patch", service_filter="backend")
+
+    # Siblings receive no PATCH entry: a full redeploy is needed to refresh them.
+    assert [service["name"] for service in body["services"]] == ["backend"]
+    env = body["services"][0]["env"]
+    assert {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"} in env
+    assert {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"} in env
+    assert "tls_reject_unauthorized" not in body["kamiwaza"]
