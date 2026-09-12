@@ -7,7 +7,10 @@ import pytest
 from kamiwaza_sdk.exceptions import APIError
 
 
-EMBEDDING_REPO = "sentence-transformers/all-MiniLM-L6-v2"
+# This is the owner-curated GGUF entry seeded on the AMD qualification host.
+# The upstream sentence-transformers repository resolves to an imported model
+# and therefore cannot satisfy the closed owner recipe catalog.
+EMBEDDING_REPO = "sudomoniker/all-MiniLM-L6-v2-Q8_0-GGUF"
 EMBEDDING_QUANTIZATION = "q8_0"
 
 
