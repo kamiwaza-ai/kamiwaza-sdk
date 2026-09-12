@@ -4,7 +4,7 @@ import re
 from decimal import Decimal, InvalidOperation, localcontext
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator, model_validator
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Union
 from datetime import datetime
 from uuid import UUID
 
@@ -89,6 +89,60 @@ class CpuInferenceRequest(BaseModel):
             raise ValueError("schemaVersion must be 1")
         return value
 
+
+class AcceleratorMemoryRequirement(BaseModel):
+    """Minimum accelerator memory for an owner-qualified allocation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    minimum: StrictStr = Field(min_length=1, max_length=128)
+
+    @field_validator("minimum")
+    @classmethod
+    def _valid_memory_quantity(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?(?:Mi|Gi)", value):
+            raise ValueError("minimum must use a positive Mi or Gi quantity")
+        number, unit = value[:-2], value[-2:]
+        with localcontext() as context:
+            context.prec = 256
+            amount = Decimal(number) * (1024 ** (2 if unit == "Mi" else 3))
+        if amount <= 0 or amount > 2**63 - 1 or amount != amount.to_integral_value():
+            raise ValueError("minimum must fit a positive signed 64-bit integer")
+        return value
+
+
+class AcceleratorResourceRequest(BaseModel):
+    """Logical accelerator intent resolved by the cluster owner profile."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    capability: Literal["gpu"]
+    count: StrictInt = Field(default=1, ge=1, le=1)
+    memory: AcceleratorMemoryRequirement
+    isolation: Literal["any-qualified"]
+    profile: Optional[StrictStr] = Field(default=None, min_length=1, max_length=128)
+
+
+class AcceleratorInferenceRequest(BaseModel):
+    """Versioned provider-neutral request for one accelerator unit."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    schema_version: StrictInt = Field(alias="schemaVersion")
+    accelerator: AcceleratorResourceRequest
+    runtime: CpuRuntimeSelection
+    alternatives: List[CpuInferenceRequest] = Field(default_factory=list, max_length=8)
+
+    @field_validator("schema_version")
+    @classmethod
+    def _schema_v1(cls, value: int) -> int:
+        if value != 1:
+            raise ValueError("schemaVersion must be 1")
+        return value
+
+
+InferenceResourceRequest = Union[CpuInferenceRequest, AcceleratorInferenceRequest]
+
 class CreateModelDeployment(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -108,7 +162,7 @@ class CreateModelDeployment(BaseModel):
     max_concurrent_requests: Optional[int] = Field(default=None, description="Maximum number of concurrent requests allowed")
     vram_allocation: Optional[float] = Field(default=None, description="The VRAM allocation, in bytes of vram for each copy of the deployed model")
     gpu_allocation: Optional[float] = Field(default=None, description="The GPU allocation, as a percentage of the total VRAM available")
-    inference_resources: Optional[CpuInferenceRequest] = Field(
+    inference_resources: Optional[InferenceResourceRequest] = Field(
         default=None,
         alias="inferenceResources",
         description="Explicit CPU resources for restricted tenant inference.",
