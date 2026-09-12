@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from kamiwaza_sdk.exceptions import APIError
-from model_targets import GGUF_LLM_TARGET
+
+
+EMBEDDING_REPO = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_QUANTIZATION = "q8_0"
 
 
 pytestmark = [
@@ -23,8 +26,8 @@ def test_explicit_amd_accelerator_request_uses_owner_profile(
     try:
         model = ensure_repo_ready(
             client,
-            GGUF_LLM_TARGET.repo_id,
-            quantization=GGUF_LLM_TARGET.quantization,
+            EMBEDDING_REPO,
+            quantization=EMBEDDING_QUANTIZATION,
         )
     except (TimeoutError, RuntimeError, ValueError) as exc:
         pytest.skip(f"AMD model preparation unavailable: {type(exc).__name__}: {exc}")
@@ -43,7 +46,7 @@ def test_explicit_amd_accelerator_request_uses_owner_profile(
             deployment_id = client.serving.deploy_model(
                 model_id=str(model.id),
                 m_config_id=config.id,
-                m_file_id=target_model_file_id(model, GGUF_LLM_TARGET.quantization),
+                m_file_id=target_model_file_id(model, EMBEDDING_QUANTIZATION),
                 engine_name="llamacpp",
                 inferenceResources={
                     "schemaVersion": 1,
