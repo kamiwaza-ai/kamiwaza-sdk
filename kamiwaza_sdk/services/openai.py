@@ -1,5 +1,6 @@
 # kamiwaza_sdk/services/openai.py    
 
+import time
 from typing import Optional
 from uuid import UUID
 import httpx
@@ -8,6 +9,43 @@ from .base_service import BaseService
 from ..exceptions import APIError, AuthenticationError
 
 class OpenAIService(BaseService):
+    _ACTIVE_DEPLOYMENT_RECOVERY_ATTEMPTS = 12
+    _ACTIVE_DEPLOYMENT_RECOVERY_DELAY_SECONDS = 1.0
+    _NATIVE_HEALTH_RECOVERY_CODES = frozenset({
+        "NATIVE_CPU_HEALTH_UNVERIFIED",
+        "NATIVE_GPU_HEALTH_UNVERIFIED",
+    })
+
+    @classmethod
+    def _is_native_recovery_candidate(cls, deployment: object) -> bool:
+        status = str(getattr(deployment, "status", "")).upper()
+        if status == "INITIALIZING":
+            return True
+        return (
+            status in {"ERROR", "FAILED"}
+            and getattr(deployment, "last_error_code", None)
+            in cls._NATIVE_HEALTH_RECOVERY_CODES
+        )
+
+    def _find_active_deployment(self, deployment_id: UUID, initial_active):
+        """Allow the server's bounded native Pod recovery window to settle."""
+        current = self.client.serving.get_deployment(deployment_id)
+        if not self._is_native_recovery_candidate(current):
+            return None
+        active = initial_active
+        for attempt in range(self._ACTIVE_DEPLOYMENT_RECOVERY_ATTEMPTS):
+            deployment = next(
+                (item for item in active if str(item.id) == str(deployment_id)),
+                None,
+            )
+            if deployment is not None:
+                return deployment
+            if attempt + 1 == self._ACTIVE_DEPLOYMENT_RECOVERY_ATTEMPTS:
+                break
+            time.sleep(self._ACTIVE_DEPLOYMENT_RECOVERY_DELAY_SECONDS)
+            active = self.client.serving.list_active_deployments()
+        return None
+
     def get_client(
         self,
         model: Optional[str] = None,
@@ -40,6 +78,13 @@ class OpenAIService(BaseService):
                     (d for d in deployments if str(d.id) == str(deployment_id)),
                     None
                 )
+                if deployment is None:
+                    try:
+                        deployment = self._find_active_deployment(
+                            deployment_id, deployments
+                        )
+                    except APIError:
+                        deployment = None
             elif model:
                 deployment = next(
                     (d for d in deployments if d.m_name == model),
