@@ -8,6 +8,7 @@ import pytest
 from kamiwaza_sdk.exceptions import APIError, DeploymentFailedError
 from kamiwaza_sdk.schemas.serving.serving import (
     ContainerLogResponse,
+    CreateModelDeployment,
     UIModelDeployment,
 )
 from kamiwaza_sdk.services.serving import (
@@ -51,6 +52,68 @@ def test_deploy_model_builds_payload_with_repo_lookup(dummy_client):
     assert payload["json"]["m_config_id"] == str(config_id)
 
 
+def test_create_model_deployment_round_trips_tenant_cpu_resources():
+    request = CreateModelDeployment.model_validate(
+        {
+            "m_id": uuid4(),
+            "m_config_id": uuid4(),
+            "inferenceResources": {
+                "schemaVersion": 1,
+                "cpu": {
+                    "architecture": "arm64",
+                    "requests": {"cpu": "500m", "memory": "2Gi"},
+                },
+                "runtime": {"selection": "automatic"},
+            },
+        }
+    )
+    payload = request.model_dump(by_alias=True, exclude_none=True)
+    assert payload["inferenceResources"]["schemaVersion"] == 1
+    assert payload["inferenceResources"]["cpu"]["requests"] == {
+        "cpu": "500m", "memory": "2Gi"
+    }
+
+
+@pytest.mark.parametrize("cpu,memory", [
+    ("", "2Gi"), ("500x", "2Gi"), ("0", "2Gi"), ("500m", "2G"),
+    ("1.000000000000000000000000000000000000001", "2Gi"),
+    ("500m", "1.000000000000000000000000000000000000001Gi"),
+])
+def test_create_model_deployment_rejects_invalid_cpu_quantities(cpu, memory):
+    with pytest.raises(ValueError):
+        CreateModelDeployment.model_validate({
+            "m_id": uuid4(), "m_config_id": uuid4(), "inferenceResources": {
+                "schemaVersion": 1, "cpu": {"architecture": "arm64", "requests": {"cpu": cpu, "memory": memory}},
+                "runtime": {"selection": "automatic"},
+            },
+        })
+
+
+def test_create_model_deployment_rejects_inference_resource_alias_collision():
+    request = {
+        "m_id": uuid4(), "m_config_id": uuid4(),
+        "inferenceResources": None, "inference_resources": None,
+    }
+    with pytest.raises(ValueError, match="may not both"):
+        CreateModelDeployment.model_validate(request)
+
+
+def test_deploy_model_sends_canonical_inference_resource_aliases(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect("POST", "/serving/deploy_model", str(deployment_id))
+    service = ServingService(mock_client)
+    service.deploy_model(
+        model_id=uuid4(), m_config_id=uuid4(), wait=False,
+        inferenceResources={
+            "schemaVersion": 1,
+            "cpu": {"architecture": "arm64", "requests": {"cpu": "500m", "memory": "2Gi"}},
+            "runtime": {"selection": "automatic"},
+        },
+    )
+    payload = mock_client.calls[0][2]["json"]
+    assert "inferenceResources" in payload
+    assert "schemaVersion" in payload["inferenceResources"]
+    assert "inference_resources" not in payload
 def _active_deployment_payload(
     deployment_id: UUID,
     *,

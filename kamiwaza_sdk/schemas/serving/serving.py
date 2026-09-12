@@ -1,11 +1,151 @@
 # kamiwaza_sdk/schemas/serving/serving.py
 
-from pydantic import BaseModel, Field
-from typing import Dict, List, Optional
+import re
+from decimal import Decimal, InvalidOperation, localcontext
+
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator, model_validator
+from typing import Dict, List, Literal, Optional, Union
 from datetime import datetime
 from uuid import UUID
 
+
+class CpuResourceQuantities(BaseModel):
+    """Explicit Kubernetes CPU request quantities for tenant inference."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    cpu: StrictStr = Field(min_length=1, max_length=128)
+    memory: StrictStr = Field(min_length=1, max_length=128)
+
+    @field_validator("cpu")
+    @classmethod
+    def _valid_cpu_quantity(cls, value: str) -> str:
+        match = re.fullmatch(
+            r"([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))([numkMGTPE]|[eE][+-]?[0-9]+)?",
+            value,
+        )
+        if match is None:
+            raise ValueError("cpu must be a Kubernetes decimal quantity")
+        try:
+            number, suffix = match.groups()
+            exponent = {None: 0, "n": -9, "u": -6, "m": -3, "k": 3, "M": 6, "G": 9, "T": 12, "P": 15, "E": 18}.get(suffix)
+            exponent = int(suffix[1:]) if exponent is None else exponent
+            with localcontext() as context:
+                context.prec = 256
+                amount = Decimal(number) * (Decimal(10) ** (exponent + 3))
+        except (InvalidOperation, ValueError, OverflowError) as exc:
+            raise ValueError("cpu exceeds the supported quantity range") from exc
+        if amount <= 0 or amount > 2**63 - 1 or amount != amount.to_integral_value():
+            raise ValueError("cpu must fit a positive signed 64-bit integer")
+        return value
+
+    @field_validator("memory")
+    @classmethod
+    def _valid_memory_quantity(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?(?:Mi|Gi)", value):
+            raise ValueError("memory must use a positive Mi or Gi quantity")
+        number, unit = value[:-2], value[-2:]
+        with localcontext() as context:
+            context.prec = 256
+            amount = Decimal(number) * (1024 ** (2 if unit == "Mi" else 3))
+        if amount <= 0 or amount > 2**63 - 1 or amount != amount.to_integral_value():
+            raise ValueError("memory must fit a positive signed 64-bit integer")
+        return value
+
+
+class CpuResourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    architecture: StrictStr = Field(min_length=1)
+    requests: CpuResourceQuantities
+
+    @field_validator("architecture")
+    @classmethod
+    def _no_whitespace_architecture(cls, value: str) -> str:
+        if not value.strip() or any(char.isspace() for char in value):
+            raise ValueError("architecture must be a non-empty identifier")
+        return value
+
+
+class CpuRuntimeSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    selection: Literal["automatic"]
+
+
+class CpuInferenceRequest(BaseModel):
+    """Provider-neutral CPU request accepted by the restricted tenant path."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    schema_version: StrictInt = Field(alias="schemaVersion")
+    cpu: CpuResourceRequest
+    runtime: CpuRuntimeSelection
+
+    @field_validator("schema_version")
+    @classmethod
+    def _schema_v1(cls, value: int) -> int:
+        if value != 1:
+            raise ValueError("schemaVersion must be 1")
+        return value
+
+
+class AcceleratorMemoryRequirement(BaseModel):
+    """Minimum accelerator memory for an owner-qualified allocation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    minimum: StrictStr = Field(min_length=1, max_length=128)
+
+    @field_validator("minimum")
+    @classmethod
+    def _valid_memory_quantity(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?(?:Mi|Gi)", value):
+            raise ValueError("minimum must use a positive Mi or Gi quantity")
+        number, unit = value[:-2], value[-2:]
+        with localcontext() as context:
+            context.prec = 256
+            amount = Decimal(number) * (1024 ** (2 if unit == "Mi" else 3))
+        if amount <= 0 or amount > 2**63 - 1 or amount != amount.to_integral_value():
+            raise ValueError("minimum must fit a positive signed 64-bit integer")
+        return value
+
+
+class AcceleratorResourceRequest(BaseModel):
+    """Logical accelerator intent resolved by the cluster owner profile."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    capability: Literal["gpu"]
+    count: StrictInt = Field(default=1, ge=1, le=1)
+    memory: AcceleratorMemoryRequirement
+    isolation: Literal["any-qualified"]
+    profile: Optional[StrictStr] = Field(default=None, min_length=1, max_length=128)
+
+
+class AcceleratorInferenceRequest(BaseModel):
+    """Versioned provider-neutral request for one accelerator unit."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    schema_version: StrictInt = Field(alias="schemaVersion")
+    accelerator: AcceleratorResourceRequest
+    runtime: CpuRuntimeSelection
+    alternatives: List[CpuInferenceRequest] = Field(default_factory=list, max_length=8)
+
+    @field_validator("schema_version")
+    @classmethod
+    def _schema_v1(cls, value: int) -> int:
+        if value != 1:
+            raise ValueError("schemaVersion must be 1")
+        return value
+
+
+InferenceResourceRequest = Union[CpuInferenceRequest, AcceleratorInferenceRequest]
+
 class CreateModelDeployment(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     m_id: UUID = Field(description="The UUID of the model to deploy")
     m_file_id: Optional[UUID] = Field(default=None, description="Which weights file to use for models with >1 set of weights")
     m_config_id: UUID = Field(description="The UUID of the ModelConfig to use for this deployment")
@@ -22,6 +162,18 @@ class CreateModelDeployment(BaseModel):
     max_concurrent_requests: Optional[int] = Field(default=None, description="Maximum number of concurrent requests allowed")
     vram_allocation: Optional[float] = Field(default=None, description="The VRAM allocation, in bytes of vram for each copy of the deployed model")
     gpu_allocation: Optional[float] = Field(default=None, description="The GPU allocation, as a percentage of the total VRAM available")
+    inference_resources: Optional[InferenceResourceRequest] = Field(
+        default=None,
+        alias="inferenceResources",
+        description="Explicit CPU resources for restricted tenant inference.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_resource_alias_collision(cls, value):
+        if isinstance(value, dict) and "inferenceResources" in value and "inference_resources" in value:
+            raise ValueError("inferenceResources and inference_resources may not both be supplied")
+        return value
 
     def __str__(self):
         return (
