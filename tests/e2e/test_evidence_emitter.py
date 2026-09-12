@@ -4,9 +4,9 @@ Pins the plugin contract: no behavior without ``--emit-evidence``; refusal
 without a build identity (and without a parseable map); explicit-map-only
 matching with ``exclude`` carve-outs (unmapped, excluded, and unrun tests
 emit nothing); one conforming, schema-validated ``scenario-evidence.v2``
-record per map entry whose tests ran, with ``evidence_provenance:
-"pre-existing"`` and harness ``derive_status`` composition (all passed →
-passed, skips → passed_with_notes, any failure → failed).
+record per map entry whose tests ran, with harness ``derive_status``
+composition (all passed → passed, skips → passed_with_notes, any failure →
+failed).
 
 Also pins the three rules that stop a partial run from claiming evidence:
 an incomplete test contributes no step, an aborted session writes nothing,
@@ -18,7 +18,8 @@ semantics are pinned by direct unit tests.
 
 Guards on the *shipped* ``capability_map.yaml`` — that its patterns and
 ``exclude`` globs still match real collected nodeids — live next door in
-``test_capability_map.py``.
+``test_capability_map.py``, and an entry's ``evidence_provenance`` is pinned
+in ``test_evidence_provenance.py``.
 """
 
 from __future__ import annotations
