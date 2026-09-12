@@ -46,6 +46,37 @@ class OpenAIService(BaseService):
             active = self.client.serving.list_active_deployments()
         return None
 
+    def _resolve_deployment(
+        self, deployments, *, model, deployment_id, repo_id
+    ):
+        if deployment_id:
+            deployment = next(
+                (item for item in deployments if str(item.id) == str(deployment_id)),
+                None,
+            )
+            if deployment is None:
+                try:
+                    deployment = self._find_active_deployment(
+                        deployment_id, deployments
+                    )
+                except APIError:
+                    return None
+            return deployment
+        if model:
+            return next(
+                (item for item in deployments if item.m_name == model),
+                None,
+            )
+        if repo_id:
+            model_obj = self.client.models.get_model_by_repo_id(repo_id)
+            if not model_obj:
+                raise ValueError(f"No model found with repo ID: {repo_id}")
+            return next(
+                (item for item in deployments if str(item.m_id) == str(model_obj.id)),
+                None,
+            )
+        raise ValueError("Must specify either model, deployment_id, repo_id, or endpoint")
+
     def get_client(
         self,
         model: Optional[str] = None,
@@ -72,38 +103,12 @@ class OpenAIService(BaseService):
             base_url = endpoint
         else:
             deployments = self.client.serving.list_active_deployments()
-            
-            if deployment_id:
-                deployment = next(
-                    (d for d in deployments if str(d.id) == str(deployment_id)),
-                    None
-                )
-                if deployment is None:
-                    try:
-                        deployment = self._find_active_deployment(
-                            deployment_id, deployments
-                        )
-                    except APIError:
-                        deployment = None
-            elif model:
-                deployment = next(
-                    (d for d in deployments if d.m_name == model),
-                    None
-                )
-            elif repo_id:
-                # First, get the model ID for the repo ID
-                model_obj = self.client.models.get_model_by_repo_id(repo_id)
-                if not model_obj:
-                    raise ValueError(f"No model found with repo ID: {repo_id}")
-                
-                # Then find deployments for this model
-                deployment = next(
-                    (d for d in deployments if str(d.m_id) == str(model_obj.id)),
-                    None
-                )
-            else:
-                raise ValueError("Must specify either model, deployment_id, repo_id, or endpoint")
-                
+            deployment = self._resolve_deployment(
+                deployments,
+                model=model,
+                deployment_id=deployment_id,
+                repo_id=repo_id,
+            )
             if not deployment:
                 identifier_type = 'model' if model else 'repo_id' if repo_id else 'deployment_id'
                 identifier_value = model or repo_id or deployment_id
