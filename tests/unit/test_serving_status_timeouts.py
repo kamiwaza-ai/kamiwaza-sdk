@@ -40,6 +40,22 @@ def test_get_deployment_status_bounds_transport_timeout(mock_client):
     )
 
 
+def test_get_deployment_forwards_explicit_transport_timeout(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        _deployment_payload(deployment_id, "DEPLOYED"),
+    )
+
+    deployment = ServingService(mock_client).get_deployment(
+        deployment_id, timeout_seconds=7.5
+    )
+
+    assert deployment.id == deployment_id
+    assert mock_client.calls[0][2]["timeout"] == 7.5
+
+
 class _StatusService:
     def __init__(self) -> None:
         self.timeouts: list[float | None] = []
