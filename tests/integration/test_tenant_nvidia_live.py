@@ -139,8 +139,11 @@ def qualify(
         assert ready.status == "DEPLOYED", "deployment did not reach DEPLOYED"
         assert ready.instances, "deployment reported no instances"
         actual = client.serving.get_deployment(deployment_id).inference_resources
-        assert (
-            actual == target.inference_resources
+        assert actual is not None, "inference resource readback missing"
+        assert actual.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        ) == target.inference_resources.model_dump(
+            mode="json", by_alias=True, exclude_none=True
         ), "inference resource readback changed"
         record("owner_profile", profile)
         invoke_twice(client, deployment_id)
