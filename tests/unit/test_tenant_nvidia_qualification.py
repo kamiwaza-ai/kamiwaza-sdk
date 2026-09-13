@@ -93,6 +93,7 @@ def test_missing_owner_selection_fails(lane, field):
     ("field", "value"),
     [
         ("engine_name", "vllm"),
+        ("force_cpu", True),
         ("inferenceResources", {"schemaVersion": 1, "alternatives": []}),
     ],
 )
@@ -186,10 +187,24 @@ def test_stop_residue_reaches_bounded_failure(lane, client, monkeypatch):
 
 def test_configured_lane_converts_client_skip_to_failure(lane, monkeypatch):
     monkeypatch.setenv("KAMIWAZA_TENANT_NVIDIA_REQUEST", json.dumps(REQUEST))
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
     request = Mock()
     request.getfixturevalue.side_effect = pytest.skip.Exception("missing auth")
     with pytest.raises(pytest.fail.Exception, match="configured NVIDIA"):
         lane.test_explicit_nvidia_owner_lifecycle(request, Mock())
+
+
+@pytest.mark.parametrize("value", [None, "false", "0"])
+def test_configured_lane_requires_verified_tls(lane, client, monkeypatch, value):
+    monkeypatch.setenv("KAMIWAZA_TENANT_NVIDIA_REQUEST", json.dumps(REQUEST))
+    if value is None:
+        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+    else:
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", value)
+    with pytest.raises(AssertionError, match="TLS"):
+        lane.test_explicit_nvidia_owner_lifecycle(
+            Mock(getfixturevalue=lambda _: client), Mock()
+        )
 
 
 @pytest.mark.parametrize("step", ["deploy_model", "stop_deployment"])
@@ -237,6 +252,7 @@ def test_profile_is_required(lane, profile):
 
 def test_configured_lane_runs_the_qualified_target(lane, client, monkeypatch):
     monkeypatch.setenv("KAMIWAZA_TENANT_NVIDIA_REQUEST", json.dumps(REQUEST))
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
     request = Mock()
     request.getfixturevalue.return_value = client
     lane.test_explicit_nvidia_owner_lifecycle(request, Mock())

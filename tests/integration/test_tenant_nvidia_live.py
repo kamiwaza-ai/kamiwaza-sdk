@@ -34,7 +34,17 @@ def load_request(raw: str) -> CreateModelDeployment:
     assert resources.accelerator.profile, "explicit owner profile is required"
     assert not resources.alternatives, "qualification cannot use CPU fallback"
     assert target.engine_name == "llamacpp", "this lane qualifies llamacpp chat"
+    assert not target.force_cpu, "qualification cannot force CPU execution"
     return target
+
+
+def require_verified_tls() -> None:
+    """Do not accept a live NVIDIA result obtained with TLS verification off."""
+    value = os.environ.get("KAMIWAZA_VERIFY_SSL", "").strip().lower()
+    assert value in {"1", "true", "yes", "on"}, (
+        "NVIDIA qualification requires KAMIWAZA_VERIFY_SSL=true; "
+        "disabled TLS is not release evidence"
+    )
 
 
 def invoke_twice(client: KamiwazaClient, deployment_id: UUID) -> None:
@@ -106,6 +116,7 @@ def test_explicit_nvidia_owner_lifecycle(request, record_property) -> None:
     raw = os.environ.get("KAMIWAZA_TENANT_NVIDIA_REQUEST", "")
     if not raw:
         pytest.skip("NVIDIA owner qualification lane is not configured")
+    require_verified_tls()
     target = load_request(raw)
     try:
         client = request.getfixturevalue("live_kamiwaza_client")
