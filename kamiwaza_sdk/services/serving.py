@@ -25,6 +25,11 @@ from ..schemas.serving.inference import (
 from ..exceptions import APIError, DeploymentFailedError
 from .base_service import BaseService
 
+# Status reads are used by client-side deployment readiness and cleanup
+# pollers.  Keep each transport request bounded so a stalled ingress cannot
+# outlive the caller's documented polling budget indefinitely.
+DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS = 30.0
+
 
 class ServingService(BaseService):
     
@@ -229,7 +234,10 @@ class ServingService(BaseService):
 
     def get_deployment(self, deployment_id: UUID) -> UIModelDeployment:
         """Get the details of a specific model deployment."""
-        response = self.client.get(f"/serving/deployment/{deployment_id}")
+        response = self.client.get(
+            f"/serving/deployment/{deployment_id}",
+            timeout=DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS,
+        )
         return UIModelDeployment.model_validate(response)
 
     def wait_for_deployment(

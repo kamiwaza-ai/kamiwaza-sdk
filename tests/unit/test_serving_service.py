@@ -12,6 +12,7 @@ from kamiwaza_sdk.schemas.serving.serving import (
     UIModelDeployment,
 )
 from kamiwaza_sdk.services.serving import (
+    DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS,
     DeploymentLogStreamer,
     DeploymentStatusPoller,
     ServingService,
@@ -384,6 +385,10 @@ def test_wait_deployment_ready_raises_deployment_failed_error(mock_client):
     assert err.last_error_code == "OOM"
     assert err.deployment_id == str(deployment_id)
     assert "CUDA out of memory while loading weights" in str(err)
+    assert all(
+        call[2]["timeout"] == DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS
+        for call in mock_client.calls
+    )
 
 
 def test_wait_deployment_ready_raises_on_must_redownload(mock_client):
