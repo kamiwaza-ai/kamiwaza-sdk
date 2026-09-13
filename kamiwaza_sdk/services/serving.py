@@ -46,7 +46,12 @@ class ServingService(BaseService):
 
     def estimate_model_vram(self, deployment_request: CreateModelDeployment) -> dict:
         """Estimate the VRAM required for a model deployment."""
-        return self.client.post("/serving/estimate_model_vram", json=deployment_request.model_dump())
+        return self.client.post(
+            "/serving/estimate_model_vram",
+            json=deployment_request.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            ),
+        )
     
     def deploy_model(self,
                 model_id: Optional[Union[str, UUID]] = None,

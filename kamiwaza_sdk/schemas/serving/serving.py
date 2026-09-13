@@ -143,6 +143,48 @@ class AcceleratorInferenceRequest(BaseModel):
 
 InferenceResourceRequest = Union[CpuInferenceRequest, AcceleratorInferenceRequest]
 
+
+# Response models intentionally preserve additive fields returned by a newer
+# Core. Request models above remain strict so malformed tenant input is rejected
+# locally, while read paths remain forward-compatible across rolling upgrades.
+class ResponseCpuResourceQuantities(CpuResourceQuantities):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
+class ResponseCpuResourceRequest(CpuResourceRequest):
+    model_config = ConfigDict(extra="allow", frozen=True)
+    requests: ResponseCpuResourceQuantities
+
+
+class ResponseCpuRuntimeSelection(CpuRuntimeSelection):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
+class ResponseCpuInferenceRequest(CpuInferenceRequest):
+    model_config = ConfigDict(extra="allow", frozen=True, populate_by_name=True)
+    cpu: ResponseCpuResourceRequest
+    runtime: ResponseCpuRuntimeSelection
+
+
+class ResponseAcceleratorMemoryRequirement(AcceleratorMemoryRequirement):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
+class ResponseAcceleratorResourceRequest(AcceleratorResourceRequest):
+    model_config = ConfigDict(extra="allow", frozen=True)
+    memory: ResponseAcceleratorMemoryRequirement
+
+
+class ResponseAcceleratorInferenceRequest(AcceleratorInferenceRequest):
+    model_config = ConfigDict(extra="allow", frozen=True, populate_by_name=True)
+    accelerator: ResponseAcceleratorResourceRequest
+    runtime: ResponseCpuRuntimeSelection
+
+
+ResponseInferenceResourceRequest = Union[
+    ResponseCpuInferenceRequest, ResponseAcceleratorInferenceRequest
+]
+
 class CreateModelDeployment(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -215,6 +257,11 @@ class ModelInstance(BaseModel):
         return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
 
 class ModelDeployment(CreateModelDeployment):
+    inference_resources: Optional[ResponseInferenceResourceRequest] = Field(
+        default=None,
+        alias="inferenceResources",
+        description="Inference resources returned by Core; additive fields are preserved.",
+    )
     id: UUID = Field(description="The UUID of the deployment")
     requested_at: datetime = Field(description="Time at which the deployment was requested")
     deployed_at: Optional[datetime] = Field(default=None, description="Time at which the deployment was started")
