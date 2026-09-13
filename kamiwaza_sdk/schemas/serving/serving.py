@@ -1,7 +1,7 @@
 # kamiwaza_sdk/schemas/serving/serving.py
 
 import re
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, InvalidOperation, Overflow, localcontext
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator, model_validator
 from typing import Dict, List, Literal, Optional, Union
@@ -33,7 +33,7 @@ class CpuResourceQuantities(BaseModel):
             with localcontext() as context:
                 context.prec = 256
                 amount = Decimal(number) * (Decimal(10) ** (exponent + 3))
-        except (InvalidOperation, ValueError, OverflowError) as exc:
+        except (InvalidOperation, Overflow, ValueError, OverflowError) as exc:
             raise ValueError("cpu exceeds the supported quantity range") from exc
         if amount <= 0 or amount > 2**63 - 1 or amount != amount.to_integral_value():
             raise ValueError("cpu must fit a positive signed 64-bit integer")

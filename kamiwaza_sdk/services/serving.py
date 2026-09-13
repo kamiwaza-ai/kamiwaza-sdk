@@ -161,8 +161,10 @@ class ServingService(BaseService):
 
 
 
-    def list_active_deployments(self) -> List[ActiveModelDeployment]:
-        deployments = self.list_deployments()
+    def list_active_deployments(
+        self, *, timeout_seconds: Optional[float] = None
+    ) -> List[ActiveModelDeployment]:
+        deployments = self.list_deployments(timeout_seconds=timeout_seconds)
         active = []
 
         runtime_origin = self._runtime_origin()
@@ -229,10 +231,18 @@ class ServingService(BaseService):
         ).rstrip("/")
 
 
-    def list_deployments(self, model_id: Optional[UUID] = None) -> List[UIModelDeployment]:
+    def list_deployments(
+        self,
+        model_id: Optional[UUID] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> List[UIModelDeployment]:
         """List all model deployments or filter by model_id."""
         params = {"model_id": str(model_id)} if model_id else None
-        response = self.client.get("/serving/deployments", params=params)
+        request_kwargs = {"params": params}
+        if timeout_seconds is not None:
+            request_kwargs["timeout"] = max(float(timeout_seconds), 0.001)
+        response = self.client.get("/serving/deployments", **request_kwargs)
         return [UIModelDeployment.model_validate(item) for item in response]
 
     def get_deployment(

@@ -11,6 +11,7 @@ from ..exceptions import APIError, AuthenticationError
 class OpenAIService(BaseService):
     _ACTIVE_DEPLOYMENT_RECOVERY_ATTEMPTS = 12
     _ACTIVE_DEPLOYMENT_RECOVERY_DELAY_SECONDS = 1.0
+    _ACTIVE_DEPLOYMENT_RECOVERY_READ_TIMEOUT_SECONDS = 1.0
     _NATIVE_HEALTH_RECOVERY_CODES = frozenset({
         "NATIVE_CPU_HEALTH_UNVERIFIED",
         "NATIVE_GPU_HEALTH_UNVERIFIED",
@@ -29,7 +30,10 @@ class OpenAIService(BaseService):
 
     def _find_active_deployment(self, deployment_id: UUID, initial_active):
         """Allow the server's bounded native Pod recovery window to settle."""
-        current = self.client.serving.get_deployment(deployment_id)
+        current = self.client.serving.get_deployment(
+            deployment_id,
+            timeout_seconds=self._ACTIVE_DEPLOYMENT_RECOVERY_READ_TIMEOUT_SECONDS,
+        )
         if not self._is_native_recovery_candidate(current):
             return None
         active = initial_active
@@ -43,7 +47,9 @@ class OpenAIService(BaseService):
             if attempt + 1 == self._ACTIVE_DEPLOYMENT_RECOVERY_ATTEMPTS:
                 break
             time.sleep(self._ACTIVE_DEPLOYMENT_RECOVERY_DELAY_SECONDS)
-            active = self.client.serving.list_active_deployments()
+            active = self.client.serving.list_active_deployments(
+                timeout_seconds=self._ACTIVE_DEPLOYMENT_RECOVERY_READ_TIMEOUT_SECONDS,
+            )
         return None
 
     def _resolve_deployment(

@@ -34,6 +34,11 @@ def test_get_client_waits_for_native_replacement_to_become_active(monkeypatch, s
     assert result is sentinel
     assert client.serving.list_active_deployments.call_count == 3
     assert client.serving.get_deployment.call_count == 1
+    assert all(
+        call.kwargs["timeout_seconds"] == 1.0
+        for call in client.serving.list_active_deployments.call_args_list[1:]
+    )
+    assert client.serving.get_deployment.call_args.kwargs["timeout_seconds"] == 1.0
 
 
 def test_get_client_does_not_retry_unrelated_error(monkeypatch):
@@ -46,7 +51,9 @@ def test_get_client_does_not_retry_unrelated_error(monkeypatch):
         OpenAIService(client).get_client(deployment_id=deployment_id)
 
     client.serving.list_active_deployments.assert_called_once()
-    client.serving.get_deployment.assert_called_once_with(deployment_id)
+    client.serving.get_deployment.assert_called_once_with(
+        deployment_id, timeout_seconds=1.0
+    )
 
 
 def test_get_client_preserves_missing_deployment_error(monkeypatch):

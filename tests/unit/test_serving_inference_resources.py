@@ -4,12 +4,18 @@ import pytest
 
 from kamiwaza_sdk.schemas.serving.serving import (
     AcceleratorInferenceRequest,
+    CpuResourceQuantities,
     CreateModelDeployment,
 )
 from kamiwaza_sdk.services.serving import ServingService
 
 
 pytestmark = pytest.mark.unit
+
+
+def test_cpu_quantity_rejects_decimal_overflow():
+    with pytest.raises(ValueError, match="supported quantity range"):
+        CpuResourceQuantities(cpu="1e999999999", memory="1Gi")
 
 
 def test_list_deployments_round_trips_accelerator_inference_resources(mock_client):
