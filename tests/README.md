@@ -114,6 +114,7 @@ export KAMIWAZA_TENANT_NVIDIA_REQUEST='{
   }
 }'
 # Supply KAMIWAZA_API_KEY or KAMIWAZA_USERNAME/KAMIWAZA_PASSWORD securely.
+export KAMIWAZA_VERIFY_SSL=true
 uv run pytest tests/integration/test_tenant_nvidia_live.py -v \
   --live-base-url https://tenant.example.com/api \
   --junitxml=/tmp/tenant-nvidia-junit.xml -o junit_family=xunit1
@@ -122,8 +123,9 @@ uv run pytest tests/integration/test_tenant_nvidia_live.py -v \
 For MIG, select the signed partition profile (for example
 `nvidia-mig-1g.24gb`) and its qualified model/config/file and memory request.
 The profile name itself does not prove NVIDIA device injection. Use a trusted
-CA bundle for TLS; `KAMIWAZA_VERIFY_SSL=false` is only for self-signed dev/test
-clusters.
+CA bundle for TLS and set `KAMIWAZA_VERIFY_SSL=true` explicitly for this
+qualification lane; `KAMIWAZA_VERIFY_SSL=false` is only for self-signed
+dev/test clusters and must not be used as release evidence.
 
 Only an unset request skips this lane. Once configured, invalid input,
 authentication, deployment, readback, invocation, or cleanup errors fail it.

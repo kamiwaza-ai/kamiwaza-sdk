@@ -89,6 +89,27 @@ def test_missing_owner_selection_fails(lane, field):
         lane.load_request(json.dumps(value))
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("engine_name", "vllm"),
+        ("inferenceResources", {"schemaVersion": 1, "alternatives": []}),
+    ],
+)
+def test_nvidia_lane_rejects_non_qualified_target(lane, field, value):
+    request = json.loads(json.dumps(REQUEST))
+    request[field] = value
+    with pytest.raises((ValueError, AssertionError)):
+        lane.load_request(json.dumps(request))
+
+
+def test_nvidia_lane_rejects_cpu_fallback(lane):
+    request = json.loads(json.dumps(REQUEST))
+    request["inferenceResources"]["alternatives"] = [{"capability": "cpu", "count": 1}]
+    with pytest.raises((ValueError, AssertionError)):
+        lane.load_request(json.dumps(request))
+
+
 def test_success_pins_request_and_checks_cold_warm_stop(lane, client, target):
     record = Mock()
     lane.qualify(client, target, record)
@@ -100,6 +121,10 @@ def test_success_pins_request_and_checks_cold_warm_stop(lane, client, target):
         DEPLOYMENT_ID, timeout_seconds=600, poll_interval_seconds=5
     )
     inference = client.openai.get_client.return_value.with_options.return_value
+    client.openai.get_client.assert_called_once_with(deployment_id=DEPLOYMENT_ID)
+    client.openai.get_client.return_value.with_options.assert_called_once_with(
+        timeout=60, max_retries=0
+    )
     assert inference.chat.completions.create.call_count == 2
     inference.close.assert_called_once()
     client.serving.stop_deployment.assert_called_once_with(
