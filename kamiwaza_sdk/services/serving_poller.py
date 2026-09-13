@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Callable, Iterable, Optional, TYPE_CHECKING, Union
 from uuid import UUID
 
@@ -23,6 +24,15 @@ def _is_transient_poll_error(exc: APIError) -> bool:
     """Return whether a poll failure is safe to retry."""
     status_code = getattr(exc, "status_code", None)
     return status_code is None or status_code >= 500
+
+
+@dataclass(frozen=True)
+class _PollRequest:
+    deployment_uuid: UUID
+    desired: set[str]
+    failures: set[str]
+    transient_errors: int
+    request_timeout: Optional[float]
 
 
 class DeploymentStatusPoller:
@@ -59,12 +69,17 @@ class DeploymentStatusPoller:
         start = self._time()
         transient_errors = 0
         while True:
+            request = _PollRequest(
+                deployment_uuid=deployment_uuid,
+                desired=desired,
+                failures=failures,
+                transient_errors=transient_errors,
+                request_timeout=self._request_timeout(
+                    start, deployment_uuid, desired
+                ),
+            )
             deployment, transient_errors = self._poll_deployment(
-                deployment_uuid,
-                desired,
-                failures,
-                transient_errors,
-                self._request_timeout(start, deployment_uuid, desired),
+                request,
             )
             if deployment is not None:
                 return deployment
@@ -73,19 +88,15 @@ class DeploymentStatusPoller:
 
     def _poll_deployment(
         self,
-        deployment_uuid: UUID,
-        desired: set[str],
-        failures: set[str],
-        transient_errors: int,
-        request_timeout: Optional[float],
+        request: _PollRequest,
     ) -> tuple[Optional[ModelDeployment], int]:
         try:
             deployment = self._service.get_deployment(
-                deployment_uuid,
-                timeout_seconds=request_timeout,
+                request.deployment_uuid,
+                timeout_seconds=request.request_timeout,
             )
         except APIError as exc:
-            transient_errors += 1
+            transient_errors = request.transient_errors + 1
             if not _is_transient_poll_error(exc):
                 raise
             if transient_errors >= self.MAX_TRANSIENT_POLL_ERRORS:
@@ -93,10 +104,10 @@ class DeploymentStatusPoller:
             return None, transient_errors
 
         current = (deployment.status or "").upper()
-        if current in desired:
+        if current in request.desired:
             return deployment, 0
-        if failures and current in failures:
-            self._raise_failure(deployment, deployment_uuid)
+        if request.failures and current in request.failures:
+            self._raise_failure(deployment, request.deployment_uuid)
         return None, 0
 
     def _request_timeout(
