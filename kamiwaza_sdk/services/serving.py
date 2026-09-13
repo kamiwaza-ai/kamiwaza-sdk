@@ -504,37 +504,68 @@ class DeploymentStatusPoller:
         start = self._time()
         transient_errors = 0
         while True:
-            remaining = None
-            if self._timeout is not None:
-                remaining = self._timeout - (self._time() - start)
-                if remaining <= 0:
-                    self._raise_timeout(deployment_uuid, desired)
-            try:
-                deployment = self._service.get_deployment(
-                    deployment_uuid,
-                    timeout_seconds=(
-                        min(DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS, remaining)
-                        if remaining is not None
-                        else None
-                    ),
-                )
-            except APIError as exc:
-                transient_errors += 1
-                if (
-                    not _is_transient_poll_error(exc)
-                    or transient_errors >= self.MAX_TRANSIENT_POLL_ERRORS
-                ):
-                    raise
-            else:
-                transient_errors = 0
-                current = (deployment.status or "").upper()
-                if current in desired:
-                    return deployment
-                if failures and current in failures:
-                    self._raise_failure(deployment, deployment_uuid)
-            if self._timeout is not None and (self._time() - start) > self._timeout:
-                self._raise_timeout(deployment_uuid, desired)
+            deployment, transient_errors = self._poll_deployment(
+                deployment_uuid,
+                desired,
+                failures,
+                transient_errors,
+                self._request_timeout(start, deployment_uuid, desired),
+            )
+            if deployment is not None:
+                return deployment
+            self._raise_if_expired(start, deployment_uuid, desired)
             self._sleep_for_next_poll(start)
+
+    def _poll_deployment(
+        self,
+        deployment_uuid: UUID,
+        desired: set[str],
+        failures: set[str],
+        transient_errors: int,
+        request_timeout: Optional[float],
+    ) -> tuple[Optional[ModelDeployment], int]:
+        try:
+            deployment = self._service.get_deployment(
+                deployment_uuid,
+                timeout_seconds=request_timeout,
+            )
+        except APIError as exc:
+            transient_errors += 1
+            if not _is_transient_poll_error(exc):
+                raise
+            if transient_errors >= self.MAX_TRANSIENT_POLL_ERRORS:
+                raise
+            return None, transient_errors
+
+        current = (deployment.status or "").upper()
+        if current in desired:
+            return deployment, 0
+        if failures and current in failures:
+            self._raise_failure(deployment, deployment_uuid)
+        return None, 0
+
+    def _request_timeout(
+        self, start: float, deployment_uuid: UUID, desired: set[str]
+    ) -> Optional[float]:
+        """Return a transport timeout bounded by the caller's deadline."""
+        remaining = self._remaining_budget(start)
+        if remaining is not None and remaining <= 0:
+            self._raise_timeout(deployment_uuid, desired)
+        if remaining is None:
+            return None
+        return min(DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS, remaining)
+
+    def _remaining_budget(self, start: float) -> Optional[float]:
+        if self._timeout is None:
+            return None
+        return self._timeout - (self._time() - start)
+
+    def _raise_if_expired(
+        self, start: float, deployment_uuid: UUID, desired: set[str]
+    ) -> None:
+        remaining = self._remaining_budget(start)
+        if remaining is not None and remaining <= 0:
+            self._raise_timeout(deployment_uuid, desired)
 
     def _sleep_for_next_poll(self, start: float) -> None:
         """Sleep for the poll interval without exceeding the caller budget."""
