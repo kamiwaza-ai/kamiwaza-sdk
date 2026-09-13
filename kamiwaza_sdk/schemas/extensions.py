@@ -84,8 +84,8 @@ class KamiwazaIntegrationSpec(BaseModel):
         exclude=True,
         description=(
             "Legacy local compatibility attribute, omitted from API requests. "
-            "Configure TLS through each service's KAMIWAZA_VERIFY_SSL and "
-            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED environment values."
+            "Connection TLS settings apply only to SDK requests; the platform "
+            "projects workload trust."
         ),
     )
 

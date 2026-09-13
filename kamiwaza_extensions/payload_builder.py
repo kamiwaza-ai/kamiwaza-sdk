@@ -144,12 +144,9 @@ class PayloadBuilder:
             if ext_type == "app"
             else f"/runtime/{ext_type}s/{dev_name}"
         )
-        # ``effective_verify_ssl`` centralizes the SSL precedence:
-        # KAMIWAZA_VERIFY_SSL env var > dev-TLD auto-disable > persisted
-        # connection.verify_ssl. Drives both the per-service env
-        # injection (``_build_services``) so in-cluster callbacks match
-        # the developer's intent. The legacy integration attribute is
-        # retained locally but never serialized into an API request.
+        # Keep the connection's TLS choice local to CLI-to-platform requests.
+        # The compatibility attribute remains readable in Python but is not
+        # serialized, and workload trust is projected by the platform.
         verify_ssl = connection.effective_verify_ssl()
         transformed_compose, rewrites = self._prepare_compose_for_payload(
             transformed_compose, dev_name
@@ -157,7 +154,6 @@ class PayloadBuilder:
         services = self._build_services(
             transformed_compose,
             app_path=app_path,
-            verify_ssl=verify_ssl,
             extension_type=ext_type,
             metadata=metadata,
         )
@@ -308,7 +304,6 @@ class PayloadBuilder:
         self,
         transformed: Dict[str, Any],
         app_path: str = "",
-        verify_ssl: bool = True,
         extension_type: str = "app",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> List[ExtensionServiceSpec]:
@@ -334,7 +329,7 @@ class PayloadBuilder:
             resources = self._parse_resources(svc)
 
             is_primary = svc_name == primary_name
-            self._append_platform_env(env, app_path, verify_ssl)
+            self._append_platform_env(env, app_path)
             health_check = (
                 _metadata_service_field(metadata, svc_name, "healthCheck")
                 or _service_extension_field(svc, "healthCheck")
@@ -405,25 +400,21 @@ class PayloadBuilder:
     def _append_platform_env(
         env: List[Dict[str, str]],
         app_path: str,
-        verify_ssl: bool,
     ) -> None:
         platform_values = {
             "KAMIWAZA_ROUTING_MODE": "path" if app_path else "port",
-            "KAMIWAZA_VERIFY_SSL": "true" if verify_ssl else "false",
-            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED": "1" if verify_ssl else "0",
         }
         if app_path:
             platform_values["KAMIWAZA_APP_PATH"] = app_path
         # Explicit env shadows ConfigMap envFrom in both modes. Without an
         # explicit port value, a stale KAMIWAZA_APP_PATH can trigger legacy
         # path-mode inference and make an otherwise valid deployment 404.
-        # Emit both TLS conventions in both modes. Otherwise re-enabling
-        # verification can inherit a stale insecure ConfigMap value.
-        platform_owned_names = set(platform_values)
-        # Port mode must also remove an author-supplied path. The explicit mode
-        # makes it inert at runtime, but emitting both values is contradictory
-        # and leaves duplicate platform configuration in the generated CR.
-        platform_owned_names.add("KAMIWAZA_APP_PATH")
+        platform_owned_names = {
+            *platform_values,
+            "KAMIWAZA_APP_PATH",
+            "KAMIWAZA_VERIFY_SSL",
+            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED",
+        }
         env[:] = [
             entry for entry in env if entry.get("name") not in platform_owned_names
         ]

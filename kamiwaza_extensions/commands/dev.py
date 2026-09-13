@@ -140,9 +140,7 @@ def _validate_service_filter(
         )
 
 
-def warn_orphaned_persistence(
-    prior_mounts: Dict[str, str], payload: Any
-) -> List[str]:
+def warn_orphaned_persistence(prior_mounts: Dict[str, str], payload: Any) -> List[str]:
     """Warn where a removed persistence block leaves the CR's PVC in place.
 
     ``get_extension`` returns only ``ExtensionServiceStatus``, so the CR's own
@@ -218,9 +216,7 @@ def _deployable_service_names(services: Dict[str, Any]) -> List[str]:
     )
 
 
-def _fail_service_filter(
-    service: str, reason: str, services: Dict[str, Any]
-) -> None:
+def _fail_service_filter(service: str, reason: str, services: Dict[str, Any]) -> None:
     console.print(f"[red]Error:[/red] --service '{service}' {reason}.")
     deployable = _deployable_service_names(services)
     if deployable:
@@ -769,10 +765,9 @@ def run_dev_remote(
             f"  Push via:   {push_registry} "
             f"({registry_resolution.push_registry_source})"
         )
-    # Surface auto-disabled TLS verify when the URL is a dev TLD so the
-    # user knows why their KAMIWAZA_TLS_REJECT_UNAUTHORIZED ends up "0".
-    # Skip the notice when the persisted setting already matched (no
-    # effective change) or when the user set the env var explicitly.
+    # Surface auto-disabled TLS verification for CLI requests to the selected
+    # connection. Workload trust remains platform-owned and is not derived from
+    # this host-side choice.
     from kamiwaza_extensions.connections import _VERIFY_SSL_FALSE_VALUES
 
     if (
@@ -1143,9 +1138,7 @@ def run_dev_remote(
             # Build patch from payload — extract image, env, replicas
             # plus the x-kamiwaza per-service overrides forwarded via
             # ``extra="allow"`` (jxstanford PR #97 review H2).
-            patch_services = _build_patch_service_specs(
-                payload, service_filter=service
-            )
+            patch_services = _build_patch_service_specs(payload, service_filter=service)
             # Carries the deployer/revision/deployed-at annotations on
             # every PATCH so `kz-ext status` reflects the current
             # redeploy (review re-review PR #84 H1).

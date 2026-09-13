@@ -52,12 +52,11 @@ print(ext.endpoints)      # ExtensionEndpoints(external="https://...", internal=
 
 Create a new extension from a specification.
 
-TLS verification is configured in each service's environment through
-`KAMIWAZA_VERIFY_SSL` and `KAMIWAZA_TLS_REJECT_UNAUTHORIZED`. The extension CLI
-sets both from the selected connection and its TLS override. The legacy
-`KamiwazaIntegrationSpec.tls_reject_unauthorized` attribute remains readable
-locally but is excluded from serialized requests: the current platform rejects
-that retired integration field with HTTP 422.
+The CLI's TLS setting applies only to CLI-to-platform requests. Extension
+payloads do not carry `KAMIWAZA_VERIFY_SSL` or
+`KAMIWAZA_TLS_REJECT_UNAUTHORIZED`; the platform projects workload trust.
+The legacy `KamiwazaIntegrationSpec.tls_reject_unauthorized` attribute remains
+readable locally but is excluded from serialized requests.
 
 Compose URLs referencing the service itself are scoped to its deployed Service
 name, just like references from another service. Kubernetes does not provide
