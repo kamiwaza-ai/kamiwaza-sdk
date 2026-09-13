@@ -31,7 +31,11 @@ def load_request(raw: str) -> CreateModelDeployment:
     assert target.m_file_id is not None, "owner-qualified model file is required"
     resources = target.inference_resources
     assert isinstance(resources, AcceleratorInferenceRequest), "GPU resources required"
-    assert resources.accelerator.profile, "explicit owner profile is required"
+    profile = resources.accelerator.profile
+    assert profile, "explicit owner profile is required"
+    assert profile.startswith(
+        "nvidia-"
+    ), "NVIDIA qualification requires an owner profile in the nvidia-* namespace"
     assert not resources.alternatives, "qualification cannot use CPU fallback"
     assert target.engine_name == "llamacpp", "this lane qualifies llamacpp chat"
     assert not target.force_cpu, "qualification cannot force CPU execution"

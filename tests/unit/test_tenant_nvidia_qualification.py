@@ -95,11 +95,15 @@ def test_missing_owner_selection_fails(lane, field):
         ("engine_name", "vllm"),
         ("force_cpu", True),
         ("inferenceResources", {"schemaVersion": 1, "alternatives": []}),
+        ("profile", "amd-whole-gpu-rdna"),
     ],
 )
 def test_nvidia_lane_rejects_non_qualified_target(lane, field, value):
     request = json.loads(json.dumps(REQUEST))
-    request[field] = value
+    if field == "profile":
+        request["inferenceResources"]["accelerator"]["profile"] = value
+    else:
+        request[field] = value
     with pytest.raises((ValueError, AssertionError)):
         lane.load_request(json.dumps(request))
 
