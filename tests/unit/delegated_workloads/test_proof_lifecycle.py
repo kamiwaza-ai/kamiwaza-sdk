@@ -7,6 +7,7 @@ import pickle
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import jwt
@@ -92,6 +93,27 @@ def test_projected_assertion_accepts_root_owned_kubelet_mode_for_group_reader(
     monkeypatch.setattr(proof_module.os, "getgroups", lambda: [65532])
 
     assert proof_module._secure_assertion_file(metadata)
+
+
+def test_projected_assertion_accepts_effective_owner_mode_on_read_only_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token_path = tmp_path / "token"
+    token_path.write_text(ASSERTION, encoding="utf-8")
+    token_path.chmod(0o600)
+    monkeypatch.setattr(proof_module, "_KUBERNETES_ASSERTION_PATH", token_path)
+    monkeypatch.setattr(
+        proof_module.os,
+        "fstatvfs",
+        lambda _descriptor: SimpleNamespace(f_flag=os.ST_RDONLY),
+    )
+
+    assertion = WorkloadProof.kubernetes(
+        AttestationProfile.KUBERNETES_OFFLINE_V1
+    ).assertion()
+
+    assert assertion.get_secret_value() == ASSERTION
 
 
 @pytest.mark.parametrize("mode", [0o600, 0o404, 0o440 | 0o020])
