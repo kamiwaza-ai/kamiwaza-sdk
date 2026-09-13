@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Callable, Iterable, Iterator, List, Optional, Union
+from typing import Any, Callable, Iterable, Iterator, List, Optional, Union
 from uuid import UUID
 from urllib.parse import urlparse, urlunparse
 
@@ -239,7 +239,7 @@ class ServingService(BaseService):
     ) -> List[UIModelDeployment]:
         """List all model deployments or filter by model_id."""
         params = {"model_id": str(model_id)} if model_id else None
-        request_kwargs = {"params": params}
+        request_kwargs: dict[str, Any] = {"params": params}
         if timeout_seconds is not None:
             request_kwargs["timeout"] = max(float(timeout_seconds), 0.001)
         response = self.client.get("/serving/deployments", **request_kwargs)
