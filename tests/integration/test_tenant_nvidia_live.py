@@ -17,6 +17,7 @@ from uuid import UUID
 import pytest
 
 from kamiwaza_sdk import KamiwazaClient
+from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.serving.serving import (
     AcceleratorInferenceRequest,
     CreateModelDeployment,
@@ -77,19 +78,43 @@ def stop_and_verify(client: KamiwazaClient, deployment_id: UUID) -> None:
         deployment_id=deployment_id, force=True
     ), "stop refused"
     deadline = time.monotonic() + 90
+    last_transient: APIError | None = None
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError("stop did not reach STOPPED with zero instances in 90s")
-        stopped = client.serving.get_deployment(
-            deployment_id,
-            timeout_seconds=min(
-                DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS, remaining
-            ),
-        )
+            timeout_error = TimeoutError(
+                "stop did not reach STOPPED with zero instances in 90s"
+            )
+            if last_transient is not None:
+                raise timeout_error from last_transient
+            raise timeout_error
+        try:
+            stopped = client.serving.get_deployment(
+                deployment_id,
+                timeout_seconds=min(
+                    DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS, remaining
+                ),
+            )
+        except APIError as exc:
+            # A status read can briefly fail while the serving control plane
+            # rolls out the stop. Retry connection failures and 5xx responses,
+            # but fail immediately for caller/authorization errors (4xx).
+            if exc.status_code is not None and exc.status_code < 500:
+                raise
+            last_transient = exc
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timeout_error = TimeoutError(
+                    "stop did not reach STOPPED with zero instances in 90s"
+                )
+                raise timeout_error from last_transient
+            time.sleep(min(1, remaining))
+            continue
         if stopped.status == "STOPPED" and stopped.instances == []:
             return
-        time.sleep(1)
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(1, remaining))
 
 
 def qualify(

@@ -238,7 +238,14 @@ class ServingService(BaseService):
         *,
         timeout_seconds: Optional[float] = None,
     ) -> UIModelDeployment:
-        """Get the details of a specific model deployment."""
+        """Get deployment details with a bounded HTTP request.
+
+        Args:
+            deployment_id: Deployment identifier to retrieve.
+            timeout_seconds: Per-request transport timeout. If omitted, the
+                SDK default is 30 seconds; callers polling under a shorter
+                deadline should pass their remaining budget.
+        """
         request_timeout = (
             DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS
             if timeout_seconds is None
@@ -372,7 +379,14 @@ class ServingService(BaseService):
         *,
         timeout_seconds: Optional[float] = None,
     ) -> ModelDeployment:
-        """Get the status of a specific model deployment."""
+        """Get deployment status with a bounded HTTP request.
+
+        Args:
+            deployment_id: Deployment identifier to retrieve.
+            timeout_seconds: Per-request transport timeout. If omitted, the
+                SDK default is 30 seconds; callers polling under a shorter
+                deadline should pass their remaining budget.
+        """
         request_timeout = (
             DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS
             if timeout_seconds is None
@@ -520,13 +534,18 @@ class DeploymentStatusPoller:
                     self._raise_failure(deployment, deployment_uuid)
             if self._timeout is not None and (self._time() - start) > self._timeout:
                 self._raise_timeout(deployment_uuid, desired)
-            if self._poll_interval > 0:
-                if self._timeout is None:
-                    self._sleep(self._poll_interval)
-                else:
-                    remaining = self._timeout - (self._time() - start)
-                    if remaining > 0:
-                        self._sleep(min(self._poll_interval, remaining))
+            self._sleep_for_next_poll(start)
+
+    def _sleep_for_next_poll(self, start: float) -> None:
+        """Sleep for the poll interval without exceeding the caller budget."""
+        if self._poll_interval <= 0:
+            return
+        if self._timeout is None:
+            self._sleep(self._poll_interval)
+            return
+        remaining = self._timeout - (self._time() - start)
+        if remaining > 0:
+            self._sleep(min(self._poll_interval, remaining))
 
     @staticmethod
     def _raise_timeout(deployment_uuid: UUID, desired: set[str]) -> None:

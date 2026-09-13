@@ -193,9 +193,48 @@ def test_stop_residue_reaches_bounded_failure(lane, client, monkeypatch):
     client.serving.get_deployment.return_value = SimpleNamespace(
         status="STOPPED", instances=[object()]
     )
-    monkeypatch.setattr(lane.time, "monotonic", Mock(side_effect=[0, 91]))
+    clock = Mock(side_effect=[0, 91])
+    monkeypatch.setattr(lane.time, "monotonic", clock)
     with pytest.raises(TimeoutError, match="stop"):
         lane.stop_and_verify(client, DEPLOYMENT_ID)
+
+
+def test_stop_retries_transient_status_error(lane, client, monkeypatch):
+    from kamiwaza_sdk.exceptions import APIError
+
+    client.serving.get_deployment.side_effect = [
+        APIError("control plane unavailable", status_code=503),
+        SimpleNamespace(status="STOPPED", instances=[]),
+    ]
+    monkeypatch.setattr(lane.time, "sleep", Mock())
+    lane.stop_and_verify(client, DEPLOYMENT_ID)
+    assert client.serving.get_deployment.call_count == 2
+    assert client.serving.get_deployment.call_args_list[0].kwargs["timeout_seconds"] <= 30
+    assert client.serving.get_deployment.call_args_list[1].kwargs["timeout_seconds"] <= 30
+    lane.time.sleep.assert_called_once()
+
+
+def test_stop_retries_connection_error_until_bounded_timeout(lane, client, monkeypatch):
+    from kamiwaza_sdk.exceptions import APIError
+
+    client.serving.get_deployment.side_effect = APIError("connection reset")
+    clock = Mock(side_effect=[0, 0, 1, 1, 91])
+    monkeypatch.setattr(lane.time, "monotonic", clock)
+    monkeypatch.setattr(lane.time, "sleep", Mock())
+    with pytest.raises(TimeoutError, match="stop") as error:
+        lane.stop_and_verify(client, DEPLOYMENT_ID)
+    assert isinstance(error.value.__cause__, APIError)
+
+
+def test_stop_does_not_retry_client_error(lane, client):
+    from kamiwaza_sdk.exceptions import APIError
+
+    error = APIError("forbidden", status_code=403)
+    client.serving.get_deployment.side_effect = error
+    with pytest.raises(APIError) as raised:
+        lane.stop_and_verify(client, DEPLOYMENT_ID)
+    assert raised.value is error
+    client.serving.get_deployment.assert_called_once()
 
 
 def test_configured_lane_converts_client_skip_to_failure(lane, monkeypatch):
