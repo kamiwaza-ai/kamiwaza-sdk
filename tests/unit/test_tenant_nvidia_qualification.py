@@ -106,8 +106,17 @@ def test_nvidia_lane_rejects_non_qualified_target(lane, field, value):
 
 def test_nvidia_lane_rejects_cpu_fallback(lane):
     request = json.loads(json.dumps(REQUEST))
-    request["inferenceResources"]["alternatives"] = [{"capability": "cpu", "count": 1}]
-    with pytest.raises((ValueError, AssertionError)):
+    request["inferenceResources"]["alternatives"] = [
+        {
+            "schemaVersion": 1,
+            "cpu": {
+                "architecture": "arm64",
+                "requests": {"cpu": "1", "memory": "4Gi"},
+            },
+            "runtime": {"selection": "automatic"},
+        }
+    ]
+    with pytest.raises(AssertionError, match="CPU fallback"):
         lane.load_request(json.dumps(request))
 
 
