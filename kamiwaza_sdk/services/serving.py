@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Callable, Iterable, Iterator, List, Optional, Union
+from typing import Any, Callable, Iterable, Iterator, List, Optional, Union
 from uuid import UUID
 from urllib.parse import urlparse, urlunparse
 
@@ -22,8 +22,11 @@ from ..schemas.serving.inference import (
     UnloadModelRequest,
     UnloadModelResponse,
 )
-from ..exceptions import APIError, DeploymentFailedError
 from .base_service import BaseService
+from .serving_poller import (
+    DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS,
+    DeploymentStatusPoller,
+)
 
 
 class ServingService(BaseService):
@@ -43,7 +46,12 @@ class ServingService(BaseService):
 
     def estimate_model_vram(self, deployment_request: CreateModelDeployment) -> dict:
         """Estimate the VRAM required for a model deployment."""
-        return self.client.post("/serving/estimate_model_vram", json=deployment_request.model_dump())
+        return self.client.post(
+            "/serving/estimate_model_vram",
+            json=deployment_request.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            ),
+        )
     
     def deploy_model(self,
                 model_id: Optional[Union[str, UUID]] = None,
@@ -132,7 +140,7 @@ class ServingService(BaseService):
         )
 
         # Convert UUIDs to strings in the deployment_request dictionary
-        request_dict = deployment_request.model_dump()
+        request_dict = deployment_request.model_dump(by_alias=True, exclude_none=True)
         request_dict['m_id'] = str(request_dict['m_id'])
         if request_dict.get('m_file_id'):
             request_dict['m_file_id'] = str(request_dict['m_file_id'])
@@ -153,8 +161,10 @@ class ServingService(BaseService):
 
 
 
-    def list_active_deployments(self) -> List[ActiveModelDeployment]:
-        deployments = self.list_deployments()
+    def list_active_deployments(
+        self, *, timeout_seconds: Optional[float] = None
+    ) -> List[ActiveModelDeployment]:
+        deployments = self.list_deployments(timeout_seconds=timeout_seconds)
         active = []
 
         runtime_origin = self._runtime_origin()
@@ -221,15 +231,43 @@ class ServingService(BaseService):
         ).rstrip("/")
 
 
-    def list_deployments(self, model_id: Optional[UUID] = None) -> List[UIModelDeployment]:
+    def list_deployments(
+        self,
+        model_id: Optional[UUID] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> List[UIModelDeployment]:
         """List all model deployments or filter by model_id."""
         params = {"model_id": str(model_id)} if model_id else None
-        response = self.client.get("/serving/deployments", params=params)
+        request_kwargs: dict[str, Any] = {"params": params}
+        if timeout_seconds is not None:
+            request_kwargs["timeout"] = max(float(timeout_seconds), 0.001)
+        response = self.client.get("/serving/deployments", **request_kwargs)
         return [UIModelDeployment.model_validate(item) for item in response]
 
-    def get_deployment(self, deployment_id: UUID) -> UIModelDeployment:
-        """Get the details of a specific model deployment."""
-        response = self.client.get(f"/serving/deployment/{deployment_id}")
+    def get_deployment(
+        self,
+        deployment_id: UUID,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> UIModelDeployment:
+        """Get deployment details with a bounded HTTP request.
+
+        Args:
+            deployment_id: Deployment identifier to retrieve.
+            timeout_seconds: Per-request transport timeout. If omitted, the
+                SDK default is 30 seconds; callers polling under a shorter
+                deadline should pass their remaining budget.
+        """
+        request_timeout = (
+            DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else max(float(timeout_seconds), 0.001)
+        )
+        response = self.client.get(
+            f"/serving/deployment/{deployment_id}",
+            timeout=request_timeout,
+        )
         return UIModelDeployment.model_validate(response)
 
     def wait_for_deployment(
@@ -348,9 +386,29 @@ class ServingService(BaseService):
             
         return self.client.delete(f"/serving/deployment/{deployment_id}", params={"force": force})
 
-    def get_deployment_status(self, deployment_id: UUID) -> ModelDeployment:
-        """Get the status of a specific model deployment."""
-        response = self.client.get(f"/serving/deployment/{deployment_id}/status")
+    def get_deployment_status(
+        self,
+        deployment_id: UUID,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> ModelDeployment:
+        """Get deployment status with a bounded HTTP request.
+
+        Args:
+            deployment_id: Deployment identifier to retrieve.
+            timeout_seconds: Per-request transport timeout. If omitted, the
+                SDK default is 30 seconds; callers polling under a shorter
+                deadline should pass their remaining budget.
+        """
+        request_timeout = (
+            DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else max(float(timeout_seconds), 0.001)
+        )
+        response = self.client.get(
+            f"/serving/deployment/{deployment_id}/status",
+            timeout=request_timeout,
+        )
         return ModelDeployment.model_validate(response)
 
     def get_deployment_logs(self, deployment_id: UUID) -> ContainerLogResponse:
@@ -409,99 +467,6 @@ class ServingService(BaseService):
         """Load a model."""
         response = self.client.post("/load_model", json=request.model_dump())
         return LoadModelResponse.model_validate(response)
-
-
-def _is_transient_poll_error(exc: APIError) -> bool:
-    """Connection-level failures (no status code) and server-side 5xx are
-    transient; 4xx client errors are not — retrying cannot fix the request."""
-    status_code = getattr(exc, "status_code", None)
-    return status_code is None or status_code >= 500
-
-
-class DeploymentStatusPoller:
-    """Utility helper that polls deployment status until completion.
-
-    Tolerates up to ``MAX_TRANSIENT_POLL_ERRORS`` consecutive transient
-    poll failures (connection blips, HTTP 5xx) before propagating, so a
-    single blip cannot abort a default up-to-1-hour deploy wait. Errors
-    raised from the wait carry a ``deployment_id`` attribute so callers
-    can stop/inspect the in-flight deployment.
-    """
-
-    #: Consecutive transient poll failures tolerated before propagating.
-    MAX_TRANSIENT_POLL_ERRORS = 3
-
-    def __init__(
-        self,
-        service: "ServingService",
-        *,
-        poll_interval: float = 5.0,
-        timeout: Optional[float] = 600.0,
-        sleep_fn: Callable[[float], None] = time.sleep,
-        time_fn: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._service = service
-        self._poll_interval = poll_interval
-        self._timeout = timeout
-        self._sleep = sleep_fn
-        self._time = time_fn
-
-    def wait_for(
-        self,
-        deployment_id: Union[str, UUID],
-        *,
-        desired_status: Iterable[str],
-        failure_status: Iterable[str],
-    ) -> ModelDeployment:
-        deployment_uuid = UUID(str(deployment_id))
-        desired = {status.upper() for status in desired_status}
-        failures = {status.upper() for status in failure_status}
-        start = self._time()
-        transient_errors = 0
-        while True:
-            try:
-                deployment = self._service.get_deployment(deployment_uuid)
-            except APIError as exc:
-                transient_errors += 1
-                if (
-                    not _is_transient_poll_error(exc)
-                    or transient_errors >= self.MAX_TRANSIENT_POLL_ERRORS
-                ):
-                    raise
-            else:
-                transient_errors = 0
-                current = (deployment.status or "").upper()
-                if current in desired:
-                    return deployment
-                if failures and current in failures:
-                    self._raise_failure(deployment, deployment_uuid)
-            if self._timeout is not None and (self._time() - start) > self._timeout:
-                timeout_error = TimeoutError(
-                    f"Timed out waiting for deployment {deployment_uuid} to reach {desired}"
-                )
-                # Builtin TimeoutError for caller compatibility; carry the id
-                # programmatically rather than only inside the message string.
-                setattr(timeout_error, "deployment_id", str(deployment_uuid))
-                raise timeout_error
-            if self._poll_interval > 0:
-                self._sleep(self._poll_interval)
-
-    @staticmethod
-    def _raise_failure(deployment: ModelDeployment, deployment_uuid: UUID) -> None:
-        last_error_message = getattr(deployment, "last_error_message", None)
-        last_error_code = getattr(deployment, "last_error_code", None)
-        message = (
-            f"Deployment {deployment_uuid} entered failure status {deployment.status}"
-        )
-        if last_error_message:
-            message = f"{message}: {last_error_message}"
-        raise DeploymentFailedError(
-            message,
-            status=deployment.status,
-            last_error_message=last_error_message,
-            last_error_code=last_error_code,
-            deployment_id=str(deployment_uuid),
-        )
 
 
 class DeploymentLogStreamer:

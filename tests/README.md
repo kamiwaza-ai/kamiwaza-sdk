@@ -87,6 +87,62 @@ also accept `KAMIWAZA_CONTEXT_LLM_REPO`, `KAMIWAZA_CONTEXT_LLM_ENGINE`, and
 explicit context repository and otherwise inherits the shared target. An
 explicit context repository is also required and fails closed.
 
+## Explicit tenant NVIDIA qualification
+
+`test_tenant_nvidia_live.py` is the strict API lifecycle lane for an
+owner-qualified NVIDIA whole-device or MIG profile. It does not query cluster
+inventory or import models. First publish the signed owner profile/recipe and
+prepare the exact model file through the supported owner/catalog workflow.
+Replace the example UUIDs below with that catalog entry's IDs, and use the
+owner's actual profile name and qualified minimum memory:
+
+```bash
+export KAMIWAZA_TENANT_NVIDIA_REQUEST='{
+  "m_id": "00000000-0000-0000-0000-000000000001",
+  "m_config_id": "00000000-0000-0000-0000-000000000002",
+  "m_file_id": "00000000-0000-0000-0000-000000000003",
+  "engine_name": "llamacpp",
+  "inferenceResources": {
+    "schemaVersion": 1,
+    "accelerator": {
+      "capability": "gpu", "count": 1,
+      "memory": {"minimum": "4Gi"},
+      "isolation": "any-qualified", "profile": "nvidia-whole"
+    },
+    "runtime": {"selection": "automatic"},
+    "alternatives": []
+  }
+}'
+# Supply KAMIWAZA_API_KEY or KAMIWAZA_USERNAME/KAMIWAZA_PASSWORD securely.
+export KAMIWAZA_VERIFY_SSL=true
+uv run pytest tests/integration/test_tenant_nvidia_live.py -v \
+  --live-base-url https://tenant.example.com/api \
+  --junitxml=/tmp/tenant-nvidia-junit.xml -o junit_family=xunit1
+```
+
+For MIG, select the signed partition profile (for example
+`nvidia-mig-1g.24gb`) and its qualified model/config/file and memory request.
+The profile name itself does not prove NVIDIA device injection. Use a trusted
+CA bundle for TLS and set `KAMIWAZA_VERIFY_SSL=true` explicitly for this
+qualification lane; `KAMIWAZA_VERIFY_SSL=false` is only for self-signed
+dev/test clusters and must not be used as release evidence.
+
+Only an unset request skips this lane. Once configured, invalid input,
+authentication, deployment, readback, invocation, or cleanup errors fail it.
+The test requires `DEPLOYED` with instances, unchanged inference-resource
+readback, nonempty cold and warm chat responses, and `STOPPED` with zero API
+instances within 90 seconds. It records the deployment ID and owner profile
+in JUnit properties. Readiness is bounded to 600 seconds; each chat call is
+bounded to 60 seconds with no retries.
+
+This is **not** the full qualification matrix or a restricted-platform-user
+audit. Separately capture the source/Core/runtime image digests, signed
+catalog digest/profile identity, Kubernetes/driver/device-plugin identities,
+tenant no-Node RBAC, actual Pod resource grants and device visibility, and
+eventual absence of labeled Kubernetes resources. The owner-side observer
+must remain separate from the tenant SDK identity. Replacement, restart,
+negative paths, and pre-1.34 acceptance still require their own evidence.
+
 ## Shared Fixtures
 - `dummy_client` – lightweight HTTP stub for unit tests (records calls, replays canned responses).
 - `client_factory` – builds real `KamiwazaClient` instances with consistent defaults.
