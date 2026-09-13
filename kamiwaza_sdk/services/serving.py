@@ -232,11 +232,21 @@ class ServingService(BaseService):
         response = self.client.get("/serving/deployments", params=params)
         return [UIModelDeployment.model_validate(item) for item in response]
 
-    def get_deployment(self, deployment_id: UUID) -> UIModelDeployment:
+    def get_deployment(
+        self,
+        deployment_id: UUID,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> UIModelDeployment:
         """Get the details of a specific model deployment."""
+        request_timeout = (
+            DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else max(float(timeout_seconds), 0.001)
+        )
         response = self.client.get(
             f"/serving/deployment/{deployment_id}",
-            timeout=DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS,
+            timeout=request_timeout,
         )
         return UIModelDeployment.model_validate(response)
 
@@ -356,9 +366,22 @@ class ServingService(BaseService):
             
         return self.client.delete(f"/serving/deployment/{deployment_id}", params={"force": force})
 
-    def get_deployment_status(self, deployment_id: UUID) -> ModelDeployment:
+    def get_deployment_status(
+        self,
+        deployment_id: UUID,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> ModelDeployment:
         """Get the status of a specific model deployment."""
-        response = self.client.get(f"/serving/deployment/{deployment_id}/status")
+        request_timeout = (
+            DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else max(float(timeout_seconds), 0.001)
+        )
+        response = self.client.get(
+            f"/serving/deployment/{deployment_id}/status",
+            timeout=request_timeout,
+        )
         return ModelDeployment.model_validate(response)
 
     def get_deployment_logs(self, deployment_id: UUID) -> ContainerLogResponse:
@@ -467,8 +490,20 @@ class DeploymentStatusPoller:
         start = self._time()
         transient_errors = 0
         while True:
+            remaining = None
+            if self._timeout is not None:
+                remaining = self._timeout - (self._time() - start)
+                if remaining <= 0:
+                    self._raise_timeout(deployment_uuid, desired)
             try:
-                deployment = self._service.get_deployment(deployment_uuid)
+                deployment = self._service.get_deployment(
+                    deployment_uuid,
+                    timeout_seconds=(
+                        min(DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS, remaining)
+                        if remaining is not None
+                        else None
+                    ),
+                )
             except APIError as exc:
                 transient_errors += 1
                 if (
@@ -484,15 +519,24 @@ class DeploymentStatusPoller:
                 if failures and current in failures:
                     self._raise_failure(deployment, deployment_uuid)
             if self._timeout is not None and (self._time() - start) > self._timeout:
-                timeout_error = TimeoutError(
-                    f"Timed out waiting for deployment {deployment_uuid} to reach {desired}"
-                )
-                # Builtin TimeoutError for caller compatibility; carry the id
-                # programmatically rather than only inside the message string.
-                setattr(timeout_error, "deployment_id", str(deployment_uuid))
-                raise timeout_error
+                self._raise_timeout(deployment_uuid, desired)
             if self._poll_interval > 0:
-                self._sleep(self._poll_interval)
+                if self._timeout is None:
+                    self._sleep(self._poll_interval)
+                else:
+                    remaining = self._timeout - (self._time() - start)
+                    if remaining > 0:
+                        self._sleep(min(self._poll_interval, remaining))
+
+    @staticmethod
+    def _raise_timeout(deployment_uuid: UUID, desired: set[str]) -> None:
+        timeout_error = TimeoutError(
+            f"Timed out waiting for deployment {deployment_uuid} to reach {desired}"
+        )
+        # Builtin TimeoutError for caller compatibility; carry the id
+        # programmatically rather than only inside the message string.
+        setattr(timeout_error, "deployment_id", str(deployment_uuid))
+        raise timeout_error
 
     @staticmethod
     def _raise_failure(deployment: ModelDeployment, deployment_uuid: UUID) -> None:

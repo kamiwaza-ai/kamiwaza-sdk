@@ -391,6 +391,21 @@ def test_wait_deployment_ready_raises_deployment_failed_error(mock_client):
     )
 
 
+def test_get_deployment_status_bounds_transport_timeout(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect(
+        "GET",
+        f"/serving/deployment/{deployment_id}/status",
+        _deployment_payload(deployment_id, "DEPLOYING"),
+    )
+
+    ServingService(mock_client).get_deployment_status(deployment_id)
+
+    assert mock_client.calls[0][2]["timeout"] == (
+        DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS
+    )
+
+
 def test_wait_deployment_ready_raises_on_must_redownload(mock_client):
     """The server background-launch path (ENG-6530) has a third resting
     terminal failure state, MUST_REDOWNLOAD (corrupted/incomplete model
@@ -440,11 +455,13 @@ class _StatusService:
     def __init__(self, statuses: list[str]):
         self.statuses = statuses
         self.calls = 0
+        self.timeouts: list[float | None] = []
 
-    def get_deployment(self, deployment_id: UUID):
+    def get_deployment(self, deployment_id: UUID, *, timeout_seconds=None):
         idx = min(self.calls, len(self.statuses) - 1)
         status = self.statuses[idx]
         self.calls += 1
+        self.timeouts.append(timeout_seconds)
         return SimpleNamespace(status=status, id=deployment_id)
 
 
@@ -477,6 +494,24 @@ def test_status_poller_returns_when_desired_status_reached():
     assert sleep_calls == [1.0]
 
 
+def test_status_poller_caps_transport_timeout_to_remaining_budget():
+    deployment_id = uuid4()
+    service = _StatusService(["DEPLOYED"])
+
+    deployment = DeploymentStatusPoller(
+        service,
+        poll_interval=0,
+        timeout=5.0,
+        sleep_fn=lambda _: None,
+        time_fn=lambda: 0.0,
+    ).wait_for(
+        deployment_id, desired_status=["DEPLOYED"], failure_status=["FAILED"]
+    )
+
+    assert deployment.status == "DEPLOYED"
+    assert service.timeouts == [5.0]
+
+
 def test_status_poller_raises_on_failure_status():
     deployment_id = uuid4()
     service = _StatusService(["PENDING", "FAILED"])
@@ -499,10 +534,12 @@ class _FlakyStatusService:
     def __init__(self, outcomes: list):
         self.outcomes = outcomes
         self.calls = 0
+        self.timeouts: list[float | None] = []
 
-    def get_deployment(self, deployment_id: UUID):
+    def get_deployment(self, deployment_id: UUID, *, timeout_seconds=None):
         idx = min(self.calls, len(self.outcomes) - 1)
         self.calls += 1
+        self.timeouts.append(timeout_seconds)
         outcome = self.outcomes[idx]
         if isinstance(outcome, Exception):
             raise outcome

@@ -21,6 +21,7 @@ from kamiwaza_sdk.schemas.serving.serving import (
     AcceleratorInferenceRequest,
     CreateModelDeployment,
 )
+from kamiwaza_sdk.services.serving import DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -77,11 +78,17 @@ def stop_and_verify(client: KamiwazaClient, deployment_id: UUID) -> None:
     ), "stop refused"
     deadline = time.monotonic() + 90
     while True:
-        stopped = client.serving.get_deployment(deployment_id)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("stop did not reach STOPPED with zero instances in 90s")
+        stopped = client.serving.get_deployment(
+            deployment_id,
+            timeout_seconds=min(
+                DEPLOYMENT_STATUS_REQUEST_TIMEOUT_SECONDS, remaining
+            ),
+        )
         if stopped.status == "STOPPED" and stopped.instances == []:
             return
-        if time.monotonic() >= deadline:
-            raise TimeoutError("stop did not reach STOPPED with zero instances in 90s")
         time.sleep(1)
 
 
