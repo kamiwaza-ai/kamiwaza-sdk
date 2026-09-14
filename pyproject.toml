@@ -141,6 +141,10 @@ dev = [
     "pytest-httpx>=0.30",
     "jsonschema>=4.26.0,<5.0.0",
     "boto3>=1.34",
+    # ENG-11524: the skills-library live test verifies the backing store
+    # directly (skill_library row + object-store package), which the API
+    # deliberately does not expose. Test-only; configured by env DSN.
+    "psycopg[binary]>=3.1",
     "numpy>=1.26",
     "pandas>=2.2",
     "pyarrow>=17.0",
@@ -186,6 +190,7 @@ markers = [
     "requires_shared_idp: live federation tests exercising the shared_idp (Alt C) trust posture — receiver validates a shared-realm token against a trusted issuer (ENG-8213). Required two-cluster lanes carry this together with requires_two_clusters and must provision their shared-identity prerequisites before selection.",
     "requires_owned_shared_realm: live shared_idp tests that require an independently provisioned realm, ROPC client, clearance-bearing personas, and ownership-guarded teardown (ENG-10050)",
     "requires_delegated_workload: live federation tests that require the release/1.2.0 delegated RayJob boundary, receiver package catalog, and private package repository (ENG-8454)",
+    "requires_platform_store: live tests that additionally read the platform's backing stores directly (Postgres via KAMIWAZA_SKILLS_STORE_DSN, object store via KAMIWAZA_SKILLS_STORE_S3_*); skips when those are not configured (ENG-11524)",
     "requires_deployable_model: live tests that require the host to deploy the integration test model; skips on hosts without compatible inference capacity (e.g. x86 CPU smoke vs an MLX model)",
     "extension_regression: D210 12-issue regression checklist (UAC-17 / EDX-OPS-2). See tests/unit/extensions/regression/inventory.yaml.",
     "live_extension: live extension-contract tests against a real cluster (relocated from kamiwaza, env-gated by RUN_LIVE_EXTENSION_TESTS=1)",

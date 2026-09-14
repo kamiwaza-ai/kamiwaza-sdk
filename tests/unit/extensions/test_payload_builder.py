@@ -161,7 +161,9 @@ class TestBuild:
         env = []
         builder._append_platform_env(env, app_path="")
 
-        assert env == [{"name": "KAMIWAZA_ROUTING_MODE", "value": "port"}]
+        assert env == [
+            {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
+        ]
 
     def test_connection_tls_choice_is_not_projected_into_workload_env(
         self, builder, metadata, transformed_compose, connection, monkeypatch
@@ -481,6 +483,7 @@ class TestAnnotations:
         assert ANNOTATION_DEPLOYER not in out
         assert ANNOTATION_REVISION not in out
         assert ANNOTATION_DEPLOYED_AT in out
+
 
 
 class TestServiceRefRewritesAnnotation:

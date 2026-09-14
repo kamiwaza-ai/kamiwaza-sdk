@@ -30,6 +30,11 @@ the gate audit, and receiver provenance. The job also calls
 and must receive exactly the granted dataset. Successful imports without that
 agent evidence fail the provider case.
 
+Before submitting a job, the provider performs a receiver dataset read to trigger
+first-ingress grant seeding. It waits up to 30 seconds for explicit authorization-
+unavailable 503 responses to clear as SpiceDB projects those grants. It does not
+retry job submissions, authorization denials, or unrelated failures.
+
 For a direct invocation, use the standard provider protocol:
 
 ```shell

@@ -10,6 +10,12 @@ mesh-edge: three clearance retrievals, three tenant-negative retrievals,
 authorized dataset listing, a receiver job marker, and an unonboarded-user
 denial. Required cases fail; they are never silently skipped.
 
+Positive retrieval cases first perform a receiver dataset read. This triggers
+first-ingress grant seeding and waits up to 30 seconds for an explicit
+authorization-unavailable 503 to clear while SpiceDB projects the grants.
+Authorization denials and unrelated failures are not retried. The negative
+identity cases retain their direct rejection checks.
+
 ## Inputs
 
 Create a `profile.json` describing both existing clusters and their edge:
@@ -180,3 +186,15 @@ run-owned resources are removed in reverse journal order. Inspect
 `cleanup.json` and rerun the same teardown command until its status is
 `passed`. A `failed` result is intentionally not converted into success: fix
 the reported ownership or connectivity problem before retrying.
+
+### Paired integration readiness
+
+The paired SDK live tests use the same bounded authorization readiness read as
+the scenario provider before positive retrieval and delegated job submission. Only an
+explicit `503 authorization_unavailable` is retried for up to 30 seconds.
+Negative tenant and onboarding cases remain direct calls. Delegated submission
+separately retries only the exact `503 delegated_access_unavailable` response
+for up to 30 seconds: Core emits it before recording or dispatching a job.
+Once a job ID is accepted, polling occurs outside that retry boundary. Denials,
+other 503 reasons and ambiguous transport failures propagate without resubmission.
+Run both paths when qualifying a provisioned federation smoke.

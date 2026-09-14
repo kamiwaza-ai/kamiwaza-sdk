@@ -14,6 +14,8 @@ from urllib.parse import quote
 import pytest
 
 from kamiwaza_sdk.schemas.delegated_jobs import normalize_python_packages
+from kamiwaza_sdk.validation.delegated_readiness import run_delegated_job
+from kamiwaza_sdk.validation.federation_readiness import authorized_datasets
 
 from .test_federation_shared_idp_gated_retrieval_live import (
     _receiver_prereqs,  # noqa: F401 - dependency of imported live fixture
@@ -146,6 +148,7 @@ def test_shared_idp_delegated_job_installs_approved_package(
             }
         ]
     }
+    authorized_datasets(persona, wiring["name"])
     baseline_marker = f"eng8454-base-{uuid.uuid4().hex}"
     baseline_script = (
         "import importlib.metadata, json\n"
@@ -161,12 +164,14 @@ def test_shared_idp_delegated_job_installs_approved_package(
         "print('KZ_MESH_RUN_ON_JSON::' + json.dumps(payload))\n"
     )
     baseline = _required_mesh_call(
-        lambda: persona.jobs.run(
-            entrypoint="python3 -c " + shlex.quote(baseline_script),
-            target_cluster=wiring["name"],
-            timeout_seconds=300,
-            recoverable=True,
-            delegated_access=delegated_access,
+        lambda: run_delegated_job(
+            persona,
+            dict(
+                entrypoint="python3 -c " + shlex.quote(baseline_script),
+                target_cluster=wiring["name"],
+                timeout_seconds=300,
+                delegated_access=delegated_access,
+            ),
         )
     )
     baseline = _await_delegated_result(persona, baseline, wiring["name"])
@@ -190,13 +195,15 @@ def test_shared_idp_delegated_job_installs_approved_package(
     )
 
     result = _required_mesh_call(
-        lambda: persona.jobs.run(
-            entrypoint="python3 -c " + shlex.quote(script),
-            target_cluster=wiring["name"],
-            timeout_seconds=300,
-            recoverable=True,
-            delegated_access=delegated_access,
-            python_packages=list(coordinates),
+        lambda: run_delegated_job(
+            persona,
+            dict(
+                entrypoint="python3 -c " + shlex.quote(script),
+                target_cluster=wiring["name"],
+                timeout_seconds=300,
+                delegated_access=delegated_access,
+                python_packages=list(coordinates),
+            ),
         )
     )
     result = _await_delegated_result(persona, result, wiring["name"])

@@ -26,6 +26,7 @@ from kamiwaza_sdk.validation.federation_fixture import (
     UNONBOARDED_PERSONA,
     records,
 )
+from kamiwaza_sdk.validation.federation_readiness import authorized_datasets
 from kamiwaza_sdk.validation.federation_spec import SHARED_REALM_CLIENT_ID
 from kamiwaza_sdk.validation.models import CaseResult, ResolvedScenario
 from kamiwaza_sdk.validation.provider import ProviderContractError
@@ -156,6 +157,7 @@ def _retrieve_rows(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     persona = hooks.make_client(context.initiator_base, token)
     try:
+        authorized_datasets(persona, required_text(context.params, "federation_name"))
         return hooks.mesh_retrieve(
             RetrievalRequest(
                 persona=persona,
@@ -205,8 +207,8 @@ def _run_dataset_case(context: RunContext, hooks: CaseHooks) -> None:
     token = _issue_token(context, PERSONAS["U"])
     persona = hooks.make_client(context.initiator_base, token)
     try:
-        datasets = persona.catalog.datasets.list(
-            target_cluster=required_text(context.params, "federation_name")
+        datasets = authorized_datasets(
+            persona, required_text(context.params, "federation_name")
         )
         urn = required_text(context.params, "dataset_urn")
         if [str(item.urn) for item in datasets] != [urn]:

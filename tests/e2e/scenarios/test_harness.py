@@ -52,6 +52,9 @@ def _runbook(steps, *, scenario_id="S1", **extra):
         "name": f"Test scenario {scenario_id}",
         "sign_off_actor": "SDK team",
         "uacs": ["UAC-16"],
+        # Required since ENG-11522; `**extra` still lets a test override it
+        # (e.g. with [] or a malformed value) to exercise the refusal paths.
+        "capability_ids": ["workrooms.create"],
         "expected_outcomes": ["something demonstrable"],
         "steps": steps,
         **extra,
@@ -313,6 +316,7 @@ class TestRecordRun:
             finished_at="2026-04-30T17:00:05+00:00",
             duration_s=5.0,
             sign_off_actor="SDK team",
+            capability_ids=["workrooms.create"],
             ci_job_url=None,
             build=TEST_BUILD,
             status="passed",
@@ -327,6 +331,7 @@ class TestRecordRun:
             finished_at="2026-04-30T19:30:07+00:00",
             duration_s=7.0,
             sign_off_actor="SDK team",
+            capability_ids=["workrooms.create"],
             ci_job_url=None,
             build=TEST_BUILD,
             status="passed",

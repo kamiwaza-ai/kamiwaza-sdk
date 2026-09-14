@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
+from kamiwaza_sdk.validation.delegated_readiness import run_delegated_job
 from kamiwaza_sdk.validation.delegated_workload_spec import DELEGATED_CASE_IDS
 from kamiwaza_sdk.validation.federation_cases import RunContext, _issue_token
 from kamiwaza_sdk.validation.federation_common import (
@@ -18,6 +19,7 @@ from kamiwaza_sdk.validation.federation_common import (
     required_text,
     token_client,
 )
+from kamiwaza_sdk.validation.federation_readiness import authorized_datasets
 from kamiwaza_sdk.validation.models import CaseResult
 
 _CLASSIFICATION = "U"
@@ -75,6 +77,7 @@ def _run_approved_package_case(context: RunContext) -> None:
     delegated_access = {"datasets": [{"urn": dataset, "operations": ["discover"]}]}
     baseline_marker = f"kz-delegated-base-{uuid.uuid4().hex}"
     try:
+        authorized_datasets(persona, target)
         baseline = _submit(
             persona,
             _JobRequest(
@@ -108,13 +111,15 @@ def _submit(
     persona: Any,
     request: _JobRequest,
 ) -> Any:
-    result = persona.jobs.run(
-        entrypoint="python3 -c " + shlex.quote(request.script),
-        target_cluster=request.target,
-        timeout_seconds=300,
-        recoverable=True,
-        delegated_access=request.delegated_access,
-        **({"python_packages": request.packages} if request.packages else {}),
+    result = run_delegated_job(
+        persona,
+        dict(
+            entrypoint="python3 -c " + shlex.quote(request.script),
+            target_cluster=request.target,
+            timeout_seconds=300,
+            delegated_access=request.delegated_access,
+            **({"python_packages": request.packages} if request.packages else {}),
+        ),
     )
     return _await_result(persona, result, request.target)
 

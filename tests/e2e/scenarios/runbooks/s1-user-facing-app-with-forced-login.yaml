@@ -1,6 +1,12 @@
 id: "S1"
 name: "User-facing app with forced login"
 sign_off_actor: "Preston McGowan"
+# Reviewed mapping (ENG-11522). The scenario scaffolds an app with
+# `kz-ext create --type app`, deploys it, and asserts the platform's
+# identity headers reach the backend through the cluster ingress.
+capability_ids:
+  - "platform.app-generation-path"
+  - "workrooms.app-runtime-binding"
 uacs:
   - UAC-9
   - UAC-9a

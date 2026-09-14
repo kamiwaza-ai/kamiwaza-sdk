@@ -14,6 +14,7 @@ from uuid import UUID
 
 from ..client import KamiwazaClient
 from ..exceptions import APIError
+from .workroom_binding import enter_projected_workroom
 
 
 def _is_binding_unsupported(error: APIError) -> bool:
@@ -71,10 +72,12 @@ def scoped_client_for_workroom(
     header instead, so that specific rejection is tolerated and the
     header-scoped client is returned unchanged. Any other error (e.g. a 404 for
     an unknown workroom) propagates.
+    An explicit pre-binding authorization-unavailable 503 is retried for up
+    to 30 seconds while newly created workroom grants project.
     """
     bound = client.workroom_scope(None)
     try:
-        bound.workrooms.enter(workroom_id)
+        enter_projected_workroom(bound, workroom_id)
     except APIError as exc:
         if not _is_binding_unsupported(exc):
             raise

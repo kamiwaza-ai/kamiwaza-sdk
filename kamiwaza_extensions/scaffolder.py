@@ -224,7 +224,7 @@ class Scaffolder:
                         f"Choose a different name or empty the directory."
                     )
             else:
-                target.mkdir()
+                self._create_directory(target)
         else:
             target = cwd
 
@@ -314,20 +314,89 @@ class Scaffolder:
         for src in sorted(template_dir.rglob("*")):
             if src.is_dir():
                 continue
+            self._render_template_file(src, template_dir, target, context)
 
-            rel = src.relative_to(template_dir)
-            dest = target / substitute(str(rel), context)
+    def _render_template_file(
+        self, src: Path, template_dir: Path, target: Path, context: Dict[str, str]
+    ) -> None:
+        """Render one template file into the target and pin its shareable mode.
 
-            dest.parent.mkdir(parents=True, exist_ok=True)
+        Templated text files get variable substitution; binary assets are
+        preserved byte-for-byte. Either way the file's mode is normalized so
+        the output is umask-independent (see ``_normalize_mode``).
+        """
+        rel = src.relative_to(template_dir)
+        dest = target / substitute(str(rel), context)
 
-            # Render templated text files and preserve binary assets byte-for-byte.
-            try:
-                content = src.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                dest.write_bytes(src.read_bytes())
-                continue
+        self._create_directory(dest.parent)
 
-            dest.write_text(substitute(content, context), encoding="utf-8")
+        # Render templated text files and preserve binary assets byte-for-byte.
+        try:
+            content = src.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            dest.write_bytes(src.read_bytes())
+            self._normalize_mode(src, dest)
+            return
+
+        dest.write_text(substitute(content, context), encoding="utf-8")
+        self._normalize_mode(src, dest)
+
+    def _create_directory(self, directory: Path) -> None:
+        """Create missing parents and pin only directories we actually create.
+
+        Existing directories (including symlink targets) retain their modes.
+        Directory creation is umask-masked, so new build-context directories
+        need 0755 for the image's non-root runtime to traverse them.
+        """
+        if directory.is_dir():
+            return
+        self._create_directory(directory.parent)
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            # Another creator may have won the race; we do not own its mode.
+            if not directory.is_dir():
+                raise
+        else:
+            self._set_mode(directory, 0o755)
+
+    @staticmethod
+    def _set_mode(dest: Path, mode: int) -> None:
+        """Warn and continue when the filesystem cannot apply POSIX modes."""
+        if dest.is_symlink():
+            return
+        try:
+            dest.chmod(mode)
+        except OSError as exc:
+            console.print(
+                f"Warning: could not set permissions to {mode:04o} on {dest}: "
+                f"{exc}. Non-root container access may require a filesystem "
+                "that supports POSIX permissions.",
+                style="yellow",
+                markup=False,
+            )
+
+    def _normalize_mode(self, src: Path, dest: Path) -> None:
+        """Pin scaffolded files to shareable modes regardless of host umask.
+
+        ``write_text``/``write_bytes`` create files as ``0666 & ~umask`` and
+        ``mkdir`` creates directories as ``0777 & ~umask``. On hardened
+        hosts (umask 077) every scaffolded file lands 0600 and every
+        directory 0700, and the app shape's files become a Docker build
+        context: ``COPY`` preserves those modes, the Next.js standalone
+        runtime runs as a non-root user, and the boot-time relocation dies
+        with ``EACCES`` — first opening a root-owned ``package.json``
+        through a staging symlink, then failing to ``scandir`` the
+        image's ``public`` directory (both proven live as uid 1001
+        against ``-rw------- root root`` context files).
+        Normalizing to 0644 files / 0755 directories (0755 for executable
+        templates, preserving their executable intent) makes newly created
+        output modes independent of umask on POSIX filesystems. Executable
+        templates explicitly receive execute bits, which write_text alone
+        would not preserve even on a default 022 host.
+        """
+        mode = 0o755 if src.stat().st_mode & 0o111 else 0o644
+        self._set_mode(dest, mode)
 
     def _git_init(self, target: Path) -> None:
         try:

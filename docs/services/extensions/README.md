@@ -60,7 +60,9 @@ readable locally but is excluded from serialized requests.
 
 Compose URLs referencing the service itself are scoped to its deployed Service
 name, just like references from another service. Kubernetes does not provide
-the unprefixed Compose alias, including for self-callbacks.
+the unprefixed Compose alias, including for self-callbacks. Scoped Service
+callbacks can reach any ready replica. Use `localhost` or `127.0.0.1` when a
+call must stay in-pod, including startup or readiness calls before the pod is ready.
 
 ```python
 from kamiwaza_sdk.schemas.extensions import CreateExtension, ExtensionServiceSpec

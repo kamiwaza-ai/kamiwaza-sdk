@@ -32,6 +32,7 @@ from kamiwaza_sdk import (
 )
 from kamiwaza_sdk.services.federation_credentials import federation_credential_headers
 from kamiwaza_sdk.token_store import InMemoryTokenStore
+from kamiwaza_sdk.validation.federation_readiness import authorized_datasets
 from tests.integration import mesh_outcome
 
 from . import _mini_clearance as mc
@@ -575,6 +576,8 @@ def test_required_mesh_retrieval_returns_exact_post_gate_rows(
     name, urn = wiring["name"], wiring["urn"]
     persona, token = _active_persona_session(wiring["personas"][clearance])
 
+    authorized_datasets(persona, name)
+
     def _retrieve():
         # Create the retrieval job over the mesh AND drain its gated SSE stream
         # over the mesh — the results + gate_audit footer arrive on the stream,
@@ -637,11 +640,7 @@ def test_required_mesh_dataset_list_returns_only_authorized_fixture(
     wiring = shared_idp_gated_pair
     persona, _token = _active_persona_session(wiring["personas"]["U"])
 
-    datasets = _required_mesh_call(
-        lambda: persona.catalog.datasets.list(
-            target_cluster=wiring["name"],
-        )
-    )
+    datasets = authorized_datasets(persona, wiring["name"])
 
     assert [str(dataset.urn) for dataset in datasets] == [wiring["urn"]]
 
@@ -652,6 +651,7 @@ def test_required_mesh_job_reaches_receiver_and_returns_marker(
     """Run a recoverable job on the receiver and assert its exact payload."""
     wiring = shared_idp_gated_pair
     persona, _token = _active_persona_session(wiring["personas"]["U"])
+    authorized_datasets(persona, wiring["name"])
     marker = f"eng10050-{uuid.uuid4().hex}"
     script = (
         "import json\n"
