@@ -4,7 +4,6 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 from uuid import UUID
-from enum import Enum
 
 
 class CreateToolDeployment(BaseModel):

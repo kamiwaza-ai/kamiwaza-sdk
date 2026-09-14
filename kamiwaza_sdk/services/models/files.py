@@ -1,12 +1,15 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import TYPE_CHECKING, List, Union
 from uuid import UUID
-from ...schemas.models.model import Model
 from ...schemas.models.model_file import ModelFile, CreateModelFile
 from ...schemas.models.model_search import HubModelFileSearch
+
+if TYPE_CHECKING:
+    from ...client import KamiwazaClient
 
 
 class ModelFileMixin:
     """Mixin for model file operations."""
+    client: "KamiwazaClient"
     
     def get_model_memory_usage(self, model_id: Union[str, UUID]) -> int:
         """

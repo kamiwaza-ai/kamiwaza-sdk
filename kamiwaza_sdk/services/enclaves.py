@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from ..exceptions import APIError
 from .base_service import BaseService
 from ..schemas.enclaves import (
     ConnectorCreate,

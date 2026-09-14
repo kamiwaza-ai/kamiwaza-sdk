@@ -36,7 +36,7 @@ class HuggingFaceArtifactProvider(ArtifactProvider):
         path = snapshot_download(
             repo_id,
             revision=revision,
-            allow_patterns=allow_patterns,
+            allow_patterns=list(allow_patterns) if allow_patterns is not None else None,
             cache_dir=cache_dir,
             repo_type="model",
         )
