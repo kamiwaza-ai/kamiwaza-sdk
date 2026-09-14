@@ -2,6 +2,7 @@
 
 import ssl
 
+import httpx
 import pytest
 from openai._models import FinalRequestOptions
 from starlette.datastructures import Headers
@@ -65,6 +66,44 @@ class TestAvailableModel:
 
         assert model._extra["gpu_count"] == 2
         assert model._extra["endpoint_url"] == "http://model:8080"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "expected_base"),
+    [
+        (
+            "https://models.example.test/runtime/models/dep-chat/v1",
+            "http://platform-gateway.kamiwaza.svc.cluster.local"
+            "/runtime/models/dep-chat/v1",
+        ),
+        (
+            "https://models.example.test/v1",
+            "http://platform-gateway.kamiwaza.svc.cluster.local/v1",
+        ),
+    ],
+)
+async def test_model_client_preserves_route_authority_over_standard_transport(
+    monkeypatch, endpoint, expected_base
+):
+    monkeypatch.setenv("KAMIWAZA_ENDPOINT", endpoint)
+    monkeypatch.setenv(
+        "KAMIWAZA_PLATFORM_GATEWAY_URL",
+        "http://platform-gateway.kamiwaza.svc.cluster.local",
+    )
+    request = MagicMock()
+    request.headers = {"x-auth-token": "jwt-abc"}
+
+    client = await get_model_client(request)
+
+    assert str(client.base_url).rstrip("/") == expected_base
+    assert client._client.headers["host"] == "models.example.test"
+    outbound = httpx.Request("POST", f"{expected_base}/chat/completions")
+    for hook in client._client.event_hooks["request"]:
+        await hook(outbound)
+    assert outbound.extensions["sni_hostname"] == "models.example.test"
+    await client.close()
 
 
 @pytest.mark.unit

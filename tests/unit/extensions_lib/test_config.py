@@ -71,6 +71,10 @@ class TestAuthConfig:
     def test_from_env_all_set(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
         monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://cluster.test/api")
+        monkeypatch.setenv(
+            "KAMIWAZA_PLATFORM_GATEWAY_URL",
+            "http://platform-gateway.kamiwaza.svc.cluster.local",
+        )
         monkeypatch.setenv("KAMIWAZA_ENDPOINT", "http://model:8080/v1")
         monkeypatch.setenv(
             "KAMIWAZA_APP_URL", "https://cluster.test/runtime/apps/my-app"
@@ -90,6 +94,10 @@ class TestAuthConfig:
 
         assert config.api_url == "http://api:7777/api"
         assert config.public_api_url == "https://cluster.test/api"
+        assert (
+            config.platform_gateway_url
+            == "http://platform-gateway.kamiwaza.svc.cluster.local"
+        )
         assert config.openai_base == "http://model:8080/v1"
         assert config.app_url == "https://cluster.test/runtime/apps/my-app"
         assert config.app_path == "/runtime/apps/my-app"
@@ -108,6 +116,7 @@ class TestAuthConfig:
             pass
         monkeypatch.delenv("KAMIWAZA_API_URL", raising=False)
         monkeypatch.delenv("KAMIWAZA_PUBLIC_API_URL", raising=False)
+        monkeypatch.delenv("KAMIWAZA_PLATFORM_GATEWAY_URL", raising=False)
         monkeypatch.delenv("KAMIWAZA_ENDPOINT", raising=False)
         monkeypatch.delenv("KAMIWAZA_MODEL_URL", raising=False)
         monkeypatch.delenv("KAMIWAZA_APP_URL", raising=False)
@@ -124,6 +133,7 @@ class TestAuthConfig:
         config = AuthConfig.from_env()
 
         assert config.api_url == ""
+        assert config.platform_gateway_url == ""
         assert config.openai_base == ""
         assert config.use_auth is True  # secure default
         assert config.api_key == ""

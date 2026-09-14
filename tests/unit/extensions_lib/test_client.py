@@ -14,14 +14,27 @@ from kamiwaza_extensions_lib.client import KamiwazaExtClient
 @pytest.mark.unit
 class TestKamiwazaExtClientInit:
     def test_from_env(self, monkeypatch):
-        monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
-        monkeypatch.setenv("KAMIWAZA_ENDPOINT", "http://model:8080/v1")
+        monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
+        monkeypatch.setenv(
+            "KAMIWAZA_PUBLIC_API_URL", "https://public.example.test/api"
+        )
+        monkeypatch.setenv(
+            "KAMIWAZA_PLATFORM_GATEWAY_URL",
+            "http://platform-gateway.kamiwaza.svc.cluster.local",
+        )
+        monkeypatch.setenv("KAMIWAZA_ENDPOINT", "https://public.example.test/v1")
         monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
 
         client = KamiwazaExtClient.from_env()
 
-        assert client.api_base == "http://api:7777/api"
-        assert client.openai_base == "http://model:8080/v1"
+        assert (
+            client.api_base
+            == "http://platform-gateway.kamiwaza.svc.cluster.local/api"
+        )
+        assert (
+            client.openai_base
+            == "http://platform-gateway.kamiwaza.svc.cluster.local/v1"
+        )
         assert client._verify_ssl is True
 
     def test_from_env_strips_trailing_slash(self, monkeypatch):
@@ -34,11 +47,22 @@ class TestKamiwazaExtClientInit:
         assert client.openai_base == "http://model:8080/v1"
 
     def test_service_account(self, monkeypatch):
-        monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
+        monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
+        monkeypatch.setenv(
+            "KAMIWAZA_PUBLIC_API_URL", "https://public.example.test/api"
+        )
+        monkeypatch.setenv(
+            "KAMIWAZA_PLATFORM_GATEWAY_URL",
+            "http://platform-gateway.kamiwaza.svc.cluster.local",
+        )
         monkeypatch.setenv("KAMIWAZA_API_KEY", "pat-secret")
 
         client = KamiwazaExtClient.service_account()
 
+        assert (
+            client.api_base
+            == "http://platform-gateway.kamiwaza.svc.cluster.local/api"
+        )
         assert client._default_headers["Authorization"] == "Bearer pat-secret"
 
     def test_service_account_raises_without_key(self, monkeypatch):
