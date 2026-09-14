@@ -1,6 +1,5 @@
 # kamiwaza-sdk/schemas/vectordb.py
 
-import uuid
 from pydantic import Field, BaseModel
 from typing import Any, Dict, List, Tuple, Optional
 from datetime import datetime
@@ -22,8 +21,8 @@ class VectorDB(CreateVectorDB):
 class Connect(BaseModel):
     host: str = Field(..., description="The host to connect to")
     port: int = Field(..., description="The port to connect to")
-    username: str = Field(None, description="The username for the connection")
-    password: str = Field(None, description="The password for the connection")
+    username: Optional[str] = Field(None, description="The username for the connection")
+    password: Optional[str] = Field(None, description="The password for the connection")
 
 class InsertVectorsRequest(BaseModel):
     collection_name: str
@@ -39,7 +38,7 @@ class SearchVectorsRequest(BaseModel):
     collection_name: str
     query_vectors: List[List[float]]
     anns_field: str = "embedding"
-    search_params: Dict[str, Any] = None
+    search_params: Optional[Dict[str, Any]] = None
     limit: int = 100
     output_fields: Optional[List[str]] = None
 

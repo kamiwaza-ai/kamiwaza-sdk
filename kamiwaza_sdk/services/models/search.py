@@ -1,11 +1,17 @@
-from typing import List, Optional, Dict, Any, Union, Set
-from uuid import UUID
+from typing import TYPE_CHECKING, List, Optional, cast
 from ...schemas.models.model import Model
 from ...schemas.models.model_search import ModelSearchRequest, ModelSearchResponse, HubModelFileSearch
+
+if TYPE_CHECKING:
+    from ...client import KamiwazaClient
+    from .files import ModelFileMixin
+    from ...utils.quant_manager import QuantizationManager
 
 
 class ModelSearchMixin:
     """Mixin for model search functionality."""
+    client: "KamiwazaClient"
+    quant_manager: "QuantizationManager"
     
     def search_models(self, query: str, exact: bool = False, limit: int = 100, 
                      hubs_to_search: Optional[List[str]] = None, 
@@ -39,7 +45,7 @@ class ModelSearchMixin:
                 try:
                     # Search for files for this model
                     if model.repo_modelId and model.hub:
-                        files = self.search_hub_model_files(
+                        files = cast("ModelFileMixin", self).search_hub_model_files(
                             HubModelFileSearch(hub=model.hub, model=model.repo_modelId)
                         )
                         # Add files to the model

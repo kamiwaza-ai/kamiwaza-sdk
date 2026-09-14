@@ -1,10 +1,14 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import TYPE_CHECKING, List, Union
 from uuid import UUID
-from ...schemas.models.model import Model, ModelConfig, CreateModelConfig
+from ...schemas.models.model import ModelConfig, CreateModelConfig
+
+if TYPE_CHECKING:
+    from ...client import KamiwazaClient
 
 
 class ModelConfigMixin:
     """Mixin for model configuration operations."""
+    client: "KamiwazaClient"
     
     def create_model_config(self, config: CreateModelConfig) -> ModelConfig:
         """

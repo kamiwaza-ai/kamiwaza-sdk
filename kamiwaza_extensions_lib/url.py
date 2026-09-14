@@ -1,33 +1,17 @@
-"""URL-resolution helpers shared by the runtime-lib and the app template.
+"""URL helpers for registered platform routes and callback transports.
 
-Two distinct base-URL concepts; pick the right one for the call site:
-
-* :func:`public_base_url` — **browser-facing** runtime URLs (model
-  endpoints displayed in the UI, deployment access paths returned to
-  the frontend). ``/api`` is stripped.
-
-* :func:`backend_runtime_base` — **container-routable** runtime URLs
-  used by code that runs *inside* the backend container (AsyncOpenAI
-  base URLs, server-to-platform runtime calls). ``/api`` is stripped.
-
-Auth endpoints (``/api/auth/login``, ``/api/auth/logout``) live UNDER
-``/api`` and so use the raw URLs directly via inline
-``(public ?: api).rstrip("/")`` precedence in :mod:`session` — they
-intentionally do NOT route through these helpers.
-
-In production both URLs typically point at the same gateway, so the
-priority order is a no-op there. Under ``kz-ext dev local --auth`` the
-two intentionally diverge (``KAMIWAZA_PUBLIC_API_URL=http://localhost:8000``
-for browser, ``KAMIWAZA_API_URL=http://host.docker.internal:8000/api``
-for container).
-
-This module is the single source of truth — any call site that imports
-its own copy of the priority logic risks the round-5/7/8 regressions
-where one URL leaked into the other audience's code path.
+Registered URLs define HTTP Host, path, TLS authority, and authorization
+context. ``KAMIWAZA_PLATFORM_GATEWAY_URL`` may replace only the connection
+origin used by extension backend callbacks.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import httpx
+
+from ._headers import has_http_control_character
 from .config import AuthConfig
 
 
@@ -46,36 +30,84 @@ def _strip_api_suffix(url: str) -> str:
     return url.rstrip("/").removesuffix("/api").rstrip("/")
 
 
-def public_base_url(config: AuthConfig) -> str:
-    """Browser-facing base URL — for redirects and user-displayed values.
+@dataclass(frozen=True)
+class CallbackTarget:
+    """Connection URL plus authority retained from a registered route."""
 
-    Prefers ``config.public_api_url`` (the developer's browser-resolvable
-    host) over ``config.api_url``. Under ``kz-ext dev local --auth`` the
-    browser cannot resolve ``host.docker.internal``, so this MUST keep
-    the original loopback host.
-    """
+    url: str
+    host: str
+    server_name: str
+
+    @property
+    def extensions(self) -> dict[str, str] | None:
+        """Return HTTPX TLS authority metadata when available."""
+        if not self.server_name:
+            return None
+        return {"sni_hostname": self.server_name}
+
+
+def _http_url(raw: str, *, origin_only: bool) -> httpx.URL:
+    value = raw.strip()
+    try:
+        url = httpx.URL(value)
+        port = url.port
+    except (httpx.InvalidURL, ValueError) as exc:
+        raise ValueError("invalid HTTP URL") from exc
+    invalid = any(
+        (
+            not value,
+            url.scheme not in {"http", "https"},
+            not url.host,
+            port is not None and not 1 <= port <= 65535,
+            bool(url.userinfo),
+            bool(url.query),
+            bool(url.fragment),
+            has_http_control_character(value),
+            origin_only and url.path not in {"", "/"},
+        )
+    )
+    if invalid:
+        raise ValueError("invalid HTTP URL")
+    return url
+
+
+def callback_target(
+    registered_url: str,
+    transport_origin: str = "",
+) -> CallbackTarget:
+    """Dial ``transport_origin`` while retaining registered route authority."""
+    registered = _http_url(registered_url, origin_only=False)
+    transport = (
+        _http_url(transport_origin, origin_only=True)
+        if transport_origin.strip()
+        else registered
+    )
+    target = registered.copy_with(
+        scheme=transport.scheme,
+        host=transport.host,
+        port=transport.port,
+    )
+    return CallbackTarget(
+        url=str(target),
+        host=registered.netloc.decode("ascii"),
+        server_name=registered.host,
+    )
+
+
+def registered_api_url(config: AuthConfig) -> str:
+    """Return public registered API URL without direct-Core fallback."""
     if config.public_api_url:
-        return _strip_api_suffix(config.public_api_url)
-    if config.api_url:
-        return _strip_api_suffix(config.api_url)
+        return config.public_api_url.strip()
+    if config.origin:
+        return f"{config.origin.strip().rstrip('/')}/api"
     return ""
+
+
+def public_base_url(config: AuthConfig) -> str:
+    """Return browser-facing base URL with legacy API fallback."""
+    return _strip_api_suffix(registered_api_url(config) or config.api_url)
 
 
 def backend_runtime_base(config: AuthConfig) -> str:
-    """Container-routable base URL — for code that runs inside the backend.
-
-    Prefers ``config.api_url`` (server-to-platform routable) over
-    ``config.public_api_url``. Under ``kz-ext dev local --auth`` the
-    backend container cannot reach its own ``localhost``, so this MUST
-    use the rewritten ``host.docker.internal`` alias.
-
-    PR #87 round-7 + round-8 caught two regressions where this priority
-    wasn't honored: round-7 in ``_resolve_openai_base`` (lib), round-8 in
-    the template's local ``_public_base_url`` and the
-    ``/auth/logout`` server-side termination call.
-    """
-    if config.api_url:
-        return _strip_api_suffix(config.api_url)
-    if config.public_api_url:
-        return _strip_api_suffix(config.public_api_url)
-    return ""
+    """Return legacy container-routable runtime base during transition."""
+    return _strip_api_suffix(config.api_url or registered_api_url(config))

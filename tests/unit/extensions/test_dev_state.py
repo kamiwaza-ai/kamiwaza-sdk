@@ -690,10 +690,10 @@ class TestBuildPatchKwargsCarriesAnnotations:
         patch = PatchExtension(**kwargs)
         assert (patch.model_extra or {}).get("annotations") == {"k": "v"}
 
-    def test_carries_kamiwaza_spec_so_patch_refreshes_integration_settings(self):
-        """Refresh API URLs, origin, and auth settings on the existing CR.
-
-        TLS policy is carried separately by each patched service's env.
+    def test_carries_kamiwaza_spec_so_patch_refreshes_platform_endpoints(self):
+        """The existing CR persists from the original CREATE. PATCH must carry
+        current platform API and origin settings so a connection change does
+        not leave deployed workloads on stale endpoints.
         """
         from kamiwaza_extensions.commands.dev import _build_patch_kwargs
 

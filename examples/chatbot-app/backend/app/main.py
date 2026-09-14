@@ -5,23 +5,22 @@ import logging
 import os
 from urllib.parse import urlparse, urlunparse
 
-import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from openai import APIStatusError
+
 from kamiwaza_extensions_lib import (
     AuthConfig,
     Identity,
     MisboundAuthError,
     backend_runtime_base,
     create_session_router,
-    forward_auth_httpx_headers,
     get_model_client,
     list_available_models,
     public_base_url,
     require_auth,
 )
-from fastapi.responses import JSONResponse
-from openai import APIStatusError, AsyncOpenAI
 
 app = FastAPI(title="chatbot-app")
 logger = logging.getLogger(__name__)
@@ -281,30 +280,7 @@ def _candidate_models(requested_model: str, resolved_model: str, endpoint: str |
 
 
 async def _build_chat_client(request: Request, endpoint: str | None):
-    if not endpoint:
-        return await get_model_client(request)
-
-    config = AuthConfig.from_env()
-    wire_headers = forward_auth_httpx_headers(request.headers)
-    auth_header = wire_headers.get("authorization")
-
-    api_key = "not-needed-kamiwaza"
-    if auth_header:
-        prefix = "bearer "
-        if auth_header.lower().startswith(prefix):
-            api_key = auth_header[len(prefix) :]
-        else:
-            api_key = auth_header
-
-    return AsyncOpenAI(
-        base_url=endpoint,
-        api_key=api_key,
-        http_client=httpx.AsyncClient(
-            headers=wire_headers,
-            verify=config.httpx_verify(),
-            trust_env=False,
-        ),
-    )
+    return await get_model_client(request, endpoint)
 
 
 @app.post("/api/chat")

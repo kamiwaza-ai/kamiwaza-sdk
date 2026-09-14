@@ -1,13 +1,20 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import TYPE_CHECKING, Any, Dict, List, cast
 import platform
-from uuid import UUID
 from ...exceptions import APIError
 from ...schemas.models.model_file import ModelFile
 from ...schemas.models.model_search import HubModelFileSearch
 
 
+if TYPE_CHECKING:
+    from ...client import KamiwazaClient
+    from .files import ModelFileMixin
+    from .search import ModelSearchMixin
+
+
 class CompatibilityMixin:
     """Mixin for OS compatibility checks."""
+    client: "KamiwazaClient"
+    _server_info: Dict[str, Any] | None
     
     def _get_server_os(self) -> str:
         """
@@ -43,14 +50,16 @@ class CompatibilityMixin:
         Returns:
             List[Dict[str, Any]]: A list of compatible models with their files.
         """
-        server_os = self._get_server_os()
-        models = self.search_models(model_name)
+        self._get_server_os()
+        models = cast("ModelSearchMixin", self).search_models(model_name)
         
         # Let server handle compatibility via download endpoint
         # Just organize the model info for the user
         model_info = []
         for model in models:
-            files = self.search_hub_model_files(
+            if model.hub is None or model.repo_modelId is None:
+                continue
+            files = cast("ModelFileMixin", self).search_hub_model_files(
                 HubModelFileSearch(
                     hub=model.hub, 
                     model=model.repo_modelId

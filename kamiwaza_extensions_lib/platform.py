@@ -13,7 +13,7 @@ from ._headers import has_http_control_character, header_bytes, is_http_token
 from .auth import is_forwarded_auth_header, platform_auth_httpx_headers
 from .config import AuthConfig
 from .errors import PlatformOutageError, PlatformRedirectError, UnexpectedContextError
-from .url import _strip_api_suffix
+from .url import CallbackTarget, _strip_api_suffix, callback_target, registered_api_url
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _FORBIDDEN_REQUEST_KWARGS = frozenset(
@@ -54,8 +54,7 @@ _FORBIDDEN_ROUTING_HEADERS = frozenset(
 )
 
 
-def _platform_url(path: str, config: AuthConfig) -> str:
-    """Resolve a root-relative path against the container-routable base."""
+def _validate_platform_path(path: str) -> None:
     try:
         parsed_path = urlsplit(path)
     except ValueError as exc:
@@ -91,39 +90,29 @@ def _platform_url(path: str, config: AuthConfig) -> str:
             "'/api/catalog/datasets/'); pass query parameters with params="
         )
 
-    raw_base = config.api_url.strip()
+
+def _platform_url(path: str, config: AuthConfig) -> CallbackTarget:
+    """Resolve a root-relative path through standard callback transport."""
+    _validate_platform_path(path)
+    standard_transport = config.platform_gateway_url.strip()
+    raw_base = (
+        registered_api_url(config)
+        if standard_transport
+        else config.api_url.strip() or registered_api_url(config)
+    )
     if not raw_base:
         raise UnexpectedContextError(
-            "KAMIWAZA_API_URL is required for request-bound platform calls"
+            "KAMIWAZA_API_URL or KAMIWAZA_PUBLIC_API_URL is required "
+            "for request-bound platform calls"
         )
+    registered_url = f"{_strip_api_suffix(raw_base).rstrip('/')}{path}"
     try:
-        configured_base = urlsplit(raw_base)
-        configured_hostname = configured_base.hostname
-        configured_port = configured_base.port
+        return callback_target(registered_url, standard_transport)
     except ValueError as exc:
         raise UnexpectedContextError(
-            "KAMIWAZA_API_URL is not a valid container-routable platform URL"
+            "KAMIWAZA_API_URL, KAMIWAZA_PUBLIC_API_URL, or "
+            "KAMIWAZA_PLATFORM_GATEWAY_URL is not valid callback configuration"
         ) from exc
-    configured_base_is_invalid = any(
-        (
-            configured_base.scheme not in {"http", "https"},
-            not configured_base.netloc,
-            not configured_hostname,
-            configured_port is not None and not 1 <= configured_port <= 65535,
-            configured_base.username is not None,
-            configured_base.password is not None,
-            bool(configured_base.query),
-            bool(configured_base.fragment),
-            has_http_control_character(raw_base),
-        )
-    )
-    if configured_base_is_invalid:
-        raise UnexpectedContextError(
-            "KAMIWAZA_API_URL is not a valid container-routable platform URL"
-        )
-
-    base = _strip_api_suffix(raw_base)
-    return f"{base.rstrip('/')}{path}"
 
 
 def _application_header_items(
@@ -170,14 +159,12 @@ async def platform_request(
     timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     **kwargs: Any,
 ) -> httpx.Response:
-    """Call a canonical platform path with the incoming user's auth envelope.
+    """Call a canonical platform route with the incoming user's auth envelope.
 
-    The destination is resolved from the container-routable
-    ``KAMIWAZA_API_URL``. Absolute and scheme-relative URLs are rejected so
-    forwarded credentials cannot leave that origin. Redirects are deliberately
-    disabled: a redirect response raises :class:`PlatformRedirectError`,
-    prompting the caller to correct the platform path rather than risk losing
-    auth headers.
+    Registered public URL retains Host, path, TLS authority, and authorization.
+    ``KAMIWAZA_PLATFORM_GATEWAY_URL`` changes only the connection origin.
+    Absolute and scheme-relative paths are rejected. Redirects raise
+    :class:`PlatformRedirectError` instead of forwarding credentials.
 
     The response is returned without calling ``raise_for_status`` so an
     extension can preserve the platform's 4xx/5xx status and error contract.
@@ -198,8 +185,10 @@ async def platform_request(
         raise ValueError("platform_request requires a valid HTTP method token")
 
     config = AuthConfig.from_env()
-    url = _platform_url(path, config)
+    target = _platform_url(path, config)
     outbound_headers = _request_headers(request.headers, headers)
+    outbound_headers["Host"] = target.host
+    kwargs["extensions"] = target.extensions
     kwargs["follow_redirects"] = False
 
     try:
@@ -210,7 +199,7 @@ async def platform_request(
         ) as client:
             response = await client.request(
                 method.upper(),
-                url,
+                target.url,
                 headers=outbound_headers,
                 **kwargs,
             )

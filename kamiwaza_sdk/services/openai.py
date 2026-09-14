@@ -5,7 +5,7 @@ from uuid import UUID
 import httpx
 from openai import OpenAI
 from .base_service import BaseService
-from ..exceptions import APIError, AuthenticationError
+from ..exceptions import AuthenticationError
 
 class OpenAIService(BaseService):
     def get_client(

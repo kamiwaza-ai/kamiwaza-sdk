@@ -1,7 +1,7 @@
 # kamiwaza_sdk/schemas/cluster.py
 
 from pydantic import BaseModel, Field, EmailStr
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 from datetime import datetime
 from uuid import UUID
 

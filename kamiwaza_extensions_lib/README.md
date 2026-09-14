@@ -42,10 +42,13 @@ response.raise_for_status()
 datasets = response.json()
 ```
 
-The helper uses the container-routable platform URL, forwards the current
-ForwardAuth envelope, and deliberately refuses to follow HTTP redirects. Set
-the optional `timeout=` in seconds when the 30-second default is unsuitable.
-Each call currently uses a short-lived client; connection pooling is tracked in
+When `KAMIWAZA_PLATFORM_GATEWAY_URL` is present, the helper connects through
+that origin while retaining the registered public route's Host, path, TLS
+authority, and complete ForwardAuth envelope. Existing runtimes without the new
+variable continue to use `KAMIWAZA_API_URL` during the transition. The helper
+never follows HTTP redirects. Set `timeout=` in seconds when the 30-second
+default is unsuitable. Each call currently uses a short-lived client;
+connection pooling is tracked in
 [GitHub issue #63](https://github.com/kamiwaza-ai/kamiwaza-sdk/issues/63). Do not
 construct absolute platform URLs or use a raw `httpx.AsyncClient` for
 request-bound platform calls. Caller headers cannot replace the envelope's
@@ -61,7 +64,7 @@ The helper raises:
 - `ValueError` for invalid paths, methods, headers, or caller overrides
 - `MisboundAuthError` when the platform-provided ForwardAuth envelope is
   malformed or contains an ambiguous duplicate field
-- `UnexpectedContextError` when `KAMIWAZA_API_URL` is missing or invalid
+- `UnexpectedContextError` when callback URL configuration is missing or invalid
 - `PlatformRedirectError` (a specialized `UnexpectedContextError`) when the
   canonical route redirects
 - `PlatformOutageError` for network, timeout, or upstream protocol failures

@@ -84,8 +84,8 @@ class KamiwazaIntegrationSpec(BaseModel):
         exclude=True,
         description=(
             "Legacy local compatibility attribute, omitted from API requests. "
-            "Configure TLS through each service's KAMIWAZA_VERIFY_SSL and "
-            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED environment values."
+            "Connection TLS settings apply only to SDK requests; the platform "
+            "projects workload trust."
         ),
     )
 
@@ -189,6 +189,7 @@ class PatchServiceSpec(BaseModel):
     image: Optional[ImagePatch] = None
     primary: Optional[bool] = None
     env: Optional[List[Dict[str, Any]]] = None
+    replace_env: bool = Field(default=False, alias="replaceEnv")
     replicas: Optional[int] = Field(None, ge=0)
     command: Optional[List[str]] = None
     args: Optional[List[str]] = None

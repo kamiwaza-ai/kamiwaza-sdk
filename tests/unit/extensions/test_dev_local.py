@@ -36,6 +36,7 @@ class TestEnvOverlay:
         overlay = build_env_overlay(conn, "my-app")
         assert overlay["KAMIWAZA_API_URL"] == "https://example.com/api"
         assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com/api"
+        assert overlay["KAMIWAZA_PLATFORM_GATEWAY_URL"] == "https://example.com"
         assert overlay["KAMIWAZA_USE_AUTH"] == "false"
         assert overlay["KAMIWAZA_APP_NAME"] == "my-app"
 
@@ -63,6 +64,7 @@ class TestEnvOverlay:
         assert (
             overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com/api-gateway/api"
         )
+        assert overlay["KAMIWAZA_PLATFORM_GATEWAY_URL"] == "https://example.com"
 
     def test_auth_false_preserves_current_behaviour(self):
         # TS-5 — auth=False is the existing path; no gate, no bearer, USE_AUTH=false
@@ -115,6 +117,10 @@ class TestEnvOverlay:
         # Container-side: rewritten so backend can reach the host.
         assert overlay["KAMIWAZA_API_URL"] == "http://host.docker.internal:8000/api"
         assert overlay["KAMIWAZA_ENDPOINT"] == "http://host.docker.internal:8000/api/v1"
+        assert (
+            overlay["KAMIWAZA_PLATFORM_GATEWAY_URL"]
+            == "http://host.docker.internal:8000"
+        )
         # Browser-side: NEVER rewritten — host.docker.internal isn't
         # resolvable from the developer's browser. Round-10: keeps the
         # ``/api`` suffix so session.py's login/logout URLs are correct.
@@ -138,6 +144,7 @@ class TestEnvOverlay:
         assert overlay["KAMIWAZA_API_URL"] == "https://kamiwaza.test/api"
         # Round-10: raw URL (with /api) so session.py auth redirects work.
         assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://kamiwaza.test/api"
+        assert overlay["KAMIWAZA_PLATFORM_GATEWAY_URL"] == "https://kamiwaza.test"
         assert overlay["KAMIWAZA_VERIFY_SSL"] == "false"
 
     def test_auth_true_loopback_public_url_stays_on_original_host(self):
@@ -1305,6 +1312,7 @@ class TestPollAndPrintUrls:
         get TWO URLs printed, not one — and the loop must terminate as
         soon as both are resolved, not spin to the 60s deadline."""
         import threading
+
         from kamiwaza_extensions import dev_local
 
         runner = self._runner()
@@ -1346,6 +1354,7 @@ class TestPollAndPrintUrls:
         the moment the single URL is resolved (PR #91 round-3 / Claude
         review)."""
         import threading
+
         from kamiwaza_extensions import dev_local
 
         runner = self._runner()

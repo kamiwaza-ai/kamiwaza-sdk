@@ -106,17 +106,17 @@ response = await platform_request(request, "GET", "/api/catalog/datasets/")
 response.raise_for_status()
 ```
 
-`platform_request()` requires the container-routable `KAMIWAZA_API_URL`; route
-paths must include the platform `/api` prefix. It forwards the
-platform-authenticated request envelope, rejects absolute destinations, and
-raises `PlatformRedirectError` (a specialized `UnexpectedContextError`) rather
-than following a redirect. Set `timeout=` in seconds when the 30-second default
-is unsuitable. Invalid caller input raises `ValueError`, missing or invalid
+`platform_request()` uses `KAMIWAZA_PLATFORM_GATEWAY_URL` as its connection
+origin when present. It retains the registered public route's Host, path, TLS
+authority, and platform-authenticated request envelope. Existing runtimes
+without the new variable continue to use `KAMIWAZA_API_URL` during the
+transition. Route paths must include the platform `/api` prefix. The helper
+rejects absolute destinations and raises `PlatformRedirectError` rather than
+following redirects. Set `timeout=` in seconds when the 30-second default is
+unsuitable. Invalid caller input raises `ValueError`, missing or invalid
 runtime configuration raises `UnexpectedContextError`, and transport failures
 raise `PlatformOutageError`. Caller headers cannot replace authentication,
 routing, framing, or `X-Request-Id` correlation fields from the envelope.
-This keeps auth attached to the original platform request and makes a missing
-canonical slash an immediate development error.
 
 User-bound clients ignore proxy and CA environment defaults. If the platform
 uses a private CA, mount its PEM bundle in the backend container and set

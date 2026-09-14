@@ -412,10 +412,11 @@ hosts must match their audience:
 - Python `list_available_models()` returns browser-facing endpoints for UI
   display. It preserves an explicit platform `endpoint`; otherwise it resolves
   `access_path`, then `lb_port`, against the public base.
-- Python `get_model_client()` runs inside the backend container. It prefers an
-  explicit platform `endpoint` but rehosts it onto the container-routable
-  origin, then falls back to `access_path`, `lb_port`, and the configured
-  OpenAI base.
+- Python `get_model_client()` preserves the registered model route's Host,
+  path, TLS authority, and authorization context. When
+  `KAMIWAZA_PLATFORM_GATEWAY_URL` is present, only the connection origin
+  changes. Existing runtimes without that variable retain legacy container
+  rehosting during the transition.
 
 Do not connect directly to a model worker port; the load balancer owns routing
 and failover. The generated scaffold demonstrates the backend flow when it

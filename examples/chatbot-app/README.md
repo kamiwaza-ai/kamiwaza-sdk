@@ -46,7 +46,8 @@ The frontend runs on http://localhost:3000 and the backend on http://localhost:8
   response.raise_for_status()
   ```
 
-  The helper uses the container-routable base, preserves the complete signed
-  envelope, and rejects redirects before auth can be lost.
+  When `KAMIWAZA_PLATFORM_GATEWAY_URL` is present, the helper connects through
+  that origin while preserving the registered route and complete signed
+  envelope. Existing runtimes retain their `KAMIWAZA_API_URL` behavior.
 - This example is kept intentionally close to the default app starter so
   changes to one should be reflected in the other.

@@ -81,10 +81,14 @@ def _http_body(payload, operation, service_filter=None):
     return client.patch.call_args.kwargs["json"]
 
 
+def test_patch_marks_environment_as_authoritative(compose):
+    body = _http_body(_build_payload(compose), "patch", service_filter="backend")
+
+    assert body["services"][0]["replaceEnv"] is True
+
+
 @pytest.mark.parametrize("operation", ["create", "patch"])
-def test_tls_policy_replaces_conflicts_in_every_serialized_service(
-    compose, tls_setting, operation
-):
+def test_tls_policy_stays_out_of_serialized_services(compose, tls_setting, operation):
     original = deepcopy(compose)
     payload = _build_payload(compose)
     body = _http_body(payload, operation)
@@ -99,12 +103,8 @@ def test_tls_policy_replaces_conflicts_in_every_serialized_service(
     }
     for service in body["services"]:
         env = service["env"]
-        assert [e["value"] for e in env if e["name"] == "KAMIWAZA_VERIFY_SSL"] == [
-            str(tls_setting).lower()
-        ]
-        assert [
-            e["value"] for e in env if e["name"] == "KAMIWAZA_TLS_REJECT_UNAUTHORIZED"
-        ] == ["1" if tls_setting else "0"]
+        assert not any(e["name"] == "KAMIWAZA_VERIFY_SSL" for e in env)
+        assert not any(e["name"] == "KAMIWAZA_TLS_REJECT_UNAUTHORIZED" for e in env)
         assert {"name": "KEEP", "value": "unchanged"} in env
         assert {"name": "KAMIWAZA_CA_BUNDLE", "value": "/mounted/company-ca.pem"} in env
     assert compose == original
@@ -139,11 +139,12 @@ def test_self_callback_reaches_http_body_without_mutating_source(
         assert compose == original
 
 
-def test_filtered_patch_refreshes_only_selected_service(compose, monkeypatch):
+def test_filtered_patch_keeps_platform_tls_out_of_workload(compose, monkeypatch):
     monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
     initial = _http_body(_build_payload(compose), "create")
+    tls_names = {"KAMIWAZA_VERIFY_SSL", "KAMIWAZA_TLS_REJECT_UNAUTHORIZED"}
     assert all(
-        {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"} in service["env"]
+        not any(entry["name"] in tls_names for entry in service["env"])
         for service in initial["services"]
     )
 
@@ -153,8 +154,8 @@ def test_filtered_patch_refreshes_only_selected_service(compose, monkeypatch):
     # Siblings receive no PATCH entry: a full redeploy is needed to refresh them.
     assert [service["name"] for service in body["services"]] == ["backend"]
     env = body["services"][0]["env"]
-    assert {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"} in env
-    assert {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"} in env
+    assert not any(entry["name"] == "KAMIWAZA_VERIFY_SSL" for entry in env)
+    assert not any(entry["name"] == "KAMIWAZA_TLS_REJECT_UNAUTHORIZED" for entry in env)
     assert "tls_reject_unauthorized" not in body["kamiwaza"]
 
 
