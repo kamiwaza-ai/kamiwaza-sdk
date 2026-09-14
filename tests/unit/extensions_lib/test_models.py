@@ -1,12 +1,12 @@
 """Tests for kamiwaza_extensions_lib.models."""
 
 import ssl
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from openai._models import FinalRequestOptions
 from starlette.datastructures import Headers
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from kamiwaza_extensions_lib.models import (
     AvailableModel,
@@ -234,6 +234,7 @@ class TestGetModelClient:
         import httpx
 
         monkeypatch.setenv("KAMIWAZA_API_URL", "https://kamiwaza.test/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://kamiwaza.test/api")
         monkeypatch.setenv("KAMIWAZA_ENDPOINT", "https://model.test/v1")
         request = MagicMock()
         request.headers = {"x-user-id": "usr-123"}
@@ -323,6 +324,7 @@ class TestListAvailableModels:
     @pytest.mark.asyncio
     async def test_normalizes_endpoint_field_from_platform_payload(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://kamiwaza.test/api")
 
         request = MagicMock()
         request.headers = {"x-user-id": "usr-123"}
@@ -355,9 +357,10 @@ class TestListAvailableModels:
         )
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_no_api_url(self, monkeypatch):
+    async def test_returns_empty_when_no_registered_gateway(self, monkeypatch):
         monkeypatch.delenv("KAMIWAZA_API_URL", raising=False)
-
+        monkeypatch.delenv("KAMIWAZA_PUBLIC_API_URL", raising=False)
+        monkeypatch.delenv("KAMIWAZA_ORIGIN", raising=False)
         request = MagicMock()
         request.headers = {}
 
@@ -369,6 +372,7 @@ class TestListAvailableModels:
         import httpx
 
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://api:7777/api")
 
         request = MagicMock()
         request.headers = {}
@@ -395,6 +399,7 @@ class TestListAvailableModels:
     async def test_propagates_programming_errors(self, monkeypatch):
         """Non-network errors (e.g., TypeError) should NOT be silently swallowed."""
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://api:7777/api")
 
         request = MagicMock()
         request.headers = {}

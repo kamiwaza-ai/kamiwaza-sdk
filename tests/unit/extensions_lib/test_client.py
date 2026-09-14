@@ -15,9 +15,7 @@ from kamiwaza_extensions_lib.client import KamiwazaExtClient
 class TestKamiwazaExtClientInit:
     def test_from_env(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
-        monkeypatch.setenv(
-            "KAMIWAZA_PUBLIC_API_URL", "https://public.example.test/api"
-        )
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://public.example.test/api")
         monkeypatch.setenv(
             "KAMIWAZA_PLATFORM_GATEWAY_URL",
             "http://platform-gateway.kamiwaza.svc.cluster.local",
@@ -28,8 +26,7 @@ class TestKamiwazaExtClientInit:
         client = KamiwazaExtClient.from_env()
 
         assert (
-            client.api_base
-            == "http://platform-gateway.kamiwaza.svc.cluster.local/api"
+            client.api_base == "http://platform-gateway.kamiwaza.svc.cluster.local/api"
         )
         assert (
             client.openai_base
@@ -38,7 +35,7 @@ class TestKamiwazaExtClientInit:
         assert client._verify_ssl is True
 
     def test_from_env_strips_trailing_slash(self, monkeypatch):
-        monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api/")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://api:7777/api/")
         monkeypatch.setenv("KAMIWAZA_ENDPOINT", "http://model:8080/v1/")
 
         client = KamiwazaExtClient.from_env()
@@ -46,11 +43,29 @@ class TestKamiwazaExtClientInit:
         assert client.api_base == "http://api:7777/api"
         assert client.openai_base == "http://model:8080/v1"
 
+    def test_from_env_keeps_model_only_legacy_configuration(self, monkeypatch):
+        monkeypatch.delenv("KAMIWAZA_API_URL", raising=False)
+        monkeypatch.delenv("KAMIWAZA_PUBLIC_API_URL", raising=False)
+        monkeypatch.delenv("KAMIWAZA_PLATFORM_GATEWAY_URL", raising=False)
+        monkeypatch.setenv("KAMIWAZA_ENDPOINT", "http://model:8080/v1")
+
+        client = KamiwazaExtClient.from_env()
+
+        assert client.api_base == ""
+        assert client.openai_base == "http://model:8080/v1"
+
+    def test_from_env_keeps_legacy_api_when_public_url_is_invalid(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "ftp://invalid.example.test/api")
+        monkeypatch.delenv("KAMIWAZA_PLATFORM_GATEWAY_URL", raising=False)
+
+        client = KamiwazaExtClient.from_env()
+
+        assert client.api_base == "http://core-api:7777/api"
+
     def test_service_account(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
-        monkeypatch.setenv(
-            "KAMIWAZA_PUBLIC_API_URL", "https://public.example.test/api"
-        )
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://public.example.test/api")
         monkeypatch.setenv(
             "KAMIWAZA_PLATFORM_GATEWAY_URL",
             "http://platform-gateway.kamiwaza.svc.cluster.local",
@@ -60,8 +75,7 @@ class TestKamiwazaExtClientInit:
         client = KamiwazaExtClient.service_account()
 
         assert (
-            client.api_base
-            == "http://platform-gateway.kamiwaza.svc.cluster.local/api"
+            client.api_base == "http://platform-gateway.kamiwaza.svc.cluster.local/api"
         )
         assert client._default_headers["Authorization"] == "Bearer pat-secret"
 
@@ -132,7 +146,7 @@ class TestKamiwazaExtClientMethods:
     async def test_get_models_raises_without_api_base(self):
         client = KamiwazaExtClient(api_base="", openai_base="http://model:8080")
 
-        with pytest.raises(RuntimeError, match="KAMIWAZA_API_URL"):
+        with pytest.raises(RuntimeError, match="KAMIWAZA_PUBLIC_API_URL"):
             await client.get_models()
 
     @pytest.mark.asyncio
@@ -162,6 +176,7 @@ class TestKamiwazaExtClientMethods:
                     "model": "gpt-4",
                     "messages": [{"role": "user", "content": "hi"}],
                 },
+                extensions=None,
             )
 
     @pytest.mark.asyncio
@@ -185,9 +200,40 @@ class TestKamiwazaExtClientMethods:
             result = await client.get_models()
 
             mock_instance.get.assert_called_once_with(
-                "http://api:7777/api/serving/deployments"
+                "http://api:7777/api/serving/deployments",
+                extensions=None,
             )
             assert result == [{"id": "d1", "model_name": "llama"}]
+
+    @pytest.mark.asyncio
+    async def test_get_models_preserves_registered_authority_over_transport(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://public.example.test/api")
+        monkeypatch.setenv(
+            "KAMIWAZA_PLATFORM_GATEWAY_URL",
+            "http://platform-gateway.kamiwaza.svc.cluster.local",
+        )
+        client = KamiwazaExtClient.from_env()
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = []
+
+        with patch("kamiwaza_extensions_lib.client.httpx.AsyncClient") as client_cls:
+            transport = AsyncMock()
+            transport.get = AsyncMock(return_value=mock_response)
+            transport.__aenter__ = AsyncMock(return_value=transport)
+            transport.__aexit__ = AsyncMock(return_value=False)
+            client_cls.return_value = transport
+
+            await client.get_models()
+
+        assert client_cls.call_args.kwargs["headers"]["host"] == "public.example.test"
+        transport.get.assert_called_once_with(
+            "http://platform-gateway.kamiwaza.svc.cluster.local"
+            "/api/serving/deployments",
+            extensions={"sni_hostname": "public.example.test"},
+        )
 
     @pytest.mark.asyncio
     async def test_get_models_preserves_complete_envelope_and_promotes_auth_token(

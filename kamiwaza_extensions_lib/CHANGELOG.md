@@ -26,6 +26,14 @@ follow semver. The library is published to PyPI as a standalone package
 * Path-mode public URLs are derived from the configured origin plus the
   deployment prefix when `KAMIWAZA_APP_PATH_URL` is absent. Runtime path
   segments now use the regex-safe platform alphabet `[A-Za-z0-9_-]+`.
+* Extension callbacks consume `KAMIWAZA_PLATFORM_GATEWAY_URL` when present.
+  The connection uses that transport origin while retaining the registered
+  route's Host, path, TLS authority, and forwarded authorization context.
+  Runtimes without the new variable keep the existing `KAMIWAZA_API_URL`
+  behavior during the transition.
+* `get_model_client(request, endpoint=...)` accepts an explicit registered
+  model route, so generated apps and custom model selection share the same
+  callback transport.
 * `kz-ext update` adds `frontend/.dockerignore` rules for `.env*`, build output,
   and VCS metadata. Existing author negations remain authoritative for backward
   compatibility. When the update newly adds `.env*`, it warns and saves the old

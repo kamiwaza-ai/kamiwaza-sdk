@@ -22,6 +22,15 @@ def _request(headers: dict[str, str] | None = None) -> SimpleNamespace:
     return SimpleNamespace(headers=Headers(headers or {}))
 
 
+@pytest.fixture(autouse=True)
+def registered_gateway(monkeypatch):
+    monkeypatch.setenv(
+        "KAMIWAZA_PUBLIC_API_URL",
+        "http://core-api:7777/api",
+    )
+    monkeypatch.delenv("KAMIWAZA_PLATFORM_GATEWAY_URL", raising=False)
+
+
 @pytest.mark.unit
 class TestPlatformRequest:
     @pytest.mark.asyncio
@@ -396,40 +405,10 @@ class TestPlatformRequest:
         assert client_cls.call_args.kwargs["verify"] is verify_context
 
     @pytest.mark.asyncio
-    async def test_missing_container_base_is_typed_context_error(self, monkeypatch):
+    async def test_missing_registered_gateway_is_typed_context_error(self, monkeypatch):
         monkeypatch.delenv("KAMIWAZA_API_URL", raising=False)
         monkeypatch.delenv("KAMIWAZA_PUBLIC_API_URL", raising=False)
-
-        with pytest.raises(UnexpectedContextError, match="KAMIWAZA_API_URL"):
-            await platform_request(
-                _request(),
-                "GET",
-                "/api/catalog/datasets/",
-            )
-
-    @pytest.mark.asyncio
-    async def test_public_url_is_not_used_for_request_bound_credentials(
-        self, monkeypatch
-    ):
-        monkeypatch.delenv("KAMIWAZA_API_URL", raising=False)
-        monkeypatch.setenv(
-            "KAMIWAZA_PUBLIC_API_URL", "https://browser.example.test/api"
-        )
-
-        with pytest.raises(UnexpectedContextError, match="KAMIWAZA_API_URL"):
-            await platform_request(
-                _request({"Cookie": "session=opaque"}),
-                "GET",
-                "/api/catalog/datasets/",
-            )
-
-    @pytest.mark.asyncio
-    async def test_direct_core_url_does_not_replace_missing_gateway_origin(
-        self, monkeypatch
-    ):
-        monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
-        monkeypatch.delenv("KAMIWAZA_PUBLIC_API_URL", raising=False)
-        monkeypatch.delenv("KAMIWAZA_PLATFORM_GATEWAY_URL", raising=False)
+        monkeypatch.delenv("KAMIWAZA_ORIGIN", raising=False)
 
         with pytest.raises(UnexpectedContextError, match="KAMIWAZA_PUBLIC_API_URL"):
             await platform_request(
@@ -437,6 +416,46 @@ class TestPlatformRequest:
                 "GET",
                 "/api/catalog/datasets/",
             )
+
+    @pytest.mark.asyncio
+    async def test_registered_public_url_is_transport_fallback(
+        self, monkeypatch, httpx_mock
+    ):
+        monkeypatch.delenv("KAMIWAZA_API_URL", raising=False)
+        monkeypatch.setenv(
+            "KAMIWAZA_PUBLIC_API_URL", "https://browser.example.test/api"
+        )
+        expected_url = "https://browser.example.test/api/catalog/datasets/"
+        httpx_mock.add_response(method="GET", url=expected_url, json=[])
+
+        response = await platform_request(
+            _request({"Cookie": "session=opaque"}),
+            "GET",
+            "/api/catalog/datasets/",
+        )
+
+        assert response.status_code == 200
+        outbound = httpx_mock.get_request()
+        assert outbound is not None
+        assert outbound.headers["host"] == "browser.example.test"
+
+    @pytest.mark.asyncio
+    async def test_legacy_direct_core_url_remains_supported(
+        self, monkeypatch, httpx_mock
+    ):
+        monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "ftp://invalid.example.test/api")
+        monkeypatch.delenv("KAMIWAZA_PLATFORM_GATEWAY_URL", raising=False)
+        expected_url = "http://core-api:7777/api/catalog/datasets/"
+        httpx_mock.add_response(method="GET", url=expected_url, json=[])
+
+        response = await platform_request(
+            _request(),
+            "GET",
+            "/api/catalog/datasets/",
+        )
+
+        assert response.status_code == 200
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -453,12 +472,30 @@ class TestPlatformRequest:
             "http://user:secret@core-api:7777/api",
         ],
     )
-    async def test_invalid_container_base_is_typed_context_error(
+    async def test_invalid_registered_base_is_typed_context_error(
         self, monkeypatch, base
     ):
-        monkeypatch.setenv("KAMIWAZA_API_URL", base)
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", base)
 
-        with pytest.raises(UnexpectedContextError, match="not a valid"):
+        with pytest.raises(UnexpectedContextError, match="not valid"):
+            await platform_request(
+                _request(),
+                "GET",
+                "/api/catalog/datasets/",
+            )
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_standard_transport(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://public.example.test/api")
+        monkeypatch.setenv(
+            "KAMIWAZA_PLATFORM_GATEWAY_URL",
+            "http://platform-gateway.kamiwaza.svc.cluster.local/not-an-origin",
+        )
+
+        with pytest.raises(
+            UnexpectedContextError,
+            match="KAMIWAZA_PLATFORM_GATEWAY_URL",
+        ):
             await platform_request(
                 _request(),
                 "GET",
