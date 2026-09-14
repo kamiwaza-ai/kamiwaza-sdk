@@ -250,7 +250,8 @@ def _build_patch_service_spec(service: Any) -> Any:
             digest=digest if separator else "",
         ),
         primary=service.primary,
-        env=service.env or None,
+        env=service.env or [],
+        replace_env=True,
         replicas=service.replicas,
         # Empty lists explicitly restore the image defaults when a Compose
         # revision removes a prior entrypoint/command override.

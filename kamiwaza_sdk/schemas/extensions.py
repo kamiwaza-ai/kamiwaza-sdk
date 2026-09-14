@@ -189,6 +189,7 @@ class PatchServiceSpec(BaseModel):
     image: Optional[ImagePatch] = None
     primary: Optional[bool] = None
     env: Optional[List[Dict[str, Any]]] = None
+    replace_env: bool = Field(default=False, alias="replaceEnv")
     replicas: Optional[int] = Field(None, ge=0)
     command: Optional[List[str]] = None
     args: Optional[List[str]] = None
