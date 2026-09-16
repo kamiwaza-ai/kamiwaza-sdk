@@ -153,3 +153,7 @@ Core 1.4.0 instance; this does not represent another complete three-install run.
 Final receipts omit authentication bootstrap output and retain only workload
 response arrays from the runtime log. No private token files or authorization
 headers were copied.
+
+## Explicit-selection successor qualification
+
+The current admin-controlled selection implementation is qualified by the [isolated instance receipt](https://github.com/kamiwaza-internal/kamiwaza/blob/3604f3616c/tests/qualification/extension_selection/receipt.json) and [operator qualification narrative](https://github.com/kamiwaza-ai/kamiwaza-docs/pull/243). It separately records the full straw-version matrix and final-source targeted checks; this historical report remains unchanged evidence of the earlier behavior.
