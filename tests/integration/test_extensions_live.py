@@ -190,6 +190,18 @@ def test_extension_crud_lifecycle_typed(live_kamiwaza_client) -> None:
             PatchExtension(services=[PatchServiceSpec(name="echo", replicas=0)]),
         )
         assert patched.name == ext_name
+        for _ in range(30):
+            observed = service.get_extension_status(ext_name)
+            echo = next(
+                (item for item in observed.services if item.name == "echo"), None
+            )
+            if echo is not None and echo.replicas == 0:
+                break
+            time.sleep(1)
+        else:
+            pytest.fail(
+                f"Extension {ext_name} did not retain the patched replica count"
+            )
 
     finally:
         # Cleanup
