@@ -86,6 +86,10 @@
 #     client, then asserts the vectordb it made is listed and carries that
 #     workroom_id. No enter/leave or 403 denial — it cannot establish
 #     workrooms.session-scoping.
+#   * test_connector_spec_live.py — NOT evidence for
+#     connectors.managed-data-sources. register_from_spec creates a catalog
+#     dataset URN under /catalog and does not exercise the documented
+#     /connectors type/config lifecycle, availability, or verification.
 
 # ENG-12269: these warm-cluster tests can return before a download starts.
 # Restore a models.discover-and-download mapping only for a cold-cluster test
@@ -243,19 +247,6 @@
 
 # ENG-12269: workroom isolation tests do not enter/leave a session or prove
 # the documented 403 denial. A session-scoping mapping requires that workflow.
-
-# Justification: ENG-6952 control plane — test_register_from_spec_returns_dataset_urn
-# registers a managed data source from a connector spec and asserts the
-# returned dataset URN. It is the only test here that registers one.
-# Excluded: the test_register_rejects_* trio asserts spec validation refusals
-# (nothing is registered), and test_publisher_grant_then_revoke only calls the
-# catalog publisher grant/revoke APIs without configuring a connector at all.
-- pattern: "tests/integration/test_connector_spec_live.py::*"
-  capability_ids: [connectors.managed-data-sources]
-  scenario_name: "Managed data source registration from connector spec"
-  exclude:
-    - "*::test_register_rejects_*"
-    - "*::test_publisher_grant_then_revoke"
 
 # Justification: test_federated_job_audit_actor_round_trip runs a job on the
 # peer cluster through the mesh and proves the originating identity survives
