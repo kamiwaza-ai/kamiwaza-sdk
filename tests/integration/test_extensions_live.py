@@ -9,6 +9,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import time
 from uuid import uuid4
 
 import pytest
@@ -18,6 +19,8 @@ from kamiwaza_sdk.schemas.extensions import (
     CreateExtension,
     Extension,
     ExtensionServiceSpec,
+    PatchExtension,
+    PatchServiceSpec,
 )
 
 pytestmark = [
@@ -98,7 +101,7 @@ def test_list_extensions_typed(live_kamiwaza_client) -> None:
     for ext in extensions:
         assert isinstance(ext, Extension)
         assert ext.name
-        assert ext.type in ("app", "tool", "service")
+        assert ext.type in ("app", "tool", "service", "connector")
 
 
 def test_list_extensions_raw(live_kamiwaza_client) -> None:
@@ -152,38 +155,52 @@ def test_delete_nonexistent_extension_typed(live_kamiwaza_client) -> None:
 
 
 def test_extension_crud_lifecycle_typed(live_kamiwaza_client) -> None:
-    """Full create -> get -> list -> delete cycle via typed SDK service."""
+    """Create, observe, patch and delete a disposable extension via the SDK."""
     if not _k8s_available(live_kamiwaza_client):
         pytest.skip("K8s extension API unavailable (503)")
 
     ext_name = _unique("sdk-test-ext")
     request = _create_test_extension_payload(ext_name)
 
+    service = live_kamiwaza_client.extensions
     created = None
     try:
         # Create
-        created = live_kamiwaza_client.extensions.create_extension(request)
+        created = service.create_extension(request)
         assert isinstance(created, Extension)
         assert created.name == ext_name
         assert created.type == "tool"
         assert created.version == "0.0.1-test"
 
         # Get
-        fetched = live_kamiwaza_client.extensions.get_extension(ext_name)
+        fetched = service.get_extension(ext_name)
         assert fetched.name == ext_name
 
         # List should include our extension
-        all_exts = live_kamiwaza_client.extensions.list_extensions()
+        all_exts = service.list_extensions()
         names = [e.name for e in all_exts]
         assert ext_name in names
+
+        status = service.get_extension_status(ext_name)
+        assert status.name == ext_name
+        assert status.phase
+
+        patched = service.patch_extension(
+            ext_name,
+            PatchExtension(services=[PatchServiceSpec(name="echo", replicas=0)]),
+        )
+        assert patched.name == ext_name
 
     finally:
         # Cleanup
         if created is not None:
-            try:
-                live_kamiwaza_client.extensions.delete_extension(ext_name)
-            except (APIError, NotFoundError):
-                pass
+            assert service.delete_extension(ext_name)
+            for _ in range(30):
+                if ext_name not in {ext.name for ext in service.list_extensions()}:
+                    break
+                time.sleep(1)
+            else:
+                pytest.fail(f"Extension {ext_name} remained listed after deletion")
 
 
 def test_extension_crud_lifecycle_raw(live_kamiwaza_client) -> None:
