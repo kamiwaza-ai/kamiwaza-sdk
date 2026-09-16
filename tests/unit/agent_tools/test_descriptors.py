@@ -39,7 +39,12 @@ def test_every_published_operation_classifies(index) -> None:
     assert unclassified(index) == ()
 
 
-def test_an_unknown_verb_refuses_rather_than_defaulting(index) -> None:
+def test_an_unknown_verb_is_treated_as_a_mutation_not_a_read(index) -> None:
+    """A new verb must stay reachable (FR-005c) and must not read as free.
+
+    Raising here instead would take the whole catalog down over one method
+    added upstream, which is a worse failure than describing it cautiously.
+    """
     entry = index.published[0]
     odd = type(entry)(
         selector="mystery.frobnicate_thing",
@@ -52,8 +57,11 @@ def test_an_unknown_verb_refuses_rather_than_defaulting(index) -> None:
         returns=None,
     )
     assert classify(odd.selector, odd.method) is None
-    with pytest.raises(ValueError, match="unclassified verb"):
-        describe(odd)
+    descriptor = describe(odd)
+    assert descriptor.effect is Effect.UNCLASSIFIED
+    assert not descriptor.hints.read_only
+    assert not descriptor.hints.idempotent
+    assert descriptor.requires_approval
 
 
 @pytest.mark.parametrize(

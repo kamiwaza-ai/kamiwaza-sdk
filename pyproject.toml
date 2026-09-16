@@ -165,6 +165,10 @@ dev = [
     "black>=23.0",
     "isort>=5.12",
     "ruff>=0.1",
+    # Measures the agent-tools catalog's token cost. Dev-only: the descriptor
+    # layer takes a tokeniser as an argument rather than importing one, so no
+    # SDK consumer inherits this.
+    "tiktoken>=0.7",
     "mypy>=1.0",
     "build>=1.0",
     "twine>=4.0",

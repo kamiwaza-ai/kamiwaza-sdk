@@ -56,18 +56,30 @@ __all__ = [
 class Effect(str, Enum):
     """What an operation does to platform state.
 
-    Four values rather than a read/write boolean, because approval and the
+    Four real effects rather than a read/write boolean, because approval and the
     destructive hint need to tell "replaces a field" from "removes the object".
+
+    :data:`UNCLASSIFIED` is the fifth, and it is a fail-safe rather than a
+    category. A method whose verb no rule knows must stay reachable the day it
+    ships (FR-005c), so refusing to describe it would take the whole catalog
+    down with it. Instead it is treated as a mutation requiring approval — the
+    safe reading of "we do not know what this does" — and :func:`unclassified`
+    reports it so the answer gets recorded.
     """
 
     READ = "read"
     CREATE = "create"
     UPDATE = "update"
     DESTROY = "destroy"
+    UNCLASSIFIED = "unclassified"
 
     @property
     def is_read(self) -> bool:
-        """Whether the effect leaves platform state unchanged."""
+        """Whether the effect leaves platform state unchanged.
+
+        An unclassified effect is never a read: assuming otherwise would
+        publish an unknown mutation as a free call.
+        """
         return self is Effect.READ
 
 
@@ -369,25 +381,20 @@ def _derive_hints(effect: Effect, op_selector: str) -> BehaviourHints:
 def describe(entry: OperationEntry) -> OperationDescriptor:
     """Build the descriptor for one indexed operation.
 
+    An operation whose verb no rule classifies is described as
+    :data:`Effect.UNCLASSIFIED`: not read-only, not idempotent, approval
+    required. It stays reachable, which FR-005c requires, and it stays safe,
+    because the unknown case is treated as a mutation. Raising instead would
+    take the whole catalog down over one new verb.
+
     Args:
         entry: An operation from the index.
 
     Returns:
         The descriptor, with hints derived from the effect and then replaced
         wholesale by an override when one is registered.
-
-    Raises:
-        ValueError: If the operation's verb is unclassified. Refusing here is
-            deliberate: a descriptor that silently defaulted to read-only would
-            publish a mutation as a free call.
     """
-    effect = classify(entry.selector, entry.method)
-    if effect is None:
-        raise ValueError(
-            f"{entry.selector} has an unclassified verb "
-            f"{entry.method.split('_')[0]!r}; add it to a verb set or to "
-            f"EFFECT_OVERRIDES"
-        )
+    effect = classify(entry.selector, entry.method) or Effect.UNCLASSIFIED
     hints = HINT_OVERRIDES.get(entry.selector) or _derive_hints(effect, entry.selector)
     requires_approval = not hints.read_only or entry.selector in APPROVAL_REQUIRED_READS
     return OperationDescriptor(
@@ -404,17 +411,15 @@ def describe(entry: OperationEntry) -> OperationDescriptor:
 def describe_all(index: OperationIndex) -> tuple[OperationDescriptor, ...]:
     """Describe every published operation in an index.
 
-    Unpublished operations are skipped: they are never presented to a host, and
-    one of them carrying an unclassifiable verb must not break the surface.
+    Unpublished operations are skipped: they are never presented to a host.
 
     Args:
         index: The operation index.
 
     Returns:
-        Descriptors in index order.
-
-    Raises:
-        ValueError: If a published operation has an unclassified verb.
+        Descriptors in index order. An operation with an unclassified verb is
+        described conservatively rather than omitted, so the surface never
+        shrinks silently; call :func:`unclassified` to find them.
     """
     return tuple(describe(entry) for entry in index.published)
 
