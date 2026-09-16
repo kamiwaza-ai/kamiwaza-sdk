@@ -68,6 +68,26 @@ def _create_test_extension_payload(name: str) -> CreateExtension:
     )
 
 
+def _wait_for_replica_count(service, name: str, expected: int) -> None:
+    """Observe the persisted service spec, not merely the PATCH response."""
+    for _ in range(30):
+        status = service.get_extension_status(name)
+        echo = next((item for item in status.services if item.name == "echo"), None)
+        if echo is not None and echo.replicas == expected:
+            return
+        time.sleep(1)
+    pytest.fail(f"Extension {name} did not retain replica count {expected}")
+
+
+def _delete_and_wait_for_absence(service, name: str) -> None:
+    assert service.delete_extension(name)
+    for _ in range(30):
+        if name not in {ext.name for ext in service.list_extensions()}:
+            return
+        time.sleep(1)
+    pytest.fail(f"Extension {name} remained listed after deletion")
+
+
 # ---------------------------------------------------------------------------
 # Garden status (no K8s dependency)
 # ---------------------------------------------------------------------------
@@ -190,29 +210,12 @@ def test_extension_crud_lifecycle_typed(live_kamiwaza_client) -> None:
             PatchExtension(services=[PatchServiceSpec(name="echo", replicas=0)]),
         )
         assert patched.name == ext_name
-        for _ in range(30):
-            observed = service.get_extension_status(ext_name)
-            echo = next(
-                (item for item in observed.services if item.name == "echo"), None
-            )
-            if echo is not None and echo.replicas == 0:
-                break
-            time.sleep(1)
-        else:
-            pytest.fail(
-                f"Extension {ext_name} did not retain the patched replica count"
-            )
+        _wait_for_replica_count(service, ext_name, 0)
 
     finally:
         # Cleanup
         if created is not None:
-            assert service.delete_extension(ext_name)
-            for _ in range(30):
-                if ext_name not in {ext.name for ext in service.list_extensions()}:
-                    break
-                time.sleep(1)
-            else:
-                pytest.fail(f"Extension {ext_name} remained listed after deletion")
+            _delete_and_wait_for_absence(service, ext_name)
 
 
 def test_extension_crud_lifecycle_raw(live_kamiwaza_client) -> None:
