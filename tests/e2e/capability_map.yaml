@@ -218,11 +218,14 @@
 # and inline_large_object_hits_threshold (oversized object). Also excluded:
 # sse_retrieval_emits_terminal_event, whose ingestion is setup for an SSE claim
 # and asserts no registry behavior.
+# Cycle-authored, not harvested: the metadata assertions these records rest
+# on were written for ENG-12320; the earlier module asserted status strings.
 # Split from the retrieval entry below: `exclude` is per-entry, so a single
 # entry claiming two capabilities cannot satisfy the per-test rule for both.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [catalog.dataset-registry]
   scenario_name: "Multi-source catalog ingestion"
+  evidence_provenance: cycle-authored
   exclude:
     - "*::test_catalog_file_ingestion_metadata"
     - "*::test_catalog_kafka_ingestion_metadata"
@@ -240,9 +243,11 @@
 # so a record captured there is `failed`.
 # Excluded: the same four optional paths as the registry entry, plus
 # container_link, which never submits a retrieval job.
+# Cycle-authored for the same reason as the registry entry above.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [retrieval.async-retrieval-jobs]
   scenario_name: "Multi-source inline and SSE retrieval"
+  evidence_provenance: cycle-authored
   exclude:
     - "*::test_catalog_file_ingestion_metadata"
     - "*::test_catalog_kafka_ingestion_metadata"
