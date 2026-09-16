@@ -256,7 +256,7 @@ def _create_vectordb_with_retry(
             if attempt == _VECTORDB_CREATE_ATTEMPTS:
                 raise
             logger.warning(
-                "VectorDB create failed with HTTP %s for %s; retrying " "attempt %s/%s",
+                "VectorDB create failed with HTTP %s for %s; retrying attempt %s/%s",
                 status_code,
                 name,
                 attempt + 1,
@@ -1201,6 +1201,125 @@ def test_context_workroom_collection_lifecycle(
                 collection_name=collection_name,
                 vectordb_id=shared_workroom_vectordb,
             )
+
+
+def _wait_for_document_job(
+    service: ContextService, *, workroom_id: str, job_id: str
+) -> dict[str, object]:
+    deadline = time.monotonic() + 180
+    last: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        last = service.get_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+        if last["status"] == "completed":
+            return last
+        if last["status"] in {"failed", "cancelled"}:
+            pytest.fail(
+                f"Document pipeline ended in {last['status']}: {last.get('error')}"
+            )
+        time.sleep(2)
+    pytest.fail(f"Document pipeline did not complete: {last}")
+
+
+@pytest.mark.requires_embedding_model
+def test_context_uploaded_document_is_searchable_only_in_its_workroom(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
+) -> None:
+    """Index a unique document and reject cross-workroom search and fetch."""
+    service = shared_context_service
+    workrooms = service.client.workrooms
+    collection_name = _sdk_collection_name()
+    filename = f"sdk-t14-{uuid4().hex[:8]}.txt"
+    needle = f"t14probe{uuid4().hex}"
+    source_urn = f"urn:sdk:t14:{uuid4()}"
+    job_id: str | None = None
+    other_workroom_id: str | None = None
+    collection_created = False
+
+    try:
+        created = service.create_collection(
+            workroom_id=session_workroom,
+            name=collection_name,
+            dimension=384,
+            vectordb_id=shared_workroom_vectordb,
+        )
+        assert created["display_name"] == collection_name
+        collection_created = True
+
+        uploaded = service.upload_file(
+            workroom_id=session_workroom,
+            filename=filename,
+            file_content=f"The verification phrase is {needle}.".encode(),
+            content_type="text/plain",
+            collection_name=collection_name,
+            source_urn=source_urn,
+        )
+        job_id = str(uploaded["id"])
+        job = _wait_for_document_job(
+            service, workroom_id=session_workroom, job_id=job_id
+        )
+        assert job["collection_name"] == collection_name
+        items = service.list_pipeline_job_items(
+            workroom_id=session_workroom, job_id=job_id
+        )
+        assert isinstance(items.get("items"), list)
+
+        owner_results = service.search(
+            workroom_id=session_workroom,
+            query=needle,
+            collection_name=collection_name,
+            vectordb_id=shared_workroom_vectordb,
+        )["results"]
+        assert any(
+            needle in result["content"]
+            and result["metadata"]["source_file"] == filename
+            for result in owner_results
+        )
+        retrieved = service.retrieve(
+            workroom_id=session_workroom,
+            query=needle,
+            collection_names=[collection_name],
+            score_threshold=0.0,
+            vectordb_id=shared_workroom_vectordb,
+        )
+        assert any(
+            source["filename"] == filename and needle in source["snippet"]
+            for source in retrieved["sources"]
+        )
+        document = service.get_document_download_url(
+            source_urn, workroom_id=session_workroom
+        )
+        assert document["filename"] == filename
+
+        other = workrooms.create(f"sdk-t14-other-{uuid4().hex[:8]}", "ephemeral")
+        other_workroom_id = str(other.id)
+        try:
+            foreign_results = service.search(
+                workroom_id=other_workroom_id,
+                query=needle,
+                collection_name=collection_name,
+            )["results"]
+        except (NotFoundError, APIError) as error:
+            assert isinstance(error, NotFoundError) or error.status_code in {403, 404}
+        else:
+            assert all(needle not in item["content"] for item in foreign_results)
+
+        with pytest.raises((NotFoundError, APIError)) as denied:
+            service.get_document_download_url(source_urn, workroom_id=other_workroom_id)
+        if isinstance(denied.value, APIError):
+            assert denied.value.status_code in {403, 404}
+    finally:
+        if job_id is not None:
+            service.delete_pipeline_job(workroom_id=session_workroom, job_id=job_id)
+        if collection_created:
+            service.delete_collection(
+                workroom_id=session_workroom,
+                collection_name=collection_name,
+                vectordb_id=shared_workroom_vectordb,
+            )
+        if other_workroom_id is not None:
+            workrooms.delete(other_workroom_id)
 
 
 @pytest.mark.requires_embedding_model
