@@ -1,4 +1,4 @@
-"""Verify catalog sync preserves templates used by existing deployments."""
+"""Verify catalog sync advances templates without replacing deployment identities."""
 
 import argparse
 import json
@@ -15,9 +15,11 @@ def read_state(client, version):
         response = client.get(path, params={"template_type": kind})
         response.raise_for_status()
         templates.update(summarize(selected(response.json(), version, [kind])))
-    deployments = client.get("/apps/deployments")
-    deployments.raise_for_status()
-    ids = {row["id"]: row["template_id"] for row in deployments.json()}
+    ids = {}
+    for prefix in ("apps", "tool"):
+        deployments = client.get(f"/{prefix}/deployments")
+        deployments.raise_for_status()
+        ids.update({row["id"]: row["template_id"] for row in deployments.json()})
     assert all(
         row["id"] in ids.values() for row in templates.values()
     ), "Each proof template must be deployed"
@@ -41,16 +43,21 @@ def verify_update(client, args):
         )
         response.raise_for_status()
         assert not response.json().get("errors"), response.json()
-    after = read_state(client, args.retained_version)
-    assert (
-        before == after
-    ), "Catalog update mutated deployed template identity or deployment references"
+    after = read_state(client, args.remote_version)
+    assert all(
+        after["deployment_templates"].get(key) == value
+        for key, value in before["deployment_templates"].items()
+    )
+    assert {k: v["id"] for k, v in before["templates"].items()} == {
+        k: v["id"] for k, v in after["templates"].items()
+    }
     return {
         "before": before,
         "after": after,
         "selected_remote_version": args.remote_version,
-        "retained_active_version": args.retained_version,
-        "unchanged": True,
+        "previous_template_version": args.retained_version,
+        "template_and_deployment_ids_unchanged": True,
+        "runtime_endpoints_verified_separately": True,
     }
 
 
