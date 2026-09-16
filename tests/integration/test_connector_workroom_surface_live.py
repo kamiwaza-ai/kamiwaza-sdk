@@ -39,19 +39,33 @@ def _enabled_m365_ids(client) -> set[UUID]:
 
 
 def _connected_files_ref(client, eligible: set[UUID]) -> ConnectorSurfaceRef | None:
-    for workroom in client.workrooms.list():
-        if str(workroom.id) == _GLOBAL_WORKROOM_ID:
-            continue
-        for entry in client.connectors.list_surface_catalog(workroom.id):
-            if entry.id not in eligible or not entry.connected:
-                continue
-            if any(
-                surface.surface == "files" for surface in entry.searchable_surfaces()
-            ):
-                return ConnectorSurfaceRef(
-                    workroom_id=str(workroom.id), connector_id=str(entry.id)
-                )
+    workrooms = (
+        workroom
+        for workroom in client.workrooms.list()
+        if str(workroom.id) != _GLOBAL_WORKROOM_ID
+    )
+    for workroom in workrooms:
+        entry = next(
+            (
+                item
+                for item in client.connectors.list_surface_catalog(workroom.id)
+                if _is_searchable_m365_files(item, eligible)
+            ),
+            None,
+        )
+        if entry is not None:
+            return ConnectorSurfaceRef(
+                workroom_id=str(workroom.id), connector_id=str(entry.id)
+            )
     return None
+
+
+def _is_searchable_m365_files(entry, eligible: set[UUID]) -> bool:
+    return (
+        entry.id in eligible
+        and entry.connected
+        and any(surface.surface == "files" for surface in entry.searchable_surfaces())
+    )
 
 
 def _folder_scope(client, target: ConnectorSurfaceRef) -> str | None:
