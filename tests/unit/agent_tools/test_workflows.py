@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 from typing import Any
 
 import pytest
@@ -14,9 +16,11 @@ from kamiwaza_sdk.agent_tools.workflows import (
     complete_dataset_ingestion,
     deploy_app_from_garden,
     diagnose_deployment,
+    enclave_ingest,
     find_and_deploy_model,
     install_and_bind_gate_package,
     preflight_and_deploy_model,
+    rag_query,
     retire_deployment,
 )
 
@@ -172,8 +176,6 @@ def test_preflight_refuses_before_creating_anything() -> None:
     """The whole point: a capacity failure after creation leaves a half-built
     deployment an agent has to find and clean up."""
     calls: list[str] = []
-    fields = {"m_id": "m-1", "m_config_id": None, "m_file_id": None}
-    request = type("Request", (), fields)()
     client = _client(
         calls,
         serving=Recorder(
@@ -181,10 +183,51 @@ def test_preflight_refuses_before_creating_anything() -> None:
         ),
         cluster=Recorder(calls, "cluster", get_running_nodes=lambda: []),
     )
-    outcome = preflight_and_deploy_model(client, request)
+    outcome = preflight_and_deploy_model(
+        client,
+        "8b1f4bd0-0000-4000-8000-000000000001",
+        "8b1f4bd0-0000-4000-8000-000000000002",
+    )
     assert isinstance(outcome, Refusal)
     assert "40000 bytes" in outcome.shortfall
     assert "serving.deploy_model" not in calls
+
+
+def test_a_workflow_takes_its_arguments_not_a_platform_request_body() -> None:
+    """The property that keeps a workflow tool usable, and cheap to publish.
+
+    ``CreateModelDeployment`` has sixteen fields and this workflow reads three.
+    Accepting the whole model published 720 tokens of schema on every listing
+    and invited a caller to set thirteen fields that would be ignored — and
+    for the retrieval workflow, two of the fields it would have published are a
+    credential and a session, which must never appear on an agent surface.
+
+    Asserted over the parameter names rather than the token count, because the
+    rule is what matters: a workflow's arguments are the task's, and building
+    the platform's request body is the workflow's own job.
+    """
+    for workflow in (preflight_and_deploy_model, rag_query, enclave_ingest):
+        parameters = inspect.signature(workflow).parameters
+        for name, parameter in parameters.items():
+            if name == "client":
+                continue
+            annotation = str(parameter.annotation)
+            assert not any(
+                model in annotation
+                for model in (
+                    "CreateModelDeployment",
+                    "RetrievalRequest",
+                    "ConnectorCreate",
+                    "RelationshipTuple",
+                )
+            ), (
+                f"{workflow.__name__} takes {name!r} as a platform request "
+                f"model; take the fields the workflow uses instead"
+            )
+            assert annotation != "typing.Any", (
+                f"{workflow.__name__} takes {name!r} as Any, which publishes an "
+                f"empty schema — a caller cannot tell what to pass"
+            )
 
 
 def test_retire_confirms_rather_than_trusting_the_stop() -> None:

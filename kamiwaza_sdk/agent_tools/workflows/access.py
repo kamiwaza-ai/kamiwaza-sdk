@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from kamiwaza_sdk.schemas.authz import ObjectModel, RelationshipTuple, SubjectModel
+
 from ._contract import WorkflowSpec, register
 
 __all__ = [
@@ -185,23 +187,39 @@ def pair_federation_and_allow_user(
 def grant_subject_access(
     client: Any,
     username: str,
-    relationship: Any,
+    relation: str,
+    object_type: str,
+    object_id: str,
     *,
+    subject_type: str = "user",
     attributes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Upsert a subject, write one authorization tuple, and confirm the result.
 
+    The tuple is assembled here from its parts rather than accepted whole. A
+    ``RelationshipTuple`` nests a subject model and an object model, so
+    publishing it meant a caller reading three definitions to write one grant.
+
     Args:
         client: The platform client.
-        username: Subject to upsert.
-        relationship: A ``RelationshipTuple`` to write.
+        username: Subject to upsert and grant to.
+        relation: Relation to grant, such as ``reader`` or ``owner``.
+        object_type: Kind of thing being granted on.
+        object_id: Which thing of that kind.
+        subject_type: Kind of subject, for the platform's own namespacing.
         attributes: Attributes to set on the subject.
 
     Returns:
         Mapping with ``subject`` and its ``grants`` read back after the write.
     """
     subject = client.subjects.upsert(username, attributes=attributes or {})
-    client.authz.upsert_tuple(relationship)
+    client.authz.upsert_tuple(
+        RelationshipTuple(
+            subject=SubjectModel(namespace=subject_type, id=username),
+            relation=relation,
+            object=ObjectModel(namespace=object_type, id=object_id),
+        )
+    )
     return {
         "subject": getattr(subject, "username", username),
         "grants": client.subjects.grants(username),

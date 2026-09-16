@@ -9,6 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from kamiwaza_sdk.schemas.enclaves import ConnectorCreate
+from kamiwaza_sdk.schemas.retrieval import RetrievalRequest
+
 from ._contract import Refusal, WorkflowSpec, register
 
 __all__ = [
@@ -199,20 +202,42 @@ def complete_dataset_ingestion(
         idempotent=True,
     )
 )
-def rag_query(client: Any, request: Any) -> dict[str, Any]:
+def rag_query(
+    client: Any,
+    dataset_urn: str,
+    *,
+    limit_rows: int | None = None,
+    columns: list[str] | None = None,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Retrieve over a dataset and return results with their source.
+
+    Takes the four arguments a retrieval needs rather than a whole
+    ``RetrievalRequest``. Two reasons, and the second is not about tokens: the
+    request model has eleven fields, and two of them — ``credential_override``
+    and ``sdk_session`` — must never appear on an agent-facing surface, because
+    a published field is an invitation to set it.
 
     Args:
         client: The platform client.
-        request: A ``RetrievalRequest`` naming the dataset and filters.
+        dataset_urn: Dataset to retrieve over.
+        limit_rows: Most rows to return.
+        columns: Columns to return, or every column when omitted.
+        filters: Column filters to apply.
 
     Returns:
         Mapping with ``dataset``, ``rows`` and ``citations``. Citations are not
         decoration: an answer an agent cannot attribute is an answer a member
         cannot check.
     """
+    request = RetrievalRequest(
+        dataset_urn=dataset_urn,
+        limit_rows=limit_rows,
+        columns=columns,
+        filters=filters,
+    )
     result = client.retrieval.materialize(request)
-    dataset = getattr(request, "dataset_urn", None)
+    dataset = dataset_urn
     return {
         "dataset": dataset,
         "rows": getattr(result, "rows", None),
@@ -235,16 +260,39 @@ def rag_query(client: Any, request: Any) -> dict[str, Any]:
         resume_hint="get_enclaves_connectors",
     )
 )
-def enclave_ingest(client: Any, payload: Any) -> dict[str, Any]:
+def enclave_ingest(
+    client: Any,
+    name: str,
+    source_type: str,
+    connector_type: str,
+    connection_config: dict[str, Any],
+    *,
+    description: str | None = None,
+) -> dict[str, Any]:
     """Create an enclave connector and start its ingest.
+
+    Takes the connector's own fields rather than a ``ConnectorCreate``, so the
+    published shape names what to supply instead of nesting a model definition
+    a caller has to read twice.
 
     Args:
         client: The platform client.
-        payload: A ``ConnectorCreate`` describing the source.
+        name: Name for the connector.
+        source_type: Kind of source being connected.
+        connector_type: Kind of connector to create for it.
+        connection_config: How to reach the source.
+        description: What this connector is for.
 
     Returns:
         Mapping with ``connector`` and the ``trigger`` response.
     """
+    payload = ConnectorCreate(
+        name=name,
+        source_type=source_type,
+        connector_type=connector_type,
+        connection_config=connection_config,
+        description=description,
+    )
     connector = client.enclaves.connectors.create(payload)
     connector_id = getattr(connector, "id", None) or getattr(
         connector, "connector_id", None

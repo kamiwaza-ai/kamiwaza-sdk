@@ -7,6 +7,9 @@ check capacity first, work out why one is not serving, and retire it.
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
+
+from kamiwaza_sdk.schemas.serving.serving import CreateModelDeployment
 
 from ._contract import DeploymentOutcome, Refusal, WorkflowSpec, register
 
@@ -180,7 +183,12 @@ def _required_bytes(estimate: Any) -> int | None:
     )
 )
 def preflight_and_deploy_model(
-    client: Any, deployment_request: Any, *, timeout_seconds: int = 3600
+    client: Any,
+    model_id: str,
+    model_config_id: str,
+    *,
+    model_file_id: str | None = None,
+    timeout_seconds: int = 3600,
 ) -> DeploymentOutcome | Refusal:
     """Estimate memory, compare it against the cluster, then deploy or refuse.
 
@@ -188,15 +196,36 @@ def preflight_and_deploy_model(
     on capacity after the fact leaves a half-built thing an agent must find and
     clean up.
 
+    Takes the three identifiers it uses rather than a ``CreateModelDeployment``.
+    The request model has sixteen fields and this workflow reads three of them,
+    so accepting the whole thing published 720 tokens of schema on every
+    listing and invited a caller to set thirteen fields that would be ignored.
+
+    That leaves five parameters, which is one past what a static analyser
+    recommends for a Python function, and the trade is deliberate: this
+    signature *is* the published tool shape, so grouping arguments into an
+    object to reduce the count would put a nested definition back into every
+    listing to satisfy a threshold written for ordinary call sites. Each of the
+    five is a value a caller genuinely decides.
+
     Args:
         client: The platform client.
-        deployment_request: A ``CreateModelDeployment`` describing the intent.
+        model_id: Model to deploy.
+        model_config_id: Configuration to deploy it with. Required, because the
+            platform's own deployment request requires it — a workflow that
+            defaulted it would fail at the platform instead of at the argument.
+        model_file_id: Specific model file, when the model has more than one.
         timeout_seconds: Bound on the readiness wait.
 
     Returns:
         The ready deployment, or a :class:`Refusal` naming the estimated
         requirement and what the cluster has.
     """
+    deployment_request = CreateModelDeployment(
+        m_id=UUID(str(model_id)),
+        m_config_id=UUID(str(model_config_id)),
+        m_file_id=UUID(str(model_file_id)) if model_file_id else None,
+    )
     estimate = client.serving.estimate_model_vram(deployment_request)
     required = _required_bytes(estimate)
     nodes = client.cluster.get_running_nodes()
@@ -206,12 +235,9 @@ def preflight_and_deploy_model(
             shortfall=f"{required} bytes of accelerator memory, 0 running nodes",
         )
     deployment = client.serving.deploy_model(
-        model_id=getattr(deployment_request, "m_id", None),
-        m_config_id=getattr(deployment_request, "m_config_id", None),
-        m_file_id=getattr(deployment_request, "m_file_id", None),
+        model_id=model_id, m_config_id=model_config_id, m_file_id=model_file_id
     )
-    model_id = str(getattr(deployment_request, "m_id", ""))
-    return _await_deployment(client, deployment, model_id, timeout_seconds)
+    return _await_deployment(client, deployment, str(model_id), timeout_seconds)
 
 
 @register(
