@@ -321,8 +321,38 @@ class TestStatusDerivation:
         result = run_scenario(self._two_step_runbook(), {"a": lambda: "ok"})
         assert result.status == "passed_with_notes"
 
+    def test_required_skipped_step_is_failed(self):
+        runbook = self._two_step_runbook()
+        runbook["steps"][1]["required"] = True
+
+        def skip_b():
+            pytest.skip("required deployment unavailable")
+
+        result = run_scenario(runbook, {"a": lambda: "ok", "b": skip_b})
+        assert [step.status for step in result.steps] == ["passed", "skipped"]
+        assert result.status == "failed"
+        assert result.passed is False
+
+    def test_required_pending_step_is_failed(self):
+        runbook = self._two_step_runbook()
+        runbook["steps"][1]["required"] = True
+        result = run_scenario(runbook, {"a": lambda: "ok"})
+        assert result.status == "failed"
+
+    def test_direct_runbook_rejects_non_boolean_required_before_execution(self):
+        runbook = self._two_step_runbook()
+        runbook["steps"][1]["required"] = "true"
+        calls = []
+        with pytest.raises(ValueError, match="required must be a boolean"):
+            run_scenario(runbook, {"a": lambda: calls.append("ran")})
+        assert calls == []
+
     def test_derive_status_empty_steps_is_failed(self):
         assert derive_status([]) == "failed"
+
+    def test_derive_status_absent_required_step_is_failed(self):
+        result = [StepResult(name="a", status="passed", duration_s=0.0)]
+        assert derive_status(result, required_steps=["a", "b"]) == "failed"
 
     def test_derive_status_all_pending_is_failed(self):
         """A run whose every step is `pending` executed nothing (ENG-11717).
@@ -520,9 +550,9 @@ class TestEvidenceValidation:
         )
         with pytest.raises(ValueError, match="build"):
             record_run(result)
-        assert not runs_dir.exists() or not list(runs_dir.iterdir()), (
-            "an invalid record must not be persisted"
-        )
+        assert not runs_dir.exists() or not list(
+            runs_dir.iterdir()
+        ), "an invalid record must not be persisted"
 
     def test_v1_artifact_is_untouched_and_not_v2(self):
         """A pre-existing v1 run record — no ``schema`` field — is readable,
