@@ -21,8 +21,10 @@ receive HTTP 412, races four independent publishers, and verifies history and
 opaque metadata survive. Receipt hashes cover the exact S3 object bytes exported
 to the HTTP root. Moto is a protocol emulator, not a production R2 certification.
 
-Serve this root by HTTP and configure the isolated Core's LOCAL catalog origin
-and `compat-v1` generation accordingly. Wait until candidate Core is active before
+Expose these exact bytes through trusted HTTPS or a read-only file mount and
+configure the isolated Core's LOCAL catalog origin and `compat-v1` generation.
+Core intentionally rejects plain HTTP catalog origins; the harness option
+`--http-root` names the export directory and does not relax that security policy. Wait until candidate Core is active before
 exposing catalogs: old readers do not support overlapping histories. The instance harness first asserts the canonical runtime version returned by
 `/apps/remote/compatibility`; the version argument never changes the runtime.
 
