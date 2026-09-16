@@ -189,6 +189,25 @@
   capability_ids: [models.local-deployment, models.openai-compatible-inference]
   scenario_name: "Engine matrix deploy and infer with fractional co-location"
 
+# ENG-12327 (T09). Both tests deploy weights already present on the cluster and
+# fail if anything attempts a download, so they cannot pass on a warm cluster
+# without deploying (the gap that retired the 1.2.1 model records). They are
+# split one capability per test so an inference failure cannot mark local
+# deployment as failing, or the reverse. The lifecycle test creates, reads,
+# lists and updates a disposable model config, deploys with it to DEPLOYED,
+# checks the deployment, instances and logs, stops it, and deletes the config.
+- pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_model_config_and_local_deployment_lifecycle"
+  capability_ids: [models.local-deployment]
+  scenario_name: "Model config and local deployment lifecycle through the SDK"
+  evidence_provenance: cycle-authored
+
+# One real chat completion, with non-empty content, through the
+# OpenAI-compatible client the SDK returns for a fresh deployment.
+- pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_openai_compatible_inference_through_sdk_client"
+  capability_ids: [models.openai-compatible-inference]
+  scenario_name: "OpenAI-compatible chat completion through the SDK client"
+  evidence_provenance: cycle-authored
+
 # Justification: test_s3_ingest_and_retrieve_inline / _grpc ingest a sample
 # dataset into the catalog and then run retrieval jobs streaming results
 # inline and over gRPC (per test_retrieval_live.py's docstring these carry
