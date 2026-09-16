@@ -37,14 +37,9 @@ class CreateWorkroom(BaseModel):
     type: WorkroomType = Field(..., description="ephemeral or persistent")
     description: Optional[str] = Field(default=None, max_length=1024)
     labels: Optional[List[str]] = None
-    classification: Optional[str] = Field(default=None, max_length=255)
     attributes: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Extensible customer or operator key-value pairs",
-    )
-    scg_references: Optional[List[str]] = Field(
-        default=None,
-        description="Security Classification Guide identifiers",
     )
 
 
@@ -54,9 +49,7 @@ class UpdateWorkroom(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=1024)
     labels: Optional[List[str]] = None
-    classification: Optional[str] = Field(default=None, max_length=255)
     attributes: Optional[Dict[str, Any]] = None
-    scg_references: Optional[List[str]] = None
 
 
 class Workroom(WorkroomResponseModel):
@@ -69,9 +62,7 @@ class Workroom(WorkroomResponseModel):
     type: WorkroomType
     description: Optional[str] = None
     labels: Optional[List[str]] = None
-    classification: Optional[str] = None
     attributes: Optional[Dict[str, Any]] = None
-    scg_references: Optional[List[str]] = None
     status: WorkroomStatus
     created_at: datetime
     updated_at: Optional[datetime] = None

@@ -1,8 +1,8 @@
 """Offline contracts for fail-closed mesh retrieval stream errors (ENG-9664).
 
 This module deliberately has no live or integration marker. The live helper's
-raw ``requests`` seam and mesh-outcome classification must stay observable on
-every PR without a two-cluster rig.
+raw ``requests`` seam and mesh-outcome category must stay observable on every
+PR without a two-cluster rig.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Any, Iterator
 import pytest
 
 from kamiwaza_sdk.exceptions import APIError
-from tests.integration import _mini_clearance as mc
+from tests.integration import _access_tier as mc
 from tests.integration import mesh_outcome
 from tests.integration.test_federation_shared_idp_gated_retrieval_live import (
     _SHARED_IDP_POLICY,

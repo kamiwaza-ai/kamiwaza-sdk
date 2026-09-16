@@ -42,7 +42,10 @@ def _assert_live_retrieval_parametrization() -> None:
         if mark.name == "parametrize"
     ]
     assert len(retrieval_marks) == 1
-    assert retrieval_marks[0].args == ("clearance", ["U", "S", "TS"])
+    assert retrieval_marks[0].args == (
+        "access_tier",
+        ["basic", "standard", "advanced"],
+    )
     assert retrieval_marks[0].kwargs == {}
 
 
@@ -80,9 +83,9 @@ def test_required_edge_plugin_is_registered_only_at_pytest_root() -> None:
 
 def test_required_edge_collection_guard_requires_all_nine_cases() -> None:
     expected_cases = {
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[U]",
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[basic]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[standard]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[advanced]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[missing-canonical]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[legacy-only]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[canonical-nondefault]",
@@ -319,7 +322,7 @@ def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) 
             "platform_verify": True,
             "allow_insecure_tls": False,
         },
-        "fed-clr-u",
+        "access-basic",
     )
 
     assert calls == ["password", "refresh", "read"]
@@ -417,7 +420,7 @@ def test_required_dataset_list_uses_mesh_and_requires_exact_fixture() -> None:
         "name": "receiver cluster",
         "urn": "urn:dataset:only-authorized",
         "personas": {
-            "U": {"client": persona, "authenticator": authenticator},
+            "basic": {"client": persona, "authenticator": authenticator},
         },
     }
 
@@ -449,7 +452,7 @@ def test_required_job_case_runs_recoverably_on_named_peer(monkeypatch) -> None:
     wiring = {
         "name": "receiver-cluster",
         "personas": {
-            "U": {"client": persona, "authenticator": authenticator},
+            "basic": {"client": persona, "authenticator": authenticator},
         },
         "verify": True,
         "source_cluster_id": "initiator-uuid",
@@ -530,7 +533,7 @@ def test_gate_package_read_or_install_failure_never_registers_cleanup(
         index_url="index",
         dataset_path="/fixture.csv",
     )
-    monkeypatch.setattr(edge.mc, "declare_clearance_attribute", Mock())
+    monkeypatch.setattr(edge.mc, "declare_access_tier_attribute", Mock())
 
     with pytest.raises(RuntimeError, match="install failed"):
         required_setup.provision_gated_dataset(
@@ -634,13 +637,13 @@ def test_required_retrieval_case_asserts_streamed_known_answer(monkeypatch) -> N
         "name": "receiver-cluster",
         "urn": "urn:kamiwaza:dataset:known",
         "personas": {
-            "U": {"client": persona, "authenticator": authenticator},
+            "basic": {"client": persona, "authenticator": authenticator},
         },
         "verify": True,
     }
 
     edge.test_required_mesh_retrieval_returns_exact_post_gate_rows(
-        "U",
+        "basic",
         wiring,
         SimpleNamespace(base_url="https://initiator.example/api"),
     )
@@ -765,7 +768,7 @@ def test_exact_retrieval_oracle_rejects_duplicate_allowed_rows() -> None:
     }
 
     with pytest.raises(AssertionError, match="wrong post-gate rows"):
-        edge.mc.assert_persona_result("U", duplicate_rows, [footer])
+        edge.mc.assert_persona_result("basic", duplicate_rows, [footer])
 
 
 def test_persona_cleanup_revokes_exact_allowlist_row() -> None:

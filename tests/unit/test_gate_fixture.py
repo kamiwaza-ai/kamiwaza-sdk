@@ -18,7 +18,7 @@ pytestmark = pytest.mark.unit
 
 
 def test_dataset_uses_the_always_mounted_allowed_root() -> None:
-    assert fixture.DATASET_PATH == "/app/tmp/eng10050-mini-clearance.csv"
+    assert fixture.DATASET_PATH == "/app/tmp/eng10050-access-tier.csv"
 
 
 def _completed(
@@ -179,7 +179,7 @@ def test_auto_provision_refreshes_runtime_for_explicit_kubectl(
         "M5_TEST_WHEEL_DIR": "/tmp/wheels",
         "M5_TEST_INDEX_URL": "file:///fixture/simple",
         "M5_TEST_NETWORK_POLICY_ALLOWED_URL": "http://ray-head:18080/simple/",
-        "MINI_CLEARANCE_DATASET_PATH": "/app/tmp/mini-clearance.csv",
+        "ACCESS_TIER_DATASET_PATH": "/app/tmp/access-tier.csv",
     }
     observed: list[list[str]] = []
 
@@ -274,7 +274,7 @@ def test_publish_routes_sorted_binary_files_and_mirrors_dataset_to_ray_worker(
     contents = {
         fixture.WHEEL_NAME: b"wheel\x00bytes",
         "index.html": b"<a>index</a>",
-        "mini_clearance.csv": b"id,clearance\n1,high\n",
+        "access_tier.csv": b"id,required_tier\n1,basic\n",
     }
     for name, payload in contents.items():
         directory.joinpath(name).write_bytes(payload)
@@ -315,21 +315,21 @@ def test_publish_routes_sorted_binary_files_and_mirrors_dataset_to_ray_worker(
     assert "http.server" in setup_calls[2][-1]
     assert not any("jsonpath={.status.podIP}" in call for call in setup_calls)
     assert [base64.b64decode(payload) for _, payload in writes] == [
+        contents["access_tier.csv"],
+        contents["access_tier.csv"],
+        contents["access_tier.csv"],
         contents[fixture.WHEEL_NAME],
         contents["index.html"],
-        contents["mini_clearance.csv"],
-        contents["mini_clearance.csv"],
-        contents["mini_clearance.csv"],
     ]
     destinations = [cmd[2] for cmd, _ in writes]
-    assert f"{fixture.MOUNT}/simple/acme-gates/{fixture.WHEEL_NAME}" in destinations[0]
-    assert f"{fixture.MOUNT}/simple/acme-gates/index.html" in destinations[1]
+    assert fixture.DATASET_PATH in destinations[0]
+    assert fixture.DATASET_PATH in destinations[1]
     assert fixture.DATASET_PATH in destinations[2]
-    assert fixture.DATASET_PATH in destinations[3]
-    assert fixture.DATASET_PATH in destinations[4]
-    assert "-c ray-head" in destinations[2]
-    assert "-c ray-worker" in destinations[3]
-    assert "-c ray-worker" in destinations[4]
+    assert f"{fixture.MOUNT}/simple/acme-gates/{fixture.WHEEL_NAME}" in destinations[3]
+    assert f"{fixture.MOUNT}/simple/acme-gates/index.html" in destinations[4]
+    assert "-c ray-head" in destinations[0]
+    assert "-c ray-worker" in destinations[1]
+    assert "-c ray-worker" in destinations[2]
     assert all(cmd[:2] == ["ssh", "spark-2"] for cmd, _ in writes)
 
 
@@ -396,8 +396,8 @@ def test_verify_hashes_wheels_on_head_and_dataset_on_every_ray_pod(
     tmp_path: Path,
 ) -> None:
     wheel_digest = "a" * 64
-    dataset = tmp_path / "mini_clearance.csv"
-    dataset.write_bytes(b"id,classification\n1,U\n")
+    dataset = tmp_path / "access_tier.csv"
+    dataset.write_bytes(b"id,required_tier\n1,basic\n")
     dataset_digest = hashlib.sha256(dataset.read_bytes()).hexdigest()
     calls: list[list[str]] = []
 
@@ -434,8 +434,8 @@ def test_verify_fails_when_any_worker_dataset_digest_differs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    dataset = tmp_path / "mini_clearance.csv"
-    dataset.write_bytes(b"id,classification\n1,U\n")
+    dataset = tmp_path / "access_tier.csv"
+    dataset.write_bytes(b"id,required_tier\n1,basic\n")
     expected = hashlib.sha256(dataset.read_bytes()).hexdigest()
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -495,4 +495,4 @@ def test_gate_fixture_source_is_owned_by_sdk() -> None:
     assert (source / "pyproject.toml").is_file()
     assert (source / "acme_gates" / "gate.py").is_file()
     assert (source / "acme_gates" / "exec_gate.py").is_file()
-    assert (source / "acme_gates" / "mini_clearance_gate.py").is_file()
+    assert (source / "acme_gates" / "access_tier_gate.py").is_file()

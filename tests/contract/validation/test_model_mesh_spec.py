@@ -387,7 +387,9 @@ def test_model_mesh_prepare_owns_only_pairing_model_grant_and_no_gate_fixture(
     receiver_users = cluster_factory.wrappers["edge-b"].client.federations.users.added
     assert receiver_users
     user_tuples = [
-        tuples for external_id, tuples in receiver_users if "fed-clr-u" in external_id
+        tuples
+        for external_id, tuples in receiver_users
+        if "access-basic" in external_id
     ]
     assert user_tuples == [
         [

@@ -312,22 +312,22 @@ def test_provision_creates_default_and_tenant_negative_personas(
         fixture.OwnedRealm("unique", "owner-a"),
     )
 
-    assert mappers == ["clearance", "tenant_id", "tenant"]
+    assert mappers == ["access_tier", "tenant_id", "tenant"]
     assert users == [
-        ("fed-clr-u", {"clearance": "U", "tenant_id": "__default__"}),
-        ("fed-clr-s", {"clearance": "S", "tenant_id": "__default__"}),
-        ("fed-clr-ts", {"clearance": "TS", "tenant_id": "__default__"}),
+        ("access-basic", {"access_tier": "basic", "tenant_id": "__default__"}),
+        ("access-standard", {"access_tier": "standard", "tenant_id": "__default__"}),
+        ("access-advanced", {"access_tier": "advanced", "tenant_id": "__default__"}),
         (
-            "fed-clr-unonboarded",
-            {"clearance": "U", "tenant_id": "__default__"},
+            "access-unonboarded",
+            {"access_tier": "basic", "tenant_id": "__default__"},
         ),
-        ("fed-tenant-missing", {"clearance": "U"}),
+        ("tenant-missing", {"access_tier": "basic"}),
         (
-            "fed-tenant-legacy-only",
-            {"clearance": "U", "tenant": "__default__"},
+            "tenant-legacy-only",
+            {"access_tier": "basic", "tenant": "__default__"},
         ),
         (
-            "fed-tenant-nondefault",
-            {"clearance": "U", "tenant_id": "tenant-a"},
+            "tenant-nondefault",
+            {"access_tier": "basic", "tenant_id": "tenant-a"},
         ),
     ]

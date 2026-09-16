@@ -69,9 +69,9 @@ class TestRegistryShape:
     def test_strategies_are_valid(self, shape: str):
         valid = {"overwrite", "preserve_if_modified", "merge"}
         for f in MANIFESTS[shape].files:
-            assert (
-                f.strategy in valid
-            ), f"{shape}/{f.relative_path}: invalid strategy {f.strategy!r}"
+            assert f.strategy in valid, (
+                f"{shape}/{f.relative_path}: invalid strategy {f.strategy!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -88,14 +88,14 @@ def test_every_template_file_is_classified(shape: str, template_root: Path):
     on_disk = sorted(
         str(p.relative_to(shape_dir)) for p in shape_dir.rglob("*") if p.is_file()
     )
-    classified = {f.relative_path for f in MANIFESTS[shape].files} | set(
-        AUTHOR_OWNED_DENYLIST.get(shape, ())
+    categorized = {f.relative_path for f in MANIFESTS[shape].files} | set(
+        AUTHOR_OWNED_DENYLIST[shape]
     )
 
-    unclassified = [p for p in on_disk if p not in classified]
-    assert not unclassified, (
+    uncategorized = [p for p in on_disk if p not in categorized]
+    assert not uncategorized, (
         f"Files in templates/{shape}/ are neither in the manifest nor on "
-        f"AUTHOR_OWNED_DENYLIST: {unclassified}\n"
+        f"AUTHOR_OWNED_DENYLIST: {uncategorized}\n"
         "Add new files to kamiwaza_extensions.template_manifest as either "
         "TemplateOwnedFile entries (reconciled by `kz-ext update`) or to "
         "AUTHOR_OWNED_DENYLIST (scaffold-only, never reconciled)."
@@ -140,9 +140,9 @@ def test_tool_template_fastmcp_run_does_not_pass_host_or_port_kwargs(template_ro
         f"TypeError on the current API. host/port belong on the FastMCP() "
         f"constructor. run args: {run_args!r}"
     )
-    assert not re.search(
-        r"\bport\s*=", run_args
-    ), f"tool template still passes port=... to FastMCP.run(). run args: {run_args!r}"
+    assert not re.search(r"\bport\s*=", run_args), (
+        f"tool template still passes port=... to FastMCP.run(). run args: {run_args!r}"
+    )
     # Must bind on 0.0.0.0 somewhere (otherwise loopback-only — unreachable
     # from outside the container).
     assert "0.0.0.0" in server_py, (

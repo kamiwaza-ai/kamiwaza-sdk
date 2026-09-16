@@ -191,7 +191,7 @@ Templates define the container configuration and requirements for applications. 
 - Default environment variables
 - Port configurations
 - Resource requirements
-- Risk tier classification
+- Risk tier
 
 Templates are verified by the Kamiwaza team and categorized by risk level for security.
 

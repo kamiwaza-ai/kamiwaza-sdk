@@ -133,9 +133,9 @@ fail loudly at upsert time instead of returning success with empty
 attributes.
 
 ```python
-kz.cluster.declare_attribute("clearance", type="string")
-kz.cluster.declare_attribute("country",   type="string")
-kz.cluster.declare_attribute("programs",  type="string[]")  # multivalued
+kz.cluster.declare_attribute("access_tier", type="string")
+kz.cluster.declare_attribute("region",      type="string")
+kz.cluster.declare_attribute("teams",       type="string[]")  # multivalued
 ```
 
 `declare_attribute` is idempotent on identical shape — safe to re-run
@@ -163,16 +163,16 @@ round-trip, infers multivalued KC entries for list-shaped values, and
 rolls back attribute deltas on partial failure (T3.4).
 
 ```python
-cdr_baker = kz.subjects.upsert(
-    "cdr-baker",
+alice = kz.subjects.upsert(
+    "alice",
     attributes={
-        "clearance": "TS",
-        "country": "USA",
-        "programs": ["IRIS", "ARGOS"],   # list → multivalued KC attribute
+        "access_tier": "standard",
+        "region": "west",
+        "teams": ["analytics", "operations"],
     },
-    password="cdr-baker",
+    password="alice",
 )
-print(cdr_baker.id, cdr_baker.attributes["clearance"])  # kc-uuid TS
+print(alice.id, alice.attributes["access_tier"])
 ```
 
 Audit emits `subject_upsert{outcome=success}` on the receiver. A
@@ -222,12 +222,8 @@ print(conjunctions.urn)  # urn:li:dataset:(postgres,conjunctions,PROD)
 ```python
 ds_binding = kz.datasets.set_gate(
     conjunctions.urn,
-    type="kamiwaza_extensions.classified_conjunction_gate.ClassifiedConjunctionGate",
-    config={
-        "classification_field": "classification",
-        "releasable_to_field": "releasable_to",
-        "program_compartment_field": "program_compartment",
-    },
+    type="acme_gates.access_tier_gate.AccessTierGate",
+    config={"required_tier_field": "required_tier"},
 )
 print(ds_binding.dataset_urn, ds_binding.gate_name)
 ```

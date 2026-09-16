@@ -53,18 +53,18 @@ def test_set_execution_gate_forwards_config(mock_client) -> None:
         "/cluster/execution-gate",
         {
             "type": "my_gate.MyExecutionGate",
-            "config": {"min_clearance": "S"},
+            "config": {"minimum_tier": "S"},
             "gate_name": "my-gate",
             "kind": "execution",
         },
     )
 
     ClusterAPI(client=mock_client).set_execution_gate(
-        type="my_gate.MyExecutionGate", config={"min_clearance": "S"}
+        type="my_gate.MyExecutionGate", config={"minimum_tier": "S"}
     )
 
     _method, _path, kwargs = mock_client.calls[0]
-    assert kwargs.get("json", {}).get("config") == {"min_clearance": "S"}
+    assert kwargs.get("json", {}).get("config") == {"minimum_tier": "S"}
 
 
 def test_get_execution_gate_returns_binding(mock_client) -> None:

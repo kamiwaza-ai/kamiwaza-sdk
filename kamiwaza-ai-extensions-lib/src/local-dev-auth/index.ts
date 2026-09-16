@@ -64,11 +64,9 @@ const GLOBAL_WORKROOM_SENTINEL = "ffffffff-ffff-ffff-ffff-ffffffffffff";
  * Forwarded-auth envelope headers that the platform gateway owns in
  * production. Under the local-dev bridge we MUST clear all of these
  * before injecting our synthesized values — otherwise a client-supplied
- * spoof (e.g. `x-user-system-high: 1`) would slip through unchanged and
- * make local auth tests pass for permissions the user doesn't actually
- * have. Sourced from the shared `ENVELOPE_AUTH_HEADERS` constant so
- * `proxy.ts` (forward) and this file (clear) cannot drift —
- * round-10 review caught this maintainability gap.
+ * spoof (e.g. `x-user-workroom-role: admin`) would slip through unchanged
+ * and make local auth tests pass for permissions the user does not have.
+ * The shared constant keeps the proxy and clear lists in sync.
  */
 const FORWARDED_AUTH_HEADERS = ENVELOPE_AUTH_HEADERS;
 
@@ -202,18 +200,17 @@ export function _buildBridgedHeaders(
     // envelope headers before bridging. Starting from `new Headers(incoming)`
     // and only `set()`-ing a subset would preserve client-supplied values
     // for headers we don't bridge (e.g. a request with no `authorization`
-    // but with `x-user-system-high: 1` or `x-user-workroom-role: admin`
-    // would forward those spoofed values to the backend, making local
-    // auth tests pass in ways production wouldn't — in production the
-    // platform gateway owns the entire envelope). Clear every header in
+    // but with `x-user-workroom-role: admin`) would forward those spoofed
+    // values to the backend, making local auth tests pass in ways production
+    // wouldn't — in production the platform gateway owns the entire envelope.
     // FORWARDED_AUTH_HEADERS first, then set only the synthesized values.
     //
     // Round-13 review (codex P2) — the round-6 fix only ran on the
     // no-inbound-Authorization path. The original early-return on
     // inbound ``Authorization`` preserved EVERY envelope header
     // including spoofs, opening a privilege-escalation bypass:
-    // ``Authorization: anything`` + ``x-user-id: admin`` +
-    // ``x-user-system-high: 1`` reached the backend untouched. The
+    // ``Authorization: anything`` + ``x-user-id: admin`` reached the backend
+    // with other forged envelope fields untouched. The
     // sanitization now runs unconditionally on every gate-on path —
     // when the bridge is active there's no platform gateway, so
     // spoofs never have a legitimate source.

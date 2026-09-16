@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.integration import test_federation_shared_idp_gated_retrieval_live as shared_edge
+from tests.integration import (
+    test_federation_shared_idp_gated_retrieval_live as shared_edge,
+)
 
 try:
     from tests.integration import required_delegated_workload_edge as required_edge
@@ -119,7 +121,7 @@ def test_delegated_result_requires_exact_installed_versions() -> None:
         result={
             "data": [
                 {
-                    "classification": "U",
+                    "access_tier": "basic",
                     "probe": "marker",
                     "package_imports": ["humanize", "kamiwaza_sdk"],
                     "package_versions": {
@@ -156,7 +158,7 @@ def test_delegated_package_fixture_must_change_the_base_environment() -> None:
         result={
             "data": [
                 {
-                    "classification": "U",
+                    "access_tier": "basic",
                     "probe": "baseline",
                     "package_versions": {
                         "humanize": None,
@@ -172,7 +174,7 @@ def test_delegated_package_fixture_must_change_the_base_environment() -> None:
         result={
             "data": [
                 {
-                    "classification": "U",
+                    "access_tier": "basic",
                     "probe": "baseline",
                     "package_versions": expected,
                 }
@@ -201,7 +203,7 @@ def test_delegated_workload_waits_for_submitter_marker(
     ready = SimpleNamespace(
         status="SUCCEEDED",
         result={
-            "data": [{"classification": "U", "probe": "ready"}],
+            "data": [{"access_tier": "basic", "probe": "ready"}],
             "metadata": {"gate_audit": [{}], "filtered": False},
         },
         job_id="job-1",

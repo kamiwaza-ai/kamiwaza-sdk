@@ -159,17 +159,17 @@ def test_set_gate_puts_to_dataset_scoped_endpoint(mock_client) -> None:
         f"/catalog/datasets/{encoded}/gate",
         {
             "dataset_urn": urn,
-            "type": "my_gate.ClassificationGate",
-            "config": {"classification_field": "classification"},
-            "gate_name": "classification-gate",
+            "type": "my_gate.AccessTierGate",
+            "config": {"required_tier_field": "required_tier"},
+            "gate_name": "access-tier-gate",
             "kind": "attribute",
         },
     )
 
     binding = DatasetsAPI(client=mock_client).set_gate(
         urn,
-        type="my_gate.ClassificationGate",
-        config={"classification_field": "classification"},
+        type="my_gate.AccessTierGate",
+        config={"required_tier_field": "required_tier"},
     )
 
     assert isinstance(binding, AttributeGateBinding)
@@ -178,8 +178,8 @@ def test_set_gate_puts_to_dataset_scoped_endpoint(mock_client) -> None:
 
     body = mock_client.calls[0][2].get("json", {})
     assert body == {
-        "type": "my_gate.ClassificationGate",
-        "config": {"classification_field": "classification"},
+        "type": "my_gate.AccessTierGate",
+        "config": {"required_tier_field": "required_tier"},
     }
 
 

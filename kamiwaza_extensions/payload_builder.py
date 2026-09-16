@@ -44,7 +44,7 @@ from kamiwaza_sdk.schemas.extensions import (
 # to the ``kamiwaza.io/*`` namespace; ``kamiwaza.ai/*`` annotations are
 # silently dropped on the platform side, leaving ``kz-ext status`` unable
 # to surface "Last deployed by..." and similar observability fields.
-# (ENG-3901 dry-run finding F-010 — tactical SDK-side workaround until the
+# (ENG-3901 dry-run finding F-010 — temporary SDK-side workaround until the
 # platform broadens its allow-list. The ``.ai`` namespace was tried
 # originally for SDK-team-set annotations but is unsupported in practice.)
 ANNOTATION_DEPLOYER = "kamiwaza.io/deployer"

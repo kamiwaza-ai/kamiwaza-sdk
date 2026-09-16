@@ -1,8 +1,6 @@
 /**
- * PR #87 round-10 review (Comprehensive H) — the local-dev-auth bridge
- * MUST clear every envelope header that ``proxy.ts`` is willing to
- * forward, otherwise an inbound spoof of (e.g.) ``x-user-system-high``
- * survives the bridge's clear-and-synthesize cycle.
+ * Local-dev auth must clear every envelope header that ``proxy.ts`` forwards,
+ * otherwise an inbound spoof survives the clear-and-synthesize cycle.
  *
  * Round-10 collapsed both lists onto a shared
  * ``ENVELOPE_AUTH_HEADERS`` constant so the drift surface is gone.

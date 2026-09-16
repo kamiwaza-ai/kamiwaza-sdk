@@ -1,14 +1,12 @@
-"""Required two-cluster shared-IDP mesh job and gated-retrieval edge.
+"""Required two-cluster shared-IDP mesh job and access-tier retrieval edge.
 
-The lane carries both topology markers, provisions every prerequisite before
-selection, and treats any skip or denial as failure. It drains mesh retrieval
-SSE for exact U/S/TS rows and runs a recoverable job to ``SUCCEEDED`` with a
-unique receiver marker. Every clearance persona receives viewer authority only
-for the unique dataset; the U submitter additionally receives the explicit
-cluster-job executor relation. Tenant-negative personas are receiver-allowlisted
-with no initial tuples so the producer tenant boundary is the exact denial under
-test. The receiver execution gate still governs dispatch, and the job service
-auto-grants per-job authority only after successful submission.
+The lane carries both topology markers and provisions every prerequisite before
+selection. It drains mesh retrieval SSE for the exact basic, standard, and
+advanced rows. Each persona receives viewer authority only for the unique
+dataset. The basic-tier submitter also receives the cluster-job executor
+relation. Tenant-negative personas are receiver-allowlisted with no initial
+tuples, making the producer tenant boundary the exact denial under test. The
+receiver execution gate still governs dispatch.
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ from kamiwaza_sdk.token_store import InMemoryTokenStore
 from kamiwaza_sdk.validation.federation_readiness import authorized_datasets
 from tests.integration import mesh_outcome
 
-from . import _mini_clearance as mc
+from . import _access_tier as mc
 from ._shared_idp_fixture import DEFAULT_TENANT_ID, TENANT_NEGATIVE_PERSONAS
 from .required_federation_edge_setup import pair_required_edge, provision_gated_dataset
 
@@ -48,8 +46,12 @@ pytestmark = [
     pytest.mark.requires_owned_shared_realm,
 ]
 
-_PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
-_UNONBOARDED_PERSONA = "fed-clr-unonboarded"
+_PERSONAS = {
+    "basic": "access-basic",
+    "standard": "access-standard",
+    "advanced": "access-advanced",
+}
+_UNONBOARDED_PERSONA = "access-unonboarded"
 
 _ALLOW_ALL_EXECUTION_GATE = (
     "kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate"
@@ -247,7 +249,7 @@ def _shared_realm(config: pytest.Config) -> dict[str, str]:
         config,
         bool(issuer),
         "SHARED_ISSUER_URL not set — shared_idp pairing needs a shared realm "
-        "that projects the `clearance` claim into brokered JWTs",
+        "that projects the `access_tier` claim into brokered JWTs",
     )
     cfg = {"shared_issuer_url": issuer}
     for env, key in (
@@ -282,15 +284,15 @@ def _persona_auth(
     shared: dict[str, str],
     temp_root: Path,
 ) -> dict:
-    """Shared-realm ROPC config for default-tenant clearance personas."""
+    """Shared-realm ROPC config for default-tenant access-tier personas."""
     client_id = os.getenv("SHARED_REALM_CLIENT_ID", "").strip()
-    password = os.getenv("FED_PERSONA_PASSWORD", "").strip()
+    password = os.getenv("SHARED_REALM_PERSONA_PASSWORD", "").strip()
     _require_prerequisite(
         config,
         bool(client_id and password),
-        "SHARED_REALM_CLIENT_ID / FED_PERSONA_PASSWORD not set — the personas "
-        "need a shared-realm ROPC token with `clearance` and explicit "
-        "`tenant_id=__default__` claims",
+        "SHARED_REALM_CLIENT_ID / SHARED_REALM_PERSONA_PASSWORD not set — "
+        "personas need a shared-realm ROPC token with `access_tier` and "
+        "explicit `tenant_id=__default__` claims",
     )
     verify = os.getenv("KAMIWAZA_VERIFY_SSL", "1").strip().lower() not in {
         "0",
@@ -357,11 +359,11 @@ def _receiver_prereqs(
         "gate-packages wheel/index not configured on the receiver",
     )
     assert wi is not None
-    dataset_path = os.getenv("MINI_CLEARANCE_DATASET_PATH", "").strip()
+    dataset_path = os.getenv("ACCESS_TIER_DATASET_PATH", "").strip()
     _require_prerequisite(
         pytestconfig,
         bool(dataset_path),
-        "MINI_CLEARANCE_DATASET_PATH not set (receiver fixture file)",
+        "ACCESS_TIER_DATASET_PATH not set (receiver fixture file)",
     )
     shared = _shared_realm(pytestconfig)
     return _EdgePrerequisites(
@@ -471,14 +473,14 @@ def _provision_personas(
     provisioning: _PersonaProvisioning,
 ) -> dict[str, dict[str, Any]]:
     personas: dict[str, dict[str, Any]] = {}
-    for clearance, base in _PERSONAS.items():
+    for access_tier, base in _PERSONAS.items():
         persona = _open_persona(provisioning, base)
         _assert_default_tenant_claim(persona["token"])
         tuples = _required_initial_tuples(
             provisioning.dataset_urn,
-            job_executor=clearance == "U",
+            job_executor=access_tier == "basic",
         )
-        personas[clearance] = _allowlist_persona(provisioning, persona, tuples)
+        personas[access_tier] = _allowlist_persona(provisioning, persona, tuples)
 
     unonboarded = _open_persona(provisioning, _UNONBOARDED_PERSONA)
     _assert_default_tenant_claim(unonboarded["token"])
@@ -566,15 +568,15 @@ def shared_idp_gated_pair(
         yield wiring.__dict__
 
 
-@pytest.mark.parametrize("clearance", ["U", "S", "TS"])
+@pytest.mark.parametrize("access_tier", ["basic", "standard", "advanced"])
 def test_required_mesh_retrieval_returns_exact_post_gate_rows(
-    clearance, shared_idp_gated_pair, live_kamiwaza_session_client
+    access_tier, shared_idp_gated_pair, live_kamiwaza_session_client
 ) -> None:
     """A shared_idp persona mesh-retrieves exactly its allowed rows — known answer."""
     wiring = shared_idp_gated_pair
     initiator = live_kamiwaza_session_client
     name, urn = wiring["name"], wiring["urn"]
-    persona, token = _active_persona_session(wiring["personas"][clearance])
+    persona, token = _active_persona_session(wiring["personas"][access_tier])
 
     authorized_datasets(persona, name)
 
@@ -587,7 +589,7 @@ def test_required_mesh_retrieval_returns_exact_post_gate_rows(
         )
 
     rows, gate_audit = _required_mesh_call(_retrieve)
-    mc.assert_persona_result(clearance, rows, gate_audit)
+    mc.assert_persona_result(access_tier, rows, gate_audit)
 
 
 @pytest.mark.parametrize(
@@ -638,7 +640,7 @@ def test_required_mesh_dataset_list_returns_only_authorized_fixture(
 ) -> None:
     """List receiver datasets through mesh with receiver-local ReBAC filtering."""
     wiring = shared_idp_gated_pair
-    persona, _token = _active_persona_session(wiring["personas"]["U"])
+    persona, _token = _active_persona_session(wiring["personas"]["basic"])
 
     datasets = authorized_datasets(persona, wiring["name"])
 
@@ -650,7 +652,7 @@ def test_required_mesh_job_reaches_receiver_and_returns_marker(
 ) -> None:
     """Run a recoverable job on the receiver and assert its exact payload."""
     wiring = shared_idp_gated_pair
-    persona, _token = _active_persona_session(wiring["personas"]["U"])
+    persona, _token = _active_persona_session(wiring["personas"]["basic"])
     authorized_datasets(persona, wiring["name"])
     marker = f"eng10050-{uuid.uuid4().hex}"
     script = (

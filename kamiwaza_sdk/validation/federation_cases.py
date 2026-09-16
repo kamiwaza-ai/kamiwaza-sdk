@@ -123,10 +123,10 @@ def _dispatch_case(
     case_id: str,
     hooks: CaseHooks,
 ) -> None:
-    if case_id.startswith("retrieval-clearance-"):
-        _run_clearance_case(
+    if case_id.startswith("retrieval-access-tier-"):
+        _run_access_tier_case(
             context,
-            case_id.rsplit("-", 1)[-1].upper(),
+            case_id.rsplit("-", 1)[-1],
             hooks,
         )
         return
@@ -171,16 +171,16 @@ def _retrieve_rows(
         close_client(persona)
 
 
-def _run_clearance_case(
+def _run_access_tier_case(
     context: RunContext,
-    clearance: str,
+    access_tier: str,
     hooks: CaseHooks,
 ) -> None:
-    username = PERSONAS[clearance]
+    username = PERSONAS[access_tier]
     token = _issue_token(context, username)
     rows, audits = _retrieve_rows(context, token, hooks)
-    included, allowed = KNOWN[clearance]
-    expected = [row for row in records() if row["classification"] in allowed]
+    included, allowed = KNOWN[access_tier]
+    expected = [row for row in records() if row["required_tier"] in allowed]
     if len(rows) != included or _sort_rows(rows) != _sort_rows(expected):
         raise AssertionError("gated retrieval returned unexpected rows")
     if not audits:
@@ -204,7 +204,7 @@ def _run_tenant_case(context: RunContext, case_name: str, hooks: CaseHooks) -> N
 
 
 def _run_dataset_case(context: RunContext, hooks: CaseHooks) -> None:
-    token = _issue_token(context, PERSONAS["U"])
+    token = _issue_token(context, PERSONAS["basic"])
     persona = hooks.make_client(context.initiator_base, token)
     try:
         datasets = authorized_datasets(
@@ -218,7 +218,7 @@ def _run_dataset_case(context: RunContext, hooks: CaseHooks) -> None:
 
 
 def _run_job_case(context: RunContext, hooks: CaseHooks) -> None:
-    token = _issue_token(context, PERSONAS["U"])
+    token = _issue_token(context, PERSONAS["basic"])
     persona = hooks.make_client(context.initiator_base, token)
     marker = f"kamiwaza-validation-{context.selected.target_id}"
     script = (

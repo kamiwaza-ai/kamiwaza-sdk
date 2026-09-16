@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from ..exceptions import APIError
 from .base_service import BaseService
 from ..schemas.enclaves import (
     ConnectorCreate,
@@ -55,10 +54,14 @@ class ConnectorClient(BaseService):
         return ConnectorResponse.model_validate(response)
 
     def get(self, connector_id: UUID | str) -> ConnectorResponse:
-        response = self.client.get(f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}")
+        response = self.client.get(
+            f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}"
+        )
         return ConnectorResponse.model_validate(response)
 
-    def update(self, connector_id: UUID | str, payload: ConnectorUpdate) -> ConnectorResponse:
+    def update(
+        self, connector_id: UUID | str, payload: ConnectorUpdate
+    ) -> ConnectorResponse:
         response = self.client.put(
             f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}",
             json=payload.model_dump(mode="json", exclude_unset=True),
@@ -83,7 +86,6 @@ class DocumentClient(BaseService):
     """Helpers for enclave document indexing and retrieval."""
 
     _BASE_PATH = "/enclaves/documents"
-    _SYSTEM_HIGH_HEADER = "X-User-System-High"
 
     def create(self, payload: IndexDocumentRequest) -> DocumentRecord:
         response = self.client.post(
@@ -100,10 +102,11 @@ class DocumentClient(BaseService):
         offset: int | None = 0,
         item_type: str | None = None,
         tag: str | None = None,
-        system_high: str | None = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> DocumentListResponse:
-        params: Dict[str, Any] = {"source_id": str(_ensure_uuid(source_id, field="source_id"))}
+        params: Dict[str, Any] = {
+            "source_id": str(_ensure_uuid(source_id, field="source_id"))
+        }
         if limit is not None:
             params["limit"] = limit
         if offset is not None:
@@ -113,11 +116,7 @@ class DocumentClient(BaseService):
         if tag:
             params["tag"] = tag
 
-        request_headers = _merge_system_high_header(
-            headers=headers,
-            system_high=system_high,
-            header_name=self._SYSTEM_HIGH_HEADER,
-        )
+        request_headers = dict(headers) if headers else None
 
         response = self.client.get(
             f"{self._BASE_PATH}/",
@@ -131,15 +130,10 @@ class DocumentClient(BaseService):
         document_id: UUID | str,
         *,
         source_id: UUID | str,
-        system_high: str | None = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> DocumentRecord:
         params = {"source_id": str(_ensure_uuid(source_id, field="source_id"))}
-        request_headers = _merge_system_high_header(
-            headers=headers,
-            system_high=system_high,
-            header_name=self._SYSTEM_HIGH_HEADER,
-        )
+        request_headers = dict(headers) if headers else None
         response = self.client.get(
             f"{self._BASE_PATH}/{_ensure_uuid(document_id, field='document_id')}",
             params=params,
@@ -164,21 +158,3 @@ def _ensure_uuid(value: UUID | str, *, field: str) -> UUID:
         return UUID(value)
     except ValueError as exc:
         raise ValueError(f"Invalid {field}: expected UUID, got {value!r}") from exc
-
-
-def _merge_system_high_header(
-    *,
-    headers: Optional[Dict[str, str]],
-    system_high: Optional[str],
-    header_name: str,
-) -> Optional[Dict[str, str]]:
-    request_headers = dict(headers or {})
-    if not system_high:
-        return request_headers or None
-
-    for existing_name in request_headers:
-        if existing_name.lower() == header_name.lower():
-            return request_headers
-
-    request_headers[header_name] = system_high
-    return request_headers

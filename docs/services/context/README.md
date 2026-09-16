@@ -191,9 +191,8 @@ records rather than typed models.
   and `metadata` are forwarded only when set.
 - `list_raw_files(*, workroom_id, ...)` — list stored raw files
   (`GET /context/storage/raw`), returning the `{"items": [...], "count": N}`
-  shape. Supports `source_urn` / `job_id` / `connector_id` filters, `limit` /
-  `offset` paging, and `include_markings=True` to attach aggregated security
-  markings.
+  shape. Supports `source_urn` / `job_id` / `connector_id` filters and `limit` /
+  `offset` paging.
 - `get_raw_file(file_id, *, workroom_id, ...)` — fetch one raw-file record
   (`GET /context/storage/raw/{file_id}`). Set `include_download_url=True` for a
   temporary presigned download URL (when S3 metadata exists); `expires_seconds`
