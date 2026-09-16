@@ -2,11 +2,11 @@
 
 An evidence record is composed from whichever mapped tests actually ran, so a
 claim is honest only when each test earns it on its own (the PER-TEST RULE in
-capability_map.yaml). The inline test proves catalog registration, readback
-and deletion but never touches Arrow Flight; the gRPC test is the one that
-exercises the Flight transport. If the inline test fed a record claiming
-``retrieval.async-retrieval-jobs``, a run that deselected or skipped the gRPC
-test would publish Flight evidence that nothing produced.
+capability_map.yaml). T01's retrieval claim is scoped to its Arrow Flight leg:
+the inline test proves catalog registration, readback and deletion, and only
+the gRPC test exercises Flight. If the inline test fed T01's
+``retrieval.async-retrieval-jobs`` claim, a run that deselected or skipped the
+gRPC test would report that claim as passing without its Flight leg.
 """
 
 from __future__ import annotations

@@ -196,8 +196,10 @@
 # secret and proving each absent. They differ in how the rows come back.
 #
 # The inline test retrieves through retrieval.create_job/get_job with the inline
-# transport. On its own it does not exercise Arrow Flight, so it claims only the
-# catalog registration and readback it proves.
+# transport. T01's retrieval claim is scoped to its Arrow Flight leg, which only
+# the gRPC test exercises, so the inline test claims only the catalog
+# registration and readback it proves; a T01 run without the gRPC test then
+# cannot report T01's retrieval claim as passing.
 - pattern: "tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline"
   capability_ids: [catalog.dataset-registry]
   scenario_name: "Catalog S3 dataset registration, readback, and deletion"

@@ -48,6 +48,9 @@ _ABSENCE_POLLS = 15
 _ABSENCE_POLL_INTERVAL_S = 2.0
 _COMPLETED = "COMPLETED"
 _S3_NOT_FOUND_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+# The server detail of the 503 that ENG-12300 diagnoses; other upstream
+# failures also answer 503 and must keep their own diagnostics.
+_ENG_12300_503_DETAIL = "Arrow Flight retrieval is not configured"
 
 
 @dataclass(frozen=True)
@@ -160,8 +163,9 @@ def _seeded_dataset(
     dataset_urns: list[str] = []
     with ExitStack() as cleanup:
         # Callbacks run last-registered-first: datasets, then the object, then
-        # the secret they were ingested with. The fixture's own teardown then
-        # meets only the expected 404 for the secret.
+        # the secret they were ingested with. ingestion_s3_secret_urn is
+        # function-scoped, so no other test sees the deleted secret, and its
+        # own teardown then meets only the expected 404.
         cleanup.callback(client.catalog.secrets.delete, secret_urn)
         buffer = io.BytesIO()
         pd.DataFrame(rows).to_parquet(buffer, index=False)
@@ -234,14 +238,13 @@ def test_s3_ingest_and_retrieve_grpc(
                 )
             )
         except APIError as exc:
-            if exc.status_code == 503:
+            if exc.status_code == 503 and _ENG_12300_503_DETAIL in str(exc):
                 pytest.fail(
                     "gRPC (Arrow Flight) retrieval job creation returned HTTP 503: "
-                    f"{exc}. ENG-12300 diagnoses this failure on the Azure 1.2.1 "
+                    f"{exc}. ENG-12300 diagnoses this 503 on the Azure 1.2.1 "
                     "evidence instance, whose stored 'retrieval' runtime config "
-                    "lacks flight_advertised_locations_raw, so "
-                    "RETRIEVAL_FLIGHT_ADVERTISED_LOCATIONS is ignored. Check that "
-                    "ticket before treating this as a new defect."
+                    "lacks flight_advertised_locations_raw. Check that ticket "
+                    "before treating this as a new defect."
                 )
             raise
         assert job.transport == TransportType.GRPC
