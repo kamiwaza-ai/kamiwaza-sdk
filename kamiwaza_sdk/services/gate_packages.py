@@ -72,12 +72,24 @@ class GatePackagesAPI(BaseService):
         return GatePackageInstallResult.model_validate(response)
 
     def list(self) -> GatePackageList:
-        """List installed gate packages (FR-90)."""
+        """List every gate package currently installed on the platform.
+
+        Returns:
+            GatePackageList: The installed packages and their states.
+        """
         response = self.client._request("GET", "/authz/gate-packages")
         return GatePackageList.model_validate(response)
 
     def get(self, name: str) -> GatePackageState:
-        """Get the state record for one installed gate package (FR-90)."""
+        """Get the state record for one installed gate package.
+
+        Args:
+            name: Name of the installed package.
+
+        Returns:
+            GatePackageState: The package's installed state, including the
+            classpaths it provides.
+        """
         response = self.client._request("GET", f"/authz/gate-packages/{name}")
         return GatePackageState.model_validate(response)
 
@@ -89,7 +101,22 @@ class GatePackagesAPI(BaseService):
         *,
         index_url: Optional[str] = None,
     ) -> GatePackageInstallResult:
-        """Atomic in-place replace (FR-89a). Ships in WS-M5b.
+        """Replace an installed gate package in place, atomically.
+
+        Re-resolves every binding that references the package, so a caller
+        should read the resulting bindings before treating the replace as done.
+        Refuses when the candidate would drop a classpath something is still
+        bound to.
+
+        Args:
+            name: Name of the installed package to replace.
+            package_spec: Specifier of the replacement package.
+            hash_digest: Hash the replacement must match. Required, because a
+                gate package decides whether other code may run.
+            index_url: Package index to install from, when not the default.
+
+        Returns:
+            GatePackageInstallResult: The replacement's install result.
 
         Raises:
             GatePackageHashRequiredError: 400 when ``hash_digest`` is missing.
@@ -116,10 +143,10 @@ class GatePackagesAPI(BaseService):
         return GatePackageInstallResult.model_validate(response)
 
     def uninstall(self, name: str) -> None:
-        """Uninstall (FR-90). Server refuses if any active binding
-        references a classpath from the package. Ships in WS-M5b.
+        """Uninstall a gate package, refusing while any binding still uses it.
 
-        Return value is reserved; M5b may surface the audit event id.
+        Args:
+            name: Name of the installed package to uninstall.
 
         Raises:
             GatePackageNotFoundError: 404 when no package named ``name``

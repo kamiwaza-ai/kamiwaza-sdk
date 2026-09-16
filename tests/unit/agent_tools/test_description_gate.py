@@ -23,20 +23,18 @@ pytestmark = pytest.mark.unit
 
 #: Published operations with no description from any source. Target: 0.
 #:
-#: Raised from 41 to 69 when the index began walking nested platform
-#: sub-clients, which made 38 previously unreachable operations callable —
-#: `catalog.containers`, `catalog.datasets`, `catalog.secrets`,
-#: `enclaves.connectors`, `enclaves.documents` and `gates.packages`. 28 of
-#: those 38 carry no description. This is the one legitimate reason to raise a
-#: ceiling: new territory, not a regression on ground already covered. Coverage
-#: went from 41/294 to 69/332, so the rate got worse because the newly reached
-#: families are the least documented in the client.
-MAX_ABSENT = 69
+#: History, because a ceiling that moves needs one. 41 at the first
+#: measurement; raised to 69 when the index began walking nested platform
+#: sub-clients and made 38 previously unreachable operations callable — the one
+#: legitimate reason to raise a ceiling, since that is new territory rather
+#: than a regression on covered ground. Now 38: the six nested families and the
+#: catalogue facade are documented, which is T116's first slice.
+MAX_ABSENT = 38
 
 #: Published operations whose description is under six words — present, but too
 #: short to distinguish one operation from another in a ranked list. Target: 0.
-#: Raised from 85 by the same change; 3 of the 38 are thin.
-MAX_THIN = 88
+#: 85 at the first measurement, 88 after the nested families arrived, now 83.
+MAX_THIN = 83
 
 
 @pytest.fixture(scope="module")
