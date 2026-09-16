@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import warnings
 
 import pytest
@@ -141,6 +142,65 @@ def test_search_never_returns_a_withheld_operation(index) -> None:
 def test_search_honours_the_limit_and_empty_query(index) -> None:
     assert len(index.search("get", limit=5)) <= 5
     assert index.search("   ") == ()
+
+
+def test_every_word_narrows_the_search_rather_than_widening_it(index) -> None:
+    """The defect this scoring exists to prevent, pinned as a property.
+
+    Measured before the fix: "deploy a model" matched 325 of 332 published
+    operations, because any single term counted and something in the platform
+    mentions "model" nearly everywhere. A search that gets worse the more
+    precisely it is described is worse than no search, because an agent reads
+    the first few results and concludes those are the options.
+    """
+    everything = len(index.published)
+    broad = index.search("model", limit=everything)
+    narrow = index.search("deploy a model", limit=everything)
+    assert len(narrow) < len(broad), (
+        "adding words widened the result set, which means a term is being "
+        "counted as a match on its own again"
+    )
+    assert len(narrow) < everything // 4
+    assert any("deploy" in e.published_id for e in narrow[:3])
+
+
+def test_a_noise_length_term_is_ignored_beside_a_real_one(index) -> None:
+    """"a" and "it" carry no signal as substrings, so they must not score.
+
+    Dropped only when a longer term survives: a caller searching "id" alone
+    still means it.
+    """
+    assert index.search("deploy a model") == index.search("deploy model")
+    assert index.search("id", limit=5), "a short query on its own still searches"
+
+
+def test_a_term_matches_at_a_word_start_not_inside_a_word(index) -> None:
+    """Prefix matching is what a searcher expects; substring matching is not.
+
+    "deploy" should still find "deployment"; nothing should match a term that
+    merely appears inside an unrelated word.
+    """
+    found = {e.published_id for e in index.search("deploy", limit=len(index.published))}
+    assert any("deployment" in name or "deploy" in name for name in found)
+    for entry in index.search("port", limit=len(index.published)):
+        text = f"{entry.published_id} {entry.selector} {entry.summary or ''}".lower()
+        assert re.search(r"\bport", text), (
+            f"{entry.published_id} matched 'port' inside a word such as "
+            f"'transport' or 'important', which is not a match a caller meant"
+        )
+
+
+def test_the_requirement_widens_only_when_nothing_matches_everything(index) -> None:
+    """A phrase nothing satisfies completely still answers with its best near miss.
+
+    Empty is reserved for a query no operation matches at all: an agent that
+    gets nothing back concludes the capability does not exist, so nothing is
+    the wrong answer whenever a partial match exists (FR-040 in the server
+    repository).
+    """
+    partial = index.search("ingest a dataset and index it", limit=len(index.published))
+    assert partial, "a four-word phrase with real platform nouns returned nothing"
+    assert index.search("zzzqqq wibblefrotz") == ()
 
 
 def test_index_stamps_its_provenance(index) -> None:
