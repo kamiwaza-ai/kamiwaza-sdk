@@ -206,31 +206,48 @@
     - "*::test_catalog_secret_list"
     - "*::test_catalog_secret_endpoints"
 
-# Justification: every test in the module ingests from some source
-# (file/object/parquet/postgres/kafka/slack) and asserts the resulting
-# dataset's catalog metadata, so the whole module evidences the registry.
+# Justification (ENG-12320, T02): the retained tests each ingest a seeded
+# source through client.ingestion and assert the catalog retained its metadata
+# -- object_ingestion_inline_retrieval, parquet_ingestion_inline_retrieval and
+# inline_small_object_succeeds (platform, s3:// path, format),
+# postgres_ingestion_metadata (schema, table, column names), and
+# container_link_sets_dataset_container_urn (container membership both ways).
+# Excluded -- optional paths that skip before their ingestion or retrieval
+# starts and are not T02 coverage: file_ingestion_metadata (needs CATALOG_FILE_INGESTION_ROOT),
+# kafka (retrieval not implemented at 1.2.1), slack (needs SLACK_TEST_* tokens),
+# and inline_large_object_hits_threshold (oversized object). Also excluded:
+# sse_retrieval_emits_terminal_event, whose ingestion is setup for an SSE claim
+# and asserts no registry behavior.
 # Split from the retrieval entry below: `exclude` is per-entry, so a single
 # entry claiming two capabilities cannot satisfy the per-test rule for both.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [catalog.dataset-registry]
   scenario_name: "Multi-source catalog ingestion"
+  exclude:
+    - "*::test_catalog_file_ingestion_metadata"
+    - "*::test_catalog_kafka_ingestion_metadata"
+    - "*::test_catalog_slack_ingestion_metadata"
+    - "*::test_catalog_inline_large_object_hits_threshold"
+    - "*::test_catalog_sse_retrieval_emits_terminal_event"
 
-# Justification: the subset that actually submits a retrieval job over the
-# ingested data and asserts the result — the two *_inline_retrieval tests,
-# inline_small_object and file_ingestion_metadata (both POST /retrieval/jobs
-# and assert row_count), large_object_sse_retrieval, and
-# postgres_ingestion_metadata.
-# Excluded: kafka (xfails before any retrieval), slack, and container_link
-# never submit a job at all, and inline_large_object_hits_threshold asserts a
-# 422 rejection rather than a successful retrieval.
+# Justification (ENG-12320, T02): the retained tests each run a retrieval job
+# through client.retrieval over seeded data and assert the outcome, not a
+# status string -- the three inline S3 tests and postgres_ingestion_metadata
+# (job COMPLETED on create and read-back, rows_processed equal to row_count,
+# content equal to the seed), and sse_retrieval_emits_terminal_event (chunk
+# events, a terminal `complete` event, job COMPLETED). On 1.2.1 the SSE test
+# fails (ENG-12300), so this scenario's record is honestly `failed`.
+# Excluded: the same four optional paths as the registry entry, plus
+# container_link, which never submits a retrieval job.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [retrieval.async-retrieval-jobs]
   scenario_name: "Multi-source inline and SSE retrieval"
   exclude:
+    - "*::test_catalog_file_ingestion_metadata"
     - "*::test_catalog_kafka_ingestion_metadata"
     - "*::test_catalog_slack_ingestion_metadata"
-    - "*::test_catalog_container_link_sets_dataset_container_urn"
     - "*::test_catalog_inline_large_object_hits_threshold"
+    - "*::test_catalog_container_link_sets_dataset_container_urn"
 
 # Justification: TestWorkroomCrudIsolation — create/get/list/update/archive
 # workrooms. Every retained test creates one, either through the workroom_a /
