@@ -31,8 +31,10 @@ the existing service NetworkPolicy intentionally denies external ingress.
   all eight changed runtime files were hash-verified in the guest. See
   [source hashes](receipts/core-source-hashes.json). Earlier commit `6bee46a`
   has the same runtime files; subsequent changes were docs/generated OpenAPI.
-- SDK publishing implementation: `e209839` plus the committed qualification
-  harness in this directory. Core selection and publisher were executed directly.
+- SDK final-candidate publication rerun: `515807b724a5cc1c581338abdab199d48a278531`,
+  including legacy grammar fix `69a7ede` and the boto3 floor change. All 74 copied
+  Python source files were SHA-256 verified before execution. See
+  [final SDK source hashes](receipts/final-sdk/source-hashes.json).
 - Kajiya importer: `36d778495c660f5cb654369dacc13ae105d875a5`.
 - Deploy candidate: `d12fe53dd1ead35922ef6c7306d7e607443b1281`.
 - Shared publishing CI candidate: `37800d95f7f4a7fe9ae9f5b2fb051e2ccae43715`;
@@ -86,3 +88,19 @@ all six selection points. `runtime-baseline-after-update-*` and `runtime-update-
 show old/new workload coexistence. The 1.3.0 browser/internal responses are in
 [runtime-1.3.0-browser.txt](receipts/runtime-1.3.0-browser.txt). No credentials,
 private tokens, saved cloud profiles, or unrelated installation logs are included.
+
+## Final SDK candidate rerun
+
+The final SDK candidate repeated baseline and update publication against a second,
+independent loopback S3 emulator on port 18334, with its own source copy and export
+directory. It did not touch the working instance catalog or the original S3
+server. Both stale conditional-write probes returned 412; four concurrent
+publishers again retained all four releases. Baseline and updated object bytes,
+ETags, writer metadata, and release histories exactly match the objects consumed
+by the installed matrix. This closes the source-version gap between the initial
+live publication and the final SDK fixes.
+
+[Final baseline](receipts/final-sdk/catalog-baseline.json),
+[final update](receipts/final-sdk/catalog-update.json), and
+[dependency versions](receipts/final-sdk/runtime-dependencies.json) preserve this
+rerun. boto3 and botocore were both 1.43.95; Moto was 5.1.12.
