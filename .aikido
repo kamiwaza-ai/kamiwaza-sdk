@@ -35,4 +35,4 @@ exclude:
 
     # ── Dev Configuration ──
     - .env.local.example
-    - kamiwaza-openapi-spec.json
+    - kamiwaza_sdk/agent_tools/kamiwaza-openapi-spec.json

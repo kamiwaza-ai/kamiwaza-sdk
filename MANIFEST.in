@@ -3,3 +3,4 @@ include LICENSE
 recursive-include kamiwaza_sdk *.py
 recursive-include kamiwaza_sdk *.typed
 recursive-include kamiwaza_sdk py.typed
+recursive-include kamiwaza_sdk *.json

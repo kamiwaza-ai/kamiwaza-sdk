@@ -28,6 +28,7 @@ __all__ = [
     "OperationEntry",
     "OperationIndex",
     "build_index",
+    "first_sentence",
 ]
 
 #: Version of the descriptor shape itself, distinct from the SDK version.
@@ -37,7 +38,7 @@ DESCRIPTOR_VERSION = "1"
 _FIRST_SENTENCE_ENDINGS = (". ", ".\n", ".")
 
 
-def _first_sentence(text: str | None) -> str | None:
+def first_sentence(text: str | None) -> str | None:
     """Return the first sentence of a docstring, or ``None`` when there is none.
 
     Args:
@@ -296,7 +297,7 @@ def build_index(client: Any) -> OperationIndex:
                     published_id=published_id(op_selector),
                     service=service_name,
                     method=method_name,
-                    summary=_first_sentence(inspect.getdoc(method)),
+                    summary=first_sentence(inspect.getdoc(method)),
                     parameters=params,
                     required_parameters=required,
                     returns=returns,

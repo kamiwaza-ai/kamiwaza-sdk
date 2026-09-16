@@ -8,7 +8,9 @@ FR-006k:
 * **behaviour hints** — read-only, destructive, idempotent, open-world — derived
   from that effect rather than from an HTTP verb;
 * an **approval requirement** — every non-read, plus the reads named in
-  :data:`APPROVAL_REQUIRED_READS`.
+  :data:`APPROVAL_REQUIRED_READS`;
+* a **description** — resolved by precedence from the method docstring, then
+  the interface document, and never authored in the consuming server.
 
 Derivation is the default and an override is per operation, so one wrong answer
 is corrected without abandoning derivation for the other 309. A derivation that
@@ -21,10 +23,16 @@ and the MCP server maps it onto the wire shape its revision requires.
 
 from __future__ import annotations
 
+import inspect
+import json
+import re
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
+from importlib import resources
+from typing import Any
 
-from .spec_index import OperationEntry, OperationIndex
+from .spec_index import OperationEntry, OperationIndex, first_sentence
 
 __all__ = [
     "APPROVAL_REQUIRED_READS",
@@ -34,9 +42,13 @@ __all__ = [
     "OPEN_WORLD_OPERATIONS",
     "OperationDescriptor",
     "BehaviourHints",
+    "DescriptionSource",
     "classify",
     "describe",
     "describe_all",
+    "description_coverage",
+    "interface_descriptions",
+    "resolve_description",
     "unclassified",
 ]
 
@@ -425,3 +437,185 @@ def unclassified(index: OperationIndex) -> tuple[str, ...]:
         for entry in index.published
         if classify(entry.selector, entry.method) is None
     )
+
+
+class DescriptionSource(str, Enum):
+    """Where a resolved description came from.
+
+    Recorded so the documentation gate can report *which* source answered, and
+    so a thin description traced to the interface document is distinguishable
+    from one traced to a docstring that needs writing.
+    """
+
+    DOCSTRING = "docstring"
+    INTERFACE_DESCRIPTION = "interface_description"
+    INTERFACE_SUMMARY = "interface_summary"
+    ABSENT = "absent"
+
+
+#: File name of the committed interface document, shipped as package data so a
+#: consumer that installed the wheel can read it. One copy: this is the same
+#: file the drift gate checks, not a vendored duplicate (Principle V).
+_INTERFACE_DOCUMENT = "kamiwaza-openapi-spec.json"
+
+_REQUEST_CALL = re.compile(
+    r'_request\(\s*["\'](GET|POST|PUT|PATCH|DELETE)["\']\s*,\s*f?["\']([^"\']*)["\']'
+)
+_VERB_CALL = re.compile(
+    r'self\.client\.(get|post|put|patch|delete)\(\s*f?["\']([^"\']*)["\']'
+)
+_PATH_PARAMETER = re.compile(r"\{[^}]*\}")
+
+
+def _normalise_path(path: str) -> str:
+    """Return a path with every parameter segment reduced to a single token.
+
+    The client interpolates its own names (``{model_id}``) while the interface
+    document uses the route's (``{model_uuid}``), so the names cannot be
+    compared. The *shape* can.
+
+    Args:
+        path: Request path, possibly containing parameter placeholders.
+
+    Returns:
+        The path with each placeholder replaced by ``{}`` and any trailing
+        slash removed, so ``/models/`` and ``/models`` compare equal.
+    """
+    flattened = _PATH_PARAMETER.sub("{}", path)
+    return flattened.rstrip("/") or "/"
+
+
+@lru_cache(maxsize=1)
+def interface_descriptions() -> dict[tuple[str, str], tuple[str | None, str | None]]:
+    """Return the interface document's descriptions, keyed by method and path.
+
+    Cached: the document is 280KB of JSON and its content cannot change inside
+    a process.
+
+    Returns:
+        Mapping from ``(http_method, normalised_path)`` to the operation's
+        ``(description, summary)``. Empty when the document is not installed,
+        which degrades description resolution to docstrings rather than failing
+        the surface.
+    """
+    try:
+        raw = (
+            resources.files("kamiwaza_sdk.agent_tools")
+            .joinpath(_INTERFACE_DOCUMENT)
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        return {}
+    document: dict[str, Any] = json.loads(raw)
+    descriptions: dict[tuple[str, str], tuple[str | None, str | None]] = {}
+    for path, operations in document.get("paths", {}).items():
+        if not isinstance(operations, dict):
+            continue
+        for http_method, operation in operations.items():
+            if not isinstance(operation, dict):
+                continue
+            descriptions[(http_method.upper(), _normalise_path(path))] = (
+                operation.get("description"),
+                operation.get("summary"),
+            )
+    return descriptions
+
+
+def _request_signature(service: Any, method_name: str) -> tuple[str, str] | None:
+    """Return the HTTP method and path a client method calls, if it is literal.
+
+    Read from the method's source rather than by calling it, because resolving
+    a description must never issue a request. A method that builds its path
+    dynamically yields ``None``: 47 of 310 do at this revision, and they fall
+    back to their docstring, which is the source this precedence prefers anyway.
+
+    Args:
+        service: The service object the method belongs to.
+        method_name: Name of the method.
+
+    Returns:
+        ``(http_method, normalised_path)``, or ``None`` when no literal request
+        call is present in the source.
+    """
+    function = getattr(type(service), method_name, None)
+    if function is None:
+        return None
+    try:
+        source = inspect.getsource(function)
+    except (OSError, TypeError):
+        return None
+    match = _REQUEST_CALL.search(source) or _VERB_CALL.search(source)
+    if match is None:
+        return None
+    return match.group(1).upper(), _normalise_path(match.group(2))
+
+
+def resolve_description(
+    entry: OperationEntry,
+    service: Any = None,
+) -> tuple[str | None, DescriptionSource]:
+    """Resolve one operation's description, and say where it came from.
+
+    Precedence, per FR-006h: the method docstring's first sentence, then the
+    interface document's description first sentence, then its summary. This
+    **inverts** the reference implementation's order deliberately — their
+    descriptions come from OpenAPI because their docstrings are not the source;
+    ours are, which is why the docstring gate exists.
+
+    No text is authored here and none in the consuming server: a description
+    ships with the method it describes, so the person changing behaviour is the
+    person who updates the sentence an agent ranks on.
+
+    Args:
+        entry: The indexed operation.
+        service: The service object, needed to read the method's source and map
+            it to an interface-document operation. Omit it to resolve from the
+            docstring alone.
+
+    Returns:
+        The description and its source. ``(None, ABSENT)`` when no source has
+        one, which is what the gate fails on.
+    """
+    if entry.summary:
+        return entry.summary, DescriptionSource.DOCSTRING
+    if service is None:
+        return None, DescriptionSource.ABSENT
+    signature = _request_signature(service, entry.method)
+    if signature is None:
+        return None, DescriptionSource.ABSENT
+    described = interface_descriptions().get(signature)
+    if described is None:
+        return None, DescriptionSource.ABSENT
+    description, summary = described
+    sentence = first_sentence(description)
+    if sentence:
+        return sentence, DescriptionSource.INTERFACE_DESCRIPTION
+    if summary and summary.strip():
+        return summary.strip(), DescriptionSource.INTERFACE_SUMMARY
+    return None, DescriptionSource.ABSENT
+
+
+def description_coverage(index: OperationIndex, client: Any) -> dict[str, int]:
+    """Count where published operations get their descriptions from.
+
+    The numbers the documentation gate and the PRD both quote, measured rather
+    than recorded.
+
+    Args:
+        index: The operation index.
+        client: The client the index was built from, used to reach each service.
+
+    Returns:
+        Mapping from each :class:`DescriptionSource` value to its count, plus
+        ``thin`` for resolved descriptions under six words — present but too
+        short to choose between operations on.
+    """
+    counts = {source.value: 0 for source in DescriptionSource}
+    counts["thin"] = 0
+    for entry in index.published:
+        service = getattr(client, entry.service, None)
+        description, source = resolve_description(entry, service)
+        counts[source.value] += 1
+        if description and len(description.split()) < 6:
+            counts["thin"] += 1
+    return counts
