@@ -191,8 +191,14 @@ fails the approval requirement, which asks what will change.
 
 `agent_tools` MUST NOT import an MCP library, encode an MCP wire shape, or take
 an MCP dependency. Descriptors are data: identity, description, input and output
-schema, effect classification, annotations. The server maps them onto the
-protocol.
+schema, behaviour hints, and whether the operation needs approval. The server
+maps them onto the protocol.
+
+There is deliberately no taxonomy of operation kinds in `agent_tools`. Each
+hint is derived from the method's leading verb, and the published contract is
+two facts per operation — whether it only reads, and whether it needs approval.
+A verb no set knows is treated as a destructive mutation needing approval, and
+`unknown_verbs()` reports it so the gap is closed rather than guessed at.
 
 Three reasons, in ascending cost of getting it wrong: every SDK consumer would
 inherit an MCP dependency it does not use; an MCP protocol revision would become

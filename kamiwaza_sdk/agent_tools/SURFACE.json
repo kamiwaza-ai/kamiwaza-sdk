@@ -374,10 +374,10 @@
     "workrooms.update"
   ],
   "source_digest": "57bfd6583d8526d66bf471013d4b905cf1154b8686e5e47feec78d0cda20b524",
-  "unclassified": [],
   "underivable_schemas": [
     "retrieval.flight_batches"
   ],
+  "unknown_verbs": [],
   "withheld": [
     "auth.create_pat",
     "auth.login_with_password",

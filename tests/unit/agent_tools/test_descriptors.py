@@ -6,15 +6,13 @@ import pytest
 
 from kamiwaza_sdk.agent_tools.descriptors import (
     APPROVAL_REQUIRED_READS,
-    EFFECT_OVERRIDES,
     HINT_OVERRIDES,
     OPEN_WORLD_OPERATIONS,
     BehaviourHints,
-    Effect,
-    classify,
+    derive_hints,
     describe,
     describe_all,
-    unclassified,
+    unknown_verbs,
 )
 from kamiwaza_sdk.agent_tools.spec_index import build_index
 
@@ -30,13 +28,13 @@ def index():
         return build_index(KamiwazaClient(base_url="http://localhost:7777/api"))
 
 
-def test_every_published_operation_classifies(index) -> None:
-    """A verb no rule knows must be a build failure, not a silent read-only.
+def test_every_published_operation_derives_hints(index) -> None:
+    """A verb no set knows must be a build failure, not a silent read-only.
 
-    This is the test that makes derivation safe: the fallback is refusal, so a
-    new verb cannot publish a mutation as a free call.
+    This is the test that makes derivation safe: the fallback gates everything,
+    so a new verb cannot publish a mutation as a free call.
     """
-    assert unclassified(index) == ()
+    assert unknown_verbs(index) == ()
 
 
 def test_an_unknown_verb_is_treated_as_a_mutation_not_a_read(index) -> None:
@@ -56,45 +54,48 @@ def test_an_unknown_verb_is_treated_as_a_mutation_not_a_read(index) -> None:
         required_parameters=(),
         returns=None,
     )
-    assert classify(odd.selector, odd.method) is None
+    assert derive_hints(odd.selector, odd.method) is None
     descriptor = describe(odd)
-    assert descriptor.effect is Effect.UNCLASSIFIED
+    assert descriptor.hints.destructive
     assert not descriptor.hints.read_only
     assert not descriptor.hints.idempotent
     assert descriptor.requires_approval
 
 
 @pytest.mark.parametrize(
-    ("method", "expected"),
+    ("method", "read_only", "destructive", "idempotent"),
     [
-        ("list_models", Effect.READ),
-        ("get_model", Effect.READ),
-        ("create_agent", Effect.CREATE),
-        ("deploy_model", Effect.CREATE),
-        ("update_user", Effect.UPDATE),
-        ("delete_user", Effect.DESTROY),
-        ("revoke_pat", Effect.DESTROY),
+        ("list_models", True, False, True),
+        ("get_model", True, False, True),
+        ("create_agent", False, False, False),
+        ("deploy_model", False, False, False),
+        ("update_user", False, False, True),
+        ("delete_user", False, True, True),
+        ("revoke_pat", False, True, True),
     ],
 )
-def test_effect_comes_from_the_leading_verb(method: str, expected: Effect) -> None:
-    assert classify(f"svc.{method}", method) is expected
+def test_hints_come_from_the_leading_verb(
+    method: str, read_only: bool, destructive: bool, idempotent: bool
+) -> None:
+    hints = derive_hints(f"svc.{method}", method)
+    assert hints == BehaviourHints(
+        read_only=read_only,
+        destructive=destructive,
+        idempotent=idempotent,
+        open_world=False,
+    )
 
 
 def test_an_override_beats_the_verb_rule() -> None:
-    """FR-006e: a wrong derivation is corrected per operation, not abandoned."""
-    assert classify("serving.stop_deployment", "stop_deployment") is Effect.DESTROY
-    assert classify("other.stop_deployment", "stop_deployment") is Effect.UPDATE
+    """FR-006e: a wrong derivation is corrected per operation, not abandoned.
 
-
-def test_hints_follow_the_effect(index) -> None:
-    for descriptor in describe_all(index):
-        if descriptor.entry.selector in HINT_OVERRIDES:
-            continue
-        assert descriptor.hints.read_only is descriptor.effect.is_read
-        assert descriptor.hints.destructive is (descriptor.effect is Effect.DESTROY)
-        assert descriptor.hints.idempotent is (
-            descriptor.effect in (Effect.READ, Effect.UPDATE, Effect.DESTROY)
-        ), "a create and an unclassified effect must both read as non-idempotent"
+    "stop" derives as an ordinary change. For a deployment it ends something,
+    so the override must make it destructive — and only for the two selectors
+    named, leaving the same verb elsewhere alone.
+    """
+    assert HINT_OVERRIDES["serving.stop_deployment"].destructive
+    derived = derive_hints("other.stop_deployment", "stop_deployment")
+    assert derived is not None and not derived.destructive
 
 
 def test_hint_override_replaces_the_derivation(index) -> None:
@@ -103,11 +104,12 @@ def test_hint_override_replaces_the_derivation(index) -> None:
     )
     override = HINT_OVERRIDES[entry.selector]
     assert override.idempotent is False, "a key returned once cannot be idempotent"
-    derived_effect = classify(entry.selector, entry.method)
-    assert derived_effect is Effect.UPDATE
-    assert override != BehaviourHints(
-        read_only=False, destructive=False, idempotent=True, open_world=False
+    derived = derive_hints(entry.selector, entry.method)
+    assert derived is not None and derived.idempotent, (
+        "the verb rule reads 'rotate' as a repeatable change, which is exactly "
+        "the derivation this override exists to correct"
     )
+    assert describe(entry).hints == override
 
 
 def test_open_world_defaults_to_false(index) -> None:
@@ -147,7 +149,6 @@ def test_every_override_names_a_real_operation(index) -> None:
     """A stale override is silent, so the test names it instead."""
     selectors = {entry.selector for entry in index}
     for name, configured in (
-        ("EFFECT_OVERRIDES", set(EFFECT_OVERRIDES)),
         ("HINT_OVERRIDES", set(HINT_OVERRIDES)),
         ("OPEN_WORLD_OPERATIONS", set(OPEN_WORLD_OPERATIONS)),
         ("APPROVAL_REQUIRED_READS", set(APPROVAL_REQUIRED_READS)),

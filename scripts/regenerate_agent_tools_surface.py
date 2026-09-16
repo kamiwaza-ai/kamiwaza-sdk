@@ -47,7 +47,7 @@ def build_surface() -> dict[str, Any]:
         from kamiwaza_sdk.agent_tools.catalog import build_catalog, categories
         from kamiwaza_sdk.agent_tools.descriptors import (
             description_coverage,
-            unclassified,
+            unknown_verbs,
         )
         from kamiwaza_sdk.agent_tools.schemas import underivable
         from kamiwaza_sdk.agent_tools.spec_index import build_index
@@ -65,7 +65,7 @@ def build_surface() -> dict[str, Any]:
         "categories": categories(catalog),
         "descriptions": description_coverage(index, client),
         "workflows": sorted(WORKFLOWS),
-        "unclassified": list(unclassified(index)),
+        "unknown_verbs": list(unknown_verbs(index)),
         "underivable_schemas": list(underivable(index, client)),
         "withheld": sorted(
             entry.selector for entry in index if not entry.is_published

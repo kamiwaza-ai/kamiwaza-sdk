@@ -1,21 +1,25 @@
-"""Effect classification, behaviour hints, and approval for each operation.
+"""Behaviour hints, approval, and a description for each operation.
 
-Three derivations, each with an override, per the MCP server's FR-006a to
-FR-006k:
+Two facts about an operation decide how a host may present and gate it, per the
+MCP server's FR-012a: whether it only reads, and whether it needs approval
+before it runs. Both are stated here, in code the server ships, so neither can
+be changed by a caller or a request.
 
-* an **effect** — read, create, update, or destroy — derived from the method
-  name's leading verb, because this client names operations by what they do;
-* **behaviour hints** — read-only, destructive, idempotent, open-world — derived
-  from that effect rather than from an HTTP verb;
-* an **approval requirement** — every non-read, plus the reads named in
-  :data:`APPROVAL_REQUIRED_READS`;
+Alongside them, two derivations:
+
+* **behaviour hints** — read-only, destructive, idempotent, open-world — each
+  derived from the method name's leading verb, because this client names
+  operations by what they do;
 * a **description** — resolved by precedence from the method docstring, then
   the interface document, and never authored in the consuming server.
 
-Derivation is the default and an override is per operation, so one wrong answer
-is corrected without abandoning derivation for the other 309. A derivation that
-cannot classify a verb says so rather than guessing: :data:`EFFECT_OVERRIDES`
-is where the answer goes, and :func:`unclassified` lists what is still missing.
+Derivation is the default and :data:`HINT_OVERRIDES` corrects one operation at
+a time, so a single wrong answer does not cost derivation for the other 331.
+There is deliberately no taxonomy of operation kinds here: each hint is read
+straight off the verb, and the published contract is the two facts above.
+A verb no set knows is treated as a mutation needing approval — the safe
+reading of "we do not know what this does" — and :func:`unknown_verbs` reports
+it so the gap gets closed rather than discovered in production.
 
 Protocol-neutral by construction: a hint is a plain boolean on a dataclass here,
 and the MCP server maps it onto the wire shape its revision requires.
@@ -36,51 +40,20 @@ from .spec_index import OperationEntry, OperationIndex, first_sentence
 
 __all__ = [
     "APPROVAL_REQUIRED_READS",
-    "EFFECT_OVERRIDES",
-    "Effect",
     "HINT_OVERRIDES",
     "OPEN_WORLD_OPERATIONS",
     "OperationDescriptor",
     "BehaviourHints",
     "DescriptionSource",
-    "classify",
+    "derive_hints",
     "describe",
     "describe_all",
     "description_coverage",
     "interface_descriptions",
     "resolve_description",
-    "unclassified",
+    "unknown_verbs",
 ]
 
-
-class Effect(str, Enum):
-    """What an operation does to platform state.
-
-    Four real effects rather than a read/write boolean, because approval and the
-    destructive hint need to tell "replaces a field" from "removes the object".
-
-    :data:`UNCLASSIFIED` is the fifth, and it is a fail-safe rather than a
-    category. A method whose verb no rule knows must stay reachable the day it
-    ships (FR-005c), so refusing to describe it would take the whole catalog
-    down with it. Instead it is treated as a mutation requiring approval — the
-    safe reading of "we do not know what this does" — and :func:`unclassified`
-    reports it so the answer gets recorded.
-    """
-
-    READ = "read"
-    CREATE = "create"
-    UPDATE = "update"
-    DESTROY = "destroy"
-    UNCLASSIFIED = "unclassified"
-
-    @property
-    def is_read(self) -> bool:
-        """Whether the effect leaves platform state unchanged.
-
-        An unclassified effect is never a read: assuming otherwise would
-        publish an unknown mutation as a free call.
-        """
-        return self is Effect.READ
 
 
 #: Leading verbs that read state without changing it.
@@ -120,7 +93,10 @@ _READ_VERBS = frozenset(
 )
 
 #: Leading verbs that bring something into existence or add a member.
-_CREATE_VERBS = frozenset(
+#:
+#: These are the verbs a repeat call is *not* safe for: calling one twice makes
+#: two things, so they are the only verbs that clear the idempotent hint.
+_ADD_VERBS = frozenset(
     {
         "create",
         "add",
@@ -157,7 +133,7 @@ _CREATE_VERBS = frozenset(
 )
 
 #: Leading verbs that modify something that already exists.
-_UPDATE_VERBS = frozenset(
+_CHANGE_VERBS = frozenset(
     {
         "update",
         "patch",
@@ -185,7 +161,10 @@ _UPDATE_VERBS = frozenset(
 )
 
 #: Leading verbs that remove something, or revoke access to it.
-_DESTROY_VERBS = frozenset(
+#:
+#: These set the destructive hint. Everything outside this set and outside
+#: :data:`_READ_VERBS` still changes state; it just does not end anything.
+_REMOVE_VERBS = frozenset(
     {
         "delete",
         "remove",
@@ -195,27 +174,6 @@ _DESTROY_VERBS = frozenset(
         "withdraw",
     }
 )
-
-#: Operations whose effect the verb rule gets wrong, with the correct effect.
-#:
-#: Each entry is a correction with a reason, not a preference. An empty mapping
-#: would mean the verb rule is right for all 310 operations, which is a claim
-#: this file should have to earn one entry at a time.
-EFFECT_OVERRIDES: dict[str, Effect] = {
-    # Ends a deployment's life. "stop" reads as a state change, but nothing is
-    # recoverable afterwards, so approval and the destructive hint must fire.
-    "serving.stop_deployment": Effect.DESTROY,
-    "apps.stop_deployment": Effect.DESTROY,
-    # Retires the outgoing pre-shared key. The window closes and the old key is
-    # gone, which is destruction rather than an update.
-    "cluster.complete_key_rotation": Effect.DESTROY,
-    # Removes every session. "purge" is already destructive; named here because
-    # the blast radius is every signed-in member rather than one object.
-    "auth.purge_sessions": Effect.DESTROY,
-    # Creates a token exchange rather than reading one. Withheld from the
-    # published set too, but the classification must be right regardless.
-    "auth.refresh_access_token": Effect.CREATE,
-}
 
 #: Operations that reach a system outside this platform's control.
 #:
@@ -299,6 +257,30 @@ HINT_OVERRIDES: dict[str, BehaviourHints] = {
     "gates.packages.replace": BehaviourHints(
         read_only=False, destructive=True, idempotent=False, open_world=False
     ),
+    # "stop" reads as an ordinary state change, but nothing is recoverable
+    # afterwards, so the destructive hint and approval must both fire.
+    "serving.stop_deployment": BehaviourHints(
+        read_only=False, destructive=True, idempotent=True, open_world=False
+    ),
+    "apps.stop_deployment": BehaviourHints(
+        read_only=False, destructive=True, idempotent=True, open_world=False
+    ),
+    # Retires the outgoing pre-shared key: the window closes and the old key is
+    # gone, which destroys something rather than changing it.
+    "cluster.complete_key_rotation": BehaviourHints(
+        read_only=False, destructive=True, idempotent=True, open_world=False
+    ),
+    # Removes every session. "purge" already derives as destructive; named here
+    # because the blast radius is every signed-in member rather than one object.
+    "auth.purge_sessions": BehaviourHints(
+        read_only=False, destructive=True, idempotent=True, open_world=False
+    ),
+    # Mints a new token rather than reading an existing one, so a repeat is not
+    # a no-op. Withheld from the published set as well, but the hints must be
+    # right regardless of whether anything currently reads them.
+    "auth.refresh_access_token": BehaviourHints(
+        read_only=False, destructive=False, idempotent=False, open_world=False
+    ),
 }
 
 
@@ -306,10 +288,13 @@ HINT_OVERRIDES: dict[str, BehaviourHints] = {
 class OperationDescriptor:
     """One operation with everything a host needs to present and gate it.
 
+    The two facts FR-012a requires are ``hints.read_only`` and
+    ``requires_approval``. They live here rather than beside each other in a
+    taxonomy so there is exactly one place either can be read from.
+
     Attributes:
         entry: The indexed operation this describes.
-        effect: What the operation does to platform state.
-        hints: Advisory behaviour hints.
+        hints: Advisory behaviour hints, including whether it only reads.
         requires_approval: Whether a member must approve before the call runs.
         returns_credential: Whether the result carries a credential. Such an
             operation is withheld rather than published, so this records why.
@@ -317,7 +302,6 @@ class OperationDescriptor:
     """
 
     entry: OperationEntry
-    effect: Effect
     hints: BehaviourHints
     requires_approval: bool
     returns_credential: bool
@@ -335,80 +319,72 @@ class OperationDescriptor:
 
 
 _PAGING_PARAMETERS = frozenset({"page", "per_page", "limit", "offset", "cursor"})
-_IDEMPOTENT_EFFECTS = frozenset({Effect.READ, Effect.UPDATE, Effect.DESTROY})
 
 
-def classify(op_selector: str, method: str) -> Effect | None:
-    """Return an operation's effect, or ``None`` when the verb is unknown.
+def derive_hints(op_selector: str, method: str) -> BehaviourHints | None:
+    """Derive an operation's hints from its leading verb.
+
+    Each hint is read straight off verb-set membership rather than through an
+    intermediate category:
+
+    * read-only when the verb reads;
+    * destructive when the verb removes or revokes something;
+    * idempotent unless the verb adds something, because calling an add twice
+      makes two things while a second change or removal finds the work done;
+    * open-world when the selector is on the external allowlist.
 
     Args:
-        op_selector: Dotted ``service.method`` selector, used to find an
-            override before any derivation runs.
+        op_selector: Dotted ``service.method`` selector, checked against the
+            open-world allowlist.
         method: Method name, whose leading token carries the verb.
 
     Returns:
-        The effect, or ``None`` when the leading verb is in no verb set. A
-        ``None`` is a gap to be closed in :data:`EFFECT_OVERRIDES`, never a
-        silent default to read.
+        The derived hints, or ``None`` when the leading verb is in no verb set.
+        A ``None`` is a gap to close in :data:`HINT_OVERRIDES`, never a silent
+        default to read-only.
     """
-    override = EFFECT_OVERRIDES.get(op_selector)
-    if override is not None:
-        return override
     verb = method.split("_")[0].lower()
-    if verb in _READ_VERBS:
-        return Effect.READ
-    if verb in _CREATE_VERBS:
-        return Effect.CREATE
-    if verb in _UPDATE_VERBS:
-        return Effect.UPDATE
-    if verb in _DESTROY_VERBS:
-        return Effect.DESTROY
-    return None
-
-
-def _derive_hints(effect: Effect, op_selector: str) -> BehaviourHints:
-    """Derive behaviour hints from an effect, before any override applies.
-
-    A create is not idempotent because calling it twice makes two things. An
-    update or a destroy is, because the second call finds the work already done.
-
-    Args:
-        effect: The operation's effect.
-        op_selector: Dotted selector, checked against the open-world allowlist.
-
-    Returns:
-        The derived hints.
-    """
+    known = _READ_VERBS | _ADD_VERBS | _CHANGE_VERBS | _REMOVE_VERBS
+    if verb not in known:
+        return None
     return BehaviourHints(
-        read_only=effect.is_read,
-        destructive=effect is Effect.DESTROY,
-        idempotent=effect in _IDEMPOTENT_EFFECTS,
+        read_only=verb in _READ_VERBS,
+        destructive=verb in _REMOVE_VERBS,
+        idempotent=verb not in _ADD_VERBS,
         open_world=op_selector in OPEN_WORLD_OPERATIONS,
     )
+
+
+#: Hints for an operation whose verb no set knows.
+#:
+#: Not read-only, not idempotent, and destructive, so every gate an unknown
+#: operation could need fires. The operation still ships — FR-005c requires it
+#: reachable the day it appears — and :func:`unknown_verbs` reports it so the
+#: real answer gets recorded. Refusing to describe it would take the whole
+#: catalog down over one new verb.
+_UNKNOWN_VERB_HINTS = BehaviourHints(
+    read_only=False, destructive=True, idempotent=False, open_world=False
+)
 
 
 def describe(entry: OperationEntry) -> OperationDescriptor:
     """Build the descriptor for one indexed operation.
 
-    An operation whose verb no rule classifies is described as
-    :data:`Effect.UNCLASSIFIED`: not read-only, not idempotent, approval
-    required. It stays reachable, which FR-005c requires, and it stays safe,
-    because the unknown case is treated as a mutation. Raising instead would
-    take the whole catalog down over one new verb.
-
     Args:
         entry: An operation from the index.
 
     Returns:
-        The descriptor, with hints derived from the effect and then replaced
-        wholesale by an override when one is registered.
+        The descriptor. An override replaces derived hints wholesale; an unknown
+        verb falls back to :data:`_UNKNOWN_VERB_HINTS`, which gates everything.
     """
-    effect = classify(entry.selector, entry.method) or Effect.UNCLASSIFIED
-    hints = HINT_OVERRIDES.get(entry.selector) or _derive_hints(effect, entry.selector)
+    hints = (
+        HINT_OVERRIDES.get(entry.selector)
+        or derive_hints(entry.selector, entry.method)
+        or _UNKNOWN_VERB_HINTS
+    )
     requires_approval = not hints.read_only or entry.selector in APPROVAL_REQUIRED_READS
     return OperationDescriptor(
         entry=entry,
-        effect=effect,
         hints=hints,
         requires_approval=requires_approval,
         returns_credential=not entry.is_published
@@ -426,15 +402,15 @@ def describe_all(index: OperationIndex) -> tuple[OperationDescriptor, ...]:
         index: The operation index.
 
     Returns:
-        Descriptors in index order. An operation with an unclassified verb is
+        Descriptors in index order. An operation whose verb is unknown is
         described conservatively rather than omitted, so the surface never
-        shrinks silently; call :func:`unclassified` to find them.
+        shrinks silently; call :func:`unknown_verbs` to find them.
     """
     return tuple(describe(entry) for entry in index.published)
 
 
-def unclassified(index: OperationIndex) -> tuple[str, ...]:
-    """Return the selectors whose verb no rule classifies.
+def unknown_verbs(index: OperationIndex) -> tuple[str, ...]:
+    """Return the selectors whose leading verb no set knows.
 
     The docstring and coverage gates call this rather than discovering the gap
     by crashing at describe time.
@@ -443,13 +419,14 @@ def unclassified(index: OperationIndex) -> tuple[str, ...]:
         index: The operation index.
 
     Returns:
-        Selectors of published operations with an unclassified verb, in index
-        order. Empty when every operation classifies.
+        Selectors of published operations with an unknown verb and no override,
+        in index order. Empty when every operation derives or is corrected.
     """
     return tuple(
         entry.selector
         for entry in index.published
-        if classify(entry.selector, entry.method) is None
+        if entry.selector not in HINT_OVERRIDES
+        and derive_hints(entry.selector, entry.method) is None
     )
 
 
