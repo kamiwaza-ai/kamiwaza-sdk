@@ -26,6 +26,7 @@ class ExitCode(IntEnum):
     PLATFORM_OUTAGE = 13
     STREAM_INTERRUPTED = 14  # PR-86 H5 — added with the runtime-lib class
     PLATFORM_REDIRECT = 15
+    PLATFORM_RESPONSE_TOO_LARGE = 16
 
     # Cluster and registry failures
     REGISTRY_AUTH = 20
