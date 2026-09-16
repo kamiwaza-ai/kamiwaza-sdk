@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import inspect
+import re
 
 from typing import Any
 
 import pytest
 
+from kamiwaza_sdk.agent_tools import workflows as workflow_module
+from kamiwaza_sdk.agent_tools.descriptors import _READ_VERBS
 from kamiwaza_sdk.agent_tools.workflows import (
     WORKFLOWS,
     AppRequest,
@@ -319,3 +322,72 @@ def test_app_deploy_refuses_an_unknown_garden_app() -> None:
     outcome = deploy_app_from_garden(client, AppRequest(name="nonexistent"))
     assert isinstance(outcome, Refusal)
     assert "apps.install_by_name" not in calls
+
+
+#: Matches a ``client.<service>.<method>(`` call in a workflow body, including
+#: a nested service such as ``client.enclaves.connectors.create``.
+_CLIENT_CALL = re.compile(r"client\.[a-z_][\w.]*?\.([a-z_]+)\(")
+
+
+def test_a_read_only_workflow_needs_no_approval_and_ends_nothing() -> None:
+    """FR-006a: the two hints a host acts on must not contradict each other.
+
+    Asserted as a property rather than a table of expected values per
+    workflow, because a table is the same data twice and passes for a
+    wrong-but-consistent pair.
+    """
+    for name, spec in WORKFLOWS.items():
+        assert not (spec.reads_only and spec.destructive), (
+            f"{name} reads only and is destructive; one of the two is wrong"
+        )
+        assert not (spec.reads_only and spec.approval_step), (
+            f"{name} reads only but names an approval step, and approval "
+            f"exists to gate a change"
+        )
+
+
+def test_a_read_only_workflow_calls_only_read_methods() -> None:
+    """The declaration has to match the body, not the name.
+
+    ``find_and_deploy_model`` leads with a read verb and deploys a model, so a
+    name is no evidence at all. This is the assertion that catches a workflow
+    marked read-only because of what it is called.
+    """
+    read_only = [name for name, spec in WORKFLOWS.items() if spec.reads_only]
+    assert read_only, "no workflow declares reads_only; the declaration went missing"
+    for name in read_only:
+        source = inspect.getsource(getattr(workflow_module, name))
+        methods = _CLIENT_CALL.findall(source)
+        assert methods, f"{name} declares reads_only but calls the client nowhere"
+        for method in methods:
+            assert method.split("_")[0] in _READ_VERBS, (
+                f"{name} declares reads_only but calls {method!r}, which "
+                f"changes something"
+            )
+
+
+def test_the_spec_refuses_a_read_only_workflow_that_is_also_destructive() -> None:
+    with pytest.raises(ValueError, match="contradictory_hints"):
+        WorkflowSpec(
+            name="contradictory_hints",
+            summary="Do a thing.",
+            terminal_artifact="A thing.",
+            polling_step=None,
+            approval_step=None,
+            idempotent=True,
+            reads_only=True,
+            destructive=True,
+        )
+
+
+def test_the_spec_refuses_an_approval_step_on_a_read_only_workflow() -> None:
+    with pytest.raises(ValueError, match="gated_read"):
+        WorkflowSpec(
+            name="gated_read",
+            summary="Do a thing.",
+            terminal_artifact="A thing.",
+            polling_step=None,
+            approval_step="Reading the thing.",
+            idempotent=True,
+            reads_only=True,
+        )

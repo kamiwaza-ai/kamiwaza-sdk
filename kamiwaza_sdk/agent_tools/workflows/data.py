@@ -82,6 +82,8 @@ def _job_id(job: Any) -> str:
         polling_step="Waiting for the ingestion job to reach a terminal state.",
         approval_step="Registering and ingesting the dataset.",
         idempotent=False,
+        reads_only=False,
+        destructive=False,
         not_idempotent_because=(
             "Registering the same dataset name twice creates a second entry. "
             "Call get_dataset_catalog first to check."
@@ -120,6 +122,8 @@ def ingest_dataset_and_index(
         polling_step="Waiting for the staging job to reach a terminal state.",
         approval_step=None,
         idempotent=True,
+        reads_only=False,
+        destructive=False,
         resume_hint="get_job_status_ingestion",
     )
 )
@@ -158,6 +162,8 @@ def prepare_dataset_ingestion(
         polling_step=None,
         approval_step="Promoting the staged ingestion.",
         idempotent=True,
+        reads_only=False,
+        destructive=False,
     )
 )
 def complete_dataset_ingestion(
@@ -200,6 +206,8 @@ def complete_dataset_ingestion(
         polling_step=None,
         approval_step=None,
         idempotent=True,
+        reads_only=False,
+        destructive=False,
     )
 )
 def rag_query(
@@ -253,6 +261,8 @@ def rag_query(
         polling_step="Waiting for the triggered ingest to reach a terminal state.",
         approval_step="Registering the connector.",
         idempotent=False,
+        reads_only=False,
+        destructive=False,
         not_idempotent_because=(
             "Each call registers another connector. List connectors first to "
             "reuse an existing one."

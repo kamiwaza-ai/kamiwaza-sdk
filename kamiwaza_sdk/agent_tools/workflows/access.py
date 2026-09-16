@@ -53,6 +53,8 @@ class GatePackageRef:
         polling_step=None,
         approval_step="Installing the package.",
         idempotent=True,
+        reads_only=False,
+        destructive=False,
     )
 )
 def install_and_bind_gate_package(
@@ -86,6 +88,8 @@ def install_and_bind_gate_package(
         polling_step=None,
         approval_step="Replacing the package.",
         idempotent=False,
+        reads_only=False,
+        destructive=True,
         not_idempotent_because=(
             "Replacing re-resolves every existing binding, and a failed "
             "replace can leave bindings pointing at the previous package. "
@@ -145,6 +149,8 @@ class FederationEnrolment:
         polling_step=None,
         approval_step="Pairing the federation.",
         idempotent=True,
+        reads_only=False,
+        destructive=False,
     )
 )
 def pair_federation_and_allow_user(
@@ -182,6 +188,8 @@ def pair_federation_and_allow_user(
         polling_step=None,
         approval_step="Creating the grant.",
         idempotent=True,
+        reads_only=False,
+        destructive=False,
     )
 )
 def grant_subject_access(

@@ -251,6 +251,14 @@ class OperationIndex:
         nothing satisfies completely answers with whatever matched three of
         them, rather than either nothing or everything that matched one.
 
+        Equal scores break on the shorter identifier first, then
+        alphabetically. Measured: "list models" scored `list_models` and
+        `list_guides_models` identically, and an alphabetical tie-break put the
+        guides operation first — so the closest match to what the caller asked
+        for was second, and an agent taking the first result called the wrong
+        operation. A shorter identifier carrying the same terms has fewer words
+        the caller did not ask for, which is what "closer" means here.
+
         Args:
             query: Words to search for. Case and order do not matter.
             limit: Maximum results to return.
@@ -266,13 +274,13 @@ class OperationIndex:
         graded = [(_grade(entry, terms), entry) for entry in self.published]
         for required in range(len(terms), 0, -1):
             rows = [
-                (-score, entry.published_id, entry)
+                (-score, len(entry.published_id), entry.published_id, entry)
                 for (score, hits), entry in graded
                 if hits >= required
             ]
             if rows:
                 rows.sort()
-                return tuple(entry for _, _, entry in rows[:limit])
+                return tuple(entry for *_, entry in rows[:limit])
         return ()
 
     def coverage(self) -> dict[str, int]:

@@ -39,6 +39,8 @@ class WorkroomDraft:
         polling_step=None,
         approval_step="Creating the workroom.",
         idempotent=False,
+        reads_only=False,
+        destructive=False,
         not_idempotent_because=(
             "Each call creates another workroom with the same name. Call "
             "list_workrooms first to find an existing one."
@@ -76,6 +78,8 @@ def create_workroom_and_enter(client: Any, draft: WorkroomDraft) -> dict[str, An
         polling_step=None,
         approval_step="Exporting the bundle.",
         idempotent=True,
+        reads_only=False,
+        destructive=False,
     )
 )
 def export_workroom_bundle(
@@ -128,6 +132,8 @@ class AppRequest:
         polling_step="Waiting for the app deployment to report a terminal status.",
         approval_step="Deploying the app.",
         idempotent=False,
+        reads_only=False,
+        destructive=False,
         not_idempotent_because=(
             "Each call creates another deployment. Call list_deployments_apps "
             "first to find an existing one."

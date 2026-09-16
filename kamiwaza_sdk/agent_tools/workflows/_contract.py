@@ -31,6 +31,17 @@ class WorkflowSpec:
         polling_step: The single step that waits, or ``None`` when none does.
         approval_step: The single step needing approval, or ``None``.
         idempotent: Whether calling it twice is equivalent to calling it once.
+        reads_only: Whether the workflow leaves platform state unchanged. The
+            default is ``False`` because a workflow that never declared the
+            fact must not look like one that declared it safe: a host reading
+            ``False`` asks before running, which is the harmless mistake. The
+            fact cannot be derived from the name — ``find_and_deploy_model``
+            leads with a read verb and deploys a model — so only the author
+            knows it.
+        destructive: Whether the workflow ends or replaces something a caller
+            could otherwise still use. Also declared rather than derived, for
+            the same reason: the deployment a workflow stops is not named in
+            the workflow's own verb.
         not_idempotent_because: Required when ``idempotent`` is false. FR-016
             allows a non-idempotent workflow only if it says so plainly.
         resume_hint: What to call to resume when a bounded wait expires.
@@ -42,6 +53,8 @@ class WorkflowSpec:
     polling_step: str | None
     approval_step: str | None
     idempotent: bool
+    reads_only: bool = False
+    destructive: bool = False
     not_idempotent_because: str | None = None
     resume_hint: str | None = None
 
@@ -52,6 +65,10 @@ class WorkflowSpec:
             ValueError: If a non-idempotent workflow does not say why, or one
                 that polls names no way to resume. Both are FR-016
                 requirements, and both are unenforceable once a tool ships.
+                Also if the behaviour hints contradict each other: a workflow
+                cannot both leave state unchanged and end something, and one
+                that leaves state unchanged has nothing for an approval step
+                to gate.
         """
         if not self.idempotent and not self.not_idempotent_because:
             raise ValueError(
@@ -60,6 +77,13 @@ class WorkflowSpec:
         if self.polling_step and not self.resume_hint:
             raise ValueError(
                 f"{self.name} polls and must name how to resume an expired wait"
+            )
+        if self.reads_only and self.destructive:
+            raise ValueError(f"{self.name} cannot both read only and be destructive")
+        if self.reads_only and self.approval_step:
+            raise ValueError(
+                f"{self.name} reads only and cannot need approval, because "
+                f"approval gates a change"
             )
 
 

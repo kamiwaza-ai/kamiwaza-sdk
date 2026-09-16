@@ -80,6 +80,8 @@ def _await_deployment(
         polling_step="Waiting for the deployment to report ready.",
         approval_step="Creating the deployment.",
         idempotent=False,
+        reads_only=False,
+        destructive=False,
         not_idempotent_because=(
             "Calling it twice creates a second deployment of the same model. "
             "Check list_active_deployments_serving first, or deploy by id."
@@ -122,6 +124,8 @@ def find_and_deploy_model(
         polling_step="Waiting for the deployment to report ready.",
         approval_step="Creating the deployment.",
         idempotent=False,
+        reads_only=False,
+        destructive=False,
         not_idempotent_because=(
             "Each call creates a deployment. Reuse an existing one by id "
             "instead of calling again."
@@ -175,6 +179,8 @@ def _required_bytes(estimate: Any) -> int | None:
         polling_step="Waiting for the deployment to report ready.",
         approval_step="Creating the deployment.",
         idempotent=False,
+        reads_only=False,
+        destructive=False,
         not_idempotent_because=(
             "The deployment step creates. The preflight alone is a read and "
             "can be repeated safely."
@@ -248,6 +254,8 @@ def preflight_and_deploy_model(
         polling_step=None,
         approval_step=None,
         idempotent=True,
+        reads_only=True,
+        destructive=False,
     )
 )
 def diagnose_deployment(client: Any, deployment_id: str) -> dict[str, Any]:
@@ -299,6 +307,8 @@ def diagnose_deployment(client: Any, deployment_id: str) -> dict[str, Any]:
         polling_step=None,
         approval_step="Stopping the deployment.",
         idempotent=True,
+        reads_only=False,
+        destructive=True,
     )
 )
 def retire_deployment(client: Any, deployment_id: str) -> dict[str, Any]:
