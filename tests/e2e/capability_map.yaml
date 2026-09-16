@@ -187,18 +187,17 @@
   capability_ids: [catalog.dataset-registry, retrieval.async-retrieval-jobs]
   scenario_name: "Catalog ingest to retrieval round-trip (inline and gRPC)"
 
-# Justification: test_catalog_dataset_and_secret_lifecycle registers a
-# dataset and secret in the catalog and walks their full lifecycle.
-- pattern: "tests/integration/test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle"
+# Justification: test_catalog_dataset_lifecycle registers a dataset, reads it
+# back through the catalog, and verifies its path/location metadata.
+- pattern: "tests/integration/test_catalog_live.py::test_catalog_dataset_lifecycle"
   capability_ids: [catalog.dataset-registry]
-  scenario_name: "Catalog dataset and secret lifecycle"
+  scenario_name: "Catalog dataset registration and readback"
 
-# The same lifecycle test creates a governed secret through SecretClient,
-# reads it back, waits until it is returned by the catalog query, and deletes
-# it during cleanup. This is a separate customer claim from dataset registry,
-# so it receives its own evidence record rather than being hidden behind the
-# dataset mapping above.
-- pattern: "tests/integration/test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle"
+# The dedicated secret lifecycle test creates a governed secret through
+# SecretClient, reads and lists it, requires deletion to succeed, then proves
+# the deleted secret is no longer readable. Dataset setup is deliberately
+# absent so an unrelated dataset failure cannot determine this record.
+- pattern: "tests/integration/test_catalog_live.py::test_catalog_secret_lifecycle"
   capability_ids: [catalog.secrets-management]
   scenario_name: "Catalog governed secret lifecycle"
 
