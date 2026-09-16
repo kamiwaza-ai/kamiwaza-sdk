@@ -108,6 +108,45 @@ exclude = ["tests*", "examples*", "kamiwaza_extensions_lib*"]
 kamiwaza_sdk = ["py.typed", "agent_tools/kamiwaza-openapi-spec.json"]
 kamiwaza_extensions = ["templates/**/*", "templates/**/.*", "validators/*.json", "compatibility.json", "agent_guidance.md"]
 
+[tool.ruff.lint]
+# Ruff's defaults (E, F) plus pydocstyle. A published method's docstring is the
+# text an agent ranks on when choosing among hundreds of operations, and the
+# text a human reads when approving a destructive one, so its absence is a
+# lint error rather than a style preference. See AGENTS.md, "Agent tools
+# contract", and the MCP server's FR-006h and FR-006i.
+select = ["E", "F", "D"]
+
+[tool.ruff.lint.pydocstyle]
+# Matches .ai/rules/style.md, which already requires Google style.
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# D is scoped to the descriptor layer today and widens as docstrings land.
+# Every entry here is a package whose published methods still owe a summary
+# line; removing an entry is how T116 lands, one service at a time. This list
+# only ever shrinks - see AGENTS.md: the gate is never weakened to land a
+# change.
+"kamiwaza_sdk/services/**" = ["D"]
+"kamiwaza_sdk/delegated_workloads/**" = ["D"]
+"kamiwaza_sdk/connectors/**" = ["D"]
+"kamiwaza_sdk/seeding/**" = ["D"]
+"kamiwaza_sdk/schemas/**" = ["D"]
+"kamiwaza_sdk/artifacts/**" = ["D"]
+"kamiwaza_sdk/utils/**" = ["D"]
+"kamiwaza_sdk/client.py" = ["D"]
+"kamiwaza_sdk/authentication.py" = ["D"]
+"kamiwaza_sdk/shared_idp_authentication.py" = ["D"]
+"kamiwaza_sdk/config.py" = ["D"]
+"kamiwaza_sdk/exceptions.py" = ["D"]
+"kamiwaza_sdk/model_selector.py" = ["D"]
+"kamiwaza_sdk/token_store.py" = ["D"]
+"kamiwaza_sdk/cli.py" = ["D"]
+"kamiwaza_extensions/**" = ["D"]
+"kamiwaza_extensions_lib/**" = ["D"]
+"tests/**" = ["D"]
+"examples/**" = ["D"]
+"scripts/**" = ["D"]
+
 [tool.mypy]
 python_version = "3.10"
 

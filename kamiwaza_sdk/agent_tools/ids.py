@@ -39,6 +39,12 @@ class UnpublishedOperationError(LookupError):
     """
 
     def __init__(self, operation: str, reason: str) -> None:
+        """Build the error, keeping the reason reachable as an attribute.
+
+        Args:
+            operation: Identifier the caller asked for, as they spelled it.
+            reason: Why the operation is withheld. Reaches the caller verbatim.
+        """
         super().__init__(f"{operation} is not published: {reason}")
         self.operation = operation
         self.reason = reason

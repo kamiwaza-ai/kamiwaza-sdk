@@ -53,7 +53,10 @@ def test_expired_wait_helper_carries_identifier_and_resume_hint() -> None:
         **_COMMON,
     )
     assert failure.resource_id == "dep-7"
-    assert failure.detail == {"resumable": True, "resume_with": "get_deployment_serving"}
+    assert failure.detail == {
+        "resumable": True,
+        "resume_with": "get_deployment_serving",
+    }
 
 
 def test_a_failure_must_carry_an_actionable_message() -> None:
