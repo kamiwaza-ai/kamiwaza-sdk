@@ -14,10 +14,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from packaging.version import Version
+from kamiwaza_extensions.release_versions import release_identity, release_order
 
 GENERATION = "compat-v1"
 WRITER_CAPABILITY = "compat-v1-cas"
+IMMUTABLE_CAPABILITY = "compat-v1-immutable"
 _CLAUSE = re.compile(r"(?:>=|<=|==|!=|>|<)?\d+\.\d+(?:\.\d+)?")
 
 
@@ -39,18 +40,13 @@ def require_conditional_writes() -> None:
         )
 
 
-def release_version(value: Any) -> Version:
-    """Use the same PEP 440 ordering and normalized identity as Core selection."""
-    if not isinstance(value, str):
-        raise ValueError("compat-v1 extension version must be a string")
-    return Version(value)
-
-
-def validate_entry(entry: dict[str, Any]) -> None:
+def validate_entry(entry: dict[str, Any], *, allow_legacy: bool = False) -> None:
     """Reject ambiguous identity and constraints unsupported by Core readers."""
+    if not isinstance(entry, dict):
+        raise ValueError("compat-v1 entry must be a JSON object")
     if not isinstance(entry.get("name"), str) or not entry["name"].strip():
         raise ValueError("compat-v1 entry requires a nonempty name")
-    release_version(entry.get("version"))
+    release_identity(entry.get("version"), allow_legacy=allow_legacy)
     validate_constraint(entry.get("kamiwaza_version"))
 
 
@@ -71,24 +67,32 @@ def validate_constraint(constraint: Any) -> None:
 def merge_release(
     entry: dict, existing: list[dict], force: bool = False
 ) -> tuple[list[dict], str]:
-    """Upsert exactly one normalized (name, version), preserving sibling releases."""
+    """Append an immutable release; force never permits rewriting its content."""
     validate_entry(entry)
-    version = release_version(entry["version"])
+    version = release_identity(entry["version"])
     matches = []
-    for index, row in enumerate(existing):
-        validate_entry(row)
-        if row["name"] == entry["name"] and release_version(row["version"]) == version:
-            matches.append(index)
-    if matches and not force:
-        raise ValueError(
-            f"Release {entry['name']} {version} already exists; use --force for this release only"
-        )
-    result = [
-        deepcopy(row) for index, row in enumerate(existing) if index not in matches
-    ]
-    result.append(deepcopy(entry))
-    result.sort(key=lambda row: (row["name"], release_version(row["version"])))
-    return result, "replace" if matches else "insert"
+    for row in existing:
+        validate_entry(row, allow_legacy=True)
+        if row["name"] == entry["name"] and release_identity(row["version"], allow_legacy=True) == version:
+            matches.append(row)
+    if matches:
+        expected = _release_content(entry)
+        if any(_release_content(row) != expected for row in matches):
+            raise ValueError(
+                f"Release {entry['name']} {version} already exists with different content; "
+                "published releases are immutable, including with --force. Publish a new version."
+            )
+        return deepcopy(existing), "unchanged"
+    result = [*deepcopy(existing), deepcopy(entry)]
+    result.sort(key=lambda row: (row["name"], release_order(row["version"], allow_legacy=True), row["version"]))
+    return result, "insert"
+
+
+def _release_content(entry: dict) -> str:
+    # Equivalent version spellings identify the same release. Every other field,
+    # including revision, constraints and release notes, is immutable content.
+    content = {**entry, "version": release_identity(entry["version"], allow_legacy=True)}
+    return json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 def _read(publisher: Any, key: str) -> tuple[list[dict], str | None]:
@@ -146,7 +150,6 @@ def _preview(publisher: Any, entry: dict, path: Path | None) -> tuple[dict, list
     # preview. An orphan image is safe; rolling back a concurrent catalog is not.
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     name = f"{digest}{path.suffix.lower()}"
-    publisher._upload_preview_image(path, name)
     return {**entry, "preview_image": f"images/{name}"}, [name]
 
 
@@ -154,15 +157,21 @@ def publish_compat(publisher: Any, entry: dict, options: dict) -> Any:
     """Bounded optimistic transaction; storage must enforce S3 conditional puts."""
     from kamiwaza_extensions.catalog_publisher import CatalogPublishError, PublishResult
 
+    from kamiwaza_extensions.immutable_release import validate_artifacts
+
     require_conditional_writes()
     validate_entry(entry)
+    validate_artifacts(entry)
     images: list[str] = []
-    if not options["dry_run"]:
-        entry, images = _preview(publisher, entry, options["preview_image_path"])
+    entry, images = _preview(publisher, entry, options["preview_image_path"])
+    uploaded = False
     for _attempt in range(5):
         existing, etag = _read(publisher, options["key"])
         merged, action = merge_release(entry, existing, options["force"])
-        if not options["dry_run"]:
+        if not options["dry_run"] and action != "unchanged":
+            if images and not uploaded:
+                publisher._upload_preview_image(options["preview_image_path"], images[0])
+                uploaded = True
             if not _commit(publisher, options["key"], merged, etag):
                 continue
         return PublishResult(
@@ -171,7 +180,7 @@ def publish_compat(publisher: Any, entry: dict, options: dict) -> Any:
             action=action,
             registry_url=publisher._profile.registry,
             catalog_file=options["key"],
-            images_pushed=images,
+            images_pushed=images if uploaded else [],
             dry_run=options["dry_run"],
         )
     raise CatalogPublishError(

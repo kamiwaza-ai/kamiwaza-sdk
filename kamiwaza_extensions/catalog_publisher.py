@@ -56,7 +56,7 @@ class PublishResult:
 
     extension_name: str
     version: str
-    action: str  # "insert" or "replace"
+    action: str  # "insert", "replace" (legacy only), or "unchanged"
     registry_url: str  # Where images were pushed
     catalog_file: str  # S3 key of the updated file
     images_pushed: List[str]
@@ -244,7 +244,7 @@ class CatalogPublisher:
                 compose extensions, or the connector entry builder for connectors).
             extension_type: One of ``"app"``, ``"tool"``, ``"service"``, or
                 ``"connector"``.
-            force: Overwrite existing entry with same (name, semver, revision).
+            force: Overwrite legacy entries; never permits changing a compat-v1 release.
             dry_run: Perform merge logic but skip all S3 writes.
             preview_image_path: Local path to preview image to upload.
             revision: Optional revision identifier to attach to the entry

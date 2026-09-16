@@ -33,13 +33,36 @@ kz-ext catalog-capabilities | python -c 'import json,sys; assert "compat-v1-cas"
 
 Distinct `(name, normalized extension version)` declarations coexist even if
 platform ranges overlap. This preserves unconstrained fallbacks and permits
-publishing an older maintenance release after newer releases. Versions use
-`packaging.version.Version` identity and ordering, matching Core selection:
-`1.0` equals `1.0.0`, development/prerelease versions precede final releases,
-and post releases follow them. Use a separate staging catalog when publishing
-previews; a prerelease of a later release can rank above an older final release.
-Existing same-version declarations require explicit `--force`, which replaces
-only that release, including its revision; it never deletes siblings.
+publishing an older maintenance release after newer releases. New releases require SemVer `major.minor.patch` with optional prerelease and
+build metadata. Numeric components sort numerically; prereleases precede final
+versions. Build metadata distinguishes immutable identity but does not change
+precedence. Legacy two-component versions are recognized only when reading
+existing records; new publications require all three components. PEP 440 dev,
+post and local-version syntax is not accepted. Use a separate staging catalog
+when publishing previews.
+Published `(name, version)` identities are immutable. Repeating identical
+content is a successful no-op; changing constraints, release notes, revision,
+Compose, image digests, or any other release metadata requires a new version.
+`--force` never grants overwrite permission in this generation. This also applies
+to development and staging catalogs: use a new prerelease version for changed
+content. Existing numeric generation behavior is unchanged.
+
+Every Compose service image and every declared `docker_images` or
+`extra_docker_images` reference must include `@sha256:<64 lowercase hex digits>`.
+The service-image inventory must match Compose exactly. Runtime builds and
+unresolved image substitutions are rejected at the direct publisher API, even
+when the CLI is bypassed. External and prebuilt images must be pinned by their
+author; they are not exempt from validation. For multi-platform images use the
+OCI index digest, so architecture selection still works. The existing CLI digest
+resolver reads that index digest, rather than selecting a local platform image.
+Applications downloading undeclared artifacts are outside this manifest contract.
+Keep referenced registry objects retained: digest identity does not ensure storage
+availability.
+
+Inline `release_notes` can be retained as immutable metadata. Declared
+compatibility is not certification. Consumers retain baseline, availability,
+and local selections separately; refreshing published availability must not
+change a selection or an existing deployment.
 
 ## Conditional commit safety
 

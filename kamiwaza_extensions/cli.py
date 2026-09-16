@@ -54,13 +54,13 @@ def catalog_capabilities() -> None:
     """Print machine-readable writer capabilities for publishing CI guards."""
     import json
     from kamiwaza_extensions.compat_catalog import (
-        GENERATION, WRITER_CAPABILITY, supports_conditional_writes,
+        GENERATION, IMMUTABLE_CAPABILITY, WRITER_CAPABILITY, supports_conditional_writes,
     )
 
     supported = supports_conditional_writes()
     typer.echo(json.dumps({
         "generations": [2, 3, GENERATION] if supported else [2, 3],
-        "capabilities": [WRITER_CAPABILITY] if supported else [],
+        "capabilities": [WRITER_CAPABILITY, IMMUTABLE_CAPABILITY] if supported else [],
     }))
 
 

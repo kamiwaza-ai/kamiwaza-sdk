@@ -16,7 +16,10 @@ pytestmark = pytest.mark.unit
 
 
 def row(version, minimum=None):
-    result = {"name": "demo", "version": version, "opaque": {"keep": True}}
+    image = "example/demo@sha256:" + "a" * 64
+    result = {"name": "demo", "version": version, "opaque": {"keep": True},
+              "compose_yml": f"services:\n  app:\n    image: {image}\n",
+              "docker_images": [image]}
     if minimum is not None:
         result["kamiwaza_version"] = minimum
     return result
@@ -44,13 +47,16 @@ def test_publication_order_preserves_all_releases(order):
     assert all(entry["opaque"] == {"keep": True} for entry in catalog)
 
 
-def test_force_is_exact_normalized_release_only():
-    catalog = [row("1.0"), row("2.0.0", ">=1.4.0")]
+def test_force_never_changes_an_immutable_release():
+    catalog = [row("1.0.0"), row("2.0.0", ">=1.4.0")]
     with pytest.raises(ValueError, match="already exists"):
         merge_release(row("1.0.0", ">=1.3.1"), catalog)
-    merged, action = merge_release(row("1.0.0", ">=1.3.1"), catalog, force=True)
-    assert action == "replace"
-    assert merged == [row("1.0.0", ">=1.3.1"), catalog[1]]
+    with pytest.raises(ValueError, match="immutable"):
+        merge_release(row("1.0.0", ">=1.3.1"), catalog, force=True)
+    merged, action = merge_release(row("1.0.0"), catalog, force=True)
+    assert action == "unchanged"
+    assert merged == catalog
+
 
 
 @pytest.mark.parametrize(
@@ -171,15 +177,15 @@ def test_legacy_unrestricted_and_numeric_constraints(minimum):
     validate_entry(row("1.0.0", minimum))
 
 
-def test_prerelease_and_revision_order_matches_core():
+def test_semver_prerelease_order_matches_core():
     catalog = []
-    for version in ["1.0.0", "1.0.0rc1", "1.0.0.dev1", "1.0.0.post1"]:
+    for version in ["1.0.0", "1.0.0-rc.1", "1.0.0-alpha.1", "1.0.0-beta.2"]:
         catalog, _ = merge_release(row(version), catalog)
     assert [item["version"] for item in catalog] == [
-        "1.0.0.dev1",
-        "1.0.0rc1",
+        "1.0.0-alpha.1",
+        "1.0.0-beta.2",
+        "1.0.0-rc.1",
         "1.0.0",
-        "1.0.0.post1",
     ]
 
 
@@ -216,7 +222,7 @@ def test_capability_command_is_machine_readable():
 
     result = CliRunner().invoke(app, ["catalog-capabilities"])
     assert result.exit_code == 0
-    assert "compat-v1-cas" in json.loads(result.output)["capabilities"]
+    assert {"compat-v1-cas", "compat-v1-immutable"}.issubset(json.loads(result.output)["capabilities"])
 
 
 @pytest.mark.parametrize("constraint", ["*", "", "  ", "1.3", ">=1.3,!=1.3.2"])
@@ -342,3 +348,98 @@ def test_old_botocore_model_blocks_before_preview_or_catalog(publisher, tmp_path
                 publisher.publish(row("1.0.0"), "app", preview_image_path=image)
     preview.assert_not_called()
     assert publisher._s3.puts == []
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_repeat_is_idempotent_without_catalog_or_preview_writes(publisher, tmp_path, force):
+    image = tmp_path / "preview.png"
+    image.write_bytes(b"immutable preview")
+    with patch.object(publisher, "_upload_preview_image") as upload:
+        publisher.publish(row("1.0.0"), "app", preview_image_path=image)
+        before = (publisher._s3.body, publisher._s3.etag, len(publisher._s3.puts))
+        result = publisher.publish(row("1.0.0"), "app", force=force, preview_image_path=image)
+        assert result.action == "unchanged"
+        assert result.images_pushed == []
+        assert upload.call_count == 1
+        assert before == (publisher._s3.body, publisher._s3.etag, len(publisher._s3.puts))
+        preview = publisher.publish(row("1.0.0"), "app", dry_run=True, preview_image_path=image)
+        assert preview.action == "unchanged"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("kamiwaza_version", ">=1.4"), ("release_notes", "new notes"),
+    ("revision", "new-revision"), ("opaque", {"changed": True}),
+    ("compose_yml", "services:\n  app:\n    image: example/demo@sha256:" + "a" * 64 + "\n    command: changed\n"),
+])
+@pytest.mark.parametrize("force", [False, True])
+def test_changed_release_rejected_without_mutation(publisher, field, value, force):
+    original = row("1.0.0")
+    publisher.publish(original, "app")
+    before = (publisher._s3.body, publisher._s3.etag, len(publisher._s3.puts))
+    with pytest.raises(ValueError, match="immutable"):
+        publisher.publish({**original, field: value}, "app", force=force)
+    assert before == (publisher._s3.body, publisher._s3.etag, len(publisher._s3.puts))
+
+
+def test_concurrent_identical_publish_is_idempotent(publisher):
+    publisher._s3.before_put = lambda: publisher.publish(row("1.0.0"), "app")
+    result = publisher.publish(row("1.0.0"), "app")
+    assert result.action == "unchanged"
+    assert publisher._s3.revision == 1
+
+
+@pytest.mark.parametrize("change", [
+    {"compose_yml": "services:\n  app:\n    image: postgres:16\n"},
+    {"compose_yml": "services:\n  app:\n    image: ${IMAGE}\n"},
+    {"docker_images": []}, {"docker_images": ["postgres:16"]},
+    {"extra_docker_images": ["example/dynamic:latest"]},
+    {"extra_docker_images": "not-an-array"}, {"compose_yml": "[broken"},
+    {"compose_yml": "services: {}"},
+])
+def test_direct_publisher_rejects_mutable_or_invalid_artifacts(publisher, change):
+    with pytest.raises(ValueError, match="Immutable release"):
+        publisher.publish({**row("1.0.0"), **change}, "app")
+    assert publisher._s3.puts == []
+
+
+def test_direct_publisher_rejects_build_instructions(publisher):
+    entry = row("1.0.0")
+    entry["compose_yml"] += "    build: .\n"
+    with pytest.raises(ValueError, match="build instructions"):
+        publisher.publish(entry, "app")
+    assert publisher._s3.puts == []
+
+
+def test_changed_artifact_digest_requires_new_release(publisher):
+    publisher.publish(row("1.0.0"), "app")
+    changed = row("1.0.0")
+    changed["compose_yml"] = changed["compose_yml"].replace("a" * 64, "b" * 64)
+    changed["docker_images"] = [ref.replace("a" * 64, "b" * 64) for ref in changed["docker_images"]]
+    with pytest.raises(ValueError, match="immutable"):
+        publisher.publish(changed, "app", force=True)
+    changed["version"] = "1.1.0"
+    assert publisher.publish(changed, "app").action == "insert"
+
+
+def test_legacy_two_component_existing_identity_is_not_rewritten():
+    existing = [row("1.0")]
+    merged, action = merge_release(row("1.0.0"), existing)
+    assert action == "unchanged"
+    assert merged == existing
+    with pytest.raises(ValueError, match="major.minor.patch"):
+        merge_release(row("1.1"), existing)
+
+
+def test_semver_build_metadata_is_distinct_immutable_identity():
+    first = row("1.0.0+build.a")
+    second = {**row("1.0.0+build.b"), "release_notes": "second build"}
+    merged, action = merge_release(second, [first])
+    assert action == "insert"
+    assert len(merged) == 2
+    assert merge_release(first, merged)[1] == "unchanged"
+
+
+@pytest.mark.parametrize("version", ["1.0.0rc1", "1.0.0.dev1", "1.0.0.post1", "v1.0.0"])
+def test_pep440_and_prefixed_publication_rejected(version):
+    with pytest.raises(ValueError, match="SemVer"):
+        merge_release(row(version), [])
