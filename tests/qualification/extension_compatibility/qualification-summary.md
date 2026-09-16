@@ -1,5 +1,11 @@
 # Installed qualification: 2026-09-16 UTC
 
+> Historical evidence for the original automatic-selection implementation.
+> Superseded by the explicit administrator-controlled selection requirements in
+> [Core PR #2842](https://github.com/kamiwaza-internal/kamiwaza/pull/2842).
+> The receipts below are preserved unchanged; they do not prove the newer
+> availability-only refresh, explicit update, or selection rollback behavior.
+
 All three installed straw-version cases passed against a full, working isolated
 Kamiwaza instance. These are compatibility algorithm and deployment proofs, not
 certification of future released Core builds.

@@ -17,6 +17,8 @@ import yaml
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
+from kamiwaza_extensions.publish_image_tag import publish_image_tag
+
 
 # Stage suffixes applied to image tags whose registry prefix matches.
 _STAGE_SUFFIXES = {
@@ -709,9 +711,8 @@ def _stage_and_pin_ref(
         return ref
 
     # Legacy stage-suffix synthesis (revision=None path only).
-    clean_tag = re.sub(r"-(dev|stage)$", "", tag)
-    suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
-    candidate = f"{name}:{clean_tag}{suffix}"
+    clean_tag = tag if tag == version else re.sub(r"-(dev|stage)$", "", tag)
+    candidate = f"{name}:{publish_image_tag(clean_tag, stage)}"
     if candidate in digest_map:
         return f"{candidate}@{digest_map[candidate]}"
     return ref
@@ -764,9 +765,8 @@ def resolve_extra_image(
     # Legacy synthesis. Strip an existing stage suffix so
     # `agent:{version}-dev` published against a prod stage emits the
     # unsuffixed tag rather than `agent:1.8.13-dev` reapplied.
-    clean_tag = re.sub(r"-(dev|stage)$", "", tag)
-    suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
-    return f"{name}:{clean_tag}{suffix}"
+    clean_tag = tag if tag == version else re.sub(r"-(dev|stage)$", "", tag)
+    return f"{name}:{publish_image_tag(clean_tag, stage)}"
 
 
 def _normalize_preview_image(path: str) -> str:

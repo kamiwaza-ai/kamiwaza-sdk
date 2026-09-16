@@ -68,6 +68,17 @@ def merge_release(
     entry: dict, existing: list[dict], force: bool = False
 ) -> tuple[list[dict], str]:
     """Append an immutable release; force never permits rewriting its content."""
+    matches = matching_releases(entry, existing)
+    if matches:
+        assert_immutable_content(entry, matches)
+        return deepcopy(existing), "unchanged"
+    result = [*deepcopy(existing), deepcopy(entry)]
+    result.sort(key=lambda row: (row["name"], release_order(row["version"], allow_legacy=True), row["version"]))
+    return result, "insert"
+
+
+def matching_releases(entry: dict, existing: list[dict]) -> list[dict]:
+    """Validate the whole catalog before returning normalized identity matches."""
     validate_entry(entry)
     version = release_identity(entry["version"])
     matches = []
@@ -75,17 +86,17 @@ def merge_release(
         validate_entry(row, allow_legacy=True)
         if row["name"] == entry["name"] and release_identity(row["version"], allow_legacy=True) == version:
             matches.append(row)
-    if matches:
-        expected = _release_content(entry)
-        if any(_release_content(row) != expected for row in matches):
-            raise ValueError(
-                f"Release {entry['name']} {version} already exists with different content; "
-                "published releases are immutable, including with --force. Publish a new version."
-            )
-        return deepcopy(existing), "unchanged"
-    result = [*deepcopy(existing), deepcopy(entry)]
-    result.sort(key=lambda row: (row["name"], release_order(row["version"], allow_legacy=True), row["version"]))
-    return result, "insert"
+    return matches
+
+
+def assert_immutable_content(entry: dict, matches: list[dict]) -> None:
+    """Accept exact repeats only, including equivalent version spellings."""
+    expected = _release_content(entry)
+    if any(_release_content(row) != expected for row in matches):
+        raise ValueError(
+            f"Release {entry['name']} {release_identity(entry['version'])} already exists with different content; "
+            "published releases are immutable, including with --force. Publish a new version."
+        )
 
 
 def _release_content(entry: dict) -> str:

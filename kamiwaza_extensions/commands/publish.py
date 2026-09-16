@@ -11,6 +11,7 @@ import yaml
 from rich.console import Console
 
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
+from kamiwaza_extensions.publish_image_tag import publish_image_tag
 from kamiwaza_extensions.publish_preflight import preflight_catalog_types
 from kamiwaza_extensions.compose_transformer import (
     _canonical_build_ref,
@@ -451,14 +452,9 @@ def _publish_one(
 
     # Determine the image tag.
     # --revision (e.g. CI-built SHA-pinned tag) takes precedence over the
-    # stage-derived default. Prod publishes use a bare version when no
-    # revision is supplied, matching the pre-ENG-3591 convention.
-    if revision is not None:
-        image_tag = revision
-    elif stage == "prod":
-        image_tag = version
-    else:
-        image_tag = f"{version}-{stage}"
+    # stage-derived default. Ordinary prod versions keep their existing bare
+    # tags; build metadata and oversized versions use Docker-safe identities.
+    image_tag = publish_image_tag(version, stage, revision)
 
     # 4. Build the catalog-ready compose (uses the stage-aware image tag).
     # When the extension supplied an authored appgarden compose, that file
@@ -506,6 +502,8 @@ def _publish_one(
         image_basename=info.image_basename,
     )
 
+    preview_image_path = _resolve_preview_image(info.metadata, info.path)
+
     # -- Dry-run path (still runs merge check to detect conflicts) --
     if dry_run:
         short_names = _collect_buildable_image_names(
@@ -538,6 +536,18 @@ def _publish_one(
             digest_map=dry_digest_map or None,
         )
         try:
+            if catalog_schema == "compat-v1" and any(
+                ref not in dry_digest_map for ref in canonical_refs.values()
+            ):
+                from kamiwaza_extensions.compat_catalog import validate_entry
+
+                validate_entry(entry)
+                console.print(
+                    "[yellow]PLAN ONLY: build output digests are unknown; "
+                    "artifact identity and catalog immutability are unverified.[/yellow]"
+                )
+                console.print("[dim]No changes made (dry-run mode).[/dim]")
+                return
             publisher = CatalogPublisher(
                 profile,
                 catalog_schema=catalog_schema,
@@ -548,6 +558,7 @@ def _publish_one(
                 extension_type=ext_type,
                 force=force,
                 dry_run=True,
+                preview_image_path=preview_image_path,
                 revision=revision,
             )
             console.print(
@@ -563,6 +574,15 @@ def _publish_one(
         console.print()
         console.print("[dim]No changes made (dry-run mode).[/dim]")
         return
+
+    if catalog_schema == "compat-v1" and (not no_build or not no_push):
+        try:
+            CatalogPublisher(
+                profile, catalog_schema=catalog_schema, extension_dir=info.path
+            ).preflight_new_release(info.metadata.get("name", ""), version, ext_type)
+        except (CatalogPublishError, ValueError) as exc:
+            console.print(f"\n[red]Error:[/red] {exc}")
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
 
     # 5. Build images (using stage-aware tag)
     image_refs: List[str] = []
@@ -699,7 +719,6 @@ def _publish_one(
 
     # 8. Publish to catalog
     console.print("  Publishing catalog...", end="")
-    preview_image_path = _resolve_preview_image(info.metadata, info.path)
 
     try:
         publisher = CatalogPublisher(

@@ -443,3 +443,37 @@ def test_semver_build_metadata_is_distinct_immutable_identity():
 def test_pep440_and_prefixed_publication_rejected(version):
     with pytest.raises(ValueError, match="SemVer"):
         merge_release(row(version), [])
+
+
+@pytest.mark.parametrize("existing_version", ["1.0", "1.0.0"])
+@pytest.mark.parametrize("description", ["same", "different"])
+def test_preflight_rejects_normalized_known_identity_without_writes(publisher, existing_version, description):
+    publisher._s3.body = json.dumps([
+        {"name": "app", "version": existing_version, "description": description}
+    ]).encode()
+    publisher._s3.etag = '"known"'
+    with pytest.raises(ValueError, match="already exists"):
+        publisher.preflight_new_release("app", "1.0.0", "app")
+    assert publisher._s3.puts == []
+
+
+def test_preflight_allows_new_identity_without_writes(publisher):
+    publisher.preflight_new_release("app", "1.0.0", "app")
+    assert publisher._s3.puts == []
+
+
+@pytest.mark.parametrize("body", [b'{', b'{}', b'[null]', b'[{"name":"other","version":"bad"}]'])
+def test_preflight_fails_closed_on_malformed_catalog(publisher, body):
+    publisher._s3.body = body
+    publisher._s3.etag = '"known"'
+    with pytest.raises((ValueError, CatalogPublishError)):
+        publisher.preflight_new_release("app", "1.0.0", "app")
+    assert publisher._s3.puts == []
+
+
+def test_preflight_fails_closed_on_read_failure(publisher):
+    from unittest.mock import Mock
+    publisher._s3.get_object = Mock(side_effect=RuntimeError("unreachable"))
+    with pytest.raises(CatalogPublishError, match="Cannot read catalog"):
+        publisher.preflight_new_release("app", "1.0.0", "app")
+    assert publisher._s3.puts == []

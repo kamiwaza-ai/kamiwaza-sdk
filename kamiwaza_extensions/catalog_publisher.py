@@ -228,6 +228,33 @@ class CatalogPublisher:
     # Public API
     # ------------------------------------------------------------------
 
+    def preflight_new_release(self, name: str, version: str, extension_type: str) -> None:
+        """Refuse known releases before CLI build/push can overwrite their tags.
+
+        This read is not a reservation. Catalog CAS still protects the final
+        write; concurrent first publishers and external registry writers require
+        separate registry tag immutability and artifact retention policies.
+        """
+        if self._catalog_schema != "compat-v1":
+            raise ValueError("Immutable release preflight requires compat-v1")
+        if extension_type not in _TYPE_FILE_MAP or extension_type == "connector":
+            raise ValueError(f"Unsupported compat-v1 extension type: {extension_type}")
+        from kamiwaza_extensions.compat_catalog import (
+            _read, matching_releases, require_conditional_writes,
+        )
+
+        require_conditional_writes()
+        key = f"{self._garden_dir}{_TYPE_FILE_MAP[extension_type]}"
+        try:
+            existing, _etag = _read(self, key)
+        except Exception as exc:
+            raise CatalogPublishError("Cannot read catalog; refusing build or push") from exc
+        if matching_releases({"name": name, "version": version}, existing):
+            raise ValueError(
+                f"Release {name} {version} already exists; refusing build or push. "
+                "Publish a new version, or use --no-build --no-push for an exact repeat."
+            )
+
     def publish(
         self,
         entry: Dict[str, Any],

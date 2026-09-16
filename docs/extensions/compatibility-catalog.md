@@ -86,3 +86,27 @@ The local S3 qualification script under `tests/qualification/extension_compatibi
 real CatalogPublisher against an explicitly supplied localhost endpoint and
 isolated bucket. It checks history and conditional-write enforcement; no
 production credentials or endpoints are needed.
+
+Before a live compat-v1 CLI build or push, the publisher reads and validates the
+catalog and rejects an already published normalized `(name, version)` identity,
+even if its intended content is identical or `--force` is supplied. Catalog read
+failures stop publication before either phase. To repeat an existing release
+without modifying registry tags, use `--no-build --no-push`; final immutable
+content validation still applies.
+
+This preflight is a read, not an atomic reservation of registry tags. Two first
+publishers can race before either catalog commit, and upstream CI or other
+registry clients can still retag images. Configure registry tag immutability and
+retention for published digest objects independently. Catalog compare-and-swap
+and digest references prevent catalog content replacement; they cannot prevent
+external garbage collection or guarantee ongoing artifact availability.
+
+### Dry-run qualification
+
+For buildable services whose output digests are not supplied, `--dry-run`
+(including `--all`) reports **PLAN ONLY**: artifact identity and catalog
+immutability remain unverified. It performs no build, registry push or catalog
+write. With complete immutable artifact references, dry-run performs the exact
+catalog comparison, including content-addressed preview images. Planning success
+is not permission to overwrite an existing release; live publication still
+requires all exact artifacts and immutable catalog checks.
