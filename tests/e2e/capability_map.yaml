@@ -200,6 +200,7 @@
 - pattern: "tests/integration/test_catalog_live.py::test_catalog_secret_lifecycle"
   capability_ids: [catalog.secrets-management]
   scenario_name: "Catalog governed secret lifecycle"
+  evidence_provenance: cycle-authored
 
 # A real PAT is created for the authenticated user, used by a fresh SDK client
 # to retrieve that same user's profile, revoked, and then proven unusable. The
@@ -209,13 +210,15 @@
   capability_ids: [auth.personal-access-tokens]
   scenario_name: "Personal access token authentication and revocation"
 
-# Canonical Kaizen contract: create an agent through the canonical content
-# shape, observe it in the agent list, and delete it. The module's model-setting
-# shape probes and legacy-body rejection test are deliberately outside this
-# mapping; neither creates a supported custom agent.
-- pattern: "tests/integration/test_kaizen_agent_contract_live.py::test_canonical_agent_create_accepts_the_content_contract"
-  capability_ids: [kaizen.custom-agents]
-  scenario_name: "Create and manage a canonical Kaizen custom agent"
+# DELIBERATELY UNMAPPED: tests/integration/test_kaizen_agent_contract_live.py.
+# test_canonical_agent_create_accepts_the_content_contract creates, lists, and
+# deletes a canonical agent, which is only part of what kaizen.custom-agents
+# claims -- that capability document names `bind_skill` as "what makes an agent
+# specialised rather than a renamed default assistant". A create/list/delete
+# pass would emit a record asserting the whole capability, so the mapping would
+# over-claim. Map this file once a test binds a library skill to the agent and
+# verifies it; the model-setting shape probes and the legacy-body rejection
+# test stay unmapped regardless, since neither creates a supported custom agent.
 
 # Justification: dataset schema/variant endpoints, container list/URN/path/v2
 # endpoints, and secret endpoints — the catalog registry API surface
