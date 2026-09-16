@@ -15,7 +15,7 @@ Core and therefore cannot be authored by this publisher.
 
 ## Explicit generation, unchanged legacy defaults
 
-`kz-ext publish --catalog-schema compat-v1` opts into
+`kz-ext publish --stage isolated --catalog-schema compat-v1` opts into
 `<prefix>/garden/compat-v1/apps.json` or `tools.json`. Services use apps.json.
 Connectors are intentionally excluded because their contract is different.
 Default publishing remains v3; `--catalog-schema 2` is also unchanged.

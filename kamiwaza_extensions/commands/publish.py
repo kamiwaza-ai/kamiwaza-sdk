@@ -11,6 +11,7 @@ import yaml
 from rich.console import Console
 
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
+from kamiwaza_extensions.publish_preflight import preflight_catalog_types
 from kamiwaza_extensions.compose_transformer import (
     _canonical_build_ref,
     _repo_part,
@@ -812,6 +813,7 @@ def run_publish(
         )
         raise typer.Exit(code=1) from exc
 
+    preflight_catalog_types(infos, catalog_schema)
     enforce_cli_contracts(infos, console=console)
 
     for info in infos:
