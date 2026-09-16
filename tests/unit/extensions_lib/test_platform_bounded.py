@@ -91,6 +91,23 @@ async def test_redirect_body_is_never_read(monkeypatch):
     assert stream.closed and stream.read == 0 and len(seen) == 1
 
 
+@pytest.mark.parametrize("limit", [None, 4])
+async def test_prefixed_base_redirect_preserves_caller_path(monkeypatch, limit):
+    stream = Chunks([b"sensitive"])
+    seen = setup(monkeypatch, stream, 302, {"location": "/api/source/content/"})
+    monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/kamiwaza/api")
+
+    with pytest.raises(PlatformRedirectError) as exc_info:
+        await call(limit)
+
+    assert exc_info.value.path == "/api/source/content"
+    assert seen[0].url.path == "/kamiwaza/api/source/content"
+    assert stream.closed
+    assert len(seen) == 1
+    if limit is not None:
+        assert stream.read == 0
+
+
 async def test_compression_rejected_before_body(monkeypatch):
     stream = Chunks([b"compressed"])
     setup(monkeypatch, stream, headers={"content-encoding": "gzip"})

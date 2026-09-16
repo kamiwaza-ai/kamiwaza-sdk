@@ -178,11 +178,7 @@ async def _bounded_response(
     headers["Accept-Encoding"] = "identity"
     async with client.stream(method, url, headers=headers, **kwargs) as response:
         if response.status_code in _REDIRECT_STATUS_CODES:
-            raise PlatformRedirectError(
-                response.status_code,
-                response.request.url.path,
-                response.headers.get("location"),
-            )
+            return response
         if response.headers.get("content-encoding", "identity").strip().lower() not in (
             "",
             "identity",
@@ -266,7 +262,7 @@ async def platform_request(
             trust_env=False,
         ) as client:
             if max_response_bytes is not None:
-                return await _bounded_response(
+                response = await _bounded_response(
                     client,
                     method.upper(),
                     url,
@@ -274,12 +270,13 @@ async def platform_request(
                     max_response_bytes,
                     kwargs,
                 )
-            response = await client.request(
-                method.upper(),
-                url,
-                headers=outbound_headers,
-                **kwargs,
-            )
+            else:
+                response = await client.request(
+                    method.upper(),
+                    url,
+                    headers=outbound_headers,
+                    **kwargs,
+                )
     except httpx.InvalidURL as exc:
         raise ValueError("platform_request received an invalid platform path") from exc
     except httpx.TransportError as exc:
