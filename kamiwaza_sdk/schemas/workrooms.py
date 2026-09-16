@@ -40,7 +40,7 @@ class CreateWorkroom(BaseModel):
     classification: Optional[str] = Field(default=None, max_length=255)
     attributes: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Extensible key-value pairs (mission_id, template_id, etc.)",
+        description="Extensible customer or operator key-value pairs",
     )
     scg_references: Optional[List[str]] = Field(
         default=None,
