@@ -490,6 +490,24 @@ def _normalise_path(path: str) -> str:
     return flattened.rstrip("/") or "/"
 
 
+def _read_interface_document() -> str | None:
+    """Read the packaged interface document, or ``None`` when it is not there.
+
+    Returns:
+        The document's text, or ``None`` when the package data is missing —
+        which degrades description resolution to docstrings rather than
+        failing the whole surface.
+    """
+    try:
+        return (
+            resources.files("kamiwaza_sdk.agent_tools")
+            .joinpath(_INTERFACE_DOCUMENT)
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        return None
+
+
 @lru_cache(maxsize=1)
 def interface_descriptions() -> dict[tuple[str, str], tuple[str | None, str | None]]:
     """Return the interface document's descriptions, keyed by method and path.
@@ -503,27 +521,20 @@ def interface_descriptions() -> dict[tuple[str, str], tuple[str | None, str | No
         which degrades description resolution to docstrings rather than failing
         the surface.
     """
-    try:
-        raw = (
-            resources.files("kamiwaza_sdk.agent_tools")
-            .joinpath(_INTERFACE_DOCUMENT)
-            .read_text(encoding="utf-8")
-        )
-    except (FileNotFoundError, ModuleNotFoundError, OSError):
+    raw = _read_interface_document()
+    if raw is None:
         return {}
     document: dict[str, Any] = json.loads(raw)
-    descriptions: dict[tuple[str, str], tuple[str | None, str | None]] = {}
-    for path, operations in document.get("paths", {}).items():
-        if not isinstance(operations, dict):
-            continue
-        for http_method, operation in operations.items():
-            if not isinstance(operation, dict):
-                continue
-            descriptions[(http_method.upper(), _normalise_path(path))] = (
-                operation.get("description"),
-                operation.get("summary"),
-            )
-    return descriptions
+    return {
+        (http_method.upper(), _normalise_path(path)): (
+            operation.get("description"),
+            operation.get("summary"),
+        )
+        for path, operations in document.get("paths", {}).items()
+        if isinstance(operations, dict)
+        for http_method, operation in operations.items()
+        if isinstance(operation, dict)
+    }
 
 
 def _request_signature(service: Any, method_name: str) -> tuple[str, str] | None:

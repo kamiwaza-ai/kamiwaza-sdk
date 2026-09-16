@@ -26,6 +26,7 @@ from enum import Enum
 from typing import Any
 
 __all__ = [
+    "CallContext",
     "FailureKind",
     "Failure",
     "Success",
@@ -159,149 +160,150 @@ class Failure:
         return payload
 
 
-def rejected_input(
-    *,
-    message: str,
-    field_name: str,
-    status: str,
-    code: str,
-    timeout_ms: int,
-    source: str,
-    request_id: str,
-) -> Failure:
+@dataclass(frozen=True, slots=True)
+class CallContext:
+    """The facts every failure carries about the call that produced it.
+
+    These five travel together on every failure, so they are one value rather
+    than five parameters repeated at each call site. The caller builds it once
+    per invocation.
+
+    Attributes:
+        status: Status reported by the layer that failed.
+        code: Stable machine-readable code for this failure.
+        timeout_ms: The budget that applied, so an expired wait is
+            interpretable rather than mysterious.
+        source: Which layer produced the failure.
+        request_id: Ties the failure to its call record.
+    """
+
+    status: str
+    code: str
+    timeout_ms: int
+    source: str
+    request_id: str
+
+    def failure(
+        self,
+        kind: FailureKind,
+        message: str,
+        *,
+        resource_id: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> Failure:
+        """Build a failure of one kind from this call's facts.
+
+        Args:
+            kind: Which failure kind this is.
+            message: Written for an agent to act on.
+            resource_id: Identifier of the resource involved, when there is one.
+            detail: Kind-specific facts.
+
+        Returns:
+            The failure.
+        """
+        return Failure(
+            message=message,
+            kind=kind,
+            status=self.status,
+            code=self.code,
+            timeout_ms=self.timeout_ms,
+            source=self.source,
+            request_id=self.request_id,
+            resource_id=resource_id,
+            detail=detail or {},
+        )
+
+
+def rejected_input(message: str, context: CallContext, *, field_name: str) -> Failure:
     """Build a failure for arguments that did not validate.
 
     Args:
         message: What was wrong, phrased so an agent can correct it.
-        field_name: The offending field. Required: "invalid arguments" without a
-            field name leaves an agent guessing which one to change.
-        status: Status from the validating layer.
-        code: Stable machine-readable code.
-        timeout_ms: The budget that applied.
-        source: Which layer rejected the input.
-        request_id: Call record identifier.
+        context: Facts about the call.
+        field_name: The offending field. Required, because "invalid arguments"
+            without a field name leaves an agent guessing which one to change.
 
     Returns:
         The failure, with the field name in ``detail``.
     """
-    return Failure(
-        message=message,
-        kind=FailureKind.REJECTED_INPUT,
-        status=status,
-        code=code,
-        timeout_ms=timeout_ms,
-        source=source,
-        request_id=request_id,
-        detail={"field": field_name},
+    return context.failure(
+        FailureKind.REJECTED_INPUT, message, detail={"field": field_name}
     )
 
 
 def entitlement_refusal(
-    *,
     message: str,
+    context: CallContext,
+    *,
     required: str,
-    status: str,
-    code: str,
-    timeout_ms: int,
-    source: str,
-    request_id: str,
     resource_id: str | None = None,
 ) -> Failure:
     """Build a failure for a caller who may not perform the operation.
 
     Args:
         message: The boundary, stated plainly.
+        context: Facts about the call.
         required: What would grant access — a scope, a grant, an approval.
             Required, because a refusal an agent cannot report is a refusal it
             will work around.
-        status: Status from the authorizing layer.
-        code: Stable machine-readable code.
-        timeout_ms: The budget that applied.
-        source: Which layer refused.
-        request_id: Call record identifier.
         resource_id: The resource access was refused to, when there is one.
 
     Returns:
         The failure, with what would grant access in ``detail``.
     """
-    return Failure(
-        message=message,
-        kind=FailureKind.ENTITLEMENT_REFUSAL,
-        status=status,
-        code=code,
-        timeout_ms=timeout_ms,
-        source=source,
-        request_id=request_id,
+    return context.failure(
+        FailureKind.ENTITLEMENT_REFUSAL,
+        message,
         resource_id=resource_id,
         detail={"required": required},
     )
 
 
 def unmet_prerequisite(
-    *,
     message: str,
+    context: CallContext,
+    *,
     missing: str,
-    status: str,
-    code: str,
-    timeout_ms: int,
-    source: str,
-    request_id: str,
     resource_id: str | None = None,
 ) -> Failure:
     """Build a failure for something required that was absent.
 
     Args:
         message: What could not proceed and why.
+        context: Facts about the call.
         missing: What was absent, so an agent can satisfy it rather than retry
             the same call unchanged.
-        status: Status from the failing layer.
-        code: Stable machine-readable code.
-        timeout_ms: The budget that applied.
-        source: Which layer failed.
-        request_id: Call record identifier.
         resource_id: The resource involved, when there is one.
 
     Returns:
         The failure, with the missing prerequisite in ``detail``.
     """
-    return Failure(
-        message=message,
-        kind=FailureKind.UNMET_PREREQUISITE,
-        status=status,
-        code=code,
-        timeout_ms=timeout_ms,
-        source=source,
-        request_id=request_id,
+    return context.failure(
+        FailureKind.UNMET_PREREQUISITE,
+        message,
         resource_id=resource_id,
         detail={"missing": missing},
     )
 
 
 def expired_wait(
-    *,
     message: str,
+    context: CallContext,
+    *,
     resource_id: str,
-    status: str,
-    code: str,
-    timeout_ms: int,
-    source: str,
-    request_id: str,
     resume_with: str | None = None,
 ) -> Failure:
     """Build a failure for work still converging when the budget ran out.
 
-    The resource identifier is a required argument rather than an optional one:
-    this failure means "it may exist and still be settling", and the only
-    correct response is to resume it.
+    The resource identifier is required rather than optional: this failure means
+    "it may exist and still be settling", and the only correct response is to
+    resume it.
 
     Args:
         message: What was waited on and for how long.
+        context: Facts about the call.
         resource_id: Identifier of what already exists.
-        status: Status from the waiting layer.
-        code: Stable machine-readable code.
-        timeout_ms: The budget that expired.
-        source: Which layer timed out.
-        request_id: Call record identifier.
         resume_with: The operation to call to resume, when one is known.
 
     Returns:
@@ -310,27 +312,18 @@ def expired_wait(
     detail: dict[str, Any] = {"resumable": True}
     if resume_with is not None:
         detail["resume_with"] = resume_with
-    return Failure(
-        message=message,
-        kind=FailureKind.EXPIRED_WAIT,
-        status=status,
-        code=code,
-        timeout_ms=timeout_ms,
-        source=source,
-        request_id=request_id,
+    return context.failure(
+        FailureKind.EXPIRED_WAIT,
+        message,
         resource_id=resource_id,
         detail=detail,
     )
 
 
 def platform_fault(
-    *,
     message: str,
-    status: str,
-    code: str,
-    timeout_ms: int,
-    source: str,
-    request_id: str,
+    context: CallContext,
+    *,
     resource_id: str | None = None,
     idempotent: bool = False,
 ) -> Failure:
@@ -338,11 +331,7 @@ def platform_fault(
 
     Args:
         message: What the platform reported, rewritten for an agent to act on.
-        status: Status the platform returned.
-        code: Stable machine-readable code.
-        timeout_ms: The budget that applied.
-        source: Which layer surfaced the fault.
-        request_id: Call record identifier.
+        context: Facts about the call.
         resource_id: The resource involved, when there is one.
         idempotent: Whether the attempted operation is idempotent. Carried
             because "retry only if idempotent" is advice an agent cannot follow
@@ -351,14 +340,9 @@ def platform_fault(
     Returns:
         The failure, with the retry-safety fact in ``detail``.
     """
-    return Failure(
-        message=message,
-        kind=FailureKind.PLATFORM_FAULT,
-        status=status,
-        code=code,
-        timeout_ms=timeout_ms,
-        source=source,
-        request_id=request_id,
+    return context.failure(
+        FailureKind.PLATFORM_FAULT,
+        message,
         resource_id=resource_id,
         detail={"safe_to_retry": idempotent},
     )

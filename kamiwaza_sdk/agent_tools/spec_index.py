@@ -104,6 +104,38 @@ class OperationEntry:
         return " ".join(parts).lower()
 
 
+#: Weight for a term found in an identifier, versus one found only in a summary.
+#: An identifier match is the stronger signal: a caller searching "deploy" wants
+#: the deploy operations before the ones that merely mention deployment.
+_IDENTIFIER_WEIGHT = 3
+_SUMMARY_WEIGHT = 1
+
+
+def _score(entry: OperationEntry, terms: list[str]) -> int:
+    """Score one operation against already-lowercased search terms.
+
+    Deliberately boring: no embeddings until a measured miss justifies the
+    dependency and the index-build cost.
+
+    Args:
+        entry: The operation to score.
+        terms: Lowercased search terms.
+
+    Returns:
+        The total score. Zero means no term matched, and the caller drops it.
+    """
+    identifiers = f"{entry.published_id} {entry.selector}".lower()
+    summary = (entry.summary or "").lower()
+    return sum(
+        _IDENTIFIER_WEIGHT
+        if term in identifiers
+        else _SUMMARY_WEIGHT
+        if term in summary
+        else 0
+        for term in terms
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class OperationIndex:
     """Every callable operation on one client, searchable by keyword.
@@ -161,11 +193,6 @@ class OperationIndex:
     def search(self, query: str, *, limit: int = 20) -> tuple[OperationEntry, ...]:
         """Rank published operations against a plain-language query.
 
-        Scoring is deliberately boring: a term matching an identifier outranks
-        one matching only the summary, and an operation matching more terms
-        outranks one matching fewer. No embeddings until a measured miss
-        justifies the dependency and the index-build cost.
-
         Args:
             query: Words to search for. Case and order do not matter.
             limit: Maximum results to return.
@@ -176,18 +203,13 @@ class OperationIndex:
         terms = [t for t in query.lower().split() if t]
         if not terms:
             return ()
-        scored: list[tuple[int, str, OperationEntry]] = []
-        for entry in self.published:
-            identifiers = f"{entry.published_id} {entry.selector}".lower()
-            summary = (entry.summary or "").lower()
-            score = 0
-            for term in terms:
-                if term in identifiers:
-                    score += 3
-                elif term in summary:
-                    score += 1
-            if score:
-                scored.append((score, entry.published_id, entry))
+        scored = [
+            (score, entry.published_id, entry)
+            for entry, score in (
+                (entry, _score(entry, terms)) for entry in self.published
+            )
+            if score
+        ]
         scored.sort(key=lambda row: (-row[0], row[1]))
         return tuple(entry for _, _, entry in scored[:limit])
 
@@ -263,6 +285,58 @@ def _describe(method: Any) -> tuple[tuple[str, ...], tuple[str, ...], str | None
     return tuple(params), tuple(required), returns
 
 
+def _entry_for(service_name: str, method_name: str, method: Any) -> OperationEntry:
+    """Build one index entry for a client method.
+
+    Args:
+        service_name: Service attribute on the client.
+        method_name: Method name on that service.
+        method: The unbound function, read for its signature and docstring.
+
+    Returns:
+        The entry, carrying its withheld reason when it has one.
+    """
+    op_selector = selector(service_name, method_name)
+    params, required, returns = _describe(method)
+    reason = UNPUBLISHED.get(op_selector)
+    return OperationEntry(
+        selector=op_selector,
+        published_id=published_id(op_selector),
+        service=service_name,
+        method=method_name,
+        summary=first_sentence(inspect.getdoc(method)),
+        parameters=params,
+        required_parameters=required,
+        returns=returns,
+        unpublished_reason=reason.message() if reason else None,
+    )
+
+
+def _entries_for(client: Any, service_name: str) -> list[OperationEntry]:
+    """Build every index entry for one service on a client.
+
+    Args:
+        client: The client instance.
+        service_name: Service attribute to read.
+
+    Returns:
+        Entries for the service's public methods. Empty when the service
+        cannot be constructed — one unavailable service must not cost the
+        whole index.
+    """
+    try:
+        service = getattr(client, service_name)
+    except Exception:  # noqa: BLE001 - an unavailable service is skipped, not fatal
+        return []
+    return [
+        _entry_for(service_name, method_name, method)
+        for method_name, method in inspect.getmembers(
+            type(service), predicate=inspect.isfunction
+        )
+        if not method_name.startswith("_")
+    ]
+
+
 def build_index(client: Any) -> OperationIndex:
     """Build the operation index from a client instance.
 
@@ -277,33 +351,11 @@ def build_index(client: Any) -> OperationIndex:
     Returns:
         The index, with counts measured from the client it was built against.
     """
-    entries: list[OperationEntry] = []
-    for service_name in _service_names(client):
-        try:
-            service = getattr(client, service_name)
-        except Exception:  # noqa: BLE001 - a service that cannot be constructed is skipped, not fatal
-            continue
-        for method_name, method in inspect.getmembers(
-            type(service), predicate=inspect.isfunction
-        ):
-            if method_name.startswith("_"):
-                continue
-            op_selector = selector(service_name, method_name)
-            params, required, returns = _describe(method)
-            reason = UNPUBLISHED.get(op_selector)
-            entries.append(
-                OperationEntry(
-                    selector=op_selector,
-                    published_id=published_id(op_selector),
-                    service=service_name,
-                    method=method_name,
-                    summary=first_sentence(inspect.getdoc(method)),
-                    parameters=params,
-                    required_parameters=required,
-                    returns=returns,
-                    unpublished_reason=reason.message() if reason else None,
-                )
-            )
+    entries = [
+        entry
+        for service_name in _service_names(client)
+        for entry in _entries_for(client, service_name)
+    ]
     entries.sort(key=lambda e: e.selector)
     digest = hashlib.sha256(
         "\n".join(e.selector for e in entries).encode("utf-8")

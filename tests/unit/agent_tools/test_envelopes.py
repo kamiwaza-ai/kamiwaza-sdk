@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from kamiwaza_sdk.agent_tools.envelopes import (
+    CallContext,
     Failure,
     FailureKind,
     Success,
@@ -15,13 +16,13 @@ from kamiwaza_sdk.agent_tools.envelopes import (
 
 pytestmark = pytest.mark.unit
 
-_COMMON = {
-    "status": "409",
-    "code": "conflict",
-    "timeout_ms": 30_000,
-    "source": "platform",
-    "request_id": "req-1",
-}
+CONTEXT = CallContext(
+    status="409",
+    code="conflict",
+    timeout_ms=30_000,
+    source="platform",
+    request_id="req-1",
+)
 
 
 def test_success_carries_only_data() -> None:
@@ -41,16 +42,20 @@ def test_expired_wait_requires_the_resource_identifier() -> None:
         Failure(
             message="still converging",
             kind=FailureKind.EXPIRED_WAIT,
-            **_COMMON,
+            status=CONTEXT.status,
+            code=CONTEXT.code,
+            timeout_ms=CONTEXT.timeout_ms,
+            source=CONTEXT.source,
+            request_id=CONTEXT.request_id,
         )
 
 
 def test_expired_wait_helper_carries_identifier_and_resume_hint() -> None:
     failure = expired_wait(
-        message="deployment did not settle within 30s",
+        "deployment did not settle within 30s",
+        CONTEXT,
         resource_id="dep-7",
         resume_with="get_deployment_serving",
-        **_COMMON,
     )
     assert failure.resource_id == "dep-7"
     assert failure.detail == {
@@ -61,15 +66,25 @@ def test_expired_wait_helper_carries_identifier_and_resume_hint() -> None:
 
 def test_a_failure_must_carry_an_actionable_message() -> None:
     with pytest.raises(ValueError, match="message"):
-        Failure(message="   ", kind=FailureKind.PLATFORM_FAULT, **_COMMON)
+        platform_fault("   ", CONTEXT)
+
+
+def test_every_failure_carries_the_call_context() -> None:
+    """The five call facts travel together, so none can be forgotten at a site."""
+    failure = platform_fault("upstream 502", CONTEXT)
+    assert (failure.status, failure.code, failure.request_id) == (
+        "409",
+        "conflict",
+        "req-1",
+    )
+    assert failure.timeout_ms == 30_000
+    assert failure.source == "platform"
 
 
 def test_rejected_input_names_the_offending_field() -> None:
     """"Invalid arguments" without a field leaves an agent guessing."""
     failure = rejected_input(
-        message="model_id is not a valid identifier",
-        field_name="model_id",
-        **_COMMON,
+        "model_id is not a valid identifier", CONTEXT, field_name="model_id"
     )
     assert failure.detail["field"] == "model_id"
     assert failure.kind is FailureKind.REJECTED_INPUT
@@ -77,28 +92,26 @@ def test_rejected_input_names_the_offending_field() -> None:
 
 def test_entitlement_refusal_states_what_would_grant_access() -> None:
     failure = entitlement_refusal(
-        message="you may not deploy models in this workroom",
+        "you may not deploy models in this workroom",
+        CONTEXT,
         required="grant: workroom.deploy",
-        **_COMMON,
     )
     assert failure.detail["required"] == "grant: workroom.deploy"
 
 
 def test_unmet_prerequisite_names_what_was_missing() -> None:
     failure = unmet_prerequisite(
-        message="no accelerator capacity available",
-        missing="1 GPU with 24GB",
-        **_COMMON,
+        "no accelerator capacity available", CONTEXT, missing="1 GPU with 24GB"
     )
     assert failure.detail["missing"] == "1 GPU with 24GB"
 
 
 def test_platform_fault_states_whether_retry_is_safe() -> None:
     """"Retry only if idempotent" is unfollowable without knowing which it was."""
-    assert platform_fault(message="upstream 502", idempotent=True, **_COMMON).detail[
+    assert platform_fault("upstream 502", CONTEXT, idempotent=True).detail[
         "safe_to_retry"
     ]
-    assert not platform_fault(message="upstream 502", **_COMMON).detail["safe_to_retry"]
+    assert not platform_fault("upstream 502", CONTEXT).detail["safe_to_retry"]
 
 
 @pytest.mark.parametrize(
@@ -130,7 +143,7 @@ def test_all_five_kinds_are_distinct_values() -> None:
 
 
 def test_payload_omits_absent_optional_fields() -> None:
-    payload = platform_fault(message="upstream 502", **_COMMON).as_payload()
+    payload = platform_fault("upstream 502", CONTEXT).as_payload()
     assert "resource_id" not in payload
     assert set(payload) == {
         "message",
