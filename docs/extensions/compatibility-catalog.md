@@ -45,7 +45,9 @@ only that release, including its revision; it never deletes siblings.
 
 The new generation uses S3 `PutObject` with the exact read ETag (`IfMatch`), or
 `IfNoneMatch='*'` for first creation. Conflicts re-read/re-merge, at most five
-attempts. The backend and boto3/botocore must support and enforce conditional
+attempts. boto3/botocore 1.35.70 or later is required. The capability command checks the
+installed operation model without credentials or network access, and direct
+publishing checks it before preview upload. The backend must enforce conditional
 puts; unsupported operations fail closed. Never replace this with unconditional
 uploads. Successful conditional write is the commit receipt; a later reader may
 already observe another publisher's valid commit.

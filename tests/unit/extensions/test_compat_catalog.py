@@ -313,3 +313,32 @@ def test_storage_write_failure_does_not_restore_or_retry(publisher):
     with pytest.raises(ClientError, match="AccessDenied"):
         publisher.publish(row("1.0.0"), "app")
     assert len(attempts) == 1
+
+
+def test_old_botocore_model_does_not_advertise_cas():
+    from typer.testing import CliRunner
+
+    from kamiwaza_extensions.cli import app
+
+    with patch("botocore.session.Session") as session:
+        model = (
+            session.return_value.get_service_model.return_value.operation_model.return_value
+        )
+        model.input_shape.members = {"Bucket": {}, "Key": {}, "IfNoneMatch": {}}
+        result = CliRunner().invoke(app, ["catalog-capabilities"])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {"generations": [2, 3], "capabilities": []}
+
+
+def test_old_botocore_model_blocks_before_preview_or_catalog(publisher, tmp_path):
+    image = tmp_path / "preview.png"
+    image.write_bytes(b"fixture")
+    with patch(
+        "kamiwaza_extensions.compat_catalog.supports_conditional_writes",
+        return_value=False,
+    ):
+        with patch.object(publisher, "_upload_preview_image") as preview:
+            with pytest.raises(ValueError, match="1.35.70"):
+                publisher.publish(row("1.0.0"), "app", preview_image_path=image)
+    preview.assert_not_called()
+    assert publisher._s3.puts == []

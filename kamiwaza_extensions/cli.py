@@ -53,9 +53,15 @@ _state = _GlobalState()
 def catalog_capabilities() -> None:
     """Print machine-readable writer capabilities for publishing CI guards."""
     import json
-    from kamiwaza_extensions.compat_catalog import GENERATION, WRITER_CAPABILITY
+    from kamiwaza_extensions.compat_catalog import (
+        GENERATION, WRITER_CAPABILITY, supports_conditional_writes,
+    )
 
-    typer.echo(json.dumps({"generations": [2, 3, GENERATION], "capabilities": [WRITER_CAPABILITY]}))
+    supported = supports_conditional_writes()
+    typer.echo(json.dumps({
+        "generations": [2, 3, GENERATION] if supported else [2, 3],
+        "capabilities": [WRITER_CAPABILITY] if supported else [],
+    }))
 
 
 @app.callback(invoke_without_command=True)

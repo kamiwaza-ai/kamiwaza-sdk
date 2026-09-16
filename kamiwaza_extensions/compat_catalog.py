@@ -21,6 +21,24 @@ WRITER_CAPABILITY = "compat-v1-cas"
 _CLAUSE = re.compile(r"(?:>=|<=|==|!=|>|<)?\d+\.\d+(?:\.\d+)?")
 
 
+def supports_conditional_writes() -> bool:
+    """Inspect bundled operation shapes without creating a client or reading credentials."""
+    try:
+        from botocore.session import Session
+    except ImportError:
+        return False
+    model = Session().get_service_model("s3").operation_model("PutObject")
+    return {"IfMatch", "IfNoneMatch"}.issubset(model.input_shape.members)
+
+
+def require_conditional_writes() -> None:
+    if not supports_conditional_writes():
+        raise ValueError(
+            "compat-v1 requires boto3/botocore >=1.35.70 with conditional S3 PutObject support; "
+            "upgrade kamiwaza-sdk[publish] before publishing"
+        )
+
+
 def release_version(value: Any) -> Version:
     """Use the same PEP 440 ordering and normalized identity as Core selection."""
     if not isinstance(value, str):
@@ -136,6 +154,7 @@ def publish_compat(publisher: Any, entry: dict, options: dict) -> Any:
     """Bounded optimistic transaction; storage must enforce S3 conditional puts."""
     from kamiwaza_extensions.catalog_publisher import CatalogPublishError, PublishResult
 
+    require_conditional_writes()
     validate_entry(entry)
     images: list[str] = []
     if not options["dry_run"]:
