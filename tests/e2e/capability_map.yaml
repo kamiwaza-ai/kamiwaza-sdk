@@ -235,8 +235,9 @@
 # status string -- the three inline S3 tests and postgres_ingestion_metadata
 # (job COMPLETED on create and read-back, rows_processed equal to row_count,
 # content equal to the seed), and sse_retrieval_emits_terminal_event (chunk
-# events, a terminal `complete` event, job COMPLETED). On 1.2.1 the SSE test
-# fails (ENG-12300), so this scenario's record is honestly `failed`.
+# events, a terminal `complete` event, job COMPLETED). On the Azure 1.2.1
+# evidence instance the SSE test fails (ENG-12300, cause not yet established),
+# so a record captured there is `failed`.
 # Excluded: the same four optional paths as the registry entry, plus
 # container_link, which never submits a retrieval job.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"

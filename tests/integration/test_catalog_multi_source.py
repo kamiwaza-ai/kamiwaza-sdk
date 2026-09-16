@@ -40,7 +40,7 @@ SEEDED_ORDERS = frozenset(
 ORDERS_FIELDS = ("order_id", "customer_name", "total", "created_at")
 
 FILE_INGESTION_ROOT_ENV = "CATALOG_FILE_INGESTION_ROOT"
-KNOWN_SSE_DEFECT = "ENG-12300"
+SSE_DEFECT_TICKET = "ENG-12300"
 TERMINAL_JOB_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELED"})
 CATALOG_PROPAGATION_TIMEOUT_S = 30.0
 
@@ -355,11 +355,11 @@ def test_catalog_sse_retrieval_emits_terminal_event(
     observed = f"events={[event.event for event in events]}, job status={status.status}"
     assert any(event.event == "chunk" for event in events), (
         f"SSE stream for job {job.job_id} emitted no chunk events ({observed}); "
-        f"known 1.2.1 defect {KNOWN_SSE_DEFECT}"
+        f"tracked in {SSE_DEFECT_TICKET}"
     )
     assert events[-1].event == "complete", (
         f"SSE stream for job {job.job_id} ended without a terminal complete event ({observed}); "
-        f"known 1.2.1 defect {KNOWN_SSE_DEFECT}"
+        f"tracked in {SSE_DEFECT_TICKET}"
     )
     assert isinstance(events[-1].data.get("sequence"), int)
     assert status.status == "COMPLETED", f"SSE job {job.job_id}: {observed}"
