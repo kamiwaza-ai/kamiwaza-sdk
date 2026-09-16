@@ -376,7 +376,7 @@ class RegistryBuilder:
         and collects indices to replace.  Rejects if any match is a subset
         or partial overlap.
         """
-        entry_spec = SpecifierSet(entry_constraint)
+        entry_spec = _legacy_constraint_spec(entry_constraint)
 
         # Indices to remove (equal, superset, or unconstrained matches).
         replace_indices: List[int] = []
@@ -388,7 +388,7 @@ class RegistryBuilder:
                 replace_indices.append(idx)
                 continue
 
-            existing_spec = SpecifierSet(existing_constraint)
+            existing_spec = _legacy_constraint_spec(existing_constraint)
             relationship = _constraint_relationship(entry_spec, existing_spec)
 
             if relationship == "disjoint":
@@ -781,6 +781,19 @@ def _normalize_preview_image(path: str) -> str:
     if stripped.startswith("images/"):
         return stripped
     return f"images/{stripped}"
+
+
+def _legacy_constraint_spec(constraint: str) -> SpecifierSet:
+    """Adapt Core's constraint spelling for comparison without rewriting metadata."""
+    if constraint.strip() == "*":
+        return SpecifierSet()
+    clauses = []
+    for clause in constraint.split(","):
+        clause = clause.strip()
+        if re.fullmatch(r"\d+\.\d+(?:\.\d+)?", clause):
+            clause = f"=={clause}"
+        clauses.append(clause)
+    return SpecifierSet(",".join(clauses))
 
 
 def _constraint_relationship(
