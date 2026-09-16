@@ -248,3 +248,10 @@ def test_container_lifecycle_and_membership_through_container_client(
         lambda items: all(item.urn != urn for item in items),
         "catalog.list_containers after containers.delete",
     )
+
+    client.catalog.datasets.delete(member_urn)
+    created.datasets.remove(member_urn)
+    _wait_until_absent(
+        lambda: client.catalog.datasets.get(member_urn),
+        "datasets.get for the member dataset after datasets.delete",
+    )
