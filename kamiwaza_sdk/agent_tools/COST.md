@@ -23,9 +23,9 @@ print(categories(catalog))
 
 | Measure | Value |
 | --- | --- |
-| Callable operations reachable through the client | 310 |
-| Services | 27 |
-| Published | 294 |
+| Callable operations reachable through the client | 348 |
+| Services and nested sub-clients | 33 |
+| Published | 332 |
 | Withheld, each with a stated reason | 16 |
 | Operations described by the interface document | 233 |
 
@@ -35,11 +35,11 @@ print(categories(catalog))
 
 | Measure | Value |
 | --- | --- |
-| Entries | 294 |
-| Total | **18,865 tokens** |
-| Mean per entry | 64 tokens |
+| Entries | 332 |
+| Total | **21,147 tokens** |
+| Mean per entry | 63 tokens |
 
-Against a 200,000-token context window that is 9.4% spent before an agent does
+Against a 200,000-token context window that is 10.6% spent before an agent does
 anything, and it grows with every platform release. The fixed discovery surface
 costs under 2,000 tokens and does not grow, which is the whole argument for
 FR-001.
@@ -51,13 +51,13 @@ the cost of all of them.
 
 | Category | Entries | Tokens | Mean |
 | --- | --- | --- | --- |
-| data | 79 | 5,385 | 68 |
+| data | 107 | 7,052 | 65 |
 | models | 67 | 4,202 | 62 |
+| access | 43 | 2,506 | 58 |
 | infrastructure | 41 | 2,642 | 64 |
-| access | 33 | 1,891 | 57 |
 | extensions | 30 | 1,842 | 61 |
-| collaboration | 21 | 1,497 | 71 |
 | agents | 23 | 1,406 | 61 |
+| collaboration | 21 | 1,497 | 71 |
 
 ## Description coverage
 
@@ -66,13 +66,13 @@ together. Measured by `description_coverage()`:
 
 | Source | Operations |
 | --- | --- |
-| Method docstring | 224 |
+| Method docstring | 234 |
 | Interface document description | 6 |
 | Interface document summary | 23 |
-| None | 41 |
-| — of the resolved ones, under six words | 85 |
+| None | 69 |
+| — of the resolved ones, under six words | 88 |
 
-The 41 with no description and the 85 too thin to choose between are what the
+The 69 with no description and the 88 too thin to choose between are what the
 documentation gate holds at a ceiling and T116 drives to zero. Writing those
 sentences will *raise* the catalog's token cost, which is the correct trade: an
 agent that picks the wrong operation because the description was three words
@@ -81,7 +81,7 @@ costs more than the tokens saved.
 ## Note on the 29-token figure
 
 Earlier planning used 29 tokens per *minimal* definition — an identifier and a
-description and nothing else. The 64 above is a full catalog entry: identifier,
+description and nothing else. The 63 above is a full catalog entry: identifier,
 category, description, approval requirement, four behaviour hints, and the
 parameter names. Both are right for what they measure; only the second one is
 what a host actually receives.
