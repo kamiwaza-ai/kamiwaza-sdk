@@ -1,0 +1,35 @@
+[
+  {
+    "kind": "app",
+    "deployment_id": "a24a985c-5578-4e10-839c-590cd9360c2e",
+    "name": "compat-live-app-0-6-0",
+    "status": "DEPLOYED",
+    "url": "https://ext-compat.test/runtime/apps/compat-live-app-0-6-0-a24a985c/",
+    "observed": {
+      "name": "compat-proof-app",
+      "version": "0.6.0"
+    }
+  },
+  {
+    "kind": "service",
+    "deployment_id": "2129fb35-a9ad-4b7a-b0c3-9ac589d0a58c",
+    "name": "compat-live-service-0-6-0",
+    "status": "DEPLOYED",
+    "url": "http://compat-live-service-0-6-0-2129fb35-web.kamiwaza.svc.cluster.local:8080/",
+    "observed": {
+      "name": "compat-proof-service",
+      "version": "0.6.0"
+    }
+  },
+  {
+    "kind": "tool",
+    "deployment_id": "fdd9207a-d928-462e-9fa5-5cf416d85342",
+    "name": "tool-compat-live-tool-0-6-0",
+    "status": "DEPLOYED",
+    "url": "https://ext-compat.test/runtime/tools/tool-compat-live-tool-0-6-0-fdd9207a/",
+    "observed": {
+      "name": "compat-proof-tool",
+      "version": "0.6.0"
+    }
+  }
+]

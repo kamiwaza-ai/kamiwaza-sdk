@@ -1,0 +1,11 @@
+{
+  "template_name": "compat-blocked-ee511141",
+  "template_id": "d7cc01e8-0c0c-40f9-9194-206fc5be3077",
+  "minimum": ">=9.0.0",
+  "deployment_http_status": 400,
+  "response": {
+    "detail": "Invalid deployment configuration"
+  },
+  "deployment_ids_unchanged": true,
+  "template_removed": true
+}

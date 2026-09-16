@@ -1,0 +1,13 @@
+{
+  "commit": "8eba43a138c8a6fac21deaee7e5ff62e3ac40458",
+  "files": {
+    "kamiwaza/lib/extension_selection.py": "25d3063ddea73e9288472e46508fe0740f49ca9d486031b9a07ee53f36576371",
+    "kamiwaza/lib/version_constraints.py": "8d751ee73f91f6bfe5ca9165e829311ecfab869cc4fd6d564d6b6026c4a44378",
+    "kamiwaza/serving/garden/apps/apps.py": "456336574c53dd87b5068ab43756a95e2bc38b31517943b861e4ba115c58e18c",
+    "kamiwaza/serving/garden/apps/apps_api.py": "1b4d0933812544702ad7c0c71509fdb3dda225f6b2c5e614ae7ae14d4af8a904",
+    "kamiwaza/serving/garden/apps/templates.py": "9a894ae94dd8e23a35ee469b2fc484d8214b46f58c7408a1c05440df48b68f61",
+    "kamiwaza/serving/garden/remote_template_service.py": "10a7ca5486b91c6d6d802d8daf2c7c0cb442576cf2858874535fe4c5e0d49d9f",
+    "kamiwaza/serving/garden/tool/tool_api.py": "74f14a9bdbe209144f847b9d1c5bc614f8d05fc69b6b7eb00184a55b48257794",
+    "kamiwaza/serving/garden/tool/tool_service.py": "ff1c34162c5f2c1c1671d15788b653f22d36998064159ce91783efeb194c57c5"
+  }
+}

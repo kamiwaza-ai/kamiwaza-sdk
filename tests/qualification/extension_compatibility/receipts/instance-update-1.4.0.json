@@ -1,0 +1,463 @@
+{
+  "runtime_case": "1.4.0",
+  "expected": "0.6.0",
+  "runtime_response": {
+    "kamiwaza_version": "1.4.0"
+  },
+  "apps": {
+    "remote": {
+      "compat-proof-app": {
+        "id": null,
+        "version": "0.6.0",
+        "kamiwaza_version": ">=1.3.1",
+        "compose_sha256": "1c55f0a90a8186e8681c42e9b1472ef98ee54b3f6017259430d50a13cdc1dc30",
+        "docker_images": [
+          "docker.io/library/python:3.12-alpine@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+        ]
+      },
+      "compat-proof-service": {
+        "id": null,
+        "version": "0.6.0",
+        "kamiwaza_version": ">=1.3.1",
+        "compose_sha256": "b73b82823d9a69aa4473531d7d43dd4355a3e10d3b9fe083322c501fa28628bf",
+        "docker_images": [
+          "docker.io/library/python:3.12-alpine@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+        ]
+      }
+    },
+    "persisted": {
+      "compat-proof-app": {
+        "id": "1a11407d-7e0b-402f-a37c-e38f4f7ae22c",
+        "version": "0.6.0",
+        "kamiwaza_version": ">=1.3.1",
+        "compose_sha256": "1c55f0a90a8186e8681c42e9b1472ef98ee54b3f6017259430d50a13cdc1dc30",
+        "docker_images": null
+      },
+      "compat-proof-service": {
+        "id": "83831cc6-d028-4563-8534-90042f101d97",
+        "version": "0.6.0",
+        "kamiwaza_version": ">=1.3.1",
+        "compose_sha256": "b73b82823d9a69aa4473531d7d43dd4355a3e10d3b9fe083322c501fa28628bf",
+        "docker_images": null
+      }
+    },
+    "syncs": [
+      {
+        "success": true,
+        "imported_count": 0,
+        "updated_count": 0,
+        "skipped_count": 2,
+        "errors": [],
+        "warnings": [],
+        "imported_templates": [],
+        "updated_templates": [],
+        "filtered_count": 10,
+        "filtered_templates": [
+          {
+            "name": "compat-future-app",
+            "version": "9.0.0",
+            "kamiwaza_version_constraint": ">=9.0.0",
+            "cluster_version": "1.4.0",
+            "reason": "version_mismatch"
+          },
+          {
+            "name": "compat-future-service",
+            "version": "9.0.0",
+            "kamiwaza_version_constraint": ">=9.0.0",
+            "cluster_version": "1.4.0",
+            "reason": "version_mismatch"
+          },
+          {
+            "name": "compat-proof-app",
+            "version": "0.2.0",
+            "kamiwaza_version_constraint": ">=1.2.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-app",
+            "version": "0.3.0",
+            "kamiwaza_version_constraint": ">=1.3.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-app",
+            "version": "0.4.0",
+            "kamiwaza_version_constraint": ">=1.3.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-app",
+            "version": "0.5.0",
+            "kamiwaza_version_constraint": ">=1.4.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-service",
+            "version": "0.2.0",
+            "kamiwaza_version_constraint": ">=1.2.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-service",
+            "version": "0.3.0",
+            "kamiwaza_version_constraint": ">=1.3.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-service",
+            "version": "0.4.0",
+            "kamiwaza_version_constraint": ">=1.3.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-service",
+            "version": "0.5.0",
+            "kamiwaza_version_constraint": ">=1.4.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          }
+        ],
+        "requested_names": [
+          "compat-future-service",
+          "compat-proof-service",
+          "compat-proof-app",
+          "compat-future-app"
+        ],
+        "missing_requested": [
+          "compat-future-app",
+          "compat-future-service"
+        ],
+        "services_image": {
+          "compat-race-app": [
+            {
+              "name": "web",
+              "image": {
+                "registry": "docker.io",
+                "repository": "library/python",
+                "tag": "3.12-alpine",
+                "digest": "sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+              }
+            }
+          ],
+          "compat-proof-app": [
+            {
+              "name": "web",
+              "image": {
+                "registry": "docker.io",
+                "repository": "library/python",
+                "tag": "3.12-alpine",
+                "digest": "sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+              }
+            }
+          ],
+          "compat-proof-service": [
+            {
+              "name": "web",
+              "image": {
+                "registry": "docker.io",
+                "repository": "library/python",
+                "tag": "3.12-alpine",
+                "digest": "sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "success": true,
+        "imported_count": 0,
+        "updated_count": 0,
+        "skipped_count": 2,
+        "errors": [],
+        "warnings": [],
+        "imported_templates": [],
+        "updated_templates": [],
+        "filtered_count": 10,
+        "filtered_templates": [
+          {
+            "name": "compat-future-app",
+            "version": "9.0.0",
+            "kamiwaza_version_constraint": ">=9.0.0",
+            "cluster_version": "1.4.0",
+            "reason": "version_mismatch"
+          },
+          {
+            "name": "compat-future-service",
+            "version": "9.0.0",
+            "kamiwaza_version_constraint": ">=9.0.0",
+            "cluster_version": "1.4.0",
+            "reason": "version_mismatch"
+          },
+          {
+            "name": "compat-proof-app",
+            "version": "0.2.0",
+            "kamiwaza_version_constraint": ">=1.2.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-app",
+            "version": "0.3.0",
+            "kamiwaza_version_constraint": ">=1.3.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-app",
+            "version": "0.4.0",
+            "kamiwaza_version_constraint": ">=1.3.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-app",
+            "version": "0.5.0",
+            "kamiwaza_version_constraint": ">=1.4.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-service",
+            "version": "0.2.0",
+            "kamiwaza_version_constraint": ">=1.2.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-service",
+            "version": "0.3.0",
+            "kamiwaza_version_constraint": ">=1.3.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-service",
+            "version": "0.4.0",
+            "kamiwaza_version_constraint": ">=1.3.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-service",
+            "version": "0.5.0",
+            "kamiwaza_version_constraint": ">=1.4.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          }
+        ],
+        "requested_names": [
+          "compat-future-service",
+          "compat-proof-service",
+          "compat-proof-app",
+          "compat-future-app"
+        ],
+        "missing_requested": [
+          "compat-future-app",
+          "compat-future-service"
+        ],
+        "services_image": {
+          "compat-race-app": [
+            {
+              "name": "web",
+              "image": {
+                "registry": "docker.io",
+                "repository": "library/python",
+                "tag": "3.12-alpine",
+                "digest": "sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+              }
+            }
+          ],
+          "compat-proof-app": [
+            {
+              "name": "web",
+              "image": {
+                "registry": "docker.io",
+                "repository": "library/python",
+                "tag": "3.12-alpine",
+                "digest": "sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+              }
+            }
+          ],
+          "compat-proof-service": [
+            {
+              "name": "web",
+              "image": {
+                "registry": "docker.io",
+                "repository": "library/python",
+                "tag": "3.12-alpine",
+                "digest": "sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "tools": {
+    "remote": {
+      "compat-proof-tool": {
+        "id": null,
+        "version": "0.6.0",
+        "kamiwaza_version": ">=1.3.1",
+        "compose_sha256": "6e04aaf9955d7493b5556397e480131c9a53c4bcc454cabba17710af299901f1",
+        "docker_images": [
+          "docker.io/library/python:3.12-alpine@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+        ]
+      }
+    },
+    "persisted": {
+      "compat-proof-tool": {
+        "id": "905929f1-4d96-4544-9e21-3e302779c258",
+        "version": "0.6.0",
+        "kamiwaza_version": ">=1.3.1",
+        "compose_sha256": "6e04aaf9955d7493b5556397e480131c9a53c4bcc454cabba17710af299901f1",
+        "docker_images": null
+      }
+    },
+    "syncs": [
+      {
+        "success": true,
+        "imported_count": 0,
+        "updated_count": 0,
+        "skipped_count": 1,
+        "errors": [],
+        "warnings": [],
+        "imported_templates": [],
+        "updated_templates": [],
+        "filtered_count": 5,
+        "filtered_templates": [
+          {
+            "name": "compat-future-tool",
+            "version": "9.0.0",
+            "kamiwaza_version_constraint": ">=9.0.0",
+            "cluster_version": "1.4.0",
+            "reason": "version_mismatch"
+          },
+          {
+            "name": "compat-proof-tool",
+            "version": "0.2.0",
+            "kamiwaza_version_constraint": ">=1.2.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-tool",
+            "version": "0.3.0",
+            "kamiwaza_version_constraint": ">=1.3.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-tool",
+            "version": "0.4.0",
+            "kamiwaza_version_constraint": ">=1.3.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-tool",
+            "version": "0.5.0",
+            "kamiwaza_version_constraint": ">=1.4.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          }
+        ],
+        "requested_names": [
+          "compat-proof-tool",
+          "compat-future-tool"
+        ],
+        "missing_requested": [
+          "compat-future-tool"
+        ],
+        "services_image": {
+          "compat-proof-tool": [
+            {
+              "name": "web",
+              "image": {
+                "registry": "docker.io",
+                "repository": "library/python",
+                "tag": "3.12-alpine",
+                "digest": "sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "success": true,
+        "imported_count": 0,
+        "updated_count": 0,
+        "skipped_count": 1,
+        "errors": [],
+        "warnings": [],
+        "imported_templates": [],
+        "updated_templates": [],
+        "filtered_count": 5,
+        "filtered_templates": [
+          {
+            "name": "compat-future-tool",
+            "version": "9.0.0",
+            "kamiwaza_version_constraint": ">=9.0.0",
+            "cluster_version": "1.4.0",
+            "reason": "version_mismatch"
+          },
+          {
+            "name": "compat-proof-tool",
+            "version": "0.2.0",
+            "kamiwaza_version_constraint": ">=1.2.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-tool",
+            "version": "0.3.0",
+            "kamiwaza_version_constraint": ">=1.3.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-tool",
+            "version": "0.4.0",
+            "kamiwaza_version_constraint": ">=1.3.1",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          },
+          {
+            "name": "compat-proof-tool",
+            "version": "0.5.0",
+            "kamiwaza_version_constraint": ">=1.4.0",
+            "cluster_version": "1.4.0",
+            "reason": "superseded"
+          }
+        ],
+        "requested_names": [
+          "compat-proof-tool",
+          "compat-future-tool"
+        ],
+        "missing_requested": [
+          "compat-future-tool"
+        ],
+        "services_image": {
+          "compat-proof-tool": [
+            {
+              "name": "web",
+              "image": {
+                "registry": "docker.io",
+                "repository": "library/python",
+                "tag": "3.12-alpine",
+                "digest": "sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

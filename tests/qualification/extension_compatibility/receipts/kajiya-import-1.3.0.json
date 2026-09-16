@@ -1,0 +1,114 @@
+{
+  "kamiwaza_version": "1.3.0",
+  "before": {
+    "app": [
+      {
+        "id": "6f7a906f-7c56-44c9-b022-87b8c6589611",
+        "name": "compat-race-app",
+        "version": "0.1.3",
+        "kamiwaza_version": ">=1.3.0"
+      },
+      {
+        "id": "76a04b74-aee8-4be7-a00b-6933979cd525",
+        "name": "compat-proof-app",
+        "version": "0.3.0",
+        "kamiwaza_version": ">=1.3.0"
+      }
+    ],
+    "service": [
+      {
+        "id": "2c376dcb-0b7d-4b47-8f85-86dcf51b050e",
+        "name": "compat-proof-service",
+        "version": "0.3.0",
+        "kamiwaza_version": ">=1.3.0"
+      }
+    ],
+    "tool": [
+      {
+        "id": "c675f5b2-3894-4501-acae-4cd47ef5687b",
+        "name": "compat-proof-tool",
+        "version": "0.3.0",
+        "kamiwaza_version": ">=1.3.0"
+      }
+    ]
+  },
+  "catalog_sha256": {
+    "connectors.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "apps.json": "052ea6f9fe3dcd1a1dafcad8e1bf68e803a5f76b35dd54aad6d72ab36e7de4e6",
+    "tools.json": "b89d8d43c63ae08897d5ab23767b40efa8854096ba3dcc73a5633d92c11c2af0"
+  },
+  "import_1": {
+    "returncode": 0,
+    "stdout": "[2026-09-16 04:21:03] resolved bundled catalog for running Kamiwaza 1.3.0\n[2026-09-16 04:21:03] bundle root: /home/ubuntu/ext-catalog\n[2026-09-16 04:21:03] api url: https://ext-compat.test/api\n[2026-09-16 04:21:03] importing registry root: /tmp/kajiya-import-extension-catalog.wR9H8y/selected/0\nUpdated app template 'compat-proof-app'\nUpdated app template 'compat-race-app'\napp: created=0 updated=2\nUpdated service template 'compat-proof-service'\nservice: created=0 updated=1\nUpdated tool template 'compat-proof-tool'\ntool: created=0 updated=1\n",
+    "stderr": ""
+  },
+  "after_1": {
+    "app": [
+      {
+        "id": "6f7a906f-7c56-44c9-b022-87b8c6589611",
+        "name": "compat-race-app",
+        "version": "0.1.3",
+        "kamiwaza_version": ">=1.3.0"
+      },
+      {
+        "id": "76a04b74-aee8-4be7-a00b-6933979cd525",
+        "name": "compat-proof-app",
+        "version": "0.3.0",
+        "kamiwaza_version": ">=1.3.0"
+      }
+    ],
+    "service": [
+      {
+        "id": "2c376dcb-0b7d-4b47-8f85-86dcf51b050e",
+        "name": "compat-proof-service",
+        "version": "0.3.0",
+        "kamiwaza_version": ">=1.3.0"
+      }
+    ],
+    "tool": [
+      {
+        "id": "c675f5b2-3894-4501-acae-4cd47ef5687b",
+        "name": "compat-proof-tool",
+        "version": "0.3.0",
+        "kamiwaza_version": ">=1.3.0"
+      }
+    ]
+  },
+  "import_2": {
+    "returncode": 0,
+    "stdout": "[2026-09-16 04:21:04] resolved bundled catalog for running Kamiwaza 1.3.0\n[2026-09-16 04:21:04] bundle root: /home/ubuntu/ext-catalog\n[2026-09-16 04:21:04] api url: https://ext-compat.test/api\n[2026-09-16 04:21:04] importing registry root: /tmp/kajiya-import-extension-catalog.81u7Lu/selected/0\nUpdated app template 'compat-proof-app'\nUpdated app template 'compat-race-app'\napp: created=0 updated=2\nUpdated service template 'compat-proof-service'\nservice: created=0 updated=1\nUpdated tool template 'compat-proof-tool'\ntool: created=0 updated=1\n",
+    "stderr": ""
+  },
+  "after_2": {
+    "app": [
+      {
+        "id": "6f7a906f-7c56-44c9-b022-87b8c6589611",
+        "name": "compat-race-app",
+        "version": "0.1.3",
+        "kamiwaza_version": ">=1.3.0"
+      },
+      {
+        "id": "76a04b74-aee8-4be7-a00b-6933979cd525",
+        "name": "compat-proof-app",
+        "version": "0.3.0",
+        "kamiwaza_version": ">=1.3.0"
+      }
+    ],
+    "service": [
+      {
+        "id": "2c376dcb-0b7d-4b47-8f85-86dcf51b050e",
+        "name": "compat-proof-service",
+        "version": "0.3.0",
+        "kamiwaza_version": ">=1.3.0"
+      }
+    ],
+    "tool": [
+      {
+        "id": "c675f5b2-3894-4501-acae-4cd47ef5687b",
+        "name": "compat-proof-tool",
+        "version": "0.3.0",
+        "kamiwaza_version": ">=1.3.0"
+      }
+    ]
+  }
+}

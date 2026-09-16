@@ -1,0 +1,12 @@
+{
+  "app_response": {
+    "name": "compat-proof-app",
+    "version": "0.3.0"
+  },
+  "deployment": {
+    "id": "ef86ae69-3bf4-44ed-b317-6a796ad887e5",
+    "name": "compat-live-app-0-3-0",
+    "template_id": "76a04b74-aee8-4be7-a00b-6933979cd525",
+    "status": "DEPLOYED"
+  }
+}
