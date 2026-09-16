@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError
+from kamiwaza_sdk.schemas.apps import AppTemplate
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -38,15 +39,28 @@ def test_apps_config_and_garden_status(live_kamiwaza_client) -> None:
     assert "garden_apps_available" in status
     assert "missing_apps" in status
 
+    # The catalog is still exposed by the deprecated AppService in 1.2.1.
+    garden = client.apps.list_garden_apps()
+    assert isinstance(garden, list)
+    assert all(app.name and app.version for app in garden)
+
 
 def test_apps_template_crud_and_images(live_kamiwaza_client) -> None:
     client = live_kamiwaza_client
     template_id: str | None = None
+    template_name = _unique("sdk-app-template")
 
     try:
-        created = _create_minimal_template(client, _unique("sdk-app-template"))
+        created = _create_minimal_template(client, template_name)
         template_id = str(created.get("id"))
         assert template_id
+        typed_id = UUID(template_id)
+
+        typed_templates = client.apps.list_templates()
+        assert all(isinstance(item, AppTemplate) for item in typed_templates)
+        assert any(item.id == typed_id for item in typed_templates)
+        assert client.apps.get_template(typed_id).name == template_name
+        assert client.apps.find_template(template_name).id == typed_id
 
         templates = client.get("/apps/app_templates")
         assert any(str(item.get("id")) == template_id for item in templates)
@@ -61,15 +75,14 @@ def test_apps_template_crud_and_images(live_kamiwaza_client) -> None:
         status = client.get(f"/apps/images/status/{template_id}")
         assert str(status.get("template_id")) == template_id
         assert "images" in status
+        assert client.apps.check_image_status(typed_id).template_id == typed_id
 
         pull = client.post(f"/apps/images/pull/{template_id}")
         assert "images" in pull or pull.get("message") == "No images to pull"
+        assert client.apps.pull_images(typed_id).template_id == typed_id
     finally:
         if template_id:
-            try:
-                client.delete(f"/apps/app_templates/{template_id}")
-            except APIError:
-                pass
+            client.apps.delete_template(UUID(template_id))
 
 
 def test_apps_deploy_and_deployment_error_paths(
@@ -110,7 +123,9 @@ def test_apps_deploy_and_deployment_error_paths(
     assert exc.value.status_code == 404
 
     try:
-        instances = client.get("/apps/instances", params={"deployment_id": str(bogus_id)})
+        instances = client.get(
+            "/apps/instances", params={"deployment_id": str(bogus_id)}
+        )
         assert isinstance(instances, list)
     except APIError as exc:
         assert exc.status_code == 404
