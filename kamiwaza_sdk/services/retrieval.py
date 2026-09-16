@@ -123,7 +123,7 @@ class RetrievalService(BaseService):
         return self._iter_sse(response)
 
     def stream_job(self, job_id: str) -> Iterator[RetrievalStreamEvent]:
-        """Backward-compatible alias for :meth:`stream_events`."""
+        """Stream a retrieval job's events; alias of stream_events."""
         return self.stream_events(job_id)
 
     def flight_batches(

@@ -9,7 +9,7 @@
     "models": 67
   },
   "counts": {
-    "documented": 334,
+    "documented": 343,
     "operations": 348,
     "published": 332,
     "services": 33,
@@ -17,10 +17,10 @@
   },
   "descriptions": {
     "absent": 0,
-    "docstring": 319,
-    "interface_description": 5,
-    "interface_summary": 8,
-    "thin": 65
+    "docstring": 328,
+    "interface_description": 4,
+    "interface_summary": 0,
+    "thin": 0
   },
   "descriptor_version": "1",
   "selectors": [

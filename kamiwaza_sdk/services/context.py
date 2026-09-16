@@ -611,7 +611,7 @@ class ContextService(BaseService):
         )
 
     def list_import_items(self, *, workroom_id: str) -> dict[str, Any]:
-        """List the workroom-wide source-import inventory/history.
+        """List a workroom's source-import inventory and its import history.
 
         Maps to ``GET /context/pipelines/items``.
         """
@@ -1012,7 +1012,7 @@ class ContextService(BaseService):
         template_name: str = "tool-omniparse",
         config: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Provision an OmniParse runtime instance.
+        """Provision an OmniParse runtime for parsing uploaded documents.
 
         ``name`` is the instance name; ``template_name`` selects the App Garden
         tool template (defaults to ``tool-omniparse``); ``config`` carries
@@ -1053,7 +1053,7 @@ class ContextService(BaseService):
         *,
         workroom_id: str,
     ) -> dict[str, Any]:
-        """Delete an OmniParse runtime instance."""
+        """Delete an OmniParse runtime and stop its parsing capacity."""
         return self.client.delete(
             f"{self._BASE_PATH}/omniparses/{omniparse_id}",
             headers=self._merge_headers(workroom_id=workroom_id),

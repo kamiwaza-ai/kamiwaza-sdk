@@ -83,7 +83,7 @@ class ModelService(BaseService,
 
     def create_model(self, model: CreateModel) -> Model:
         """
-        Create a new model.
+        Register a model in the catalogue without downloading it.
         
         Args:
             model (CreateModel): The model object to create.
@@ -253,6 +253,11 @@ class ModelService(BaseService,
     # Guide helpers --------------------------------------------------
 
     def list_guides(self) -> List[ModelGuide]:
+        """List the model guides describing recommended configurations.
+
+        Returns:
+            List[ModelGuide]: Every guide entry the platform holds.
+        """
         response = self.client.get("/guide/")
         return [ModelGuide.model_validate(item) for item in response]
 

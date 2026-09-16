@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any, Dict, Mapping, MutableMapping, Sequence
 
 from .base_service import BaseService
 from ..schemas.ingestion import (
@@ -20,11 +20,20 @@ class IngestionService(BaseService):
     """High level helper for ingestion operations."""
 
     def health(self) -> Dict[str, Any]:
-        """Return ingestion service health metadata."""
+        """Report whether the ingestion service is answering requests."""
 
         return self.client.get("/ingestion/health")
 
     def run_active(self, source_type: str, **kwargs: Any) -> IngestResponse:
+        """Run an ingestion immediately for one active source type.
+
+        Args:
+            source_type: Source type to ingest from.
+            **kwargs: Source-specific ingestion options.
+
+        Returns:
+            IngestResponse: The accepted ingestion and its job identifier.
+        """
         payload = ActiveIngestRequest(source_type=source_type, kwargs=kwargs)
         response = self.client.post("/ingestion/ingest/run", json=payload.model_dump())
         return IngestResponse.model_validate(response)
@@ -94,14 +103,38 @@ class IngestionService(BaseService):
         return value
 
     def emit_mcp(self, mcp: Dict[str, Any]) -> OperationStatus:
+        """Emit a metadata change event into the ingestion pipeline.
+
+        Args:
+            mcp: The metadata change proposal to emit.
+
+        Returns:
+            OperationStatus: Whether the event was accepted.
+        """
         payload = MCPEmitRequest(mcp=mcp)
         response = self.client.post("/ingestion/ingest/emit", json=payload.model_dump())
         return OperationStatus.model_validate(response)
 
     def schedule_job(self, job: IngestJobCreate) -> OperationStatus:
+        """Schedule a recurring ingestion job rather than running one now.
+
+        Args:
+            job: Schedule, source and options for the job.
+
+        Returns:
+            OperationStatus: Whether the job was registered.
+        """
         response = self.client.post("/ingestion/ingest/jobs", json=job.model_dump())
         return OperationStatus.model_validate(response)
 
     def get_job_status(self, job_id: str) -> IngestJobStatus:
+        """Fetch one ingestion job's status, including its row counts.
+
+        Args:
+            job_id: Identifier of the ingestion job.
+
+        Returns:
+            IngestJobStatus: The job's current state.
+        """
         response = self.client.get(f"/ingestion/ingest/status/{job_id}")
         return IngestJobStatus.model_validate(response)

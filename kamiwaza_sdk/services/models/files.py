@@ -1,6 +1,5 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Union
 from uuid import UUID
-from ...schemas.models.model import Model
 from ...schemas.models.model_file import ModelFile, CreateModelFile
 from ...schemas.models.model_search import HubModelFileSearch
 
@@ -89,7 +88,7 @@ class ModelFileMixin:
     
     def list_model_files(self) -> List[ModelFile]:
         """
-        List all model files.
+        List every file registered against catalogued models.
         
         Returns:
             List[ModelFile]: A list of all model file objects.
@@ -99,7 +98,7 @@ class ModelFileMixin:
     
     def create_model_file(self, model_file: CreateModelFile) -> ModelFile:
         """
-        Create a new model file.
+        Register one file belonging to a catalogued model.
         
         Args:
             model_file (CreateModelFile): The model file object to create.

@@ -44,7 +44,7 @@ class RetrievalAPI(RetrievalService):
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """List retrieval jobs newest-first (T5.36).
+        """List retrieval jobs for this member, newest first.
 
         Native admin sees all; non-admin and mesh-origin callers are
         scoped server-side to their own requester URN.
@@ -54,7 +54,7 @@ class RetrievalAPI(RetrievalService):
         return list(body) if isinstance(body, list) else []
 
     def cancel(self, query_id: str) -> dict[str, Any]:
-        """Cancel a retrieval job (T5.36).
+        """Cancel a running retrieval job before it completes.
 
         Returns the updated job-status dict (status will typically be
         ``"CANCELED"``). Server-side enforces ownership; the SDK surfaces

@@ -29,7 +29,7 @@ from .base_service import BaseService
 class ServingService(BaseService):
     
     def start_ray(self, address: Optional[str] = None, runtime_env: Optional[dict] = None, options: Optional[dict] = None) -> None:
-        """Start Ray with given parameters."""
+        """Start the Ray serving runtime with the given parameters."""
         data = {
             "address": address,
             "runtime_env": runtime_env,
@@ -38,7 +38,7 @@ class ServingService(BaseService):
         return self.client.post("/serving/start", json=data)
 
     def get_status(self) -> dict:
-        """Get the status of Ray."""
+        """Report whether the Ray serving runtime is up."""
         return self.client.get("/serving/status")
 
     def estimate_model_vram(self, deployment_request: CreateModelDeployment) -> dict:
@@ -306,7 +306,7 @@ class ServingService(BaseService):
                     repo_id: Optional[str] = None,
                     force: Optional[bool] = False) -> bool:
         """
-        Stop a model deployment.
+        Stop a model deployment and release its instances.
         
         Args:
             deployment_id (Optional[UUID]): The ID of the deployment to stop.
@@ -410,12 +410,12 @@ class ServingService(BaseService):
         return self.client.get("/serving/health")
 
     def unload_model(self, request: UnloadModelRequest) -> UnloadModelResponse:
-        """Unload a model."""
+        """Unload a model from a deployment, freeing its memory."""
         response = self.client.post("/unload_model", json=request.model_dump())
         return UnloadModelResponse.model_validate(response)
 
     def load_model(self, request: LoadModelRequest) -> LoadModelResponse:
-        """Load a model."""
+        """Load a model into a running deployment's memory."""
         response = self.client.post("/load_model", json=request.model_dump())
         return LoadModelResponse.model_validate(response)
 

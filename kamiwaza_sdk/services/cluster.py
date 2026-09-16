@@ -10,7 +10,7 @@ from .base_service import BaseService
 
 class ClusterService(BaseService):
     def create_location(self, location: CreateLocation) -> Location:
-        """Create a new location."""
+        """Register a physical or logical location for cluster nodes."""
         response = self.client.post("/cluster/location", json=location.model_dump())
         return Location.model_validate(response)
 
@@ -20,28 +20,28 @@ class ClusterService(BaseService):
         return Location.model_validate(response)
 
     def get_location(self, location_id: UUID) -> Location:
-        """Retrieve a specific location."""
+        """Fetch one registered location by its identifier."""
         response = self.client.get(f"/cluster/location/{location_id}")
         return Location.model_validate(response)
 
     def list_locations(self, skip: Optional[int] = None, limit: Optional[int] = None) -> List[Location]:
-        """List all locations."""
+        """List every location registered for cluster nodes."""
         params = {"skip": skip, "limit": limit}
         response = self.client.get("/cluster/locations", params=params)
         return [Location.model_validate(item) for item in response]
 
     def create_cluster(self, cluster: CreateCluster) -> Cluster:
-        """Create a new cluster."""
+        """Register a new cluster in the platform's inventory."""
         response = self.client.post("/cluster/cluster", json=cluster.model_dump(mode='json'))
         return Cluster.model_validate(response)
 
     def get_cluster(self, cluster_id: UUID) -> Cluster:
-        """Retrieve a specific cluster."""
+        """Fetch one registered cluster by its identifier."""
         response = self.client.get(f"/cluster/cluster/{cluster_id}")
         return Cluster.model_validate(response)
 
     def list_clusters(self, skip: Optional[int] = None, limit: Optional[int] = None) -> List[Cluster]:
-        """List all clusters."""
+        """List every cluster registered in the platform's inventory."""
         params = {"skip": skip, "limit": limit}
         response = self.client.get("/cluster/clusters", params=params)
         return [Cluster.model_validate(item) for item in response]
@@ -57,23 +57,23 @@ class ClusterService(BaseService):
         return [NodeListNode.model_validate(item) for item in response]
 
     def list_nodes(self, skip: Optional[int] = None, limit: Optional[int] = None, active: Optional[bool] = None) -> List[Node]:
-        """List all nodes."""
+        """List every node known to the cluster, running or not."""
         params = {"skip": skip, "limit": limit, "active": active}
         response = self.client.get("/cluster/nodes", params=params)
         return [Node.model_validate(item) for item in response]
 
     def create_hardware(self, hardware: CreateHardware) -> Hardware:
-        """Create a new hardware entry."""
+        """Register a hardware profile that nodes can be matched against."""
         response = self.client.post("/cluster/hardware", json=hardware.model_dump())
         return Hardware.model_validate(response)
 
     def get_hardware(self, hardware_id: UUID) -> Hardware:
-        """Retrieve a specific hardware entry."""
+        """Fetch one registered hardware profile by its identifier."""
         response = self.client.get(f"/cluster/hardware/{hardware_id}")
         return Hardware.model_validate(response)
 
     def list_hardware(self, skip: Optional[int] = None, limit: Optional[int] = None) -> List[Hardware]:
-        """List all hardware entries."""
+        """List every registered hardware profile in the inventory."""
         params = {"skip": skip, "limit": limit}
         response = self.client.get("/cluster/hardware", params=params)
         return [Hardware.model_validate(item) for item in response]

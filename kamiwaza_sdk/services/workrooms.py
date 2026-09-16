@@ -72,7 +72,7 @@ class WorkroomService(BaseService):
         attributes: Optional[dict] = None,
         scg_references: Optional[List[str]] = None,
     ) -> Workroom:
-        """Create a new workroom.
+        """Create a workroom to scope collaboration and data access.
 
         Args:
             name: Workroom name (1-255 characters).
@@ -122,7 +122,7 @@ class WorkroomService(BaseService):
         return self._parse_workroom_items(response, endpoint="/workrooms/")
 
     def get(self, workroom_id: Union[str, UUID]) -> Workroom:
-        """Get a workroom by ID.
+        """Fetch one workroom's definition and membership by identifier.
 
         Args:
             workroom_id: UUID of the workroom.
@@ -153,7 +153,7 @@ class WorkroomService(BaseService):
         attributes: Optional[dict] | object = _UNSET,
         scg_references: Optional[List[str]] | object = _UNSET,
     ) -> Workroom:
-        """Partial update of workroom metadata.
+        """Update a workroom's metadata, leaving its contents untouched.
 
         Args:
             workroom_id: UUID of the workroom.

@@ -37,11 +37,17 @@ MAX_ABSENT = 0
 
 #: Published operations whose description is under six words — present, but too
 #: short to distinguish one operation from another in a ranked list. Target: 0.
-#: 85 at the first measurement, 88 after the nested families arrived, 83 after
-#: the first documentation slice, now 65. The remainder are one-line docstrings
-#: and OpenAPI title-case summaries across `cluster` (11), `prompts` (8),
-#: `ingestion`, `models` and `serving` (5 each), and a long tail below that.
-MAX_THIN = 65
+#: **Zero, and it stays zero.** 85 at the first measurement, 88 once the nested
+#: families arrived, 83, 65, then 0 — `cluster`, `prompts`, `lab`, `apps`,
+#: `workrooms`, `ingestion`, `authz`, `models`, `serving`, `connectors`,
+#: `retrieval`, `datasets`, `extensions`, `activity`, `skills` and `subjects`.
+#:
+#: A six-word floor is not a style rule. An agent choosing among 332 operations
+#: ranks them on this text, and "Emit", "Status" or "Delete Tuple" cannot be
+#: chosen between. The pair that made the case: `query_vectors` and
+#: `query_vectors_global` are not variants — the second runs outside any
+#: workroom scope — and no short summary could say so.
+MAX_THIN = 0
 
 
 @pytest.fixture(scope="module")
@@ -75,7 +81,8 @@ def test_ceilings_are_tightened_when_they_are_beaten(coverage) -> None:
     """A ceiling left slack after the work lands stops being a gate.
 
     This fails on *improvement*, which is deliberate: the fix is a one-line
-    edit to the constant in the same change that earned it.
+    edit to the constant in the same change that earned it. Both ceilings now
+    sit at zero, so this test has become the assertion that they stay there.
     """
     assert coverage["absent"] == MAX_ABSENT, (
         f"absent is {coverage['absent']}, ceiling is {MAX_ABSENT}. Lower "

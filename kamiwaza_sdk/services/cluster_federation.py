@@ -141,7 +141,7 @@ class ClusterAPI(ClusterService):
         return ExecutionGateBinding.model_validate(response)
 
     def clear_execution_gate(self) -> None:
-        """Remove this cluster's ExecutionGate binding."""
+        """Remove this cluster's ExecutionGate binding, ungating execution."""
         self.client._request("DELETE", "/cluster/execution-gate")
 
     # ─── §4.2.18 — attribute schema surface (v0.3.6 / M3.1) ──────────────

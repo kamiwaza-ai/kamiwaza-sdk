@@ -149,7 +149,7 @@ class SkillsService(BaseService):
         return SkillLibraryDetailResponse.model_validate(response)
 
     def delete_skill(self, skill_id: UUID | str) -> bool:
-        """Soft-delete a skill."""
+        """Soft-delete a skill, keeping its record for audit."""
         try:
             self.client.delete(f"/skills/{skill_id}")
         except APIError as exc:

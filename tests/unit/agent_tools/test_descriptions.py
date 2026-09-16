@@ -60,15 +60,29 @@ def test_docstring_wins_over_the_interface_document(client) -> None:
     assert description == "List all models, optionally including files."
 
 
-def test_interface_description_is_used_when_no_docstring(client, index) -> None:
-    resolved = [
-        resolve_description(entry, getattr(client, entry.service, None))
-        for entry in index.published
-        if not entry.summary
-    ]
-    sources = {source for _, source in resolved}
-    assert DescriptionSource.INTERFACE_DESCRIPTION in sources
-    assert DescriptionSource.INTERFACE_SUMMARY in sources
+def test_interface_document_is_used_when_a_docstring_is_missing(client, index) -> None:
+    """FR-006h's second and third rungs, tested as mechanism not as gap.
+
+    An earlier version relied on real undocumented methods existing, which
+    stopped being true once T116 landed: a test that needs the codebase to stay
+    broken is not a test. The fallback is exercised with a synthetic entry
+    instead, and the real surface is asserted only on the invariant that
+    matters — every published operation resolves something.
+    """
+    entry = _entry(summary=None, method="change_my_password", service="auth")
+    description, source = resolve_description(entry, client.auth)
+    assert source in (
+        DescriptionSource.INTERFACE_DESCRIPTION,
+        DescriptionSource.INTERFACE_SUMMARY,
+    )
+    assert description
+
+    for published in index.published:
+        service = getattr(client, published.service.split(".")[0], None)
+        if "." in published.service:
+            service = getattr(service, published.service.split(".")[1], None)
+        resolved, _ = resolve_description(published, service)
+        assert resolved, f"{published.selector} resolves no description"
 
 
 def test_absent_is_reported_rather_than_invented(client) -> None:

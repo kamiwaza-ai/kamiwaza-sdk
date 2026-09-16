@@ -183,7 +183,7 @@ class AppService(BaseService):
 
     def list_deployments(self) -> List[AppDeployment]:
         """
-        List all application deployments.
+        List every application deployment, whatever its status.
 
         Returns:
             List of AppDeployment objects
@@ -235,7 +235,7 @@ class AppService(BaseService):
 
     def stop_deployment(self, deployment_id: UUID) -> bool:
         """
-        Stop an application deployment.
+        Stop a running application deployment and release its instances.
 
         Args:
             deployment_id: UUID of the deployment to stop
@@ -295,7 +295,7 @@ class AppService(BaseService):
 
     def list_templates(self, template_type: Optional[str] = None) -> List[AppTemplate]:
         """
-        List available application templates.
+        List the application templates available to deploy from.
 
         Args:
             template_type: Optional filter for template type. Valid values are

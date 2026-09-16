@@ -31,7 +31,7 @@ class ConnectorService(BaseService):
     """Manage cluster-wide connector registrations."""
 
     def list(self) -> List[Connector]:
-        """List registered connectors."""
+        """List every connector registered on the cluster."""
         response = self.client.get("/connectors")
         items = (
             response.get("items", response) if isinstance(response, dict) else response
@@ -52,7 +52,7 @@ class ConnectorService(BaseService):
         return [AvailableConnector.model_validate(item) for item in items]
 
     def get(self, connector_id: Union[str, UUID]) -> Connector:
-        """Get a connector by id."""
+        """Fetch one registered connector's configuration by identifier."""
         try:
             response = self.client.get(f"/connectors/{connector_id}")
             return Connector.model_validate(response)
@@ -81,7 +81,7 @@ class ConnectorService(BaseService):
             raise
 
     def create(self, request: ConnectorCreate) -> Connector:
-        """Register a connector (admin-scoped, cluster-wide).
+        """Register a connector type cluster-wide, which requires admin scope.
 
         ``request.connector_type`` is resolved against the published catalog;
         the platform attaches the matching manifest. For an out-of-core connector
@@ -153,7 +153,7 @@ class ConnectorService(BaseService):
         return Connector.model_validate(response)
 
     def delete(self, connector_id: Union[str, UUID]) -> bool:
-        """Delete a connector by id."""
+        """Delete a registered connector and stop its ingestion."""
         try:
             self.client.delete(f"/connectors/{connector_id}")
             return True
