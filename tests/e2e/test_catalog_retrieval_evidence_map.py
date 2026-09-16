@@ -1,10 +1,12 @@
-"""Evidence-map guard for T01, the catalog ingest-to-retrieval round trip.
+"""Evidence-map guard for T01, the catalog ingest-to-retrieval tests.
 
-The T01 record claims ``retrieval.async-retrieval-jobs``, whose capability
-document requires Arrow Flight retrieval as well as inline retrieval. If the
-gRPC test stopped feeding the record, a passing inline run alone would
-characterize a capability it does not establish. The shipped map must
-therefore route BOTH T01 tests into ONE entry and exclude neither.
+An evidence record is composed from whichever mapped tests actually ran, so a
+claim is honest only when each test earns it on its own (the PER-TEST RULE in
+capability_map.yaml). The inline test proves catalog registration, readback
+and deletion but never touches Arrow Flight; the gRPC test is the one that
+exercises the Flight transport. If the inline test fed a record claiming
+``retrieval.async-retrieval-jobs``, a run that deselected or skipped the gRPC
+test would publish Flight evidence that nothing produced.
 """
 
 from __future__ import annotations
@@ -12,49 +14,63 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+
 from tests.e2e import _evidence_emitter as emitter
 from tests.integration import test_catalog_ingest_retrieval as t01_module
 
 pytestmark = pytest.mark.unit
 
 T01_MODULE = "tests/integration/test_catalog_ingest_retrieval.py"
-T01_TESTS = ("test_s3_ingest_and_retrieve_inline", "test_s3_ingest_and_retrieve_grpc")
-T01_CAPABILITIES = ("catalog.dataset-registry", "retrieval.async-retrieval-jobs")
+EXPECTED_CLAIMS = {
+    "test_s3_ingest_and_retrieve_inline": ("catalog.dataset-registry",),
+    "test_s3_ingest_and_retrieve_grpc": ("retrieval.async-retrieval-jobs",),
+}
+# A skipped or xfailed step never evidences anything (the emitter records an
+# xfail as skipped), so a known product failure must stay a plain failure.
+OUTCOME_CHANGING_MARKERS = frozenset({"skip", "skipif", "xfail"})
 
 
-def _collected_item(test_name: str) -> SimpleNamespace:
-    """Stand in for a collected pytest item: nodeid plus the test's real markers.
-
-    Resolving the function by name fails loudly if a T01 test is renamed, and
-    carrying its actual markers keeps ``marker:`` map patterns honest.
-    """
+def _marks(test_name: str) -> list[pytest.Mark]:
+    """The test's real markers; resolving it by name fails loudly on a rename."""
     test_fn = getattr(t01_module, test_name)
-    marks = [*t01_module.pytestmark, *getattr(test_fn, "pytestmark", [])]
+    module_marks = [decorator.mark for decorator in t01_module.pytestmark]
+    return [*module_marks, *getattr(test_fn, "pytestmark", [])]
 
-    def get_closest_marker(name: str) -> object | None:
+
+def _matching_entries(test_name: str) -> list[emitter.MapEntry]:
+    marks = _marks(test_name)
+
+    def get_closest_marker(name: str) -> pytest.Mark | None:
         return next((mark for mark in marks if mark.name == name), None)
 
-    return SimpleNamespace(
-        nodeid=f"{T01_MODULE}::{test_name}",
-        get_closest_marker=get_closest_marker,
+    item = SimpleNamespace(
+        nodeid=f"{T01_MODULE}::{test_name}", get_closest_marker=get_closest_marker
     )
-
-
-def test_t01_entry_maps_both_transports_and_excludes_neither() -> None:
     entries = emitter.load_capability_map(emitter.DEFAULT_MAP_PATH)
-    items = [_collected_item(name) for name in T01_TESTS]
+    return [entry for entry in entries if entry.matches(item)]
 
-    matching = [
-        entry for entry in entries if any(entry.matches(item) for item in items)
-    ]
 
-    assert len(matching) == 1, (
-        "T01 tests must feed exactly one capability_map entry; found "
-        f"{[entry.scenario_name for entry in matching]}"
+@pytest.mark.parametrize("test_name", sorted(EXPECTED_CLAIMS))
+def test_t01_test_feeds_exactly_its_own_claim(test_name: str) -> None:
+    matching = _matching_entries(test_name)
+
+    assert [entry.capability_ids for entry in matching] == [
+        EXPECTED_CLAIMS[test_name]
+    ], (
+        f"{test_name} must feed exactly one entry claiming "
+        f"{EXPECTED_CLAIMS[test_name]}; found "
+        f"{[(entry.scenario_name, entry.capability_ids) for entry in matching]}"
     )
     (entry,) = matching
-    unmatched = [item.nodeid for item in items if not entry.matches(item)]
-    assert not unmatched, f"T01 entry {entry.scenario_name!r} drops {unmatched}"
-    assert (
-        entry.capability_ids == T01_CAPABILITIES
-    ), f"T01 entry claims {entry.capability_ids}, expected {T01_CAPABILITIES}"
+    assert entry.evidence_provenance == "cycle-authored", (
+        f"{entry.scenario_name!r} is stamped {entry.evidence_provenance!r}; "
+        "the T01 tests were written in-cycle to evidence the capability"
+    )
+
+
+@pytest.mark.parametrize("test_name", sorted(EXPECTED_CLAIMS))
+def test_t01_test_carries_no_outcome_changing_marker(test_name: str) -> None:
+    found = sorted(
+        mark.name for mark in _marks(test_name) if mark.name in OUTCOME_CHANGING_MARKERS
+    )
+    assert not found, f"{test_name} carries {found}; report failures as failures"

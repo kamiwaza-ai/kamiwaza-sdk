@@ -2,21 +2,28 @@
 
 Each test writes its own uniquely named parquet object, ingests exactly that
 object, and retrieves it through the SDK's typed retrieval client. Cleanup is
-part of the evidence: the dataset, the object, and the catalog secret are
-deleted with errors propagating, then proven absent.
+part of the evidence: the dataset, the object, and the catalog secret are all
+deleted, with errors propagating, then proven absent.
 
-On Kamiwaza 1.2.1 the gRPC leg fails with HTTP 503 (ENG-12300). It is reported
-as a failure on purpose: the retrieval capability includes Arrow Flight, so an
-unavailable transport must not be converted into a skip.
+The two tests feed separate evidence claims (tests/e2e/capability_map.yaml):
+the inline test proves catalog registration and readback, and the gRPC test is
+the one that exercises Arrow Flight. On the Azure 1.2.1 evidence instance the
+gRPC leg fails with HTTP 503 (ENG-12300). It is reported as a failure on
+purpose: the retrieval capability includes Arrow Flight, so an unavailable
+transport must not be converted into a skip.
+
+Arrow Flight verifies TLS. When the cluster certificate is not publicly
+trusted, set REQUESTS_CA_BUNDLE to the cluster CA bundle.
 """
 
 from __future__ import annotations
 
 import io
+import os
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
@@ -25,6 +32,7 @@ import boto3
 import pandas as pd
 import pytest
 from botocore.exceptions import ClientError
+
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.schemas.retrieval import RetrievalRequest, TransportType
@@ -138,23 +146,33 @@ def _seeded_dataset(
 ) -> Iterator[_SeededDataset]:
     """Write, ingest, and read back one run-unique object; delete it all after.
 
-    Deletions propagate their errors. Absence is proven only when the body
-    succeeded, so a cleanup check never masks the failure being reported.
+    Every deletion is attempted even when an earlier one raises. The error that
+    propagates is the last deletion error, with a body failure kept as its
+    context. Absence is proven only when the body and every deletion succeeded,
+    so a cleanup check never masks the failure being reported.
     """
     bucket = ingestion_environment["bucket"]
     run_id = uuid.uuid4().hex[:12]
     key = f"sdk-t01/{run_id}/t01-{run_id}.parquet"
     rows = _seed_rows(run_id)
     s3 = _local_minio_client()
-    buffer = io.BytesIO()
-    pd.DataFrame(rows).to_parquet(buffer, index=False)
-    s3.put_object(Bucket=bucket, Key=key, Body=buffer.getvalue())
 
     dataset_urns: list[str] = []
-    try:
+    with ExitStack() as cleanup:
+        # Callbacks run last-registered-first: datasets, then the object, then
+        # the secret they were ingested with. The fixture's own teardown then
+        # meets only the expected 404 for the secret.
+        cleanup.callback(client.catalog.secrets.delete, secret_urn)
+        buffer = io.BytesIO()
+        pd.DataFrame(rows).to_parquet(buffer, index=False)
+        s3.put_object(Bucket=bucket, Key=key, Body=buffer.getvalue())
+        cleanup.callback(s3.delete_object, Bucket=bucket, Key=key)
+
         dataset_urns = _ingest_exact_object(
             client, ingestion_environment, secret_urn, key
         )
+        for urn in dataset_urns:
+            cleanup.callback(client.catalog.datasets.delete, urn)
         expected_urn = _expected_urn(bucket, key)
         assert dataset_urns == [expected_urn]
         dataset = client.catalog.datasets.get(expected_urn)
@@ -163,12 +181,6 @@ def _seeded_dataset(
         yield _SeededDataset(
             urn=expected_urn, bucket=bucket, key=key, rows=tuple(_sorted_rows(rows))
         )
-    finally:
-        for urn in dataset_urns:
-            client.catalog.datasets.delete(urn)
-        s3.delete_object(Bucket=bucket, Key=key)
-        # The fixture's own teardown then meets only the expected 404.
-        client.catalog.secrets.delete(secret_urn)
 
     for urn in dataset_urns:
         _poll_until_not_found(
@@ -224,10 +236,11 @@ def test_s3_ingest_and_retrieve_grpc(
         except APIError as exc:
             if exc.status_code == 503:
                 pytest.fail(
-                    f"gRPC (Arrow Flight) retrieval job creation returned HTTP 503: "
-                    f"{exc}. On Kamiwaza 1.2.1 this is ENG-12300: the API's stored "
-                    "'retrieval' runtime config lacks flight_advertised_locations_raw, "
-                    "so RETRIEVAL_FLIGHT_ADVERTISED_LOCATIONS is ignored. Check that "
+                    "gRPC (Arrow Flight) retrieval job creation returned HTTP 503: "
+                    f"{exc}. ENG-12300 diagnoses this failure on the Azure 1.2.1 "
+                    "evidence instance, whose stored 'retrieval' runtime config "
+                    "lacks flight_advertised_locations_raw, so "
+                    "RETRIEVAL_FLIGHT_ADVERTISED_LOCATIONS is ignored. Check that "
                     "ticket before treating this as a new defect."
                 )
             raise
@@ -235,9 +248,13 @@ def test_s3_ingest_and_retrieve_grpc(
         assert job.grpc is not None
         assert job.grpc.protocol == "arrow-flight"
         assert job.grpc.endpoints
+        # The live client's KAMIWAZA_VERIFY_SSL=false outranks REQUESTS_CA_BUNDLE
+        # for HTTP, so no CA reaches Flight on its own; pass it explicitly. When
+        # it is unset, Flight verifies against the system roots.
+        ca_bundle = os.environ.get("REQUESTS_CA_BUNDLE") or None
         flight_rows = [
             row
-            for batch in client.retrieval.flight_batches(job)
+            for batch in client.retrieval.flight_batches(job, ca_cert_path=ca_bundle)
             for row in batch.to_pylist()
         ]
         assert _sorted_rows(flight_rows) == list(seeded.rows)

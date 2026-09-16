@@ -189,13 +189,28 @@
   capability_ids: [models.local-deployment, models.openai-compatible-inference]
   scenario_name: "Engine matrix deploy and infer with fractional co-location"
 
-# Justification: test_s3_ingest_and_retrieve_inline / _grpc ingest a sample
-# dataset into the catalog and then run retrieval jobs streaming results
-# inline and over gRPC (per test_retrieval_live.py's docstring these carry
-# TS17.001/TS17.003 coverage).
-- pattern: "tests/integration/test_catalog_ingest_retrieval.py::*"
-  capability_ids: [catalog.dataset-registry, retrieval.async-retrieval-jobs]
-  scenario_name: "Catalog ingest to retrieval round-trip (inline and gRPC)"
+# The two catalog ingest-to-retrieval tests are mapped separately under the
+# PER-TEST RULE. Each writes its own run-unique parquet object, ingests exactly
+# that object with ingestion.run_active, and reads the dataset back through
+# catalog.datasets.get before deleting the dataset, the object, and the catalog
+# secret and proving each absent. They differ in how the rows come back.
+#
+# The inline test retrieves through retrieval.create_job/get_job with the inline
+# transport. On its own it does not exercise Arrow Flight, so it claims only the
+# catalog registration and readback it proves.
+- pattern: "tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Catalog S3 dataset registration, readback, and deletion"
+  evidence_provenance: cycle-authored
+
+# The gRPC test creates a grpc-transport retrieval job, requires the arrow-flight
+# handshake, reads the seeded rows over Arrow Flight with flight_batches, and
+# requires the job to reach COMPLETED. It is the T01 test that exercises the
+# Flight transport, so it carries the retrieval claim.
+- pattern: "tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc"
+  capability_ids: [retrieval.async-retrieval-jobs]
+  scenario_name: "Arrow Flight retrieval of an ingested S3 dataset"
+  evidence_provenance: cycle-authored
 
 # Justification: test_catalog_dataset_lifecycle registers a dataset, reads it
 # back through the catalog, and verifies its path/location metadata.

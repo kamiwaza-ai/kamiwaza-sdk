@@ -136,10 +136,10 @@ Missing integration coverage: 163
 | TS3.034 | [x] | GET | /catalog/health | test_catalog_endpoints.py::test_catalog_metadata_and_health (direct) |
 | TS3.035 | [x] | GET | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_list (catalog.secrets.list); test_catalog_live.py::test_catalog_secret_lifecycle (catalog.list_secrets) |
 | TS3.036 | [x] | POST | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_endpoints (catalog.secrets.create) |
-| TS3.037 | [x] | DELETE | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
-| TS3.038 | [x] | GET | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
-| TS3.039 | [x] | DELETE | /catalog/secrets/v2/{secret_urn:secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
-| TS3.040 | [x] | GET | /catalog/secrets/v2/{secret_urn:secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
+| TS3.037 | [x] | DELETE | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct); test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.secrets.delete) |
+| TS3.038 | [x] | GET | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct); test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.secrets.get) |
+| TS3.039 | [x] | DELETE | /catalog/secrets/v2/{secret_urn:secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct); test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.secrets.delete) |
+| TS3.040 | [x] | GET | /catalog/secrets/v2/{secret_urn:secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct); test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.secrets.get) |
 | TS3.041 | [x] | DELETE | /catalog/secrets/{secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
 | TS3.042 | [x] | GET | /catalog/secrets/{secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
 
