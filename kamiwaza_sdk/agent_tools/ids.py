@@ -219,6 +219,13 @@ UNPUBLISHED: dict[str, UnpublishedReason] = {
             "hold safely."
         ),
     ),
+    "embedding.HuggingFaceEmbedding": UnpublishedReason(
+        reason=(
+            "Deprecated factory whose own docstring directs callers elsewhere, "
+            "and a constructor rather than a platform operation."
+        ),
+        superseded_by="embedding.get_embedder",
+    ),
 }
 
 
