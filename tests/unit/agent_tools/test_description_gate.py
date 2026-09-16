@@ -22,11 +22,21 @@ from kamiwaza_sdk.agent_tools.spec_index import build_index
 pytestmark = pytest.mark.unit
 
 #: Published operations with no description from any source. Target: 0.
-MAX_ABSENT = 41
+#:
+#: Raised from 41 to 69 when the index began walking nested platform
+#: sub-clients, which made 38 previously unreachable operations callable —
+#: `catalog.containers`, `catalog.datasets`, `catalog.secrets`,
+#: `enclaves.connectors`, `enclaves.documents` and `gates.packages`. 28 of
+#: those 38 carry no description. This is the one legitimate reason to raise a
+#: ceiling: new territory, not a regression on ground already covered. Coverage
+#: went from 41/294 to 69/332, so the rate got worse because the newly reached
+#: families are the least documented in the client.
+MAX_ABSENT = 69
 
 #: Published operations whose description is under six words — present, but too
 #: short to distinguish one operation from another in a ranked list. Target: 0.
-MAX_THIN = 85
+#: Raised from 85 by the same change; 3 of the 38 are thin.
+MAX_THIN = 88
 
 
 @pytest.fixture(scope="module")

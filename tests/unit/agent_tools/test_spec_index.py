@@ -25,23 +25,61 @@ def index(client):
     return build_index(client)
 
 
-def test_index_covers_every_public_method_the_client_exposes(client, index) -> None:
-    """SC-029: coverage is asserted against the client, not against a number.
+def _reachable_selectors(client) -> set[str]:
+    """Every selector an agent could call through this client, computed here.
 
-    A hardcoded count would pass while the index silently missed a whole
-    service, which is the failure this test exists to catch.
+    Written independently of the index so the two can disagree. It walks the
+    client's service properties and, one level down, any nested object that
+    holds a platform client of its own — which is how ``catalog.secrets`` and
+    ``gates.packages`` are reached.
     """
-    expected: set[str] = set()
+    selectors: set[str] = set()
+
+    def methods(obj) -> list[str]:
+        return [
+            name
+            for name, _ in inspect.getmembers(type(obj), predicate=inspect.isfunction)
+            if not name.startswith("_")
+        ]
+
     for name, value in vars(type(client)).items():
         if not isinstance(value, property) or name.startswith("_"):
             continue
         service = getattr(client, name)
-        for method_name, _ in inspect.getmembers(
-            type(service), predicate=inspect.isfunction
-        ):
-            if not method_name.startswith("_"):
-                expected.add(f"{name}.{method_name}")
-    assert {entry.selector for entry in index} == expected
+        selectors.update(f"{name}.{method}" for method in methods(service))
+        for attribute in dir(service):
+            if attribute.startswith("_") or attribute == "client":
+                continue
+            nested = getattr(service, attribute, None)
+            if nested is None or not type(nested).__module__.startswith("kamiwaza"):
+                continue
+            if not hasattr(nested, "client") and not hasattr(nested, "_client"):
+                continue
+            selectors.update(
+                f"{name}.{attribute}.{method}" for method in methods(nested)
+            )
+    return selectors
+
+
+def test_index_covers_every_method_the_client_can_reach(client, index) -> None:
+    """SC-029: coverage is asserted against the client, not against a number.
+
+    A hardcoded count would pass while the index silently missed a whole
+    family of operations — which is exactly what happened before the index
+    walked nested sub-clients, hiding 38 callable operations including
+    ``gates.packages.install``.
+    """
+    assert {entry.selector for entry in index} == _reachable_selectors(client)
+
+
+def test_local_helpers_are_not_indexed(client, index) -> None:
+    """A nested object with no platform client of its own is not an operation.
+
+    ``models.quant_manager`` computes over values already in hand and calls
+    nothing, so publishing its five methods would offer an agent operations
+    that reach no platform.
+    """
+    assert not any(".quant_manager." in entry.selector for entry in index)
 
 
 def test_a_newly_added_method_appears_with_no_curation(client) -> None:

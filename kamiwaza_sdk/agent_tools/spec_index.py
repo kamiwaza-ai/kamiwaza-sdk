@@ -312,29 +312,97 @@ def _entry_for(service_name: str, method_name: str, method: Any) -> OperationEnt
     )
 
 
+def _methods_of(service: Any) -> list[tuple[str, Any]]:
+    """Return a service object's public methods.
+
+    Args:
+        service: A service or sub-client instance.
+
+    Returns:
+        ``(name, function)`` pairs for public methods, in name order.
+    """
+    return [
+        (name, method)
+        for name, method in inspect.getmembers(
+            type(service), predicate=inspect.isfunction
+        )
+        if not name.startswith("_")
+    ]
+
+
+def _is_platform_sub_client(candidate: Any) -> bool:
+    """Whether a nested attribute is a sub-client that calls the platform.
+
+    Two conditions, both necessary. It must be ours, so a third-party object
+    held as an attribute is not walked. And it must hold a platform client of
+    its own, which is what separates ``catalog.secrets`` from a local helper
+    like ``models.quant_manager`` that computes over values already in hand.
+
+    Args:
+        candidate: The nested attribute value.
+
+    Returns:
+        ``True`` when the object's methods are platform operations.
+    """
+    if not type(candidate).__module__.startswith("kamiwaza"):
+        return False
+    return hasattr(candidate, "client") or hasattr(candidate, "_client")
+
+
+def _sub_clients(service: Any) -> list[tuple[str, Any]]:
+    """Return a service's nested platform sub-clients.
+
+    Several services expose whole operation families through a nested client
+    rather than their own methods — ``catalog.secrets``, ``enclaves.documents``,
+    ``gates.packages``. Those operations are as callable as any other, so the
+    index must reach them or FR-005's promise is false.
+
+    Args:
+        service: The parent service instance.
+
+    Returns:
+        ``(attribute_name, sub_client)`` pairs, in name order.
+    """
+    found: list[tuple[str, Any]] = []
+    for name in sorted(dir(service)):
+        if name.startswith("_") or name == "client":
+            continue
+        try:
+            candidate = getattr(service, name)
+        except Exception:  # noqa: BLE001 - an unreadable attribute is skipped
+            continue
+        if _is_platform_sub_client(candidate) and _methods_of(candidate):
+            found.append((name, candidate))
+    return found
+
+
 def _entries_for(client: Any, service_name: str) -> list[OperationEntry]:
-    """Build every index entry for one service on a client.
+    """Build every index entry for one service on a client, nested ones included.
 
     Args:
         client: The client instance.
         service_name: Service attribute to read.
 
     Returns:
-        Entries for the service's public methods. Empty when the service
-        cannot be constructed — one unavailable service must not cost the
-        whole index.
+        Entries for the service's public methods and for those of any nested
+        platform sub-client, the latter with a dotted
+        ``service.subclient.method`` selector. Empty when the service cannot be
+        constructed — one unavailable service must not cost the whole index.
     """
     try:
         service = getattr(client, service_name)
     except Exception:  # noqa: BLE001 - an unavailable service is skipped, not fatal
         return []
-    return [
+    entries = [
         _entry_for(service_name, method_name, method)
-        for method_name, method in inspect.getmembers(
-            type(service), predicate=inspect.isfunction
-        )
-        if not method_name.startswith("_")
+        for method_name, method in _methods_of(service)
     ]
+    entries.extend(
+        _entry_for(f"{service_name}.{sub_name}", method_name, method)
+        for sub_name, sub_client in _sub_clients(service)
+        for method_name, method in _methods_of(sub_client)
+    )
+    return entries
 
 
 def build_index(client: Any) -> OperationIndex:

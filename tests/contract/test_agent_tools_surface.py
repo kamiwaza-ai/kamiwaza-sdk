@@ -63,19 +63,34 @@ def interface_operation_ids() -> set[str]:
 
 
 def test_index_reaches_the_whole_callable_surface(client, index) -> None:
-    """SC-029, as a count comparison rather than a sample."""
+    """SC-029, as a count comparison rather than a sample.
+
+    Counts nested platform sub-clients too, since those are as callable as any
+    other operation. Before the index walked them, this test passed at 310
+    while 38 operations — including every gate-package call — were unreachable.
+    """
+
+    def public_methods(obj) -> int:
+        return sum(
+            1
+            for name, _ in inspect.getmembers(type(obj), predicate=inspect.isfunction)
+            if not name.startswith("_")
+        )
+
     reachable = 0
     for name, value in vars(type(client)).items():
         if not isinstance(value, property) or name.startswith("_"):
             continue
         service = getattr(client, name)
-        reachable += sum(
-            1
-            for method_name, _ in inspect.getmembers(
-                type(service), predicate=inspect.isfunction
-            )
-            if not method_name.startswith("_")
-        )
+        reachable += public_methods(service)
+        for attribute in dir(service):
+            if attribute.startswith("_") or attribute == "client":
+                continue
+            nested = getattr(service, attribute, None)
+            if nested is None or not type(nested).__module__.startswith("kamiwaza"):
+                continue
+            if hasattr(nested, "client") or hasattr(nested, "_client"):
+                reachable += public_methods(nested)
     assert len(index) == reachable
 
 

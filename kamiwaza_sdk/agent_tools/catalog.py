@@ -41,6 +41,15 @@ _CATEGORIES: dict[str, str] = {
     "ingestion": "data",
     "retrieval": "data",
     "enclaves": "data",
+    # Nested sub-clients. A selector is `service.subclient`, and a family can
+    # belong to a different category than its parent: catalog is grouped with
+    # models, but its secrets are an access concern.
+    "catalog.containers": "data",
+    "catalog.datasets": "data",
+    "catalog.secrets": "access",
+    "enclaves.connectors": "data",
+    "enclaves.documents": "data",
+    "gates.packages": "access",
     "context": "data",
     "cluster": "infrastructure",
     "federations": "infrastructure",

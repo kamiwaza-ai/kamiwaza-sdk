@@ -92,7 +92,9 @@ def test_hints_follow_the_effect(index) -> None:
             continue
         assert descriptor.hints.read_only is descriptor.effect.is_read
         assert descriptor.hints.destructive is (descriptor.effect is Effect.DESTROY)
-        assert descriptor.hints.idempotent is (descriptor.effect is not Effect.CREATE)
+        assert descriptor.hints.idempotent is (
+            descriptor.effect in (Effect.READ, Effect.UPDATE, Effect.DESTROY)
+        ), "a create and an unclassified effect must both read as non-idempotent"
 
 
 def test_hint_override_replaces_the_derivation(index) -> None:

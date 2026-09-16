@@ -127,6 +127,7 @@ _CREATE_VERBS = frozenset(
         "deploy",
         "register",
         "install",
+        "trigger",
         "import",
         "insert",
         "upload",
@@ -162,6 +163,7 @@ _UPDATE_VERBS = frozenset(
         "patch",
         "set",
         "upsert",
+        "replace",
         "toggle",
         "change",
         "reset",
@@ -189,6 +191,7 @@ _DESTROY_VERBS = frozenset(
         "remove",
         "purge",
         "revoke",
+        "uninstall",
         "withdraw",
     }
 )
@@ -288,6 +291,12 @@ HINT_OVERRIDES: dict[str, BehaviourHints] = {
     # Returns the new key once and only once, so a retry is not equivalent to
     # the first call: the caller loses the key it did not read.
     "cluster.rotate_preshared_key": BehaviourHints(
+        read_only=False, destructive=True, idempotent=False, open_world=False
+    ),
+    # Replacing an installed gate package re-resolves every existing binding,
+    # so a repeat is not a no-op and a failed one can leave bindings pointing
+    # at the previous package. FR-014c requires this stated, not derived.
+    "gates.packages.replace": BehaviourHints(
         read_only=False, destructive=True, idempotent=False, open_world=False
     ),
 }
