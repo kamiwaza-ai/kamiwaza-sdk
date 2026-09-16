@@ -20,12 +20,11 @@ from .identity import (
 logger = logging.getLogger(__name__)
 
 # Fields that are safe to expose in /session responses. Anything on
-# ``Identity`` not in this set — notably ``system_high`` (a classification
-# string) and ``request_id`` — MUST NOT cross the HTTP boundary to the
-# browser. The bearer credential (``X-Auth-Token``) is deliberately *not*
-# on the Identity model at all; see kamiwaza_extensions_lib.identity for
-# the rationale. Allowlist (not denylist) so new Identity fields default
-# to *private*.
+# ``Identity`` not in this set — such as the ``request_id`` correlation
+# tracer — MUST NOT cross the HTTP boundary to the browser. The bearer
+# credential (``X-Auth-Token``) is deliberately *not* on the Identity
+# model at all; see kamiwaza_extensions_lib.identity for the rationale.
+# Allowlist (not denylist) so new Identity fields default to *private*.
 SESSION_PUBLIC_FIELDS = frozenset(
     {
         "user_id",

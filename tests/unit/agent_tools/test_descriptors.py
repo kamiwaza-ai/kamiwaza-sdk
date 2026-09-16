@@ -139,7 +139,7 @@ def test_no_mutation_escapes_approval(index) -> None:
 
 
 def test_approval_required_reads_are_read_only(index) -> None:
-    """A mutation in that set would be redundant and hide a classification bug."""
+    """A mutation in that set would be redundant and hide a derivation bug."""
     by_selector = {d.selector: d for d in describe_all(index)}
     for selector in APPROVAL_REQUIRED_READS:
         assert by_selector[selector].hints.read_only

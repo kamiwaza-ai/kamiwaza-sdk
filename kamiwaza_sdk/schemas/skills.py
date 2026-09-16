@@ -33,7 +33,6 @@ class SkillLibraryListItem(BaseModel):
     description: str
     category: str
     status: str
-    classification: str | None = None
     tags: list[str] = Field(default_factory=list)
     content_checksum: str
     created_at: datetime
@@ -63,7 +62,6 @@ class SkillLibraryDetailResponse(BaseModel):
     category: str
     trigger: Any | None = None
     inputs: list[Any] | None = None
-    classification: str | None = None
     status: str
     tags: list[str] = Field(default_factory=list)
     content_checksum: str
@@ -81,7 +79,6 @@ class SkillLibraryUpdateRequest(BaseModel):
 
     display_name: str | None = Field(default=None, min_length=1, max_length=255)
     category: str | None = Field(default=None, min_length=1, max_length=100)
-    classification: str | None = Field(default=None, max_length=255)
     status: str | None = Field(default=None, min_length=1, max_length=20)
     trigger: Any | None = None
     inputs: list[Any] | None = None

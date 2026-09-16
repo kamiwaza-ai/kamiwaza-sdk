@@ -10,8 +10,6 @@ export interface Identity {
     email: string | null;
     name: string | null;
     roles: string[];
-    /** Platform classification (e.g. "U", "TS"). NOT a boolean. */
-    systemHigh: string | null;
     workroomId: string | null;
     workroomRole: string | null;
     requestId: string | null;

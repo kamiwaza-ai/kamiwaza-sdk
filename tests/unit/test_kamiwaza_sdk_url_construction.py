@@ -206,15 +206,15 @@ def test_cluster_declare_attribute_url_no_double_api_prefix(
     client, capture = _client_with_capture(
         monkeypatch,
         {
-            "name": "clearance",
+            "name": "team",
             "type": "string",
             "state": "declared",
             "declared_at": "2026-05-13T00:00:00Z",
         },
     )
-    client.cluster.declare_attribute(name="clearance", type="string")
+    client.cluster.declare_attribute(name="team", type="string")
     assert _last_url(capture) == (
-        "https://example.test/api/cluster/attribute-schema/clearance"
+        "https://example.test/api/cluster/attribute-schema/team"
     )
 
 

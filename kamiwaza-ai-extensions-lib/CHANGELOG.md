@@ -4,6 +4,15 @@ Versions follow semver. Published to npm as a standalone package
 (`@kamiwaza-ai/extensions-lib`) and versioned independently from
 `kamiwaza-sdk`.
 
+## [Unreleased]
+
+### Removed
+
+* The identity model's `system_high` field, the forwarded
+  `x-user-system-high` header, and the auth schema's `user_system_high`
+  field are removed from the runtime libraries. An extension that still
+  needs that value must read it from the incoming request headers itself.
+
 ## [0.4.3] — 2026-07-27 (ENG-9199)
 
 ### Fixed

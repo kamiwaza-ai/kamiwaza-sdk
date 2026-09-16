@@ -47,16 +47,16 @@ def test_declare_attribute_puts_to_cluster_endpoint(mock_client) -> None:
 
     mock_client.expect(
         "PUT",
-        "/cluster/attribute-schema/clearance",
-        _attribute_schema_payload("clearance"),
+        "/cluster/attribute-schema/team",
+        _attribute_schema_payload("team"),
     )
 
     schema = ClusterAPI(client=mock_client).declare_attribute(
-        "clearance", type="string"
+        "team", type="string"
     )
 
     assert isinstance(schema, AttributeSchema)
-    assert schema.name == "clearance"
+    assert schema.name == "team"
     assert schema.type == "string"
     assert schema.state == "declared"
     assert schema.authority == "local_admin"
@@ -64,7 +64,7 @@ def test_declare_attribute_puts_to_cluster_endpoint(mock_client) -> None:
 
     method, path, kwargs = mock_client.calls[0]
     assert method == "PUT"
-    assert path == "/cluster/attribute-schema/clearance"
+    assert path == "/cluster/attribute-schema/team"
     assert kwargs.get("json") == {
         "type": "string",
         "sensitive": False,
@@ -132,7 +132,7 @@ def test_list_attributes_returns_pydantic_list(mock_client) -> None:
         "/cluster/attribute-schema",
         {
             "attributes": [
-                _attribute_schema_payload("clearance"),
+                _attribute_schema_payload("team"),
                 _attribute_schema_payload("country", state="deprecated"),
             ],
             "schema_version": "v0.3.6",
@@ -144,7 +144,7 @@ def test_list_attributes_returns_pydantic_list(mock_client) -> None:
     assert len(schemas) == 2
     assert all(isinstance(s, AttributeSchema) for s in schemas)
     names = {s.name for s in schemas}
-    assert names == {"clearance", "country"}
+    assert names == {"team", "country"}
 
     _method, _path, kwargs = mock_client.calls[0]
     assert kwargs.get("params") == {"include_deprecated": "true"}
@@ -173,19 +173,19 @@ def test_deprecate_attribute_round_trips_via_get(mock_client) -> None:
 
     mock_client.expect(
         "DELETE",
-        "/cluster/attribute-schema/clearance",
+        "/cluster/attribute-schema/team",
         {"state": "deprecated", "subjects_holding_value": 0},
     )
     mock_client.expect(
         "GET",
-        "/cluster/attribute-schema/clearance",
-        _attribute_schema_payload("clearance", state="deprecated"),
+        "/cluster/attribute-schema/team",
+        _attribute_schema_payload("team", state="deprecated"),
     )
 
-    schema = ClusterAPI(client=mock_client).deprecate_attribute("clearance")
+    schema = ClusterAPI(client=mock_client).deprecate_attribute("team")
 
     assert schema.state == "deprecated"
-    assert schema.name == "clearance"
+    assert schema.name == "team"
 
 
 def test_deprecate_attribute_404_on_followup_get_raises_kamiwaza_error(
@@ -201,17 +201,17 @@ def test_deprecate_attribute_404_on_followup_get_raises_kamiwaza_error(
 
     mock_client.expect(
         "DELETE",
-        "/cluster/attribute-schema/clearance",
+        "/cluster/attribute-schema/team",
         {"state": "deprecated", "subjects_holding_value": 0},
     )
     mock_client.raise_on(
         "GET",
-        "/cluster/attribute-schema/clearance",
+        "/cluster/attribute-schema/team",
         KamiwazaError("attribute withdrawn", status_code=404),
     )
 
     with pytest.raises(KamiwazaError) as exc_info:
-        ClusterAPI(client=mock_client).deprecate_attribute("clearance")
+        ClusterAPI(client=mock_client).deprecate_attribute("team")
 
     msg = str(exc_info.value)
     # Surface message should mention the race / suggest re-fetching state.
@@ -223,12 +223,12 @@ def test_withdraw_attribute_passes_force_param(mock_client) -> None:
 
     mock_client.expect(
         "DELETE",
-        "/cluster/attribute-schema/clearance",
+        "/cluster/attribute-schema/team",
         {"state": "withdrawn", "subjects_holding_value": 5},
     )
 
     result = ClusterAPI(client=mock_client).withdraw_attribute(
-        "clearance", force=True, subjects_holding_value=5
+        "team", force=True, subjects_holding_value=5
     )
 
     assert result == {"state": "withdrawn", "subjects_holding_value": 5}
@@ -241,11 +241,11 @@ def test_withdraw_attribute_default_no_force(mock_client) -> None:
 
     mock_client.expect(
         "DELETE",
-        "/cluster/attribute-schema/clearance",
+        "/cluster/attribute-schema/team",
         {"state": "deprecated", "subjects_holding_value": 0},
     )
 
-    result = ClusterAPI(client=mock_client).withdraw_attribute("clearance")
+    result = ClusterAPI(client=mock_client).withdraw_attribute("team")
 
     assert result["state"] == "deprecated"
     _method, _path, kwargs = mock_client.calls[0]
@@ -259,14 +259,14 @@ def test_declare_attribute_400_raises_kamiwaza_error(mock_client) -> None:
 
     mock_client.raise_on(
         "PUT",
-        "/cluster/attribute-schema/clearance",
+        "/cluster/attribute-schema/team",
         KamiwazaError(
             "shape_change_on_declared",
             status_code=400,
             body={
                 "detail": {
                     "reason": "shape_change_on_declared",
-                    "name": "clearance",
+                    "name": "team",
                     "conflict": {"type": {"existing": "string", "target": "int"}},
                 }
             },
@@ -274,4 +274,4 @@ def test_declare_attribute_400_raises_kamiwaza_error(mock_client) -> None:
     )
 
     with pytest.raises(KamiwazaError):
-        ClusterAPI(client=mock_client).declare_attribute("clearance", type="int")
+        ClusterAPI(client=mock_client).declare_attribute("team", type="int")

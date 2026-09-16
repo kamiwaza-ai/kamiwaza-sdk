@@ -92,7 +92,7 @@ class NetworkingSpec(BaseModel):
 
 
 class SecuritySpec(BaseModel):
-    """Security classification."""
+    """Extension risk tier, source and verification status."""
 
     model_config = ConfigDict(extra="allow")
 

@@ -135,7 +135,7 @@ def test_publish_routes_sorted_binary_files_over_ssh(
     contents = {
         fixture.WHEEL_NAME: b"wheel\x00bytes",
         "index.html": b"<a>index</a>",
-        "mini_clearance.csv": b"id,clearance\n1,high\n",
+        "mini_clearance.csv": b"id,team\n1,high\n",
     }
     for name, payload in contents.items():
         directory.joinpath(name).write_bytes(payload)

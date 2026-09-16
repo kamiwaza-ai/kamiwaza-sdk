@@ -202,12 +202,29 @@ def test_idp_bootstrap_ensures_realm_client_mapper(monkeypatch):
     monkeypatch.setattr(cli, "build_kc_admin", lambda args: kc)
     rc, out = _run(
         ["idp", "bootstrap", "--realm", "federated", "--ropc-client", "fed-mesh-cli",
+         "--attr", "team",
          "--kc-url", "https://kc", "--kc-admin-pw-env", "KCPW"],
     )
     assert rc == 0
     kc.set_unmanaged_attributes.assert_called_once_with("federated")
-    kc.ensure_attribute_mapper.assert_called_once_with("federated", "uuid", attribute="clearance")
+    kc.ensure_attribute_mapper.assert_called_once_with("federated", "uuid", attribute="team")
+    assert out["attribute_mappers"] == ["team"]
     assert out["shared_issuer_url"] == "https://kc/realms/federated"
+
+
+def test_idp_bootstrap_requires_an_attribute(monkeypatch):
+    """No default attribute: the realm's own attribute name must be stated.
+
+    A default here would map whichever attribute the default happened to name,
+    which is a silent wrong answer rather than a visible missing argument.
+    """
+    monkeypatch.setattr(cli, "build_kc_admin", lambda args: MagicMock())
+    with pytest.raises(SystemExit) as exit_info:
+        _run(
+            ["idp", "bootstrap", "--realm", "federated", "--ropc-client",
+             "fed-mesh-cli", "--kc-url", "https://kc", "--kc-admin-pw-env", "KCPW"],
+        )
+    assert exit_info.value.code != 0
 
 
 def test_idp_persona_parses_attrs(monkeypatch):

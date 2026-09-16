@@ -227,12 +227,12 @@ def cmd_idp_bootstrap(args: argparse.Namespace, *, client: Any = None) -> dict:
     realm = kc.ensure_realm(args.realm)
     kc.set_unmanaged_attributes(args.realm)
     cli = kc.ensure_ropc_client(args.realm, args.ropc_client)
-    for attr in args.attr or ["clearance"]:
+    for attr in args.attr:
         kc.ensure_attribute_mapper(args.realm, cli["id"], attribute=attr)
     return {
         "realm": realm,
         "ropc_client": cli,
-        "attribute_mappers": args.attr or ["clearance"],
+        "attribute_mappers": list(args.attr),
         "shared_issuer_url": kc.issuer_url(args.realm),
     }
 
@@ -407,7 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = g.add_parser("bootstrap", help="ensure realm + ROPC client + attribute mapper")
     p.add_argument("--realm", required=True, help="shared realm, e.g. federated")
     p.add_argument("--ropc-client", required=True, help="public ROPC client id, e.g. fed-mesh-cli")
-    p.add_argument("--attr", action="append", help="attribute mapper(s); default clearance")
+    p.add_argument("--attr", action="append", required=True, help="attribute mapper, repeatable, e.g. --attr team")
     _add_kc_args(p)
     p.set_defaults(func=cmd_idp_bootstrap)
     p = g.add_parser("persona", help="ensure a persona user with attributes")

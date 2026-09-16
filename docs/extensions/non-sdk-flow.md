@@ -60,7 +60,6 @@ headers on success:
 | `X-User-Email` | string | RFC-5322 email. May be empty for service accounts. |
 | `X-User-Name` | string | Display name. Free-form. |
 | `X-User-Roles` | comma-separated list | E.g. `member,editor,admin`. Empty string if no roles. |
-| `X-User-System-High` | string | Platform classification token (`U`, `TS`, …). NOT a boolean. |
 | `X-Workroom-Id` | UUID string | Active workroom. **Required.** All-`f` UUID = global sentinel. |
 | `X-User-Workroom-Id` | UUID string | User-scoped alias of `X-Workroom-Id` during the migration window. Read either; both will be present. |
 | `X-User-Workroom-Role` | string | Workroom-scoped role (e.g. `editor`). |
@@ -93,7 +92,6 @@ extract_identity(headers):
     email:         headers.get("X-User-Email", ""),
     name:          headers.get("X-User-Name", ""),
     roles:         split_csv(headers.get("X-User-Roles", "")),
-    system_high:   headers.get("X-User-System-High", ""),
     workroom_id:   workroom_id,
     workroom_role: headers.get("X-User-Workroom-Role", ""),
     request_id:    headers.get("X-Request-Id", ""),

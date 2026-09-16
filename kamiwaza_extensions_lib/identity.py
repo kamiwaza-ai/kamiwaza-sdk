@@ -32,7 +32,6 @@ _HEADER_USER_ID = "x-user-id"
 _HEADER_USER_EMAIL = "x-user-email"
 _HEADER_USER_NAME = "x-user-name"
 _HEADER_USER_ROLES = "x-user-roles"
-_HEADER_USER_SYSTEM_HIGH = "x-user-system-high"
 _HEADER_WORKROOM_ID = "x-workroom-id"
 _HEADER_USER_WORKROOM_ROLE = "x-user-workroom-role"
 _HEADER_REQUEST_ID = "x-request-id"
@@ -42,7 +41,6 @@ _IDENTITY_HEADER_NAMES = frozenset(
         _HEADER_USER_EMAIL,
         _HEADER_USER_NAME,
         _HEADER_USER_ROLES,
-        _HEADER_USER_SYSTEM_HIGH,
         _HEADER_WORKROOM_ID,
         _HEADER_USER_WORKROOM_ROLE,
         _HEADER_REQUEST_ID,
@@ -62,11 +60,7 @@ class Identity(BaseModel):
     a feature.  The explicit setting also guards against future Pydantic
     v2 default changes.
 
-    ``system_high`` is the platform's ``X-User-System-High`` header — a
-    classification string (e.g. ``"U"``, ``"TS"`` per
-    ``kamiwaza_sdk/services/enclaves.py``), NOT a boolean.  Consumers
-    making trust decisions should compare to the platform's classification
-    constants, not truthiness.
+    Header values are stripped; blank values become ``None``.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -75,7 +69,6 @@ class Identity(BaseModel):
     email: Optional[str] = None
     name: Optional[str] = None
     roles: list[str] = Field(default_factory=list)
-    system_high: Optional[str] = None
     workroom_id: Optional[str] = None
     workroom_role: Optional[str] = None
     request_id: Optional[str] = None
@@ -135,7 +128,6 @@ def _project_identity_fields(lower: dict[str, str]) -> dict:
         "email": _stripped(lower, _HEADER_USER_EMAIL),
         "name": _stripped(lower, _HEADER_USER_NAME),
         "roles": _parse_roles(lower.get(_HEADER_USER_ROLES, "")),
-        "system_high": _stripped(lower, _HEADER_USER_SYSTEM_HIGH),
         "workroom_role": _stripped(lower, _HEADER_USER_WORKROOM_ROLE),
         "request_id": _stripped(lower, _HEADER_REQUEST_ID),
     }

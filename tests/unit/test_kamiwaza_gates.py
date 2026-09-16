@@ -80,23 +80,23 @@ def test_discover_surfaces_required_attributes_and_schema(mock_client) -> None:
         "POST",
         "/authz/gates/discover",
         {
-            "name": "classification-gate",
+            "name": "team-gate",
             "kind": "execution",
             "required_attributes": [
-                {"name": "clearance", "kind": "string"},
+                {"name": "team", "kind": "string"},
                 {"name": "country", "kind": "string"},
             ],
             "config_schema": {
                 "type": "object",
-                "properties": {"min_clearance": {"type": "string"}},
+                "properties": {"allowed_team": {"type": "string"}},
             },
-            "classpath": "stub.ClassificationGate",
+            "classpath": "stub.TeamGate",
             "location": "<stub>",
         },
     )
 
-    result = GatesAPI(client=mock_client).discover("stub.ClassificationGate")
+    result = GatesAPI(client=mock_client).discover("stub.TeamGate")
 
     assert len(result.required_attributes) == 2
-    assert result.required_attributes[0]["name"] == "clearance"
-    assert result.config_schema["properties"]["min_clearance"]["type"] == "string"
+    assert result.required_attributes[0]["name"] == "team"
+    assert result.config_schema["properties"]["allowed_team"]["type"] == "string"

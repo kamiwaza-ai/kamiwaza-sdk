@@ -19,8 +19,9 @@ Protocol neutrality (load-bearing)
 ----------------------------------
 This package MUST NOT import an MCP library, encode an MCP wire shape, or take
 an MCP dependency of any kind. Descriptors are protocol-neutral data: a name, a
-description, JSON Schema for input and output, an effect classification, and an
-annotation set. The server maps them onto the protocol.
+description, JSON Schema for input and output, behaviour hints, whether the
+operation needs approval, and an annotation set. The server maps them onto the
+protocol.
 
 Three reasons, in order of how much they cost to get wrong:
 

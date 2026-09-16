@@ -97,9 +97,7 @@ def _workroom_response(**overrides):
         "type": "persistent",
         "description": "A test workroom",
         "labels": ["test"],
-        "classification": None,
         "attributes": None,
-        "scg_references": None,
         "status": "active",
         "created_at": "2025-01-01T00:00:00Z",
         "updated_at": None,
@@ -180,17 +178,13 @@ def test_create_with_all_optional_fields(dummy_client):
         "ephemeral",
         description="desc",
         labels=["a", "b"],
-        classification="internal",
         attributes={"mission_id": "m1"},
-        scg_references=["scg-1"],
     )
 
     payload = client.calls[0][2]["json"]
     assert payload["description"] == "desc"
     assert payload["labels"] == ["a", "b"]
-    assert payload["classification"] == "internal"
     assert payload["attributes"] == {"mission_id": "m1"}
-    assert payload["scg_references"] == ["scg-1"]
 
 
 def test_create_excludes_none_fields(dummy_client):
@@ -372,7 +366,7 @@ def test_update_sends_only_provided_fields(dummy_client):
     assert "name" in payload
     assert "labels" in payload
     assert "description" not in payload
-    assert "classification" not in payload
+    assert "attributes" not in payload
 
 
 def test_update_not_found_raises(dummy_client):

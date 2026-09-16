@@ -24,13 +24,11 @@ class WorkroomDraft:
         name: Workroom name.
         workroom_type: Workroom type.
         description: Optional description.
-        classification: Optional classification.
     """
 
     name: str
     workroom_type: str
     description: str | None = None
-    classification: str | None = None
 
 
 @register(
@@ -62,7 +60,6 @@ def create_workroom_and_enter(client: Any, draft: WorkroomDraft) -> dict[str, An
         draft.name,
         draft.workroom_type,
         description=draft.description,
-        classification=draft.classification,
     )
     workroom_id = getattr(workroom, "id", workroom)
     return {

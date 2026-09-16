@@ -54,7 +54,6 @@ def _detail_payload() -> dict:
         "category": "export",
         "trigger": None,
         "inputs": [],
-        "classification": None,
         "status": "draft",
         "tags": ["pdf", "report"],
         "content_checksum": "abc123",
@@ -84,7 +83,6 @@ def _list_payload() -> dict:
                 "description": detail["description"],
                 "category": detail["category"],
                 "status": detail["status"],
-                "classification": detail["classification"],
                 "tags": detail["tags"],
                 "content_checksum": detail["content_checksum"],
                 "created_at": detail["created_at"],
@@ -322,12 +320,12 @@ def test_update_skill_metadata_preserves_explicit_none(dummy_client):
 
     service.update_skill_metadata(
         payload["id"],
-        SkillLibraryUpdateRequest(classification=None),
+        SkillLibraryUpdateRequest(trigger=None),
     )
 
     method, path, kwargs = client.calls[0]
     assert (method, path) == ("put", f"/skills/{payload['id']}")
-    assert kwargs["json"] == {"classification": None}
+    assert kwargs["json"] == {"trigger": None}
 
 
 def test_update_skill_metadata_maps_404(dummy_client):

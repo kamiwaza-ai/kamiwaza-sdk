@@ -262,7 +262,7 @@ def test_partial_provision_rolls_back_owned_realm(
     ]
 
 
-def test_provision_creates_clearance_and_unonboarded_personas(
+def test_provision_creates_attribute_and_unonboarded_personas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     users: list[tuple[str, dict[str, str]]] = []

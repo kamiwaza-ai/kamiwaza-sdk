@@ -144,13 +144,12 @@ class DocumentClient(BaseService):
     """Helpers for enclave document indexing and retrieval."""
 
     _BASE_PATH = "/enclaves/documents"
-    _SYSTEM_HIGH_HEADER = "X-User-System-High"
 
     def create(self, payload: IndexDocumentRequest) -> DocumentRecord:
         """Index one document into an enclave source.
 
         Args:
-            payload: The document's content, source and classification.
+            payload: The document's content, source and metadata.
 
         Returns:
             DocumentRecord: The indexed document's record.
@@ -169,7 +168,6 @@ class DocumentClient(BaseService):
         offset: int | None = 0,
         item_type: str | None = None,
         tag: str | None = None,
-        system_high: str | None = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> DocumentListResponse:
         """List indexed documents for one enclave source, filtered and paged.
@@ -180,8 +178,6 @@ class DocumentClient(BaseService):
             offset: Number of documents to skip.
             item_type: Keep only documents of this item type.
             tag: Keep only documents carrying this tag.
-            system_high: System-high marking to assert on the request, which
-                decides what the caller is permitted to see.
             headers: Extra request headers.
 
         Returns:
@@ -198,16 +194,10 @@ class DocumentClient(BaseService):
         if tag:
             params["tag"] = tag
 
-        request_headers = _merge_system_high_header(
-            headers=headers,
-            system_high=system_high,
-            header_name=self._SYSTEM_HIGH_HEADER,
-        )
-
         response = self.client.get(
             f"{self._BASE_PATH}/",
             params=params,
-            headers=request_headers or None,
+            headers=headers or None,
         )
         return DocumentListResponse.model_validate(response)
 
@@ -216,7 +206,6 @@ class DocumentClient(BaseService):
         document_id: UUID | str,
         *,
         source_id: UUID | str,
-        system_high: str | None = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> DocumentRecord:
         """Fetch one indexed enclave document by identifier.
@@ -224,23 +213,16 @@ class DocumentClient(BaseService):
         Args:
             document_id: Identifier of the document.
             source_id: Identifier of the enclave source holding it.
-            system_high: System-high marking to assert on the request, which
-                decides whether the caller may read this document.
             headers: Extra request headers.
 
         Returns:
             DocumentRecord: The document's record.
         """
         params = {"source_id": str(_ensure_uuid(source_id, field="source_id"))}
-        request_headers = _merge_system_high_header(
-            headers=headers,
-            system_high=system_high,
-            header_name=self._SYSTEM_HIGH_HEADER,
-        )
         response = self.client.get(
             f"{self._BASE_PATH}/{_ensure_uuid(document_id, field='document_id')}",
             params=params,
-            headers=request_headers or None,
+            headers=headers or None,
         )
         return DocumentRecord.model_validate(response)
 
@@ -261,21 +243,3 @@ def _ensure_uuid(value: UUID | str, *, field: str) -> UUID:
         return UUID(value)
     except ValueError as exc:
         raise ValueError(f"Invalid {field}: expected UUID, got {value!r}") from exc
-
-
-def _merge_system_high_header(
-    *,
-    headers: Optional[Dict[str, str]],
-    system_high: Optional[str],
-    header_name: str,
-) -> Optional[Dict[str, str]]:
-    request_headers = dict(headers or {})
-    if not system_high:
-        return request_headers or None
-
-    for existing_name in request_headers:
-        if existing_name.lower() == header_name.lower():
-            return request_headers
-
-    request_headers[header_name] = system_high
-    return request_headers
