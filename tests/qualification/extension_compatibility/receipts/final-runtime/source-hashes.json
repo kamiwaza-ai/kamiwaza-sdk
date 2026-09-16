@@ -1,0 +1,68 @@
+{
+  "kamiwaza": {
+    "commit": "c145ee6753c3e4511917e31be64a0df2f6160c03",
+    "files": [
+      {
+        "path": "kamiwaza/lib/extension_selection.py",
+        "sha256": "a36f293b9dbb7ba32ca2fc30ae99d26c01f56c7643dfe3931d6b8742ec14f170"
+      },
+      {
+        "path": "kamiwaza/lib/version_constraints.py",
+        "sha256": "8d751ee73f91f6bfe5ca9165e829311ecfab869cc4fd6d564d6b6026c4a44378"
+      },
+      {
+        "path": "kamiwaza/serving/config.py",
+        "sha256": "b9a259b09a130c91962c08554c6704b7862e14782d2303d6c3afd42886977b05"
+      },
+      {
+        "path": "kamiwaza/serving/garden/apps/apps.py",
+        "sha256": "456336574c53dd87b5068ab43756a95e2bc38b31517943b861e4ba115c58e18c"
+      },
+      {
+        "path": "kamiwaza/serving/garden/apps/apps_api.py",
+        "sha256": "c90a6af6a5df3ab269370ba5597b2aa170e981967ce6f301be6d52e9611c41cb"
+      },
+      {
+        "path": "kamiwaza/serving/garden/apps/templates.py",
+        "sha256": "9a894ae94dd8e23a35ee469b2fc484d8214b46f58c7408a1c05440df48b68f61"
+      },
+      {
+        "path": "kamiwaza/serving/garden/remote_template_service.py",
+        "sha256": "9c5d51a8187f82d1f093d70b7e0d400b8b2b9dd016f07a69b38f3fecc7aae951"
+      },
+      {
+        "path": "kamiwaza/serving/garden/tool/tool_api.py",
+        "sha256": "74f14a9bdbe209144f847b9d1c5bc614f8d05fc69b6b7eb00184a55b48257794"
+      },
+      {
+        "path": "kamiwaza/serving/garden/tool/tool_service.py",
+        "sha256": "ff1c34162c5f2c1c1671d15788b653f22d36998064159ce91783efeb194c57c5"
+      }
+    ]
+  },
+  "kajiya": {
+    "commit": "3e9669b5fc47e35de885d9586a9550146780de95",
+    "files": [
+      {
+        "path": "scripts/import-extension-catalog.sh",
+        "sha256": "649839e8a93517729cf0aca43a73090a283e6d2569741f6c716bd140bdeeee80"
+      },
+      {
+        "path": "scripts/import-extension-catalog-0.13.x.sh",
+        "sha256": "78d85dc2119343a6d6392409114fa368c72b34b8c2d0a9c2e40bf7e9b72f3fe3"
+      },
+      {
+        "path": "scripts/resolve-extension-catalog.py",
+        "sha256": "6316a504d9a1a6908d366e576f45f5bd9f92780a90f009db77e05e44f6448f73"
+      },
+      {
+        "path": "scripts/lib/extension_compatibility.py",
+        "sha256": "f050982f2241b3a9d4c83a28403c15886b878876e52b6835ab25c068c7682d2b"
+      },
+      {
+        "path": "scripts/bundle-extension-import-dependencies.py",
+        "sha256": "a8b95fe75d05f6ac42dbd17533197b673e34af0cbca66171a270a0587ee15498"
+      }
+    ]
+  }
+}

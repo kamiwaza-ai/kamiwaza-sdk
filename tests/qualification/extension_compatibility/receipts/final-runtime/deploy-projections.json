@@ -1,0 +1,138 @@
+[
+  {
+    "phase": "baseline",
+    "unaltered_harness_exit": 1,
+    "unaltered_harness_error": "catalog error: connectors.json must contain a non-empty JSON array"
+  },
+  {
+    "phase": "baseline",
+    "target_core_version": "1.3.0",
+    "winner_versions": {
+      "compat-proof-app": "0.3.0",
+      "compat-proof-service": "0.3.0",
+      "compat-race-app": "0.1.3",
+      "compat-proof-tool": "0.3.0"
+    },
+    "source_sha256": {
+      "garden/compat-v1/tools.json": "dd7facf1e35eef6de5de24281391d0da9890a2ee545ce6dc528c32ef65baf38b",
+      "garden/compat-v1/connectors.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "garden/compat-v1/apps.json": "1ee70713a539877476b4c989bc2ba7fd2b7b0ca9d4bcbe426c1510c634aaa799",
+      "garden/v3/connectors.json": "39112223061860c5aff8831922752f1bd16770b321e8652469103941a463ae48"
+    },
+    "exit": 0,
+    "check_exit": 0,
+    "stdout": "updated 6 catalog entries (24122 bytes)",
+    "check_stdout": "catalog snapshot valid: 6 entries, 24122 bytes",
+    "lock": "/Users/matt/code/kz/ext-compat-stack-20260915/qualification/deploy-snapshots/baseline-1.3.0/catalog.lock.json"
+  },
+  {
+    "phase": "baseline",
+    "target_core_version": "1.3.1",
+    "winner_versions": {
+      "compat-proof-app": "0.4.0",
+      "compat-proof-service": "0.4.0",
+      "compat-race-app": "0.1.3",
+      "compat-proof-tool": "0.4.0"
+    },
+    "source_sha256": {
+      "garden/compat-v1/tools.json": "dd7facf1e35eef6de5de24281391d0da9890a2ee545ce6dc528c32ef65baf38b",
+      "garden/compat-v1/connectors.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "garden/compat-v1/apps.json": "1ee70713a539877476b4c989bc2ba7fd2b7b0ca9d4bcbe426c1510c634aaa799",
+      "garden/v3/connectors.json": "39112223061860c5aff8831922752f1bd16770b321e8652469103941a463ae48"
+    },
+    "exit": 0,
+    "check_exit": 0,
+    "stdout": "updated 6 catalog entries (24122 bytes)",
+    "check_stdout": "catalog snapshot valid: 6 entries, 24122 bytes",
+    "lock": "/Users/matt/code/kz/ext-compat-stack-20260915/qualification/deploy-snapshots/baseline-1.3.1/catalog.lock.json"
+  },
+  {
+    "phase": "baseline",
+    "target_core_version": "1.4.0",
+    "winner_versions": {
+      "compat-proof-app": "0.5.0",
+      "compat-proof-service": "0.5.0",
+      "compat-race-app": "0.1.3",
+      "compat-proof-tool": "0.5.0"
+    },
+    "source_sha256": {
+      "garden/compat-v1/tools.json": "dd7facf1e35eef6de5de24281391d0da9890a2ee545ce6dc528c32ef65baf38b",
+      "garden/compat-v1/connectors.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "garden/compat-v1/apps.json": "1ee70713a539877476b4c989bc2ba7fd2b7b0ca9d4bcbe426c1510c634aaa799",
+      "garden/v3/connectors.json": "39112223061860c5aff8831922752f1bd16770b321e8652469103941a463ae48"
+    },
+    "exit": 0,
+    "check_exit": 0,
+    "stdout": "updated 6 catalog entries (24122 bytes)",
+    "check_stdout": "catalog snapshot valid: 6 entries, 24122 bytes",
+    "lock": "/Users/matt/code/kz/ext-compat-stack-20260915/qualification/deploy-snapshots/baseline-1.4.0/catalog.lock.json"
+  },
+  {
+    "phase": "updated",
+    "unaltered_harness_exit": 1,
+    "unaltered_harness_error": "catalog error: connectors.json must contain a non-empty JSON array"
+  },
+  {
+    "phase": "updated",
+    "target_core_version": "1.3.0",
+    "winner_versions": {
+      "compat-proof-app": "0.3.0",
+      "compat-proof-service": "0.3.0",
+      "compat-race-app": "0.1.3",
+      "compat-proof-tool": "0.3.0"
+    },
+    "source_sha256": {
+      "garden/compat-v1/tools.json": "b89d8d43c63ae08897d5ab23767b40efa8854096ba3dcc73a5633d92c11c2af0",
+      "garden/compat-v1/connectors.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "garden/compat-v1/apps.json": "052ea6f9fe3dcd1a1dafcad8e1bf68e803a5f76b35dd54aad6d72ab36e7de4e6",
+      "garden/v3/connectors.json": "39112223061860c5aff8831922752f1bd16770b321e8652469103941a463ae48"
+    },
+    "exit": 0,
+    "check_exit": 0,
+    "stdout": "updated 6 catalog entries (24122 bytes)",
+    "check_stdout": "catalog snapshot valid: 6 entries, 24122 bytes",
+    "lock": "/Users/matt/code/kz/ext-compat-stack-20260915/qualification/deploy-snapshots/updated-1.3.0/catalog.lock.json"
+  },
+  {
+    "phase": "updated",
+    "target_core_version": "1.3.1",
+    "winner_versions": {
+      "compat-proof-app": "0.6.0",
+      "compat-proof-service": "0.6.0",
+      "compat-race-app": "0.1.3",
+      "compat-proof-tool": "0.6.0"
+    },
+    "source_sha256": {
+      "garden/compat-v1/tools.json": "b89d8d43c63ae08897d5ab23767b40efa8854096ba3dcc73a5633d92c11c2af0",
+      "garden/compat-v1/connectors.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "garden/compat-v1/apps.json": "052ea6f9fe3dcd1a1dafcad8e1bf68e803a5f76b35dd54aad6d72ab36e7de4e6",
+      "garden/v3/connectors.json": "39112223061860c5aff8831922752f1bd16770b321e8652469103941a463ae48"
+    },
+    "exit": 0,
+    "check_exit": 0,
+    "stdout": "updated 6 catalog entries (24122 bytes)",
+    "check_stdout": "catalog snapshot valid: 6 entries, 24122 bytes",
+    "lock": "/Users/matt/code/kz/ext-compat-stack-20260915/qualification/deploy-snapshots/updated-1.3.1/catalog.lock.json"
+  },
+  {
+    "phase": "updated",
+    "target_core_version": "1.4.0",
+    "winner_versions": {
+      "compat-proof-app": "0.6.0",
+      "compat-proof-service": "0.6.0",
+      "compat-race-app": "0.1.3",
+      "compat-proof-tool": "0.6.0"
+    },
+    "source_sha256": {
+      "garden/compat-v1/tools.json": "b89d8d43c63ae08897d5ab23767b40efa8854096ba3dcc73a5633d92c11c2af0",
+      "garden/compat-v1/connectors.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "garden/compat-v1/apps.json": "052ea6f9fe3dcd1a1dafcad8e1bf68e803a5f76b35dd54aad6d72ab36e7de4e6",
+      "garden/v3/connectors.json": "39112223061860c5aff8831922752f1bd16770b321e8652469103941a463ae48"
+    },
+    "exit": 0,
+    "check_exit": 0,
+    "stdout": "updated 6 catalog entries (24122 bytes)",
+    "check_stdout": "catalog snapshot valid: 6 entries, 24122 bytes",
+    "lock": "/Users/matt/code/kz/ext-compat-stack-20260915/qualification/deploy-snapshots/updated-1.4.0/catalog.lock.json"
+  }
+]

@@ -1,0 +1,113 @@
+{
+  "status": "passed",
+  "scope": "Actual untouched pre-feature Core reader library; not an old-release full-install certification",
+  "base_commit": "abcd7548d707d00dd0aaff18065881ffacd3837b",
+  "reader_source": "/private/tmp/ext-compat-core-baseline-audit/kamiwaza/serving/garden/remote_template_service.py",
+  "reader_sha256": "a8e2e61624f6f27b7003575223668a57bc3189082a9bacf3cdf5bc436df3fb82",
+  "python": "3.12.11 (main, Sep 18 2025, 19:41:45) [Clang 20.1.4 ]",
+  "transport": "actual file URI implementation, no mocked reader or transport",
+  "catalog_version": "v3",
+  "catalog_hashes_before": {
+    "garden/compat-v1/apps.json": "d0c0f8e84db0d33a91c551e0c211d4cb19a042c8ed5854bf60429eb3a535646d",
+    "garden/compat-v1/tools.json": "30eb08a2e7ed67b245d9f7ef825c98953890eccb05ededb2afa3a9897354d9d8",
+    "garden/v3/apps.json": "68569a34b7cf1835ad084d754333cf3160fa7b5047f51c1991c90d38e79d6a77",
+    "garden/v3/tools.json": "bc2ac256f04ce4f839890b48221874ee4f8dbbedff4d01eac37ed439b4f6fa0c"
+  },
+  "catalog_hashes_after": {
+    "garden/compat-v1/apps.json": "57421b1931eee52fee7107a91e2bcd19c686ea7dbedbe64b6d2938b303369641",
+    "garden/compat-v1/tools.json": "2744fd65d269569e07bf6ec0e99036e34b4fecfa57e3244ffce2649961b4a666",
+    "garden/v3/apps.json": "68569a34b7cf1835ad084d754333cf3160fa7b5047f51c1991c90d38e79d6a77",
+    "garden/v3/tools.json": "bc2ac256f04ce4f839890b48221874ee4f8dbbedff4d01eac37ed439b4f6fa0c"
+  },
+  "initial": {
+    "apps": {
+      "passive": [
+        {
+          "description": "untouched v3 fixture",
+          "kamiwaza_version": "*",
+          "name": "legacy-apps",
+          "version": "0.3.0"
+        }
+      ],
+      "fresh": [
+        {
+          "description": "untouched v3 fixture",
+          "kamiwaza_version": "*",
+          "name": "legacy-apps",
+          "version": "0.3.0"
+        }
+      ],
+      "rejected": []
+    },
+    "tools": {
+      "passive": [
+        {
+          "description": "untouched v3 fixture",
+          "kamiwaza_version": "*",
+          "name": "legacy-tools",
+          "version": "0.3.0"
+        }
+      ],
+      "fresh": [
+        {
+          "description": "untouched v3 fixture",
+          "kamiwaza_version": "*",
+          "name": "legacy-tools",
+          "version": "0.3.0"
+        }
+      ],
+      "rejected": []
+    }
+  },
+  "after_compat_only_update_and_refresh": {
+    "apps": {
+      "passive": [
+        {
+          "description": "untouched v3 fixture",
+          "kamiwaza_version": "*",
+          "name": "legacy-apps",
+          "version": "0.3.0"
+        }
+      ],
+      "fresh": [
+        {
+          "description": "untouched v3 fixture",
+          "kamiwaza_version": "*",
+          "name": "legacy-apps",
+          "version": "0.3.0"
+        }
+      ],
+      "rejected": []
+    },
+    "tools": {
+      "passive": [
+        {
+          "description": "untouched v3 fixture",
+          "kamiwaza_version": "*",
+          "name": "legacy-tools",
+          "version": "0.3.0"
+        }
+      ],
+      "fresh": [
+        {
+          "description": "untouched v3 fixture",
+          "kamiwaza_version": "*",
+          "name": "legacy-tools",
+          "version": "0.3.0"
+        }
+      ],
+      "rejected": []
+    }
+  },
+  "observed_catalog_read_opens": [
+    "garden/v3/apps.json",
+    "garden/v3/apps.json",
+    "garden/v3/tools.json",
+    "garden/v3/tools.json",
+    "garden/v3/apps.json",
+    "garden/v3/apps.json",
+    "garden/v3/tools.json",
+    "garden/v3/tools.json"
+  ],
+  "production_or_network_writes": false
+}

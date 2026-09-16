@@ -1,0 +1,72 @@
+{
+  "original_workloads": [
+    {
+      "kind": "app",
+      "deployment_id": "96a62344-9132-4978-9fbe-078f94560d52",
+      "name": "compat-live-app-0-5-0",
+      "status": "DEPLOYED",
+      "url": "https://ext-compat.test/runtime/apps/compat-live-app-0-5-0-96a62344/",
+      "observed": {
+        "name": "compat-proof-app",
+        "version": "0.5.0"
+      }
+    },
+    {
+      "kind": "service",
+      "deployment_id": "cc37ec32-6079-4a5a-9917-fb36c0fad733",
+      "name": "compat-live-service-0-5-0",
+      "status": "DEPLOYED",
+      "url": "http://compat-live-service-0-5-0-cc37ec32-web.kamiwaza.svc.cluster.local:8080/",
+      "observed": {
+        "name": "compat-proof-service",
+        "version": "0.5.0"
+      }
+    },
+    {
+      "kind": "tool",
+      "deployment_id": "207af3e0-77c2-41ba-b5d7-e6828e5e27d7",
+      "name": "tool-compat-live-tool-0-5-0",
+      "status": "DEPLOYED",
+      "url": "https://ext-compat.test/runtime/tools/tool-compat-live-tool-0-5-0-207af3e0/",
+      "observed": {
+        "name": "compat-proof-tool",
+        "version": "0.5.0"
+      }
+    }
+  ],
+  "new_workloads": [
+    {
+      "kind": "app",
+      "deployment_id": "a24a985c-5578-4e10-839c-590cd9360c2e",
+      "name": "compat-live-app-0-6-0",
+      "status": "DEPLOYED",
+      "url": "https://ext-compat.test/runtime/apps/compat-live-app-0-6-0-a24a985c/",
+      "observed": {
+        "name": "compat-proof-app",
+        "version": "0.6.0"
+      }
+    },
+    {
+      "kind": "service",
+      "deployment_id": "2129fb35-a9ad-4b7a-b0c3-9ac589d0a58c",
+      "name": "compat-live-service-0-6-0",
+      "status": "DEPLOYED",
+      "url": "http://compat-live-service-0-6-0-2129fb35-web.kamiwaza.svc.cluster.local:8080/",
+      "observed": {
+        "name": "compat-proof-service",
+        "version": "0.6.0"
+      }
+    },
+    {
+      "kind": "tool",
+      "deployment_id": "fdd9207a-d928-462e-9fa5-5cf416d85342",
+      "name": "tool-compat-live-tool-0-6-0",
+      "status": "DEPLOYED",
+      "url": "https://ext-compat.test/runtime/tools/tool-compat-live-tool-0-6-0-fdd9207a/",
+      "observed": {
+        "name": "compat-proof-tool",
+        "version": "0.6.0"
+      }
+    }
+  ]
+}

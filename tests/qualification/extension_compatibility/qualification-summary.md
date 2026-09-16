@@ -104,3 +104,46 @@ live publication and the final SDK fixes.
 [final update](receipts/final-sdk/catalog-update.json), and
 [dependency versions](receipts/final-sdk/runtime-dependencies.json) preserve this
 rerun. boto3 and botocore were both 1.43.95; Moto was 5.1.12.
+
+## Final runtime and submission evidence
+
+The original three fresh-install matrix above retains its original source
+provenance. Subsequent runtime fixes were additionally verified on the retained
+Core 1.4.0 instance; this does not represent another complete three-install run.
+
+- Core `c145ee6753c3e4511917e31be64a0df2f6160c03` and Kajiya
+  `3e9669b5fc47e35de885d9586a9550146780de95` were copied and hash-verified, then
+  exercised against the installed instance. [Exact source hashes](receipts/final-runtime/source-hashes.json).
+- The [final Core API receipt](receipts/final-runtime/instance-1.4.0.json) confirms
+  canonical 1.4.0, selected/persisted 0.6.0, future-only exclusion, and stable
+  repeated sync. The [final guard receipt](receipts/final-runtime/incompatible-deployment-1.4.0.json)
+  proves an incompatible direct deployment receives actionable HTTP 400, leaves
+  deployment identities unchanged, and removes the negative test template.
+- All six original 0.5.0 and new 0.6.0 app/service/tool workloads still returned
+  their respective versions. [Workload responses](receipts/final-runtime/workloads.json)
+  and [pod readiness/image identities](receipts/final-runtime/pods.json).
+- The [final Kajiya import receipt](receipts/final-runtime/kajiya-import-1.4.0.json)
+  confirms both actual imports preserved the selected versions and template IDs.
+  Later Core `4b0e2d8` and Kajiya `320bb0dc` changes are corpus metadata changes,
+  not runtime changes to the source exercised here.
+- SDK submission `d21a64ab08224e41d901c05a85274d3b98135637` additionally passed 110
+  focused publishing/preflight tests. Those preflight changes are distinguished
+  from the actual publisher rerun at `515807b` above, whose resulting bytes match
+  the installed proof exactly.
+- Shared workflow `3e1df34` passed 232 tests and shell checks. Deploy `62f2cf8`
+  includes the `eab167` runtime refactor and the actual six snapshot projections
+  in [deploy-projections.json](receipts/final-runtime/deploy-projections.json).
+  The app/tool input hashes match the SDK exports. The first attempt correctly
+  rejected the harness's empty connectors array; the successful projections use
+  a separate minimal valid v3 connector fixture, preserving the app/tool bytes.
+  All six build and `--check` commands exited zero.
+- An actual untouched pre-feature Core reader at
+  `abcd7548d707d00dd0aaff18065881ffacd3837b` retained v3 behavior while compat-v1
+  files changed and its cache was cleared. Eight observed catalog opens were all
+  under `garden/v3`; v3 hashes and results stayed unchanged. This used the real
+  file-URI reader without transport mocks. [Legacy reader receipt](receipts/final-runtime/legacy-reader.json).
+  This is library compatibility proof, not a full installation of an old release.
+
+Final receipts omit authentication bootstrap output and retain only workload
+response arrays from the runtime log. No private token files or authorization
+headers were copied.

@@ -1,0 +1,11 @@
+{
+  "template_name": "compat-blocked-ae2d3dcc",
+  "template_id": "c2462356-6594-4e46-a2c0-3c155bd1941f",
+  "minimum": ">=9.0.0",
+  "deployment_http_status": 400,
+  "response": {
+    "detail": "Extension 'compat-blocked-ae2d3dcc' requires Kamiwaza '>=9.0.0'; this instance runs 1.4.0. Restore a compatible Kamiwaza version or explicitly replace the persisted template with a compatible release after retiring its dependent deployments. Catalog sync does not downgrade templates."
+  },
+  "deployment_ids_unchanged": true,
+  "template_removed": true
+}
