@@ -69,6 +69,16 @@
 #     emitted, or a gRPC transport handshake — which is strictly stronger;
 #     mapping this one alongside them would only weaken the claim, so
 #     retrieval.async-retrieval-jobs rests on those instead.
+#   * test_kaizen_agent_contract_live.py — NOT evidence for
+#     kaizen.custom-agents. test_canonical_agent_create_accepts_the_content_contract
+#     creates, lists, and deletes a canonical agent, but the capability
+#     document names `bind_skill` as "what makes an agent specialised rather
+#     than a renamed default assistant", and no test here binds a skill. A
+#     create/list/delete pass would emit a record asserting the whole
+#     capability, so the mapping would over-claim. Map it once a test binds a
+#     library skill and verifies it; the model-setting shape probes and the
+#     legacy-body rejection test stay unmapped regardless, since neither
+#     creates a supported custom agent.
 #   * test_context_workroom_scope_clients_isolate_vectordb_views — NOT
 #     evidence for workrooms.session-scoping despite its name. Its own
 #     docstring is the accurate one ("Derived SDK clients can carry workroom
@@ -197,6 +207,12 @@
 # SecretClient, reads and lists it, requires deletion to succeed, then proves
 # the deleted secret is no longer readable. Dataset setup is deliberately
 # absent so an unrelated dataset failure cannot determine this record.
+# Deliberately stricter than its sibling test_catalog_secret_list, which skips
+# when a new secret is missing from the listing: a skip is a reasonable way to
+# tolerate a known server defect in a coverage test, but this entry EMITS
+# EVIDENCE, and a capability cannot be established by a run that declined to
+# check it. A listing timeout here is therefore a failed lifecycle, and the
+# record says so.
 - pattern: "tests/integration/test_catalog_live.py::test_catalog_secret_lifecycle"
   capability_ids: [catalog.secrets-management]
   scenario_name: "Catalog governed secret lifecycle"
@@ -209,16 +225,6 @@
 - pattern: "tests/integration/test_auth_live.py::test_pat_lifecycle_supports_api_key_auth"
   capability_ids: [auth.personal-access-tokens]
   scenario_name: "Personal access token authentication and revocation"
-
-# DELIBERATELY UNMAPPED: tests/integration/test_kaizen_agent_contract_live.py.
-# test_canonical_agent_create_accepts_the_content_contract creates, lists, and
-# deletes a canonical agent, which is only part of what kaizen.custom-agents
-# claims -- that capability document names `bind_skill` as "what makes an agent
-# specialised rather than a renamed default assistant". A create/list/delete
-# pass would emit a record asserting the whole capability, so the mapping would
-# over-claim. Map this file once a test binds a library skill to the agent and
-# verifies it; the model-setting shape probes and the legacy-body rejection
-# test stay unmapped regardless, since neither creates a supported custom agent.
 
 # Justification: dataset schema/variant endpoints, container list/URN/path/v2
 # endpoints, and secret endpoints — the catalog registry API surface
