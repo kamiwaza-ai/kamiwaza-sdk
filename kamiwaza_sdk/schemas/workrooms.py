@@ -39,7 +39,7 @@ class CreateWorkroom(BaseModel):
     labels: Optional[List[str]] = None
     attributes: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Extensible key-value pairs (mission_id, template_id, etc.)",
+        description="Extensible customer or operator key-value pairs",
     )
 
 

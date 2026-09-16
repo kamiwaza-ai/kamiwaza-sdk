@@ -1023,7 +1023,7 @@ def test_list_raw_files_default_params(dummy_client):
     assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
 
 
-def test_list_raw_files_applies_filters_and_markings(dummy_client):
+def test_list_raw_files_applies_filters(dummy_client):
     responses = {("get", "/context/storage/raw"): {"items": [], "count": 0}}
     client = dummy_client(responses)
     service = ContextService(client)
@@ -1035,7 +1035,6 @@ def test_list_raw_files_applies_filters_and_markings(dummy_client):
         connector_id="conn-1",
         limit=10,
         offset=5,
-        include_markings=True,
     )
 
     _, _, kwargs = client.calls[0]
@@ -1045,7 +1044,6 @@ def test_list_raw_files_applies_filters_and_markings(dummy_client):
         "source_urn": "inline://report",
         "job_id": "job-1",
         "connector_id": "conn-1",
-        "include_markings": True,
     }
 
 

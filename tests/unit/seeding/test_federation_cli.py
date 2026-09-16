@@ -156,8 +156,10 @@ def test_dataset_gated_binds_gate_via_set_gate():
     mc = MagicMock()
     mc.datasets.create.return_value = "urn:li:dataset:(x)"
     rc, out = _run(
-        ["dataset", "gated", "--name", "d", "--path", "/data/x.csv",
-         "--gate", "acme_gates.mini.MiniClearanceGate"],
+        [
+            "dataset", "gated", "--name", "d", "--path", "/data/x.csv",
+            "--gate", "acme_gates.region.RegionGate",
+        ],
         client=mc,
     )
     assert rc == 0
@@ -166,7 +168,7 @@ def test_dataset_gated_binds_gate_via_set_gate():
     # the gate is NOT smuggled into properties — it is bound via set_gate
     assert kwargs["properties"] == {"path": "/data/x.csv"}
     mc.datasets.set_gate.assert_called_once_with(
-        "urn:li:dataset:(x)", type="acme_gates.mini.MiniClearanceGate", config={}
+        "urn:li:dataset:(x)", type="acme_gates.region.RegionGate", config={}
     )
     assert out["dataset_urn"] == "urn:li:dataset:(x)"
 
@@ -186,9 +188,9 @@ def test_gate_install_wraps_packages():
 
 def test_attr_declare():
     mc = MagicMock()
-    rc, out = _run(["attr", "declare", "--name", "clearance"], client=mc)
+    rc, out = _run(["attr", "declare", "--name", "region"], client=mc)
     assert rc == 0
-    mc.cluster.declare_attribute.assert_called_once_with("clearance", type="string")
+    mc.cluster.declare_attribute.assert_called_once_with("region", type="string")
 
 
 # --- idp (Keycloak-admin, monkeypatched) ----------------------------------
@@ -229,17 +231,24 @@ def test_idp_bootstrap_requires_an_attribute(monkeypatch):
 
 def test_idp_persona_parses_attrs(monkeypatch):
     kc = MagicMock()
-    kc.ensure_user.return_value = {"username": "fed-clr-u", "id": "u1", "created": True}
+    kc.ensure_user.return_value = {
+        "username": "fed-region-west",
+        "id": "u1",
+        "created": True,
+    }
     monkeypatch.setattr(cli, "build_kc_admin", lambda args: kc)
     monkeypatch.setenv("PPW", "secret")
     rc, out = _run(
-        ["idp", "persona", "--realm", "federated", "--user", "fed-clr-u",
-         "--attr", "clearance=U", "--pw-env", "PPW",
-         "--kc-url", "https://kc", "--kc-admin-pw-env", "KCPW"],
+        [
+            "idp", "persona", "--realm", "federated",
+            "--user", "fed-region-west", "--attr", "region=west",
+            "--pw-env", "PPW", "--kc-url", "https://kc",
+            "--kc-admin-pw-env", "KCPW",
+        ],
     )
     assert rc == 0
-    assert kc.ensure_user.call_args.kwargs["attributes"] == {"clearance": "U"}
-    assert out["attributes"] == {"clearance": "U"}
+    assert kc.ensure_user.call_args.kwargs["attributes"] == {"region": "west"}
+    assert out["attributes"] == {"region": "west"}
 
 
 def test_idp_token_raw(monkeypatch, capsys):

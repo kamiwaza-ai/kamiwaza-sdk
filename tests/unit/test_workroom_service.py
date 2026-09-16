@@ -178,13 +178,13 @@ def test_create_with_all_optional_fields(dummy_client):
         "ephemeral",
         description="desc",
         labels=["a", "b"],
-        attributes={"mission_id": "m1"},
+        attributes={"project_id": "p1"},
     )
 
     payload = client.calls[0][2]["json"]
     assert payload["description"] == "desc"
     assert payload["labels"] == ["a", "b"]
-    assert payload["attributes"] == {"mission_id": "m1"}
+    assert payload["attributes"] == {"project_id": "p1"}
 
 
 def test_create_excludes_none_fields(dummy_client):
@@ -203,15 +203,15 @@ def test_create_serializes_uuid_attributes(dummy_client):
     responses = {("post", "/workrooms/"): _workroom_response()}
     client = dummy_client(responses)
     service = WorkroomService(client)
-    mission_id = uuid.uuid4()
+    project_id = uuid.uuid4()
 
     service.create(
         "My WR",
         "persistent",
-        attributes={"mission_id": mission_id},
+        attributes={"project_id": project_id},
     )
 
-    assert client.calls[0][2]["json"]["attributes"]["mission_id"] == str(mission_id)
+    assert client.calls[0][2]["json"]["attributes"]["project_id"] == str(project_id)
 
 
 # =============================================================================

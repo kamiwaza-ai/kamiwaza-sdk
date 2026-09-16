@@ -328,7 +328,6 @@ Missing integration coverage: 163
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
 | TS18.001 | [x] | POST | /security/consent/accept | test_security_live.py::TestSecurityConsentAccept::test_accept_consent (direct) |
-| TS18.002 | [x] | GET | /security/embed.js | test_security_live.py::TestSecurityEmbedScript::test_get_embed_script (direct) |
 | TS18.003 | [x] | GET | /security/public/config | test_security_live.py::TestSecurityPublicConfig::test_get_public_config (direct) |
 
 ## (TS19) SERVING

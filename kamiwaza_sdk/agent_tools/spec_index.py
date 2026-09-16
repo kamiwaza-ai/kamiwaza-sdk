@@ -14,6 +14,8 @@ curation step and no release of the consuming server (FR-005c).
 
 from __future__ import annotations
 
+import re
+
 import hashlib
 import inspect
 from collections.abc import Iterator
@@ -110,6 +112,50 @@ class OperationEntry:
 _IDENTIFIER_WEIGHT = 3
 _SUMMARY_WEIGHT = 1
 
+#: Shortest term that carries signal on its own.
+#:
+#: Measured: "deploy a model" matched 325 of 332 published operations, because
+#: "a" appears as a substring in nearly every summary. A one- or two-character
+#: term is noise when a longer one is present, so it is dropped rather than
+#: counted — and kept when it is all the caller gave, since "id" should still
+#: search for something.
+_SHORTEST_MEANINGFUL_TERM = 3
+
+
+def _matches(term: str, text: str) -> bool:
+    """Whether a term appears in text at the start of a word.
+
+    A bare substring test makes "model" match "remodelled" and "get" match
+    "widget". Anchoring to a word start keeps the prefix behaviour a searcher
+    expects — "deploy" still finds "deployment" — without matching the middle
+    of an unrelated word. Identifiers are split on underscores and dots by the
+    same rule: a word boundary sits either side of an underscore or a dot.
+
+    Args:
+        term: An already-lowercased search term.
+        text: Already-lowercased text to search.
+
+    Returns:
+        Whether the term starts a word in the text.
+    """
+    return re.search(rf"\b{re.escape(term)}", text) is not None
+
+
+def meaningful_terms(query: str) -> list[str]:
+    """The terms a query is actually searched on.
+
+    Args:
+        query: The caller's words.
+
+    Returns:
+        Lowercased terms, with the noise-length ones dropped when longer terms
+        remain. Empty for an empty query, which the caller reports as nothing
+        found rather than matching everything.
+    """
+    terms = [t for t in query.lower().split() if t]
+    longer = [t for t in terms if len(t) >= _SHORTEST_MEANINGFUL_TERM]
+    return longer or terms
+
 
 def _score(entry: OperationEntry, terms: list[str]) -> int:
     """Score one operation against already-lowercased search terms.
@@ -124,13 +170,13 @@ def _score(entry: OperationEntry, terms: list[str]) -> int:
     Returns:
         The total score. Zero means no term matched, and the caller drops it.
     """
-    identifiers = f"{entry.published_id} {entry.selector}".lower()
+    identifiers = f"{entry.published_id} {entry.selector}".lower().replace("_", " ")
     summary = (entry.summary or "").lower()
     return sum(
         _IDENTIFIER_WEIGHT
-        if term in identifiers
+        if _matches(term, identifiers)
         else _SUMMARY_WEIGHT
-        if term in summary
+        if _matches(term, summary)
         else 0
         for term in terms
     )
@@ -193,25 +239,41 @@ class OperationIndex:
     def search(self, query: str, *, limit: int = 20) -> tuple[OperationEntry, ...]:
         """Rank published operations against a plain-language query.
 
+        An operation has to match **every** term to be a result. Matching any
+        one term made a phrase search worse the more words it was given:
+        "deploy a model" returned 325 of 332 operations, because something in
+        the platform mentions "model" almost everywhere. With every term
+        required it returns 12, best first. Each extra word now narrows,
+        which is what a searcher means by adding one.
+
+        When nothing matches every term the requirement drops by one and the
+        search runs again, down to a single term. So a four-word phrase that
+        nothing satisfies completely answers with whatever matched three of
+        them, rather than either nothing or everything that matched one.
+
         Args:
             query: Words to search for. Case and order do not matter.
             limit: Maximum results to return.
 
         Returns:
-            Up to ``limit`` operations, best first. Empty when nothing matches.
+            Up to ``limit`` operations, best first. Empty only when no
+            operation matches a single term, which is a genuine nothing-found
+            rather than a weak result presented as an answer.
         """
-        terms = [t for t in query.lower().split() if t]
+        terms = meaningful_terms(query)
         if not terms:
             return ()
-        scored = [
-            (score, entry.published_id, entry)
-            for entry, score in (
-                (entry, _score(entry, terms)) for entry in self.published
-            )
-            if score
-        ]
-        scored.sort(key=lambda row: (-row[0], row[1]))
-        return tuple(entry for _, _, entry in scored[:limit])
+        graded = [(_grade(entry, terms), entry) for entry in self.published]
+        for required in range(len(terms), 0, -1):
+            rows = [
+                (-score, entry.published_id, entry)
+                for (score, hits), entry in graded
+                if hits >= required
+            ]
+            if rows:
+                rows.sort()
+                return tuple(entry for _, _, entry in rows[:limit])
+        return ()
 
     def coverage(self) -> dict[str, int]:
         """Return counts the docstring and coverage gates assert against.
@@ -228,6 +290,34 @@ class OperationIndex:
             "documented": sum(1 for e in self.entries if e.summary),
             "services": len({e.service for e in self.entries}),
         }
+
+
+def _grade(entry: OperationEntry, terms: list[str]) -> tuple[int, int]:
+    """Score one operation and count how many terms it matched.
+
+    Both numbers come from one pass because the ranking needs the score and
+    the narrowing needs the count, and scoring an entry once per term to get
+    the second was the obvious version of this that did the work twice.
+
+    Args:
+        entry: The operation to grade.
+        terms: Lowercased search terms.
+
+    Returns:
+        The total score and the number of terms that matched at all.
+    """
+    identifiers = f"{entry.published_id} {entry.selector}".lower().replace("_", " ")
+    summary = (entry.summary or "").lower()
+    score = 0
+    hits = 0
+    for term in terms:
+        if _matches(term, identifiers):
+            score += _IDENTIFIER_WEIGHT
+            hits += 1
+        elif _matches(term, summary):
+            score += _SUMMARY_WEIGHT
+            hits += 1
+    return score, hits
 
 
 def _service_names(client: Any) -> list[str]:

@@ -114,7 +114,7 @@ Request model for creating an extension.
 | `services` | `List[ExtensionServiceSpec]` | Yes | One or more service specs |
 | `kamiwaza` | `KamiwazaIntegrationSpec` | No | Platform integration settings |
 | `networking` | `NetworkingSpec` | No | Ingress configuration |
-| `security` | `SecuritySpec` | No | Security classification |
+| `security` | `SecuritySpec` | No | Security settings |
 
 ### `ExtensionServiceSpec`
 

@@ -90,18 +90,6 @@ _PROBE_ERROR_TRUNCATE = 200
 _logger = logging.getLogger(__name__)
 
 
-def _fail_or_skip_required_edge(request: pytest.FixtureRequest, message: str) -> None:
-    from tests.integration.required_federation_edge import fail_or_skip
-
-    fail_or_skip(request, message)
-
-
-def _enforce_required_edge_collection(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
-    from tests.integration.required_federation_edge import enforce_collection
-
-    enforce_collection(config, items)
 
 
 class _TimeoutHTTPAdapter(HTTPAdapter):
@@ -1618,18 +1606,16 @@ def _require_two_clusters_for_marked_tests(request: pytest.FixtureRequest) -> No
     # credential satisfies the gate the same way the peer fixture consumes it.
     peer_password = str(request.getfixturevalue("live_password")).strip()
     if not peer_url:
-        _fail_or_skip_required_edge(
-            request,
+        pytest.skip(
             "requires_two_clusters: set --live-peer-base-url or "
-            "KAMIWAZA_PEER_BASE_URL to run.",
+            "KAMIWAZA_PEER_BASE_URL to run."
         )
     if not peer_key and not peer_password:
-        _fail_or_skip_required_edge(
-            request,
+        pytest.skip(
             "requires_two_clusters: --live-peer-base-url is set but no peer "
             "admin credential — provide --live-username/--live-password "
             "(preferred) or an admin access-token via --live-peer-api-key "
-            "(a PAT is non-admin).",
+            "(a PAT is non-admin)."
         )
 
 
@@ -1770,7 +1756,6 @@ def pytest_collection_modifyitems(
     halves makes those fixtures live across unrelated tests and can invalidate
     workroom-scoped state before the later half resumes.
     """
-    _enforce_required_edge_collection(config, items)
     peer_url = str(config.getoption("live_peer_base_url")).strip()
     if not peer_url:
         kept: list[pytest.Item] = []

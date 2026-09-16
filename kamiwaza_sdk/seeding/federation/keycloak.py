@@ -1,13 +1,9 @@
-"""Minimal Keycloak admin client for shared_idp dev seeding.
+"""Minimal Keycloak admin client for shared identity-provider dev seeding.
 
-The platform API cannot create the shared *realm* / ROPC client / persona users /
-clearance mapper — that is Keycloak-admin territory. This module is a small,
-idempotent wrapper over the Keycloak Admin REST API covering exactly what the
-``idp`` command group needs to stand up a shared_idp realm the way the L3 fixture
-did by hand. It is intentionally dependency-light (``requests`` only) and
-dev-scoped; production IdPs are managed by the customer's own tooling.
-
-All operations are idempotent (ensure-semantics): safe to re-run.
+The platform API cannot create the shared realm, ROPC client, user-attribute
+mapper, or users. This dependency-light client provides the required
+idempotent Keycloak admin operations for development and test environments.
+Production identity providers remain customer-managed.
 """
 
 from __future__ import annotations
@@ -150,11 +146,10 @@ class KeycloakAdmin:
         return OwnedRealmLifecycle(self._req, self._ok_json, KeycloakAdminError)
 
     def set_unmanaged_attributes(self, realm: str, *, policy: str = "ENABLED") -> None:
-        """Set the realm user-profile ``unmanagedAttributePolicy`` so persona
-        custom attributes (e.g. ``clearance``) are accepted (ENG-4946).
+        """Allow custom user attributes, such as ``region``, in the realm profile.
 
-        NOTE: this lives on the user-profile config endpoint, NOT the realm
-        representation (setting it on the realm rep 400s "Unrecognized field").
+        This setting belongs on the user-profile endpoint. Keycloak rejects it
+        on the realm representation.
         """
         path = f"/realms/{quote(realm)}/users/profile"
         got = self._req("GET", path)
@@ -203,9 +198,7 @@ class KeycloakAdmin:
     def ensure_attribute_mapper(
         self, realm: str, client_uuid: str, *, attribute: str
     ) -> None:
-        """Ensure a user-attribute -> access-token claim mapper on the client so a
-        persona's ``clearance`` (etc.) is projected as a top-level token claim.
-        """
+        """Project a user attribute as a top-level access-token claim."""
         base = f"/realms/{quote(realm)}/clients/{client_uuid}/protocol-mappers/models"
         existing = self._ok_json(self._req("GET", base), "list protocol mappers") or []
         name = f"{attribute}-attr-mapper"

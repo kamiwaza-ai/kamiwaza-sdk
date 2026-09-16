@@ -186,10 +186,8 @@ def cmd_fed_unpair(args: argparse.Namespace, *, client: Any) -> dict:
 
 
 def cmd_dataset_gated(args: argparse.Namespace, *, client: Any) -> dict:
-    # Create the file dataset, THEN bind the gate via the dedicated endpoint
-    # (set_gate -> PUT /catalog/datasets/{urn}/gate). Stuffing a "gate" property
-    # into the catalog record does NOT enforce a gate; set_gate is what makes
-    # retrieval gated (matches _mini_clearance.create_file_dataset).
+    # Create the file dataset, then bind the gate through the dedicated
+    # endpoint. A catalog property alone does not enforce a gate.
     urn = client.datasets.create(
         name=args.name,
         platform="file",
@@ -374,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = g.add_parser("gated", help="create a file dataset bound to a gate")
     p.add_argument("--name", required=True)
     p.add_argument("--path", required=True, help="on-cluster file path")
-    p.add_argument("--gate", required=True, help="gate classpath, e.g. acme_gates...MiniClearanceGate")
+    p.add_argument("--gate", required=True, help="gate classpath, e.g. acme_gates.region.RegionGate")
     p.add_argument("--gate-config", default=None, help="JSON gate config (default {})")
     p.add_argument("--description", default=None)
     p.set_defaults(func=cmd_dataset_gated, needs_kc=False)
@@ -392,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command"
     )
     p = g.add_parser("declare", help="declare an attribute in the vocabulary")
-    p.add_argument("--name", required=True, help="e.g. clearance")
+    p.add_argument("--name", required=True, help="e.g. region")
     p.add_argument("--type", default="string")
     p.set_defaults(func=cmd_attr_declare, needs_kc=False)
 
@@ -413,7 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = g.add_parser("persona", help="ensure a persona user with attributes")
     p.add_argument("--realm", required=True)
     p.add_argument("--user", required=True)
-    p.add_argument("--attr", action="append", help="'name=value', e.g. clearance=U")
+    p.add_argument("--attr", action="append", help="'name=value', e.g. region=west")
     p.add_argument("--pw-env", required=True, help="env var holding the persona password")
     _add_kc_args(p)
     p.set_defaults(func=cmd_idp_persona)

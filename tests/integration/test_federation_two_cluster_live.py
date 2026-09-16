@@ -80,8 +80,8 @@ def _mesh_call_or_skip(call):
     diagnosis is worse than a stated gap. Mesh transport under receiver_realm is
     covered by ``test_federation_receiver_realm_live.py``.
 
-    ENG-9664: the classification itself now lives in ``mesh_outcome`` so all
-    three live suites share one decision point and one set of unit-pinned rules.
+    ENG-9664: outcome handling now lives in ``mesh_outcome`` so all three live
+    suites share one decision point and one set of unit-pinned rules.
     Outcomes here are unchanged: 401 -> skip, non-auth 403/404 -> skip, anything
     else reds. What changes is that an auth-layer-marked 403 (the receiver
     refusing the credential, e.g. peer_jwt_validation_failed) now reds instead of
