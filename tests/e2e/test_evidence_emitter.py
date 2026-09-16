@@ -181,6 +181,40 @@ def test_all_passed_emits_passed(pytester, evidence_out):
     assert all(s["status"] == "passed" for s in record["steps"])
 
 
+def test_unverified_required_operations_emit_failed_with_reasons(
+    pytester, evidence_out
+):
+    """ENG-12269: a chat pass cannot establish the full inference contract."""
+    map_yaml = """
+- pattern: "test_mapped.py::*"
+  capability_ids: [models.openai-compatible-inference]
+  scenario_name: "Inference operation set"
+  unverified_operations: [embeddings, transcription, image_generation]
+"""
+    pytester.makepyfile(test_mapped="def test_chat():\n    assert True\n")
+    _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        TEST_BUILD,
+        map_yaml=map_yaml,
+    )
+    (record,) = _records(evidence_out)
+    assert record["status"] == "failed"
+    assert record["capability_ids"] == ["models.openai-compatible-inference"]
+    assert [step["status"] for step in record["steps"]] == [
+        "passed",
+        "skipped",
+        "skipped",
+        "skipped",
+    ]
+    assert all(
+        "required operation not exercised" in step["detail"]
+        for step in record["steps"][1:]
+    )
+
+
 def test_any_failure_emits_failed(pytester, evidence_out):
     pytester.makepyfile(
         test_mapped=(

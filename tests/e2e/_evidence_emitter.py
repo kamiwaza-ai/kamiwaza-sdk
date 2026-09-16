@@ -90,7 +90,9 @@ def sign_off_actor(evidence_provenance: str) -> str:
 
 
 _REQUIRED_ENTRY_KEYS = frozenset({"pattern", "capability_ids", "scenario_name"})
-_OPTIONAL_ENTRY_KEYS = frozenset({"exclude", "evidence_provenance"})
+_OPTIONAL_ENTRY_KEYS = frozenset(
+    {"exclude", "evidence_provenance", "unverified_operations"}
+)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 # Exit codes that mean the run did not finish the work it was asked to do.
@@ -127,6 +129,7 @@ class MapEntry:
     capability_ids: tuple[str, ...]
     exclude: tuple[str, ...] = ()
     evidence_provenance: str = "pre-existing"
+    unverified_operations: tuple[str, ...] = ()
 
     @property
     def scenario_id(self) -> str:
@@ -194,6 +197,9 @@ def _parse_entry(item: object, i: int, *, source: str) -> MapEntry:
         capability_ids=cap_ids,
         exclude=_parse_exclude(item.get("exclude", []), i, source=source),
         evidence_provenance=_parse_provenance(item, i, source=source),
+        unverified_operations=_parse_unverified_operations(
+            item.get("unverified_operations", []), i, source=source
+        ),
     )
     if not entry.scenario_id:
         # Caught here rather than at session finish, where the whole run would
@@ -270,6 +276,20 @@ def _parse_exclude(value: object, i: int, *, source: str) -> tuple[str, ...]:
         raise ValueError(f"{source}: entry[{i}].exclude must be a list of nodeid globs")
     for j, glob in enumerate(value):
         _require_non_empty_str(glob, f"entry[{i}].exclude[{j}]", source=source)
+    return tuple(value)
+
+
+def _parse_unverified_operations(
+    value: object, i: int, *, source: str
+) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"{source}: entry[{i}].unverified_operations must be a list")
+    for j, operation in enumerate(value):
+        _require_non_empty_str(
+            operation, f"entry[{i}].unverified_operations[{j}]", source=source
+        )
+    if len(set(value)) != len(value):
+        raise ValueError(f"{source}: entry[{i}].unverified_operations has duplicates")
     return tuple(value)
 
 
@@ -450,6 +470,15 @@ class EvidenceEmitterPlugin:
                     detail=f"pytest outcome: {outcome.status}",
                 )
             )
+        for operation in entry.unverified_operations:
+            steps.append(
+                harness.StepResult(
+                    name=f"required_operation:{operation}",
+                    status="skipped",
+                    duration_s=0.0,
+                    detail=f"required operation not exercised: {operation}; no mapped test",
+                )
+            )
         return steps
 
     def _write_record(
@@ -483,7 +512,12 @@ class EvidenceEmitterPlugin:
             "arm": "sdk",
             "capability_ids": list(entry.capability_ids),
             "evidence_provenance": entry.evidence_provenance,
-            "status": harness.derive_status(steps),
+            "status": harness.derive_status(
+                steps,
+                required_steps=(
+                    f"required_operation:{op}" for op in entry.unverified_operations
+                ),
+            ),
             "steps": [asdict(s) for s in steps],
             # Traceability extra (schema allows additionalProperties).
             "map_pattern": entry.pattern,

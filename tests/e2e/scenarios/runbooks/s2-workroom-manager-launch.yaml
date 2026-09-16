@@ -16,12 +16,16 @@ notes: |
 steps:
   - name: scaffold_app
     description: "kz-ext create --type app; deploy via kz-ext dev to staging."
+    required: true
   - name: assert_workroom_scoped_identity_headers
     description: "Stub a Workroom Manager-style invocation that injects X-Workroom-Id; assert the backend resolves the workroom-scoped identity (UAC-9c)."
+    required: true
   - name: assert_global_workroom_sentinel_handling
     description: "Repeat with the all-f UUID global-workroom sentinel; assert IdentityExtractor returns the expected workroom semantics (test-vectors.json case `global-workroom-sentinel`)."
+    required: true
   - name: assert_workroom_boundary_enforcement
     description: "Attempt to access a workroom-scoped resource from outside the declared workroom; assert the runtime lib raises OutOfEnvelopeAccessError."
+    required: true
 
 expected_outcomes:
   - "Workroom-scoped identity surfaces correctly inside the backend regardless of how the platform launches the extension."

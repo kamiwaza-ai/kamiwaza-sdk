@@ -132,14 +132,14 @@ class ScenarioResult:
 
     @property
     def passed(self) -> bool:
-        """True iff no step ``failed`` and no step is ``not_reached``.
+        """True iff the scenario is not failed and its steps are non-failing.
 
         ``skipped`` is non-failing (handler decided the step doesn't apply
         this run) but ``pending`` is intentionally treated as not-yet-passing
         so the driver test can distinguish "harness ran cleanly" from
         "scenario is fully implemented and green."
         """
-        if not self.steps:
+        if self.status == "failed" or not self.steps:
             return False
         return all(s.status in {"passed", "skipped"} for s in self.steps)
 
@@ -189,7 +189,15 @@ def _validate_runbook(runbook: dict, *, source: Path) -> None:
             raise ValueError(
                 f"{source.name}: step[{i}] missing required fields {missing_step}"
             )
+    _validate_required_step_flags(runbook["steps"], where=source.name)
     _validate_capability_ids(runbook, where=source.name)
+
+
+def _validate_required_step_flags(steps: list[dict], *, where: str) -> None:
+    """Refuse malformed required flags for loaded and direct runbooks alike."""
+    for i, step in enumerate(steps):
+        if "required" in step and not isinstance(step["required"], bool):
+            raise ValueError(f"{where}: step[{i}].required must be a boolean")
 
 
 def _validate_capability_ids(runbook: dict, *, where: str) -> None:
@@ -264,11 +272,12 @@ def _resolve_provenance(evidence_provenance: str | None) -> str:
     return resolved
 
 
-def derive_status(steps: list[StepResult]) -> str:
+def derive_status(
+    steps: list[StepResult], *, required_steps: Iterable[str] = ()
+) -> str:
     """Derive the three-valued scenario status from per-step statuses.
 
-    * any step ``failed`` → ``"failed"`` (``not_reached`` steps only occur
-      after a failure, so they are covered by this branch);
+    * any step ``failed`` or any required step not ``passed`` → ``"failed"``;
     * all steps ``passed`` → ``"passed"``;
     * otherwise (green but with ``skipped`` / ``pending`` / ``not_reached``
       steps — caveats a human should review) → ``"passed_with_notes"``.
@@ -277,14 +286,20 @@ def derive_status(steps: list[StepResult]) -> str:
     nothing is not evidence of anything. A run whose steps are *all*
     ``pending`` executed nothing either -- ``pending`` means no handler was
     registered, so the driver is unimplemented -- and is ``"failed"`` for the
-    same reason (ENG-11717). ``skipped`` is deliberately not covered by that
-    rule: a skip is a handler that ran and declined, which
+    same reason (ENG-11717). Unmarked ``skipped`` steps are not covered by
+    that rule: a skip is a handler that ran and declined, which
     :attr:`ScenarioResult.passed` already counts as non-failing while
     excluding ``pending``.
     """
     if not steps:
         return "failed"
     if any(s.status == "failed" for s in steps):
+        return "failed"
+    required_names = set(required_steps)
+    passed_names = {s.name for s in steps if s.status == "passed"}
+    if not required_names.issubset(passed_names):
+        return "failed"
+    if any(s.status != "passed" for s in steps if s.name in required_names):
         return "failed"
     if all(s.status == "passed" for s in steps):
         return "passed"
@@ -350,6 +365,9 @@ def run_scenario(
     # exists let a string mapping reach a persisted record. Same rules as
     # load_runbook, called rather than restated (ENG-11522).
     _validate_capability_ids(runbook, where=f"runbook {runbook.get('id', '?')!r}")
+    _validate_required_step_flags(
+        runbook["steps"], where=f"runbook {runbook.get('id', '?')!r}"
+    )
     capability_ids = list(runbook["capability_ids"])
     provenance = _resolve_provenance(evidence_provenance)
     started = datetime.now(timezone.utc)
@@ -368,7 +386,14 @@ def run_scenario(
         method="automated",
         capability_ids=capability_ids,
         evidence_provenance=provenance,
-        status=derive_status(results),
+        status=derive_status(
+            results,
+            required_steps=[
+                step["name"]
+                for step in runbook["steps"]
+                if step.get("required") is True
+            ],
+        ),
         steps=results,
     )
 
