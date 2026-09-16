@@ -18,6 +18,7 @@ from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.schemas.extensions import (
     CreateExtension,
     Extension,
+    ExtensionPort,
     ExtensionServiceSpec,
     PatchExtension,
     PatchServiceSpec,
@@ -61,7 +62,7 @@ def _create_test_extension_payload(name: str) -> CreateExtension:
                 name="echo",
                 image="busybox:latest",
                 primary=True,
-                ports=[{"container_port": 8080}],
+                ports=[ExtensionPort(container_port=8080)],
                 command=["sh", "-c", "while true; do echo ok | nc -l -p 8080; done"],
             ),
         ],
