@@ -53,6 +53,14 @@ class RetrievalService(BaseService):
     _KAFKA_PLATFORM_TAG = "urn:li:dataset:(urn:li:dataplatform:kafka"
 
     def create_job(self, request: RetrievalRequest) -> RetrievalJob:
+        """Start a retrieval job over a catalogued dataset.
+
+        Args:
+            request: Dataset URN, transport and retrieval options.
+
+        Returns:
+            RetrievalJob: The accepted job, to be followed with ``get_job``.
+        """
         self._ensure_kafka_supported(request)
         try:
             payload = reveal_secrets(request.model_dump(exclude_none=True))
@@ -90,6 +98,14 @@ class RetrievalService(BaseService):
         return RetrievalResult(job=job, grpc=job.grpc)
 
     def get_job(self, job_id: str) -> RetrievalJobStatus:
+        """Fetch one retrieval job's current status and progress.
+
+        Args:
+            job_id: Identifier of the job.
+
+        Returns:
+            RetrievalJobStatus: The job's state.
+        """
         try:
             response = self.client.get(f"{self._BASE_PATH}/jobs/{job_id}")
         except APIError as exc:
@@ -221,6 +237,18 @@ class RetrievalService(BaseService):
         credential_override: str | SecretStr | None = None,
         **options,
     ) -> RetrievalJob:
+        """Start a retrieval job with its options supplied inline.
+
+        Args:
+            dataset_urn: URN of the dataset to retrieve from.
+            format_hint: Source format, when the dataset does not declare one.
+            credential_override: Credential to use instead of the dataset's
+                stored one. Never logged and never returned in the job.
+            **options: Further source-specific retrieval options.
+
+        Returns:
+            RetrievalJob: The accepted job.
+        """
         credential = credential_override
         if isinstance(credential, str):
             credential = SecretStr(credential)
@@ -255,6 +283,24 @@ class RetrievalService(BaseService):
         transport: TransportType | str = TransportType.INLINE,
         format_hint: str = "json",
     ) -> list[dict]:
+        """Retrieve Slack messages from a catalogued Slack dataset.
+
+        Args:
+            dataset_urn: URN of the Slack dataset.
+            channels: Channels to include. Omit for every channel the dataset
+                covers.
+            include_replies: Include threaded replies alongside parents.
+            max_messages: Cap on messages returned.
+            since_ts: Earliest message timestamp to include.
+            until_ts: Latest message timestamp to include.
+            credential_override: Credential to use instead of the dataset's
+                stored one.
+            transport: How to move the result, inline by default.
+            format_hint: Source format of the dataset.
+
+        Returns:
+            list[dict]: The retrieved messages.
+        """
         options: dict[str, object] = {}
         if channels:
             options["channels"] = list(channels)

@@ -109,12 +109,18 @@ kamiwaza_sdk = ["py.typed", "agent_tools/kamiwaza-openapi-spec.json"]
 kamiwaza_extensions = ["templates/**/*", "templates/**/.*", "validators/*.json", "compatibility.json", "agent_guidance.md"]
 
 [tool.ruff.lint]
-# Ruff's defaults (E, F) plus pydocstyle. A published method's docstring is the
+# Ruff's own defaults plus pydocstyle. A published method's docstring is the
 # text an agent ranks on when choosing among hundreds of operations, and the
 # text a human reads when approving a destructive one, so its absence is a
 # lint error rather than a style preference. See AGENTS.md, "Agent tools
 # contract", and the MCP server's FR-006h and FR-006i.
-select = ["E", "F", "D"]
+#
+# E4, E7 and E9 rather than all of E, because that IS ruff's default and this
+# section must add the docstring rules without widening anything else. Plain
+# "E" also selects E501 line-length, which the repository has never enforced:
+# selecting it turned several hundred pre-existing long lines into CI failures
+# on any file a change happened to touch, which is churn rather than a gate.
+select = ["E4", "E7", "E9", "F", "D"]
 
 [tool.ruff.lint.pydocstyle]
 # Matches .ai/rules/style.md, which already requires Google style.

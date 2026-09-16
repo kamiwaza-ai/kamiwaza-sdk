@@ -23,18 +23,25 @@ pytestmark = pytest.mark.unit
 
 #: Published operations with no description from any source. Target: 0.
 #:
-#: History, because a ceiling that moves needs one. 41 at the first
-#: measurement; raised to 69 when the index began walking nested platform
-#: sub-clients and made 38 previously unreachable operations callable — the one
-#: legitimate reason to raise a ceiling, since that is new territory rather
-#: than a regression on covered ground. Now 38: the six nested families and the
-#: catalogue facade are documented, which is T116's first slice.
-MAX_ABSENT = 38
+#: **Zero, and it stays zero.** Every one of the 332 published operations now
+#: resolves a description from some source. A ceiling of 0 means the next
+#: operation added without one fails this test rather than shipping nameless.
+#:
+#: History, because a ceiling that moved needs one: 41 at the first
+#: measurement; 69 when the index began walking nested platform sub-clients and
+#: made 38 previously unreachable operations callable — the one legitimate
+#: reason to raise a ceiling, being new territory rather than a regression; 38
+#: after the nested families and the catalogue facade; 0 after `context`,
+#: `auth`, `retrieval` and `serving`.
+MAX_ABSENT = 0
 
 #: Published operations whose description is under six words — present, but too
 #: short to distinguish one operation from another in a ranked list. Target: 0.
-#: 85 at the first measurement, 88 after the nested families arrived, now 83.
-MAX_THIN = 83
+#: 85 at the first measurement, 88 after the nested families arrived, 83 after
+#: the first documentation slice, now 65. The remainder are one-line docstrings
+#: and OpenAPI title-case summaries across `cluster` (11), `prompts` (8),
+#: `ingestion`, `models` and `serving` (5 each), and a long tail below that.
+MAX_THIN = 65
 
 
 @pytest.fixture(scope="module")

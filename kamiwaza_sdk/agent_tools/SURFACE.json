@@ -9,18 +9,18 @@
     "models": 67
   },
   "counts": {
-    "documented": 281,
+    "documented": 334,
     "operations": 348,
     "published": 332,
     "services": 33,
     "unpublished": 16
   },
   "descriptions": {
-    "absent": 38,
-    "docstring": 266,
+    "absent": 0,
+    "docstring": 319,
     "interface_description": 5,
-    "interface_summary": 23,
-    "thin": 83
+    "interface_summary": 8,
+    "thin": 65
   },
   "descriptor_version": "1",
   "selectors": [

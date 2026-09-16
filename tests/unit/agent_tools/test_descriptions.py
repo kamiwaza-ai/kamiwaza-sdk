@@ -104,10 +104,17 @@ def test_coverage_counts_every_published_operation(client, index) -> None:
     assert accounted == len(index.published)
 
 
-def test_coverage_reports_the_gap_the_gate_closes(client, index) -> None:
+def test_every_published_operation_resolves_a_description(client, index) -> None:
+    """The state T116 was written to reach, now asserted rather than tracked.
+
+    An earlier version of this test required ``absent > 0`` on the grounds that
+    a zero meant the gate had nothing to enforce. That was true of the
+    measurement and false of the gate: a ceiling of zero fails the next
+    operation added without a description, which is exactly the enforcement
+    wanted.
+    """
     counts = description_coverage(index, client)
-    assert counts["absent"] > 0, "a zero here means the gate has nothing to enforce"
-    assert counts["thin"] > 0
+    assert counts["absent"] == 0
     assert counts["docstring"] > counts["interface_description"], (
         "docstrings must be the dominant source, or the precedence is wrong "
         "for this repository"

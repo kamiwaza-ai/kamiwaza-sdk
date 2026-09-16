@@ -154,6 +154,15 @@ class ServingService(BaseService):
 
 
     def list_active_deployments(self) -> List[ActiveModelDeployment]:
+        """List deployments that are serving, with their reachable endpoints.
+
+        Narrower than ``list_deployments``: this one keeps only deployments
+        that are actually serving and resolves each one's endpoint, so a caller
+        can use the result without a second lookup.
+
+        Returns:
+            List[ActiveModelDeployment]: The serving deployments.
+        """
         deployments = self.list_deployments()
         active = []
 
