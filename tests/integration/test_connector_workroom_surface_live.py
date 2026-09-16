@@ -8,7 +8,7 @@ public SDK without changing the existing connector or Microsoft 365 tenant.
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -24,8 +24,7 @@ _M365_TYPES = frozenset({"m365", "microsoft365", "microsoft-365"})
 _GLOBAL_WORKROOM_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 
-def test_connected_m365_files_browse_and_scoped_search(live_kamiwaza_client) -> None:
-    client = live_kamiwaza_client
+def _enabled_m365_ids(client) -> set[UUID]:
     registered = {
         item.id
         for item in client.connectors.list()
@@ -36,39 +35,27 @@ def test_connected_m365_files_browse_and_scoped_search(live_kamiwaza_client) -> 
         for item in client.connectors.list_available()
         if item.enabled and item.connector_type.lower() in _M365_TYPES
     }
-    eligible = registered.intersection(available)
-    if not eligible:
-        pytest.skip("No enabled Microsoft 365 connector is available to this caller")
+    return registered.intersection(available)
 
-    target = None
+
+def _connected_files_ref(client, eligible: set[UUID]) -> ConnectorSurfaceRef | None:
     for workroom in client.workrooms.list():
         if str(workroom.id) == _GLOBAL_WORKROOM_ID:
             continue
         for entry in client.connectors.list_surface_catalog(workroom.id):
             if entry.id not in eligible or not entry.connected:
                 continue
-            files = next(
-                (
-                    surface
-                    for surface in entry.searchable_surfaces()
-                    if surface.surface == "files"
-                ),
-                None,
-            )
-            if files:
-                target = ConnectorSurfaceRef(
+            if any(
+                surface.surface == "files" for surface in entry.searchable_surfaces()
+            ):
+                return ConnectorSurfaceRef(
                     workroom_id=str(workroom.id), connector_id=str(entry.id)
                 )
-                break
-        if target:
-            break
-    if target is None:
-        pytest.skip("No connected, searchable M365 files surface in a workroom")
+    return None
 
-    # Root browsing may return sites before drives. A file search requires a
-    # folder-scoped container ID supplied by a drive node, not the node ID or
-    # a site-scoped container. Read at most three metadata pages.
-    folder_id = None
+
+def _folder_scope(client, target: ConnectorSurfaceRef) -> str | None:
+    """Find a drive-root scope in at most three metadata pages."""
     page_token = None
     for _ in range(3):
         page = client.connectors.browse_surface(
@@ -88,9 +75,27 @@ def test_connected_m365_files_browse_and_scoped_search(live_kamiwaza_client) -> 
             ),
             None,
         )
-        if folder_id or not page.next_page_token:
-            break
+        if folder_id:
+            return folder_id
+        if not page.next_page_token:
+            return None
         page_token = page.next_page_token
+    return None
+
+
+def test_connected_m365_files_browse_and_scoped_search(live_kamiwaza_client) -> None:
+    client = live_kamiwaza_client
+    eligible = _enabled_m365_ids(client)
+    if not eligible:
+        pytest.skip("No enabled Microsoft 365 connector is available to this caller")
+
+    target = _connected_files_ref(client, eligible)
+    if target is None:
+        pytest.skip("No connected, searchable M365 files surface in a workroom")
+
+    # Search requires the folder-scoped container ID from a drive node, not
+    # its node ID or a site-scoped container.
+    folder_id = _folder_scope(client, target)
     if folder_id is None:
         pytest.skip("M365 connection has no visible drive root for a scoped search")
 
@@ -102,5 +107,5 @@ def test_connected_m365_files_browse_and_scoped_search(live_kamiwaza_client) -> 
         ),
     )
     assert result.surface == "files"
-    assert result.connector_id == page.connector_id
+    assert str(result.connector_id) == target.connector_id
     assert result.items == []
