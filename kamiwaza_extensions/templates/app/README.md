@@ -129,3 +129,14 @@ Authentication is handled by the Kamiwaza platform. The generated code uses `Ses
 ## AI Assistant Guidance
 
 If you are using an AI coding assistant, start with `AGENTS.md`. It explains the working request flow, safe edit zones, and the commands to run after changes.
+
+## Kamiwaza compatibility
+
+Declare the oldest supported platform in `kamiwaza.json`, for example
+`"kamiwaza_version": ">=1.3.0"`. This is independent of `kz_ext_version`, which
+constrains the developer CLI. Omission means unrestricted platform support.
+Use comma-separated numeric comparisons for bounded support, such as
+`">=1.3.0,<2.0.0"`; the minimum must reflect features actually required.
+The explicitly enabled `compat-v1` catalog retains every extension version and
+Core selects the highest compatible release. Publishing another release does
+not remove older releases needed by older platforms.

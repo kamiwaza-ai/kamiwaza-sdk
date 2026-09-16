@@ -16,13 +16,14 @@ from kamiwaza_extensions.exit_codes import exit_code_for
 from kamiwaza_extensions_lib.errors import KamiwazaRuntimeError
 
 
-def _validate_catalog_schema(value: int) -> int:
+def _validate_catalog_schema(value: str) -> int | str:
     """Typer callback: reject values outside ``SUPPORTED_CATALOG_SCHEMAS``."""
-    if value not in SUPPORTED_CATALOG_SCHEMAS:
+    normalized = int(value) if str(value).isdigit() else value
+    if normalized not in SUPPORTED_CATALOG_SCHEMAS:
         raise typer.BadParameter(
-            f"must be one of {sorted(SUPPORTED_CATALOG_SCHEMAS)} (got {value})"
+            f"must be one of {sorted(SUPPORTED_CATALOG_SCHEMAS, key=str)} (got {value})"
         )
-    return value
+    return normalized
 
 app = typer.Typer(
     name="kz-ext",
@@ -46,6 +47,15 @@ class _GlobalState:
     debug: bool = False
 
 _state = _GlobalState()
+
+
+@app.command("catalog-capabilities")
+def catalog_capabilities() -> None:
+    """Print machine-readable writer capabilities for publishing CI guards."""
+    import json
+    from kamiwaza_extensions.compat_catalog import GENERATION, WRITER_CAPABILITY
+
+    typer.echo(json.dumps({"generations": [2, 3, GENERATION], "capabilities": [WRITER_CAPABILITY]}))
 
 
 @app.callback(invoke_without_command=True)
@@ -392,13 +402,14 @@ def publish(
             "service in compose; omit to auto-resolve per-service digests."
         ),
     ),
-    catalog_schema: int = typer.Option(
-        DEFAULT_CATALOG_SCHEMA,
+    catalog_schema: str = typer.Option(
+        str(DEFAULT_CATALOG_SCHEMA),
         "--catalog-schema",
         callback=_validate_catalog_schema,
         help=(
             "Catalog schema version (garden/v{N}/ path). Defaults to 3 "
-            "(K8s/v3 extensions). Pass 2 to publish to the legacy v2 catalog."
+            "(K8s/v3 extensions). Pass 2 for legacy v2; compat-v1 explicitly opts "
+            "into history-preserving garden/compat-v1 (requires conditional S3 writes)."
         ),
     ),
     publish_all: bool = typer.Option(

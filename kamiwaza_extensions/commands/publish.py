@@ -291,7 +291,7 @@ def _publish_one(
     verbose: bool = False,
     revision: Optional[str] = None,
     digest: Optional[str] = None,
-    catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
+    catalog_schema: int | str = DEFAULT_CATALOG_SCHEMA,
 ) -> None:
     """Build, push, and publish one detected extension to catalog."""
     from kamiwaza_extensions.catalog_publisher import (
@@ -757,7 +757,7 @@ def run_publish(
     verbose: bool = False,
     revision: Optional[str] = None,
     digest: Optional[str] = None,
-    catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
+    catalog_schema: int | str = DEFAULT_CATALOG_SCHEMA,
     publish_all: bool = False,
 ) -> None:
     """Build, push, and publish extension(s) to catalog."""

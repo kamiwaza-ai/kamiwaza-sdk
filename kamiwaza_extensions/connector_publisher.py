@@ -149,7 +149,7 @@ def publish_connector(
     no_push: bool = False,
     revision: str | None = None,
     digest: str | None = None,
-    catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
+    catalog_schema: int | str = DEFAULT_CATALOG_SCHEMA,
 ) -> None:
     """Publish one detected connector extension to ``connectors.json``."""
     from kamiwaza_extensions.catalog_publisher import (
