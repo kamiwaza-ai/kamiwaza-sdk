@@ -76,7 +76,7 @@ def main():
     parser.add_argument(
         "--runtime-version",
         required=True,
-        help="Label; runtime proof supplied separately",
+        help="Expected actual canonical version of installed Core",
     )
     parser.add_argument("--expected", required=True)
     parser.add_argument("--receipt", type=Path, required=True)
@@ -89,6 +89,12 @@ def main():
         timeout=120,
         headers={"Authorization": f"Bearer {token}"},
     ) as client:
+        running = client.get("/apps/remote/compatibility")
+        running.raise_for_status()
+        assert (
+            running.json()["kamiwaza_version"] == args.runtime_version
+        ), running.json()
+        receipt["runtime_response"] = running.json()
         receipt["apps"] = verify_kind(
             client, ("apps", "apps", ("app", "service"), args.expected)
         )

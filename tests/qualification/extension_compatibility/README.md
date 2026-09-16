@@ -23,9 +23,8 @@ to the HTTP root. Moto is a protocol emulator, not a production R2 certification
 
 Serve this root by HTTP and configure the isolated Core's LOCAL catalog origin
 and `compat-v1` generation accordingly. Wait until candidate Core is active before
-exposing catalogs: old readers do not support overlapping histories. Verify the
-canonical installed runtime version separately; the harness version argument is
-only a receipt label and does not modify or prove runtime version.
+exposing catalogs: old readers do not support overlapping histories. The instance harness first asserts the canonical runtime version returned by
+`/apps/remote/compatibility`; the version argument never changes the runtime.
 
 For each fresh canonical Core 1.3.0 / 1.3.1 / 1.4.0, expect extension 0.3.0 / 0.4.0 /
 0.5.0. Store an authorized token in a private file, then run:
