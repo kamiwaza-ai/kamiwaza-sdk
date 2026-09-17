@@ -1,5 +1,13 @@
 # Changelog — `kamiwaza-extensions-lib` (Python runtime)
 
+## [0.6.0] — 2026-09-17
+
+Breaking change: identity exposes configured marking levels through
+`X-User-Marking-Level`; Python/JSON uses `marking_level` and TypeScript uses
+`markingLevel`. Deploy with SDK 1.2 and the matching generic platform.
+No default marking vocabulary is embedded in the runtime library.
+
+
 All notable changes to this runtime library are documented here. Versions
 follow semver. The library is published to PyPI as a standalone package
 (`kamiwaza-extensions-lib`) and is versioned independently from

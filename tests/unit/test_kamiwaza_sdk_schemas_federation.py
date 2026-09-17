@@ -105,9 +105,9 @@ def test_all_models_preserve_extra_allow() -> None:
         ExecutionGateBinding,
         AttributeSchema,
     ]:
-        assert cls.model_config.get("extra") == "allow", (
-            f"{cls.__name__} must set extra='allow' for forward-compat"
-        )
+        assert (
+            cls.model_config.get("extra") == "allow"
+        ), f"{cls.__name__} must set extra='allow' for forward-compat"
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ def test_attribute_schema_full_shape() -> None:
     from kamiwaza_sdk.schemas.federation import AttributeSchema
 
     schema = AttributeSchema(
-        name="clearance",
+        name="access_tier",
         type="string",
         state="declared",
         authority="local_admin",
@@ -254,7 +254,7 @@ def test_attribute_schema_full_shape() -> None:
         schema_version="1.0",
         declared_at=datetime(2026, 5, 12, 0, 0, tzinfo=timezone.utc),
     )
-    assert schema.name == "clearance"
+    assert schema.name == "access_tier"
     assert schema.type == "string"
     assert schema.state == "declared"
     assert schema.authority == "local_admin"

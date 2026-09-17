@@ -21,14 +21,10 @@ SDK_PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 RELEASE_SCRIPT_PATH = REPO_ROOT / "release.sh"
 
 
-def test_version_is_0_5_0():
-    # Runtime 0.5 adds the canonical path-routing helpers and ASGI launcher
-    # required by the dual-artifact Next.js scaffold. The compatibility
-    # floor moves with it so every freshly generated app has both sides of the
-    # runtime-relocation contract plus the patched FastAPI/Starlette floors
-    # inherited from 0.4.4 release hardening.
-    assert kamiwaza_extensions_lib.__version__ == "0.5.0", (
-        "Runtime lib is 0.5.0 (dual-artifact path relocation contract). "
+def test_version_is_0_6_0():
+    # Runtime 0.6 coordinates the generic identity wire contract.
+    assert kamiwaza_extensions_lib.__version__ == "0.6.0", (
+        "Runtime lib is 0.6.0 (generic marking identity contract). "
         "Update both __version__ and CHANGELOG.md if the version is "
         "intentionally changing."
     )
@@ -68,9 +64,9 @@ def test_sdk_dependency_requires_current_runtime_release():
         pyproject = tomllib.load(f)
 
     assert (
-        "kamiwaza-extensions-lib>=0.5,<0.6" in pyproject["project"]["dependencies"]
+        "kamiwaza-extensions-lib>=0.6,<0.7" in pyproject["project"]["dependencies"]
     ), (
-        "kamiwaza-sdk must require runtime-lib 0.5 so a fresh install "
+        "kamiwaza-sdk must require runtime-lib 0.6 so a fresh install "
         "cannot resolve a version without the path-relocation contract"
     )
 

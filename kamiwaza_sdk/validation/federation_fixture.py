@@ -10,39 +10,43 @@ from __future__ import annotations
 from typing import Any
 
 DEFAULT_TENANT_ID = "__default__"
-GATE_CLASSPATH = "acme_gates.mini_clearance_gate.MiniClearanceGate"
-GATE_NAME = "mini_clearance_gate"
+GATE_CLASSPATH = "acme_gates.mini_access_tier_gate.MiniAccessTierGate"
+GATE_NAME = "mini_access_tier_gate"
 GATE_PACKAGE_NAME = "acme-gates"
 GATE_PACKAGE_SPEC = "acme-gates==1.1.0"
 
-PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
-UNONBOARDED_PERSONA = "fed-clr-unonboarded"
+PERSONAS = {
+    "PUBLIC": "fed-tier-public",
+    "PRIVATE": "fed-tier-private",
+    "CONFIDENTIAL": "fed-tier-confidential",
+}
+UNONBOARDED_PERSONA = "fed-tier-unonboarded"
 TENANT_NEGATIVE_PERSONAS: dict[str, tuple[str, dict[str, str]]] = {
-    "missing-canonical": ("fed-tenant-missing", {"clearance": "U"}),
+    "missing-canonical": ("fed-tenant-missing", {"access_tier": "PUBLIC"}),
     "legacy-only": (
         "fed-tenant-legacy-only",
-        {"clearance": "U", "tenant": DEFAULT_TENANT_ID},
+        {"access_tier": "PUBLIC", "tenant": DEFAULT_TENANT_ID},
     ),
     "canonical-nondefault": (
         "fed-tenant-nondefault",
-        {"clearance": "U", "tenant_id": "tenant-a"},
+        {"access_tier": "PUBLIC", "tenant_id": "tenant-a"},
     ),
 }
 
 KNOWN: dict[str, tuple[int, set[str]]] = {
-    "U": (3, {"U"}),
-    "S": (4, {"U", "S"}),
-    "TS": (5, {"U", "S", "TS"}),
+    "PUBLIC": (3, {"PUBLIC"}),
+    "PRIVATE": (4, {"PUBLIC", "PRIVATE"}),
+    "CONFIDENTIAL": (5, {"PUBLIC", "PRIVATE", "CONFIDENTIAL"}),
 }
 
 
 def records() -> tuple[dict[str, Any], ...]:
-    """Return the deterministic five-row clearance fixture."""
+    """Return the deterministic five-row access_tier fixture."""
 
     return (
-        {"id": "r1", "classification": "U", "payload": "unclassified-alpha"},
-        {"id": "r2", "classification": "U", "payload": "unclassified-bravo"},
-        {"id": "r3", "classification": "U", "payload": "unclassified-charlie"},
-        {"id": "r4", "classification": "S", "payload": "secret-delta"},
-        {"id": "r5", "classification": "TS", "payload": "topsecret-echo"},
+        {"id": "r1", "tier": "PUBLIC", "payload": "public-alpha"},
+        {"id": "r2", "tier": "PUBLIC", "payload": "public-bravo"},
+        {"id": "r3", "tier": "PUBLIC", "payload": "public-charlie"},
+        {"id": "r4", "tier": "PRIVATE", "payload": "private-delta"},
+        {"id": "r5", "tier": "CONFIDENTIAL", "payload": "confidential-echo"},
     )

@@ -12,7 +12,7 @@ describe("extractIdentityStrict", () => {
             "x-user-email": "alice@example.com",
             "x-user-name": "Alice",
             "x-user-roles": "member,editor",
-            "x-user-system-high": "U",
+            "x-user-marking-level": "PUBLIC",
             "x-workroom-id": "w1",
             "x-user-workroom-role": "editor",
             "x-request-id": "req-abc",
@@ -20,7 +20,7 @@ describe("extractIdentityStrict", () => {
         const identity = extractIdentityStrict(headers);
         expect(identity.userId).toBe("u1");
         expect(identity.workroomId).toBe("w1");
-        expect(identity.systemHigh).toBe("U");
+        expect(identity.markingLevel).toBe("PUBLIC");
         expect(identity.workroomRole).toBe("editor");
         expect(identity.requestId).toBe("req-abc");
         expect(identity.isAuthenticated).toBe(true);
@@ -47,7 +47,7 @@ describe("extractIdentityStrict", () => {
     });
 });
 
-// TS-M2-26: Identity has the 3 missing fields added (systemHigh, workroomRole, requestId).
+// TS-M2-26: Identity has the 3 missing fields added (markingLevel, workroomRole, requestId).
 describe("Identity shape", () => {
     it("includes the 9 envelope fields per design §4.2.7", () => {
         const headers = new Headers({
@@ -64,7 +64,7 @@ describe("Identity shape", () => {
                 "name",
                 "requestId",
                 "roles",
-                "systemHigh",
+                "markingLevel",
                 "userId",
                 "workroomId",
                 "workroomRole",

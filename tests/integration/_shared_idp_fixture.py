@@ -6,11 +6,11 @@ suite reads "4 skipped" identically at every stage while meaning something
 different each time:
 
 1. the acme-gates wheel + pip index      -> ``_gate_fixture.py``
-2. ``MINI_CLEARANCE_DATASET_PATH``       -> ``_gate_fixture.py`` publishes the CSV
+2. ``MINI_ACCESS_TIER_DATASET_PATH``       -> ``_gate_fixture.py`` publishes the CSV
 3. a **shared realm** both clusters trust -> this module
 
-The realm has to project ``clearance`` plus the tenant attributes needed by the
-release contract into brokered JWTs. The three default-tenant clearance
+The realm has to project ``access_tier`` plus the tenant attributes needed by the
+release contract into brokered JWTs. The three default-tenant access_tier
 personas, one deliberately unonboarded persona, and three tenant-negative
 personas must mint tokens from it by ROPC, because the receiver's shared_idp
 validation accepts a caller only when the token's ``kid`` is in the SHARED
@@ -52,6 +52,7 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
+from typing import Iterator
 
 from kamiwaza_sdk.validation.federation_fixture import (
     DEFAULT_TENANT_ID,
@@ -60,7 +61,6 @@ from kamiwaza_sdk.validation.federation_fixture import (
     UNONBOARDED_PERSONA,
 )
 from kamiwaza_sdk.validation.federation_spec import SHARED_REALM_CLIENT_ID
-from typing import Iterator
 
 NAMESPACE = "kamiwaza"
 ROPC_CLIENT = SHARED_REALM_CLIENT_ID
@@ -72,7 +72,7 @@ KEYCLOAK_SVC_PORT = os.getenv("KEYCLOAK_SVC_PORT", "80")
 # These names are a CONTRACT with the consumer, not a local choice: the live
 # test passes every value straight to ROPC as the username, so a missing user
 # is a module-fixture ERROR, not a skip. Keep both constants aligned there.
-# Clearance values match _mini_clearance.KNOWN: U sees 3 rows, S sees 4, TS sees all 5.
+# AccessTier values match _mini_access_tier.KNOWN: PUBLIC sees 3 rows, PRIVATE sees 4, CONFIDENTIAL sees all 5.
 @dataclass(frozen=True)
 class OwnedRealm:
     name: str
@@ -164,7 +164,7 @@ def provision(
     persona_pw: str,
     owned_realm: OwnedRealm,
 ) -> dict:
-    """Realm + ROPC client + claim mappers + clearance and negative personas."""
+    """Realm + ROPC client + claim mappers + access_tier and negative personas."""
     from kamiwaza_sdk.seeding.federation.cli import _verify_ssl
     from kamiwaza_sdk.seeding.federation.keycloak import KeycloakAdmin
 
@@ -179,20 +179,20 @@ def provision(
     kc.create_owned_realm(realm, owned_realm.owner_nonce)
     try:
         # Keycloak >=24 drops unrecognised user attributes unless the realm opts
-        # in, which silently strips the fixture's clearance and tenant attributes.
+        # in, which silently strips the fixture's access_tier and tenant attributes.
         kc.set_unmanaged_attributes(realm)
         client = kc.ensure_ropc_client(realm, ROPC_CLIENT)
-        kc.ensure_attribute_mapper(realm, client["id"], attribute="clearance")
+        kc.ensure_attribute_mapper(realm, client["id"], attribute="access_tier")
         kc.ensure_attribute_mapper(realm, client["id"], attribute="tenant_id")
         kc.ensure_attribute_mapper(realm, client["id"], attribute="tenant")
 
-        for clearance, username in PERSONAS.items():
+        for access_tier, username in PERSONAS.items():
             kc.ensure_user(
                 realm,
                 username,
                 password=persona_pw,
                 attributes={
-                    "clearance": clearance,
+                    "access_tier": access_tier,
                     "tenant_id": DEFAULT_TENANT_ID,
                 },
             )
@@ -200,7 +200,7 @@ def provision(
             realm,
             UNONBOARDED_PERSONA,
             password=persona_pw,
-            attributes={"clearance": "U", "tenant_id": DEFAULT_TENANT_ID},
+            attributes={"access_tier": "PUBLIC", "tenant_id": DEFAULT_TENANT_ID},
         )
         for username, attributes in TENANT_NEGATIVE_PERSONAS.values():
             kc.ensure_user(

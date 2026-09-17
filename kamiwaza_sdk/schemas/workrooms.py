@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .markings import Marking
+
 
 class WorkroomResponseModel(BaseModel):
     """Base response model with forward-compatible parsing."""
@@ -33,30 +35,29 @@ class WorkroomStatus(str, Enum):
 class CreateWorkroom(BaseModel):
     """Request to create a new workroom."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(..., min_length=1, max_length=255)
     type: WorkroomType = Field(..., description="ephemeral or persistent")
     description: Optional[str] = Field(default=None, max_length=1024)
     labels: Optional[List[str]] = None
-    classification: Optional[str] = Field(default=None, max_length=255)
+    marking: Optional[Marking] = None
     attributes: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Extensible key-value pairs (mission_id, template_id, etc.)",
-    )
-    scg_references: Optional[List[str]] = Field(
-        default=None,
-        description="Security Classification Guide identifiers",
     )
 
 
 class UpdateWorkroom(BaseModel):
     """Request for partial update of workroom metadata."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=1024)
     labels: Optional[List[str]] = None
-    classification: Optional[str] = Field(default=None, max_length=255)
+    marking: Optional[Marking] = None
     attributes: Optional[Dict[str, Any]] = None
-    scg_references: Optional[List[str]] = None
 
 
 class Workroom(WorkroomResponseModel):
@@ -69,9 +70,9 @@ class Workroom(WorkroomResponseModel):
     type: WorkroomType
     description: Optional[str] = None
     labels: Optional[List[str]] = None
-    classification: Optional[str] = None
+    marking: Optional[Marking] = None
+    level_id: Optional[str] = None
     attributes: Optional[Dict[str, Any]] = None
-    scg_references: Optional[List[str]] = None
     status: WorkroomStatus
     created_at: datetime
     updated_at: Optional[datetime] = None

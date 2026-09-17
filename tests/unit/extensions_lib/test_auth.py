@@ -30,7 +30,7 @@ class TestForwardAuthHeaders:
             "X-User-Roles": "admin,user",
             "X-User-Groups": "engineering,search",
             "X-User-Attributes-Hash": "sha256:attributes",
-            "X-User-System-High": "TS",
+            "X-User-Marking-Level": "CONFIDENTIAL",
             "X-User-Workroom-Role": "editor",
             "X-Workroom-Id": "wrk-456",
             "X-User-Workroom-Id": "wrk-456",
@@ -55,7 +55,7 @@ class TestForwardAuthHeaders:
             "X-User-Roles": "admin,user",
             "X-User-Groups": "engineering,search",
             "X-User-Attributes-Hash": "sha256:attributes",
-            "X-User-System-High": "TS",
+            "X-User-Marking-Level": "CONFIDENTIAL",
             "X-User-Workroom-Role": "editor",
             "X-Workroom-Id": "wrk-456",
             "X-User-Workroom-Id": "wrk-456",
@@ -71,10 +71,10 @@ class TestForwardAuthHeaders:
         downstream services can re-establish the caller's classification
         and workroom role when the extension calls another Kamiwaza service."""
         result = forward_auth_headers(
-            {"X-User-System-High": "U", "X-User-Workroom-Role": "viewer"}
+            {"X-User-Marking-Level": "PUBLIC", "X-User-Workroom-Role": "viewer"}
         )
         assert result == {
-            "X-User-System-High": "U",
+            "X-User-Marking-Level": "PUBLIC",
             "X-User-Workroom-Role": "viewer",
         }
 

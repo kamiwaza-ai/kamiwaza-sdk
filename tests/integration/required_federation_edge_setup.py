@@ -6,7 +6,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Any
 
-from tests.integration import _mini_clearance as mc
+from tests.integration import _mini_access_tier as mc
 
 
 @dataclass(frozen=True)
@@ -79,7 +79,7 @@ def provision_gated_dataset(
     prerequisites: Any,
     name: str,
 ) -> str:
-    mc.declare_clearance_attribute(receiver)
+    mc.declare_access_tier_attribute(receiver)
     _ensure_gate_package(
         cleanup,
         receiver,
@@ -87,7 +87,7 @@ def provision_gated_dataset(
         prerequisites.index_url,
     )
     urn = receiver.datasets.create(
-        name=f"mini-clearance-{name}",
+        name=f"mini-access_tier-{name}",
         platform="file",
         properties={"path": prerequisites.dataset_path},
     )

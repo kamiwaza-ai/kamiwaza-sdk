@@ -431,7 +431,7 @@ def test_kubectl_observer_redacts_secret_bearing_runtime_arguments() -> None:
                                 "vllm",
                                 "serve",
                                 "--api-key",
-                                "top-secret",
+                                "private-value",
                                 "--hf-token=also-secret",
                                 "--tokenizer",
                                 "Qwen/tokenizer",
@@ -455,7 +455,7 @@ def test_kubectl_observer_redacts_secret_bearing_runtime_arguments() -> None:
 
     result = observer.observe("44444444-4444-4444-4444-444444444444", "vllm")
 
-    assert "top-secret" not in result.effective_args
+    assert "private-value" not in result.effective_args
     assert "also-secret" not in " ".join(result.effective_args)
     assert result.effective_args == (
         "vllm",
@@ -472,7 +472,7 @@ def test_factory_materializes_file_references_without_exposing_token(
     tmp_path: Path,
 ) -> None:
     token = tmp_path / "admin.pat"
-    token.write_text("top-secret-token\n")
+    token.write_text("private-value-token\n")
     kubeconfig = tmp_path / "kubeconfig"
     kubeconfig.write_text("apiVersion: v1\n")
     built: list[tuple[str, str]] = []
@@ -491,7 +491,7 @@ def test_factory_materializes_file_references_without_exposing_token(
 
     cluster = factory(runtime)
 
-    assert built == [("https://evo-x2-2.test/api", "top-secret-token")]
+    assert built == [("https://evo-x2-2.test/api", "private-value-token")]
     assert cluster.kubeconfig_path == kubeconfig
 
 

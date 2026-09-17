@@ -37,7 +37,7 @@ client.enclaves.documents.create(request)
 results = client.enclaves.documents.list(
     source_id=connector.id,
     limit=5,
-    system_high="U",
+    marking_level="PUBLIC",
 )
 print(results.total)
 ```

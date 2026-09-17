@@ -145,7 +145,7 @@ func TestExtract_OptionalFieldsAbsent_ProduceNullJSON(t *testing.T) {
 	enc, _ := json.Marshal(id)
 	var got map[string]interface{}
 	_ = json.Unmarshal(enc, &got)
-	for _, key := range []string{"email", "name", "system_high", "workroom_role", "request_id"} {
+	for _, key := range []string{"email", "name", "marking_level", "workroom_role", "request_id"} {
 		actual, present := got[key]
 		if !present {
 			t.Errorf("field %q dropped from marshalled Identity", key)

@@ -58,19 +58,19 @@ def _assert_persona_inventory(
     sessions: dict[str, dict[str, Any]],
 ) -> None:
     assert set(personas) == {
-        "U",
-        "S",
-        "TS",
+        "PUBLIC",
+        "PRIVATE",
+        "CONFIDENTIAL",
         "unonboarded",
         "missing-canonical",
         "legacy-only",
         "canonical-nondefault",
     }
     assert set(sessions) == {
-        "fed-clr-u",
-        "fed-clr-s",
-        "fed-clr-ts",
-        "fed-clr-unonboarded",
+        "fed-tier-public",
+        "fed-tier-private",
+        "fed-tier-confidential",
+        "fed-tier-unonboarded",
         "fed-tenant-missing",
         "fed-tenant-legacy-only",
         "fed-tenant-nondefault",
@@ -87,9 +87,9 @@ def _assert_onboarding_contract(receiver: Any) -> None:
         external_id: len(tuples)
         for external_id, tuples in tuples_by_external_id.items()
     } == {
-        "sub-fed-clr-u@source-cluster": 2,
-        "sub-fed-clr-s@source-cluster": 1,
-        "sub-fed-clr-ts@source-cluster": 1,
+        "sub-fed-tier-public@source-cluster": 2,
+        "sub-fed-tier-private@source-cluster": 1,
+        "sub-fed-tier-confidential@source-cluster": 1,
         "sub-fed-tenant-missing@source-cluster": 0,
         "sub-fed-tenant-legacy-only@source-cluster": 0,
         "sub-fed-tenant-nondefault@source-cluster": 0,

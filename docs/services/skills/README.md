@@ -98,7 +98,7 @@ updated = client.skills.update_skill_metadata(
 Mutable fields currently supported:
 - `display_name`
 - `category`
-- `classification`
+- `marking` (optional normalized profile/level/attributes envelope)
 - `status`
 - `trigger`
 - `inputs`

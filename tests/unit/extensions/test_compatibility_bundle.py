@@ -165,7 +165,7 @@ class TestPythonRuntimeLibCheck:
         # Runtime-lib 0.5 adds the relocation contract; its exact minor
         # window is the canonical fully-supported pin.
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib>=0.5,<0.6\nfastapi>=0.100\n")
+        req.write_text("kamiwaza-extensions-lib>=0.6,<0.7\nfastapi>=0.100\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
@@ -224,12 +224,12 @@ class TestPythonRuntimeLibCheck:
         assert "not found" in result.message
 
     def test_pep508_extras_are_handled(self, checker, tmp_path):
-        """`kamiwaza-extensions-lib[fastapi]>=0.5,<0.6` parses
+        """`kamiwaza-extensions-lib[fastapi]>=0.6,<0.7` parses
         cleanly via packaging.requirements.Requirement.
         (The 0.5 floor ensures the runtime relocation helpers are present.)
         """
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.5,<0.6\n")
+        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.6,<0.7\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
@@ -271,7 +271,7 @@ class TestPythonRuntimeLibCheck:
         req.write_text(spec + "\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn", (
-            f"declared {spec!r} extends beyond supported `>=0.5,<0.6` but "
+            f"declared {spec!r} extends beyond supported `>=0.6,<0.7` but "
             f"the doctor reported {result.status} (false-negative — could "
             f"resolve a 0.6+ version that's outside the CLI's compat window)"
         )
@@ -279,8 +279,8 @@ class TestPythonRuntimeLibCheck:
     @pytest.mark.parametrize(
         "spec,expected",
         [
-            ("kamiwaza-extensions-lib~=0.5.0", "pass"),  # >=0.5.0,<0.6
-            ("kamiwaza-extensions-lib~=0.5.5", "pass"),  # >=0.5.5,<0.6
+            ("kamiwaza-extensions-lib~=0.6.0", "pass"),  # >=0.6.0,<0.7
+            ("kamiwaza-extensions-lib~=0.6.5", "pass"),  # >=0.6.5,<0.6
             # Below the 0.5 floor — these ranges lack relocation support.
             ("kamiwaza-extensions-lib~=0.4.5", "warn"),
             ("kamiwaza-extensions-lib~=0.3.0", "warn"),  # >=0.3.0,<0.4 — below floor
@@ -291,8 +291,8 @@ class TestPythonRuntimeLibCheck:
     )
     def test_tilde_eq_upper_bound_derived(self, checker, tmp_path, spec, expected):
         """Round-5 H2 — ``~=X.Y.Z`` is a *compatible-release* operator with
-        an implied upper bound at ``<X.(Y+1)``. ``~=0.5.0`` and
-        ``~=0.5.5`` remain fully contained. ``~=0.4.5`` is below the floor,
+        an implied upper bound at ``<X.(Y+1)``. ``~=0.6.0`` and
+        ``~=0.6.5`` remain fully contained. ``~=0.4.5`` is below the floor,
         and the ``~=X.Y`` form expands to ``<(X+1)`` so ``~=0.5`` admits
         0.6+ and must warn.
         """
@@ -343,7 +343,7 @@ class TestTypeScriptRuntimeLibCheck:
         pkg.write_text(
             json.dumps(
                 {
-                    "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.5.0"},
+                    "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.6.0"},
                 }
             )
         )
@@ -382,15 +382,15 @@ class TestTypeScriptRuntimeLibCheck:
             ),  # caret 0.3 below supported floor (PR #87 round-6 codex P2)
             ("~0.3.0", "warn"),  # tilde 0.3 below supported floor
             (
-                "^0.5.0",
+                "^0.6.0",
                 "pass",
-            ),  # caret 0.5.0 = >=0.5.0,<0.6.0
-            ("~0.5.0", "pass"),  # tilde 0.5.0 = >=0.5.0,<0.6.0
+            ),  # caret 0.6.0 = >=0.6.0,<0.7.0
+            ("~0.6.0", "pass"),  # tilde 0.6.0 = >=0.6.0,<0.7.0
             ("0.3.5", "warn"),  # exact pin below supported floor
             ("^0.4.3", "warn"),  # pre-relocation runtime window
             ("~0.4.3", "warn"),  # pre-relocation runtime window
             ("0.4.3", "warn"),  # exact pre-relocation release
-            ("0.5.0", "pass"),  # exact pin in window
+            ("0.6.0", "pass"),  # exact pin in window
         ],
     )
     def test_full_containment_check_for_npm_specs(
@@ -399,7 +399,7 @@ class TestTypeScriptRuntimeLibCheck:
         """Round-4 H3 — TS check uses full-containment (was: lower-only
         probe). Open-ended specs (no upper, or upper above the supported
         ceiling) warn. Caret/tilde/exact specs that are fully contained
-        pass. The supported window is ``>=0.5,<0.6`` because 0.5 adds the
+        pass. The supported window is ``>=0.6,<0.7`` because 0.5 adds the
         dual-artifact runtime relocation contract required by generated apps.
         """
         pkg = tmp_path / "package.json"

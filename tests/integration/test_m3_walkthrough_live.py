@@ -39,7 +39,6 @@ from typing import Iterator
 
 import pytest
 
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.live,
@@ -145,7 +144,9 @@ def test_m3_full_walkthrough_against_live_fleet(
             # with the new pair; setup.py's step_00 does the same dance.
             for client in (lyra, orion):
                 try:
-                    existing = client._request("GET", "/cluster/federations")  # noqa: SLF001
+                    existing = client._request(
+                        "GET", "/cluster/federations"
+                    )  # noqa: SLF001
                 except KamiwazaError:
                     existing = []
                 if isinstance(existing, list):
@@ -191,7 +192,7 @@ def test_m3_full_walkthrough_against_live_fleet(
             # back at this exact call. Idempotent on identical shape; safe
             # to re-run.
             for attr_name, attr_type in (
-                ("clearance", "string"),
+                ("access_tier", "string"),
                 ("country", "string"),
                 ("programs", "string[]"),
             ):
@@ -206,14 +207,14 @@ def test_m3_full_walkthrough_against_live_fleet(
             subject = lyra.subjects.upsert(
                 demo_username,
                 attributes={
-                    "clearance": "TS",
+                    "access_tier": "CONFIDENTIAL",
                     "country": "USA",
                     "programs": ["IRIS", "ARGOS"],
                 },
                 password="demo-pw",
             )
             assert subject.username == demo_username
-            assert subject.attributes["clearance"] == "TS"
+            assert subject.attributes["access_tier"] == "CONFIDENTIAL"
             assert subject.attributes["programs"] == ["IRIS", "ARGOS"]
 
             # Step 3 — Bind cluster execution gate (replaces kubectl-exec).
@@ -285,9 +286,10 @@ def test_m3_full_walkthrough_against_live_fleet(
 
             # Step 8 — Demo-gate assertion: audit_actor names the
             # originating user (no system principal).
-            assert result.status in {"SUCCEEDED", "FAILED"}, (
-                f"Job ended in unexpected state {result.status!r}"
-            )
+            assert result.status in {
+                "SUCCEEDED",
+                "FAILED",
+            }, f"Job ended in unexpected state {result.status!r}"
             assert result.audit_actor is not None, (
                 "audit_actor must round-trip on the receiver — this is "
                 "the demo gate's load-bearing signal."
@@ -334,7 +336,9 @@ def test_m3_full_walkthrough_against_live_fleet(
                 # the raw API (FederationsAPI doesn't expose list() today;
                 # see setup.py step_00 for the same pattern).
                 try:
-                    orion_feds = orion._request("GET", "/cluster/federations")  # noqa: SLF001
+                    orion_feds = orion._request(
+                        "GET", "/cluster/federations"
+                    )  # noqa: SLF001
                     if isinstance(orion_feds, list):
                         for fed in orion_feds:
                             if (

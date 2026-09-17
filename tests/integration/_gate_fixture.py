@@ -65,7 +65,7 @@ from typing import Any
 
 # The SDK owns both live fixture families.  The M5 lifecycle test exercises
 # install 1.0.0 -> replace 1.0.1, while the federation known-answer tests use
-# the fail-closed MiniClearanceGate in 1.1.0.  One provision command publishes
+# the fail-closed MiniAccessTierGate in 1.1.0.  One provision command publishes
 # all three exact artifacts so no package test needs to skip for missing
 # fixture wheels.
 PACKAGE_VERSIONS = ("1.0.0", "1.0.1", "1.1.0")
@@ -87,7 +87,7 @@ NETWORK_INDEX_HOST = f"core-raycluster-head-svc.{NAMESPACE}.svc.cluster.local"
 NETWORK_INDEX_PIDFILE = "/tmp/kamiwaza-gate-index.pid"
 NETWORK_INDEX_LOG = "/tmp/kamiwaza-gate-index.log"
 DATASET_DIR = "/app/tmp"
-DATASET_PATH = f"{DATASET_DIR}/eng10050-mini-clearance.csv"
+DATASET_PATH = f"{DATASET_DIR}/eng10050-mini-access_tier.csv"
 PUBLISH_ATTEMPTS = 3
 PUBLISH_DIGEST_MISMATCH_RC = 74
 # Set by workflows that explicitly provision before invoking pytest.  Manual
@@ -274,9 +274,9 @@ def stage_index(
         "<!DOCTYPE html><html><body>" + "\n".join(sorted(anchors)) + "</body></html>\n",
         encoding="utf-8",
     )
-    from tests.integration import _mini_clearance as mc  # noqa: PLC0415
+    from tests.integration import _mini_access_tier as mc  # noqa: PLC0415
 
-    mc.write_dataset_file(STAGE_DIR / "mini_clearance.csv")
+    mc.write_dataset_file(STAGE_DIR / "mini_access_tier.csv")
     return STAGE_DIR
 
 
@@ -381,7 +381,7 @@ def _publish_script(destination: str, expected_digest: str) -> str:
 def _publish_item(argv: list[str], target: RayPodTarget, item: Path, leaf: str) -> None:
     """Stream one staged file into its destination inside one Ray pod."""
     destination = (
-        DATASET_PATH if item.name == "mini_clearance.csv" else f"{leaf}/{item.name}"
+        DATASET_PATH if item.name == "mini_access_tier.csv" else f"{leaf}/{item.name}"
     )
     raw = item.read_bytes()
     payload = base64.b64encode(raw)
@@ -514,7 +514,7 @@ def publish(argv: list[str], directory: Path) -> str:
     # binary wheel survives the ssh channel intact.
     items = sorted(directory.iterdir())
     for item in items:
-        destinations = targets if item.name == "mini_clearance.csv" else (head,)
+        destinations = targets if item.name == "mini_access_tier.csv" else (head,)
         for target in destinations:
             _publish_item(argv, target, item, leaf)
     print(f"  published {len(items)} staged files across {len(targets)} Ray pods")
@@ -571,7 +571,7 @@ def verify(
             want,
         )
         print(f"  verified in-pod wheel digest matches {wheel_name}: {want[:16]}…")
-    dataset_path = dataset or STAGE_DIR / "mini_clearance.csv"
+    dataset_path = dataset or STAGE_DIR / "mini_access_tier.csv"
     dataset_digest = hashlib.sha256(dataset_path.read_bytes()).hexdigest()
     for target in targets:
         _verify_remote_digest(argv, target, DATASET_PATH, dataset_digest)
@@ -586,7 +586,7 @@ def _fixture_environment(network_index_url: str | None = None) -> dict[str, str]
     values = {
         "M5_TEST_WHEEL_DIR": str(WHEEL_DIR),
         "M5_TEST_INDEX_URL": INDEX_URL,
-        "MINI_CLEARANCE_DATASET_PATH": DATASET_PATH,
+        "MINI_ACCESS_TIER_DATASET_PATH": DATASET_PATH,
     }
     if network_index_url:
         values["M5_TEST_NETWORK_POLICY_ALLOWED_URL"] = network_index_url

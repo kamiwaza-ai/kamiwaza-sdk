@@ -92,10 +92,10 @@ def test_every_template_file_is_classified(shape: str, template_root: Path):
         AUTHOR_OWNED_DENYLIST.get(shape, ())
     )
 
-    unclassified = [p for p in on_disk if p not in classified]
-    assert not unclassified, (
+    public = [p for p in on_disk if p not in classified]
+    assert not public, (
         f"Files in templates/{shape}/ are neither in the manifest nor on "
-        f"AUTHOR_OWNED_DENYLIST: {unclassified}\n"
+        f"AUTHOR_OWNED_DENYLIST: {public}\n"
         "Add new files to kamiwaza_extensions.template_manifest as either "
         "TemplateOwnedFile entries (reconciled by `kz-ext update`) or to "
         "AUTHOR_OWNED_DENYLIST (scaffold-only, never reconciled)."

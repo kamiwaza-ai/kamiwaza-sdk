@@ -96,9 +96,7 @@ def cmd_access_list(args: argparse.Namespace, *, client: Any) -> dict:
     grants = client.subjects.grants(args.subject).list()
     return {
         "subject": args.subject,
-        "grants": [
-            g.model_dump() if hasattr(g, "model_dump") else g for g in grants
-        ],
+        "grants": [g.model_dump() if hasattr(g, "model_dump") else g for g in grants],
     }
 
 
@@ -189,7 +187,7 @@ def cmd_dataset_gated(args: argparse.Namespace, *, client: Any) -> dict:
     # Create the file dataset, THEN bind the gate via the dedicated endpoint
     # (set_gate -> PUT /catalog/datasets/{urn}/gate). Stuffing a "gate" property
     # into the catalog record does NOT enforce a gate; set_gate is what makes
-    # retrieval gated (matches _mini_clearance.create_file_dataset).
+    # retrieval gated (matches _mini_access_tier.create_file_dataset).
     urn = client.datasets.create(
         name=args.name,
         platform="file",
@@ -208,9 +206,9 @@ def cmd_gate_install(args: argparse.Namespace, *, client: Any) -> dict:
         index_url=args.index_url,
     )
     return {
-        "installed": result.model_dump()
-        if hasattr(result, "model_dump")
-        else str(result)
+        "installed": (
+            result.model_dump() if hasattr(result, "model_dump") else str(result)
+        )
     }
 
 
@@ -227,12 +225,12 @@ def cmd_idp_bootstrap(args: argparse.Namespace, *, client: Any = None) -> dict:
     realm = kc.ensure_realm(args.realm)
     kc.set_unmanaged_attributes(args.realm)
     cli = kc.ensure_ropc_client(args.realm, args.ropc_client)
-    for attr in args.attr or ["clearance"]:
+    for attr in args.attr or ["access_tier"]:
         kc.ensure_attribute_mapper(args.realm, cli["id"], attribute=attr)
     return {
         "realm": realm,
         "ropc_client": cli,
-        "attribute_mappers": args.attr or ["clearance"],
+        "attribute_mappers": args.attr or ["access_tier"],
         "shared_issuer_url": kc.issuer_url(args.realm),
     }
 
@@ -248,9 +246,7 @@ def cmd_idp_persona(args: argparse.Namespace, *, client: Any = None) -> dict:
         if not sep:
             raise SystemExit(f"--attr must be 'name=value', got {pair!r}")
         attributes[k] = v
-    result = kc.ensure_user(
-        args.realm, args.user, password=pw, attributes=attributes
-    )
+    result = kc.ensure_user(args.realm, args.user, password=pw, attributes=attributes)
     return {"persona": result, "attributes": attributes}
 
 
@@ -313,7 +309,9 @@ def build_parser() -> argparse.ArgumentParser:
         p = g.add_parser(verb, help=f"{verb} a relation on a resource")
         p.add_argument("--subject", required=True, help="e.g. a username / subject id")
         p.add_argument("--relation", required=True, help="e.g. viewer / editor / owner")
-        p.add_argument("--object", required=True, help="'<namespace>:<id>', e.g. dataset:<urn>")
+        p.add_argument(
+            "--object", required=True, help="'<namespace>:<id>', e.g. dataset:<urn>"
+        )
         p.set_defaults(func=fn, needs_kc=False)
     p = g.add_parser("list", help="list a subject's grants")
     p.add_argument("--subject", required=True)
@@ -333,7 +331,9 @@ def build_parser() -> argparse.ArgumentParser:
         "omit for --role receiver — the receiver row is created without it)",
     )
     p.add_argument("--shared-issuer", required=True, help="shared realm issuer URL")
-    p.add_argument("--shared-ca-file", default=None, help="PEM CA for the shared issuer's TLS")
+    p.add_argument(
+        "--shared-ca-file", default=None, help="PEM CA for the shared issuer's TLS"
+    )
     p.add_argument(
         "--preshared-key-env",
         default=None,
@@ -374,7 +374,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = g.add_parser("gated", help="create a file dataset bound to a gate")
     p.add_argument("--name", required=True)
     p.add_argument("--path", required=True, help="on-cluster file path")
-    p.add_argument("--gate", required=True, help="gate classpath, e.g. acme_gates...MiniClearanceGate")
+    p.add_argument(
+        "--gate",
+        required=True,
+        help="gate classpath, e.g. acme_gates...MiniAccessTierGate",
+    )
     p.add_argument("--gate-config", default=None, help="JSON gate config (default {})")
     p.add_argument("--description", default=None)
     p.set_defaults(func=cmd_dataset_gated, needs_kc=False)
@@ -392,7 +396,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command"
     )
     p = g.add_parser("declare", help="declare an attribute in the vocabulary")
-    p.add_argument("--name", required=True, help="e.g. clearance")
+    p.add_argument("--name", required=True, help="e.g. access_tier")
     p.add_argument("--type", default="string")
     p.set_defaults(func=cmd_attr_declare, needs_kc=False)
 
@@ -406,15 +410,23 @@ def build_parser() -> argparse.ArgumentParser:
     ).add_subparsers(dest="command")
     p = g.add_parser("bootstrap", help="ensure realm + ROPC client + attribute mapper")
     p.add_argument("--realm", required=True, help="shared realm, e.g. federated")
-    p.add_argument("--ropc-client", required=True, help="public ROPC client id, e.g. fed-mesh-cli")
-    p.add_argument("--attr", action="append", help="attribute mapper(s); default clearance")
+    p.add_argument(
+        "--ropc-client", required=True, help="public ROPC client id, e.g. fed-mesh-cli"
+    )
+    p.add_argument(
+        "--attr", action="append", help="attribute mapper(s); default access_tier"
+    )
     _add_kc_args(p)
     p.set_defaults(func=cmd_idp_bootstrap)
     p = g.add_parser("persona", help="ensure a persona user with attributes")
     p.add_argument("--realm", required=True)
     p.add_argument("--user", required=True)
-    p.add_argument("--attr", action="append", help="'name=value', e.g. clearance=U")
-    p.add_argument("--pw-env", required=True, help="env var holding the persona password")
+    p.add_argument(
+        "--attr", action="append", help="'name=value', e.g. access_tier=PUBLIC"
+    )
+    p.add_argument(
+        "--pw-env", required=True, help="env var holding the persona password"
+    )
     _add_kc_args(p)
     p.set_defaults(func=cmd_idp_persona)
     p = g.add_parser("token", help="mint a persona ROPC token (test helper)")

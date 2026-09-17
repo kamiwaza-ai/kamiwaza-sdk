@@ -10,8 +10,8 @@ export interface Identity {
     email: string | null;
     name: string | null;
     roles: string[];
-    /** Platform classification (e.g. "U", "TS"). NOT a boolean. */
-    systemHigh: string | null;
+    /** Configured stable marking level ID; enforcement remains on the platform. */
+    markingLevel: string | null;
     workroomId: string | null;
     workroomRole: string | null;
     requestId: string | null;

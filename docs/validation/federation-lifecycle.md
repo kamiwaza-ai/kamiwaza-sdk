@@ -6,7 +6,7 @@ phases, but a pair of existing clusters can be qualified directly with these
 JSON contracts.
 
 The provider executes the exact nine registered cases for each selected
-mesh-edge: three clearance retrievals, three tenant-negative retrievals,
+mesh-edge: three access_tier retrievals, three tenant-negative retrievals,
 authorized dataset listing, a receiver job marker, and an unonboarded-user
 denial. Required cases fail; they are never silently skipped.
 

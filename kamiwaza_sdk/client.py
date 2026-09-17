@@ -1,14 +1,15 @@
 # kamiwaza_sdk/client.py
 
-from collections import OrderedDict
 import logging
 import os
 import random
 import time
+from collections import OrderedDict
 from typing import Any, Optional
 
 import requests  # type: ignore[import-untyped]
 
+from .authentication import ApiKeyAuthenticator, Authenticator
 from .exceptions import (
     APIError,
     AuthenticationError,
@@ -17,23 +18,23 @@ from .exceptions import (
     OffHostBaseURLError,
     VectorDBUnavailableError,
 )
-from .services.models import ModelService
-from .services.serving import ServingService
-from .services.catalog import CatalogService
-from .services.prompts import PromptsService
-from .services.embedding import EmbeddingService
 from .services.activity import ActivityService
-from .services.lab import LabService
+from .services.apps import AppService
 from .services.auth import AuthService
 from .services.authz import AuthzService
-from .authentication import Authenticator, ApiKeyAuthenticator
-from .services.ingestion import IngestionService
-from .services.openai import OpenAIService
-from .services.apps import AppService
-from .services.tools import ToolService
+from .services.catalog import CatalogService
 from .services.context import ContextService
-from .services.skills import SkillsService
+from .services.embedding import EmbeddingService
 from .services.enclaves import EnclavesService
+from .services.ingestion import IngestionService
+from .services.lab import LabService
+from .services.markings import MarkingsService
+from .services.models import ModelService
+from .services.openai import OpenAIService
+from .services.prompts import PromptsService
+from .services.serving import ServingService
+from .services.skills import SkillsService
+from .services.tools import ToolService
 from .services.workrooms import WorkroomService
 
 logger = logging.getLogger(__name__)
@@ -1204,6 +1205,13 @@ class KamiwazaClient:
 
             self._extensions = ExtensionService(self)
         return self._extensions
+
+    @property
+    def markings(self) -> MarkingsService:
+        """Configured optional marking vocabulary and provider presentation."""
+        if not hasattr(self, "_markings"):
+            self._markings = MarkingsService(self)
+        return self._markings
 
     @property
     def enclaves(self):

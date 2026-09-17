@@ -16,13 +16,15 @@ from kamiwaza_sdk.validation import (
     mesh_edge_target_id,
 )
 from kamiwaza_sdk.validation.applicability import applicable_targets
-from kamiwaza_sdk.validation.model_mesh_provider import ModelMeshLifecycleProvider
 from kamiwaza_sdk.validation.federation_common import initial_tuples
 from kamiwaza_sdk.validation.federation_spec import scenario_descriptor
+from kamiwaza_sdk.validation.model_mesh_provider import ModelMeshLifecycleProvider
 from kamiwaza_sdk.validation.model_mesh_spec import (
     MODEL_MESH_CASE_IDS,
     MODEL_MESH_SCENARIO_ID,
     resolve_candidates,
+)
+from kamiwaza_sdk.validation.model_mesh_spec import (
     scenario_descriptor as model_mesh_descriptor,
 )
 from kamiwaza_sdk.validation.provider import ProviderContractError
@@ -387,7 +389,9 @@ def test_model_mesh_prepare_owns_only_pairing_model_grant_and_no_gate_fixture(
     receiver_users = cluster_factory.wrappers["edge-b"].client.federations.users.added
     assert receiver_users
     user_tuples = [
-        tuples for external_id, tuples in receiver_users if "fed-clr-u" in external_id
+        tuples
+        for external_id, tuples in receiver_users
+        if "fed-tier-public" in external_id
     ]
     assert user_tuples == [
         [

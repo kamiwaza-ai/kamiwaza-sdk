@@ -133,7 +133,7 @@ fail loudly at upsert time instead of returning success with empty
 attributes.
 
 ```python
-kz.cluster.declare_attribute("clearance", type="string")
+kz.cluster.declare_attribute("access_tier", type="string")
 kz.cluster.declare_attribute("country",   type="string")
 kz.cluster.declare_attribute("programs",  type="string[]")  # multivalued
 ```
@@ -163,16 +163,16 @@ round-trip, infers multivalued KC entries for list-shaped values, and
 rolls back attribute deltas on partial failure (T3.4).
 
 ```python
-cdr_baker = kz.subjects.upsert(
-    "cdr-baker",
+alex = kz.subjects.upsert(
+    "alex",
     attributes={
-        "clearance": "TS",
+        "access_tier": "CONFIDENTIAL",
         "country": "USA",
-        "programs": ["IRIS", "ARGOS"],   # list → multivalued KC attribute
+        "programs": ["engineering", "operations"],   # list → multivalued KC attribute
     },
-    password="cdr-baker",
+    password="alex",
 )
-print(cdr_baker.id, cdr_baker.attributes["clearance"])  # kc-uuid TS
+print(alex.id, alex.attributes["access_tier"])  # kc-uuid CONFIDENTIAL
 ```
 
 Audit emits `subject_upsert{outcome=success}` on the receiver. A
@@ -222,11 +222,9 @@ print(conjunctions.urn)  # urn:li:dataset:(postgres,conjunctions,PROD)
 ```python
 ds_binding = kz.datasets.set_gate(
     conjunctions.urn,
-    type="kamiwaza_extensions.classified_conjunction_gate.ClassifiedConjunctionGate",
+    type="acme_gates.mini_access_tier_gate.MiniAccessTierGate",
     config={
-        "classification_field": "classification",
-        "releasable_to_field": "releasable_to",
-        "program_compartment_field": "program_compartment",
+        "tier_field": "tier",
     },
 )
 print(ds_binding.dataset_urn, ds_binding.gate_name)
@@ -242,10 +240,10 @@ that only the dataset's owner can rebind the gate (T2.5 follow-up).
 ```python
 # Receiver-side allowlist (same as WS-M1):
 kz.federations["ORION"].users.add(
-    external_id="cdr-baker@lyra-cluster-uuid",
+    external_id="alex@lyra-cluster-uuid",
     initial_tuples=[
         {
-            "subject": "user:cdr-baker@lyra-cluster-uuid",
+            "subject": "user:alex@lyra-cluster-uuid",
             "relation": "viewer",
             "object": "cluster:ORION",
         },
@@ -253,7 +251,7 @@ kz.federations["ORION"].users.add(
 )
 
 # Then attach a ReBAC viewer relation on the dataset (M3 subjects.grants):
-kz.subjects.grants("cdr-baker").create(
+kz.subjects.grants("alex").create(
     object_namespace="dataset",
     object_id=conjunctions.urn,
     relation="viewer",
@@ -277,7 +275,7 @@ result = kz.jobs.run(
     entrypoint="python /workdir/query.py --rows 1000",
 )
 print(result.status, result.audit_actor)
-# SUCCEEDED  cdr-baker@lyra-cluster-uuid
+# SUCCEEDED  alex@lyra-cluster-uuid
 ```
 
 For longer jobs, prefer the async + poll pattern — `submit_async`
@@ -341,7 +339,7 @@ not exceptional, that's data.
 ### Step 8 — Observe audit
 
 The receiver-side audit log shows the job completing as the
-originating user (`cdr-baker@lyra-cluster-uuid`), not as a
+originating user (`alex@lyra-cluster-uuid`), not as a
 system principal. M3 adds two more event types operators can grep for:
 
 - `gate_binding{action: set|clear, kind: execution|attribute}` — every

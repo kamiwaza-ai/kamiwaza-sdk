@@ -83,12 +83,12 @@ def test_discover_surfaces_required_attributes_and_schema(mock_client) -> None:
             "name": "classification-gate",
             "kind": "execution",
             "required_attributes": [
-                {"name": "clearance", "kind": "string"},
+                {"name": "access_tier", "kind": "string"},
                 {"name": "country", "kind": "string"},
             ],
             "config_schema": {
                 "type": "object",
-                "properties": {"min_clearance": {"type": "string"}},
+                "properties": {"min_access_tier": {"type": "string"}},
             },
             "classpath": "stub.ClassificationGate",
             "location": "<stub>",
@@ -98,5 +98,5 @@ def test_discover_surfaces_required_attributes_and_schema(mock_client) -> None:
     result = GatesAPI(client=mock_client).discover("stub.ClassificationGate")
 
     assert len(result.required_attributes) == 2
-    assert result.required_attributes[0]["name"] == "clearance"
-    assert result.config_schema["properties"]["min_clearance"]["type"] == "string"
+    assert result.required_attributes[0]["name"] == "access_tier"
+    assert result.config_schema["properties"]["min_access_tier"]["type"] == "string"

@@ -32,7 +32,7 @@ _FORWARD_HEADERS = frozenset(
         "x-user-roles",
         "x-user-groups",
         "x-user-attributes-hash",
-        "x-user-system-high",
+        "x-user-marking-level",
         "x-user-workroom-role",
         "x-workroom-id",
         "x-user-workroom-id",

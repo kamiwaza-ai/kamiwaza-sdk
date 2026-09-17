@@ -17,12 +17,16 @@ from kamiwaza_sdk.schemas.delegated_jobs import normalize_python_packages
 from kamiwaza_sdk.validation.delegated_readiness import run_delegated_job
 from kamiwaza_sdk.validation.federation_readiness import authorized_datasets
 
+from .test_federation_shared_idp_gated_retrieval_live import (  # noqa: F401 - dependency of imported live fixture
+    _receiver_prereqs,
+)
+from .test_federation_shared_idp_gated_retrieval_live import (  # noqa: F401 - imported fixture
+    shared_idp_gated_pair,
+)
 from .test_federation_shared_idp_gated_retrieval_live import (
-    _receiver_prereqs,  # noqa: F401 - dependency of imported live fixture
     _active_persona_session,
     _assert_receiver_job_provenance,
     _required_mesh_call,
-    shared_idp_gated_pair,  # noqa: F401 - imported fixture
 )
 
 pytestmark = [
@@ -36,7 +40,7 @@ pytestmark = [
 ]
 
 _IMPORT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
-_TEST_CLASSIFICATION = "U"
+_TEST_TIER = "PUBLIC"
 _RESULT_MARKER_WAIT_SECONDS = 15.0
 _RESULT_MARKER_POLL_SECONDS = 1.0
 
@@ -56,9 +60,9 @@ def _environment_string_list(name: str) -> tuple[str, ...]:
     return tuple(value.strip() for value in values)
 
 
-def _delegated_package_config() -> tuple[
-    tuple[str, ...], tuple[str, ...], dict[str, str]
-]:
+def _delegated_package_config() -> (
+    tuple[tuple[str, ...], tuple[str, ...], dict[str, str]]
+):
     coordinates = normalize_python_packages(
         list(_environment_string_list("KAMIWAZA_DELEGATED_TEST_PACKAGES_JSON"))
     )
@@ -112,7 +116,7 @@ def _require_gated_result_record(result: Any) -> dict[str, Any]:
     assert isinstance(metadata, dict), result
     assert isinstance(metadata.get("gate_audit"), list), result
     assert len(metadata["gate_audit"]) == 1, result
-    assert records[0].get("classification") == _TEST_CLASSIFICATION, result
+    assert records[0].get("tier") == _TEST_TIER, result
     return records[0]
 
 
@@ -138,7 +142,7 @@ def test_shared_idp_delegated_job_installs_approved_package(
 ) -> None:
     """Route one delegated native Ray job and import an operator-approved dependency."""
     wiring: dict[str, Any] = request.getfixturevalue("shared_idp_gated_pair")
-    persona, _token = _active_persona_session(wiring["personas"]["U"])
+    persona, _token = _active_persona_session(wiring["personas"]["PUBLIC"])
     coordinates, import_names, expected_versions = _delegated_package_config()
     delegated_access = {
         "datasets": [
@@ -159,7 +163,7 @@ def test_shared_idp_delegated_job_installs_approved_package(
         "        versions[name] = importlib.metadata.version(name)\n"
         "    except importlib.metadata.PackageNotFoundError:\n"
         "        versions[name] = None\n"
-        f"payload = [{{'classification': {_TEST_CLASSIFICATION!r}, "
+        f"payload = [{{'tier': {_TEST_TIER!r}, "
         f"'probe': {baseline_marker!r}, 'package_versions': versions}}]\n"
         "print('KZ_MESH_RUN_ON_JSON::' + json.dumps(payload))\n"
     )
@@ -188,7 +192,7 @@ def test_shared_idp_delegated_job_installs_approved_package(
         f"packages = {tuple(expected_versions)!r}\n"
         "modules = [importlib.import_module(name).__name__ for name in names]\n"
         "versions = {name: importlib.metadata.version(name) for name in packages}\n"
-        f"payload = [{{'classification': {_TEST_CLASSIFICATION!r}, "
+        f"payload = [{{'tier': {_TEST_TIER!r}, "
         f"'probe': {marker!r}, 'package_imports': modules, "
         "'package_versions': versions}]\n"
         "print('KZ_MESH_RUN_ON_JSON::' + json.dumps(payload))\n"

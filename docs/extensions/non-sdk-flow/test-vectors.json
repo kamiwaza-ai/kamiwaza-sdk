@@ -6,7 +6,7 @@
       "X-User-Email": "alice@example.com",
       "X-User-Name": "Alice",
       "X-User-Roles": "member,editor",
-      "X-User-System-High": "U",
+      "X-User-Marking-Level": "PUBLIC",
       "X-Workroom-Id": "w1",
       "X-User-Workroom-Id": "w1",
       "X-User-Workroom-Role": "editor",
@@ -20,7 +20,7 @@
       "email": "alice@example.com",
       "name": "Alice",
       "roles": ["member", "editor"],
-      "system_high": "U",
+      "marking_level": "PUBLIC",
       "workroom_id": "w1",
       "workroom_role": "editor",
       "request_id": "req-abc"
@@ -56,7 +56,7 @@
       "email": "ops@example.com",
       "name": null,
       "roles": ["admin"],
-      "system_high": null,
+      "marking_level": null,
       "workroom_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
       "workroom_role": null,
       "request_id": null

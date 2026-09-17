@@ -2,7 +2,7 @@
 
 A deterministic, operator-facing utility (``kamiwaza-federation``) that productizes the
 shared_idp stand-up + resource-access management that previously lived only in
-test fixtures (``tests/integration/_mini_clearance.py``):
+test fixtures (``tests/integration/_mini_access_tier.py``):
 
 * ``access``  — manage ReBAC grants on resources (subjects.grants)
 * ``fed``     — shared_idp federation lifecycle (pair / status / allow-user)
@@ -16,7 +16,7 @@ test fixtures (``tests/integration/_mini_clearance.py``):
 require direct Keycloak access (e.g. ``kubectl port-forward svc/keycloak 8080:80``
 then ``--kc-url http://localhost:8080``). ``idp token`` only does a public ROPC
 grant and works against the normal ingress URL. For PRODUCTION, the shared realm /
-client / clearance-mapper / user-profile policy should be provisioned
+client / access_tier-mapper / user-profile policy should be provisioned
 declaratively by the auth chart's install-time Keycloak init-Job pipeline (the
 same path that seeds the ``kamiwaza`` realm), not by this command — see the
 ENG-8571 follow-up. This CLI remains the fast path for dev/test stand-up.

@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from kamiwaza_sdk.validation.applicability import ApplicableTarget
-from kamiwaza_sdk.validation.inference_spec import _compatibility_error
 from kamiwaza_sdk.validation.federation_spec import (
     SHARED_REALM_CLIENT_ID,
     planned_shared_issuer,
 )
+from kamiwaza_sdk.validation.inference_spec import _compatibility_error
 from kamiwaza_sdk.validation.models import (
     FactMatcher,
     InferenceTarget,
@@ -154,10 +154,10 @@ def _resolved_candidate(
             "realm": realm,
             "client_id": SHARED_REALM_CLIENT_ID,
             "persona_usernames": [
-                "fed-clr-u",
-                "fed-clr-s",
-                "fed-clr-ts",
-                "fed-clr-unonboarded",
+                "fed-tier-public",
+                "fed-tier-private",
+                "fed-tier-confidential",
+                "fed-tier-unonboarded",
                 "fed-tenant-missing",
                 "fed-tenant-legacy-only",
                 "fed-tenant-nondefault",

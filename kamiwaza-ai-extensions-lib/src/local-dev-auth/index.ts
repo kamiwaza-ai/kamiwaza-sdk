@@ -64,7 +64,7 @@ const GLOBAL_WORKROOM_SENTINEL = "ffffffff-ffff-ffff-ffff-ffffffffffff";
  * Forwarded-auth envelope headers that the platform gateway owns in
  * production. Under the local-dev bridge we MUST clear all of these
  * before injecting our synthesized values — otherwise a client-supplied
- * spoof (e.g. `x-user-system-high: 1`) would slip through unchanged and
+ * spoof (e.g. `x-user-marking-level: 1`) would slip through unchanged and
  * make local auth tests pass for permissions the user doesn't actually
  * have. Sourced from the shared `ENVELOPE_AUTH_HEADERS` constant so
  * `proxy.ts` (forward) and this file (clear) cannot drift —
@@ -202,7 +202,7 @@ export function _buildBridgedHeaders(
     // envelope headers before bridging. Starting from `new Headers(incoming)`
     // and only `set()`-ing a subset would preserve client-supplied values
     // for headers we don't bridge (e.g. a request with no `authorization`
-    // but with `x-user-system-high: 1` or `x-user-workroom-role: admin`
+    // but with `x-user-marking-level: 1` or `x-user-workroom-role: admin`
     // would forward those spoofed values to the backend, making local
     // auth tests pass in ways production wouldn't — in production the
     // platform gateway owns the entire envelope). Clear every header in
@@ -213,7 +213,7 @@ export function _buildBridgedHeaders(
     // inbound ``Authorization`` preserved EVERY envelope header
     // including spoofs, opening a privilege-escalation bypass:
     // ``Authorization: anything`` + ``x-user-id: admin`` +
-    // ``x-user-system-high: 1`` reached the backend untouched. The
+    // ``x-user-marking-level: 1`` reached the backend untouched. The
     // sanitization now runs unconditionally on every gate-on path —
     // when the bridge is active there's no platform gateway, so
     // spoofs never have a legitimate source.
