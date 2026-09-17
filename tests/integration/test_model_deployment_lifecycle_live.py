@@ -96,6 +96,15 @@ class _Created:
     configs: dict[UUID, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class _Lane:
+    """What the test deploys: the target, its registered model and weights file."""
+
+    target: InferenceTarget
+    model: Any
+    file_id: UUID
+
+
 def _stop_and_wait(client, deployment_id: UUID, *, force: bool) -> None:
     """Stop a deployment and wait for STOPPED.
 
@@ -120,59 +129,66 @@ def _cleanup_failures(client, registry: _Created) -> list[str]:
     """Stop and delete every registered resource, collecting failures instead of
     stopping at the first one. A config is deleted only if it still carries the
     name the test created it with, and its deletion is proven by NotFound."""
-    failures: list[str] = []
-    for deployment_id in reversed(registry.deployment_ids):
-        try:
-            _stop_and_wait(client, deployment_id, force=True)
-        except (
-            AssertionError,
-            KamiwazaError,
-            SchemaValidationError,
-            TimeoutError,
-        ) as exc:
-            failures.append(f"could not stop deployment {deployment_id}: {exc!r}")
-    for config_id, name in reversed(list(registry.configs.items())):
-        try:
-            current = client.models.get_model_config(config_id)
-        except NotFoundError:
-            continue
-        except (KamiwazaError, SchemaValidationError) as exc:
-            failures.append(
-                f"could not read config {config_id} before cleanup: {exc!r}"
-            )
-            continue
-        if current.name != name:
-            failures.append(
-                f"refused to delete config {config_id}: it is named "
-                f"{current.name!r}, not {name!r}"
-            )
-            continue
-        delete_answer = ""
-        try:
-            client.models.delete_model_config(config_id)
-        except NotFoundError as exc:
-            # On 1.2.1 a delete refused by the permission check also answers
-            # 404, so NotFound here is not proof of absence: the read-back below
-            # decides, and the 404 is kept for the failure message.
-            delete_answer = f" (the delete answered {exc!r})"
-        except (KamiwazaError, SchemaValidationError) as exc:
-            failures.append(f"could not delete config {config_id}: {exc!r}")
-            continue
-        try:
-            # The read masks a permission refusal as 404 too, but this client
-            # read the config successfully just above, so NotFound means gone.
-            client.models.get_model_config(config_id)
-        except NotFoundError:
-            continue
-        except (KamiwazaError, SchemaValidationError) as exc:
-            failures.append(
-                f"could not confirm config {config_id} deleted: {exc!r}{delete_answer}"
-            )
-            continue
-        failures.append(
-            f"config {config_id} still readable after delete{delete_answer}"
+    failures = [
+        _stop_failure(client, deployment_id)
+        for deployment_id in reversed(registry.deployment_ids)
+    ]
+    failures += [
+        _config_cleanup_failure(client, config_id, name)
+        for config_id, name in reversed(list(registry.configs.items()))
+    ]
+    return [failure for failure in failures if failure]
+
+
+def _stop_failure(client, deployment_id: UUID) -> str | None:
+    try:
+        _stop_and_wait(client, deployment_id, force=True)
+    except (
+        AssertionError,
+        KamiwazaError,
+        SchemaValidationError,
+        TimeoutError,
+    ) as exc:
+        return f"could not stop deployment {deployment_id}: {exc!r}"
+    return None
+
+
+def _config_cleanup_failure(client, config_id: UUID, name: str) -> str | None:
+    try:
+        current = client.models.get_model_config(config_id)
+    except NotFoundError:
+        return None
+    except (KamiwazaError, SchemaValidationError) as exc:
+        return f"could not read config {config_id} before cleanup: {exc!r}"
+    if current.name != name:
+        return (
+            f"refused to delete config {config_id}: it is named "
+            f"{current.name!r}, not {name!r}"
         )
-    return failures
+    try:
+        client.models.delete_model_config(config_id)
+    except NotFoundError as exc:
+        # On 1.2.1 a delete refused by the permission check also answers 404,
+        # so NotFound here is not proof of absence: the read-back decides, and
+        # the 404 is kept for the failure message.
+        return _config_absence_failure(
+            client, config_id, f" (the delete answered {exc!r})"
+        )
+    except (KamiwazaError, SchemaValidationError) as exc:
+        return f"could not delete config {config_id}: {exc!r}"
+    return _config_absence_failure(client, config_id, "")
+
+
+def _config_absence_failure(client, config_id: UUID, delete_answer: str) -> str | None:
+    try:
+        # The read masks a permission refusal as 404 too, but cleanup read the
+        # config successfully just before deleting it, so NotFound means gone.
+        client.models.get_model_config(config_id)
+    except NotFoundError:
+        return None
+    except (KamiwazaError, SchemaValidationError) as exc:
+        return f"could not confirm config {config_id} deleted: {exc!r}{delete_answer}"
+    return f"config {config_id} still readable after delete{delete_answer}"
 
 
 @pytest.fixture
@@ -204,10 +220,8 @@ def _lane_target() -> InferenceTarget:
     return target
 
 
-def _ready_target(
-    client, target: InferenceTarget, target_model_file_id
-) -> tuple[Any, UUID]:
-    """Return the target model and its ready GGUF weights file.
+def _ready_lane(client, target: InferenceTarget, target_model_file_id) -> _Lane:
+    """Return the target with its registered model and ready GGUF weights file.
 
     Runs before anything is created. A missing optional target skips; a missing
     fleet-required target fails. It cannot tell an absent prerequisite from a
@@ -228,7 +242,7 @@ def _ready_target(
             f"prerequisite: GGUF weights for {target.repo_id} ({target.quantization}) "
             "are not already on this cluster; this test never downloads",
         )
-    return model, UUID(file_id)
+    return _Lane(target=target, model=model, file_id=UUID(file_id))
 
 
 def _missing_prerequisite(target: InferenceTarget, reason: str) -> NoReturn:
@@ -243,16 +257,66 @@ def _missing_prerequisite(target: InferenceTarget, reason: str) -> NoReturn:
     raise pytest.skip.Exception(msg=reason)
 
 
-def _deploy_fresh(
-    client, target: InferenceTarget, model, config_id: UUID, file_id: UUID
-) -> UUID:
+def _config_template(client, lane: _Lane):
+    """The model's default config (else its first), whose settings the test copies."""
+    existing = client.models.get_model_configs(lane.model.id)
+    if not existing:
+        _missing_prerequisite(
+            lane.target,
+            f"prerequisite: {lane.model.repo_modelId} has no model config to copy settings from",
+        )
+    return next((c for c in existing if c.default), existing[0])
+
+
+def _config_request(
+    lane: _Lane, template, name: str, description: str
+) -> CreateModelConfig:
+    return CreateModelConfig(
+        m_id=lane.model.id,
+        m_file_id=lane.file_id,
+        name=name,
+        default=False,
+        description=description,
+        config=dict(template.config),
+        system_config=dict(template.system_config),
+    )
+
+
+def _create_update_and_read_config(client, lane: _Lane, template, created: _Created):
+    """Create a disposable config, prove it by reads and listings, update it, and
+    prove the update by a read."""
+    name = f"sdk-t09-{uuid4().hex[:8]}"
+    description = "ENG-12327 T09 config"
+    config = client.models.create_model_config(
+        _config_request(lane, template, name, description)
+    )
+    created.configs[config.id] = name
+    assert (config.m_id, config.name, config.default) == (lane.model.id, name, False)
+
+    fetched = client.models.get_model_config(config.id)
+    assert (fetched.name, fetched.m_file_id) == (name, lane.file_id)
+    assert config.id in {c.id for c in client.models.get_model_configs(lane.model.id)}
+    assert config.id in {
+        c.id for c in client.models.get_model_configs_for_model(lane.model.id)
+    }
+
+    updated_description = f"{description} (updated)"
+    updated = client.models.update_model_config(
+        config.id, _config_request(lane, template, name, updated_description)
+    )
+    assert updated.id == config.id
+    assert client.models.get_model_config(config.id).description == updated_description
+    return config
+
+
+def _deploy_fresh(client, lane: _Lane, config_id: UUID) -> UUID:
     """Deploy and return an id that did not exist anywhere before this call."""
     existing = {d.id for d in client.serving.list_deployments()}
     deployment_id = client.serving.deploy_model(
-        model_id=model.id,
+        model_id=lane.model.id,
         m_config_id=config_id,
-        m_file_id=file_id,
-        engine_name=target.engine_name,
+        m_file_id=lane.file_id,
+        engine_name=lane.target.engine_name,
         lb_port=0,
         autoscaling=False,
         min_copies=1,
@@ -268,31 +332,37 @@ def _deploy_fresh(
     return deployment_id
 
 
-def _assert_deployed_as_requested(
-    deployment,
-    deployment_id: UUID,
-    target: InferenceTarget,
-    config_id: UUID,
-    file_id: UUID,
-) -> None:
+def _deploy_and_check(client, lane: _Lane, config_id: UUID, created: _Created) -> UUID:
+    """Deploy fresh to DEPLOYED and check the deployment carries what was requested
+    and appears in the model's and the active listings."""
+    deployment_id = _deploy_fresh(client, lane, config_id)
+    created.deployment_ids.append(deployment_id)
+    ready = client.serving.wait_deployment_ready(
+        deployment_id, timeout_seconds=_READY_TIMEOUT_SECONDS
+    )
+    assert ready.status == "DEPLOYED"
+
+    deployment = client.serving.get_deployment(deployment_id)
     assert (
         deployment.id,
         deployment.status,
         deployment.m_config_id,
         deployment.m_file_id,
         deployment.engine_name,
-    ) == (deployment_id, "DEPLOYED", config_id, file_id, target.engine_name)
+    ) == (deployment_id, "DEPLOYED", config_id, lane.file_id, lane.target.engine_name)
+    assert deployment.instances, "a DEPLOYED deployment reports no instances"
+    assert deployment_id in {
+        d.id for d in client.serving.list_deployments(model_id=lane.model.id)
+    }
+    assert deployment_id in {d.id for d in client.serving.list_active_deployments()}
+    return deployment_id
 
 
-def _deployment_logs_once_captured(client, deployment_id: UUID):
-    """Read captured logs, treating NotFound as capture not having started yet.
-
-    The 1.2.1 route answers 404 while no log file exists for the deployment.
-    """
-    try:
-        return client.serving.get_deployment_logs(deployment_id)
-    except NotFoundError:
-        return None
+def _check_instances(client, deployment_id: UUID) -> None:
+    instances = client.serving.list_model_instances(deployment_id)
+    assert instances and all(i.deployment_id == deployment_id for i in instances)
+    instance = client.serving.get_model_instance(instances[0].id)
+    assert (instance.id, instance.deployment_id) == (instances[0].id, deployment_id)
 
 
 def _sum_question() -> tuple[str, str]:
@@ -310,82 +380,8 @@ def _sum_question() -> tuple[str, str]:
             return prompt, answer
 
 
-def test_model_config_and_local_deployment_lifecycle(
-    live_kamiwaza_client,
-    target_model_file_id,
-    created,
-) -> None:
-    client = live_kamiwaza_client
-    target = _lane_target()
-    model, file_id = _ready_target(client, target, target_model_file_id)
-
-    existing = client.models.get_model_configs(model.id)
-    if not existing:
-        _missing_prerequisite(
-            target,
-            f"prerequisite: {model.repo_modelId} has no model config to copy settings from",
-        )
-    template = next((c for c in existing if c.default), existing[0])
-
-    name = f"sdk-t09-{uuid4().hex[:8]}"
-    description = "ENG-12327 T09 config"
-    config = client.models.create_model_config(
-        CreateModelConfig(
-            m_id=model.id,
-            m_file_id=file_id,
-            name=name,
-            default=False,
-            description=description,
-            config=dict(template.config),
-            system_config=dict(template.system_config),
-        )
-    )
-    created.configs[config.id] = name
-    assert (config.m_id, config.name, config.default) == (model.id, name, False)
-
-    fetched = client.models.get_model_config(config.id)
-    assert (fetched.name, fetched.m_file_id) == (name, file_id)
-    assert config.id in {c.id for c in client.models.get_model_configs(model.id)}
-    assert config.id in {
-        c.id for c in client.models.get_model_configs_for_model(model.id)
-    }
-
-    updated_description = f"{description} (updated)"
-    updated = client.models.update_model_config(
-        config.id,
-        CreateModelConfig(
-            m_id=model.id,
-            m_file_id=file_id,
-            name=name,
-            default=False,
-            description=updated_description,
-            config=dict(template.config),
-            system_config=dict(template.system_config),
-        ),
-    )
-    assert updated.id == config.id
-    assert client.models.get_model_config(config.id).description == updated_description
-
-    deployment_id = _deploy_fresh(client, target, model, config.id, file_id)
-    created.deployment_ids.append(deployment_id)
-    ready = client.serving.wait_deployment_ready(
-        deployment_id, timeout_seconds=_READY_TIMEOUT_SECONDS
-    )
-    assert ready.status == "DEPLOYED"
-
-    deployment = client.serving.get_deployment(deployment_id)
-    _assert_deployed_as_requested(deployment, deployment_id, target, config.id, file_id)
-    assert deployment.instances, "a DEPLOYED deployment reports no instances"
-    assert deployment_id in {
-        d.id for d in client.serving.list_deployments(model_id=model.id)
-    }
-    assert deployment_id in {d.id for d in client.serving.list_active_deployments()}
-
-    instances = client.serving.list_model_instances(deployment_id)
-    assert instances and all(i.deployment_id == deployment_id for i in instances)
-    instance = client.serving.get_model_instance(instances[0].id)
-    assert (instance.id, instance.deployment_id) == (instances[0].id, deployment_id)
-
+def _serve_one_chat(client, deployment_id: UUID) -> None:
+    """One chat completion through the deployment; the reply must contain the sum."""
     prompt, answer = _sum_question()
     openai_client = client.openai.get_client(deployment_id=deployment_id)
     try:
@@ -409,6 +405,20 @@ def test_model_config_and_local_deployment_lifecycle(
     assert reply.usage is not None and reply.usage.prompt_tokens > 0, reply
     assert reply.usage.completion_tokens > 0, reply
 
+
+def _deployment_logs_once_captured(client, deployment_id: UUID):
+    """Read captured logs, treating NotFound as capture not having started yet.
+
+    The 1.2.1 route answers 404 while no log file exists for the deployment.
+    """
+    try:
+        return client.serving.get_deployment_logs(deployment_id)
+    except NotFoundError:
+        return None
+
+
+def _check_captured_and_streamed_logs(client, deployment_id: UUID) -> None:
+    """Captured logs appear, and a streamed line is one of the captured lines."""
     logs = _wait_until(
         lambda: _deployment_logs_once_captured(client, deployment_id),
         lambda item: item is not None and bool(item.logs),
@@ -427,12 +437,39 @@ def test_model_config_and_local_deployment_lifecycle(
         f"stream_deployment_logs did not yield a captured line: {streamed!r}"
     )
 
+
+def _stop_and_prove_inactive(client, deployment_id: UUID, created: _Created) -> None:
+    """Stop without force to STOPPED and prove the deployment left the active list."""
     _stop_and_wait(client, deployment_id, force=False)
     created.deployment_ids.remove(deployment_id)
     assert deployment_id not in {d.id for d in client.serving.list_active_deployments()}
 
-    client.models.delete_model_config(config.id)
+
+def _delete_and_prove_config_gone(
+    client, lane: _Lane, config_id: UUID, created: _Created
+) -> None:
+    """Delete the config, prove it NotFound, and prove it left the model's listing."""
+    client.models.delete_model_config(config_id)
     with pytest.raises(NotFoundError):
-        client.models.get_model_config(config.id)
-    del created.configs[config.id]
-    assert config.id not in {c.id for c in client.models.get_model_configs(model.id)}
+        client.models.get_model_config(config_id)
+    del created.configs[config_id]
+    assert config_id not in {
+        c.id for c in client.models.get_model_configs(lane.model.id)
+    }
+
+
+def test_model_config_and_local_deployment_lifecycle(
+    live_kamiwaza_client,
+    target_model_file_id,
+    created,
+) -> None:
+    client = live_kamiwaza_client
+    lane = _ready_lane(client, _lane_target(), target_model_file_id)
+    template = _config_template(client, lane)
+    config = _create_update_and_read_config(client, lane, template, created)
+    deployment_id = _deploy_and_check(client, lane, config.id, created)
+    _check_instances(client, deployment_id)
+    _serve_one_chat(client, deployment_id)
+    _check_captured_and_streamed_logs(client, deployment_id)
+    _stop_and_prove_inactive(client, deployment_id, created)
+    _delete_and_prove_config_gone(client, lane, config.id, created)
