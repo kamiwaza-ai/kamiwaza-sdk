@@ -92,10 +92,11 @@ CATALOG_PROPAGATION_TIMEOUT_S = 30.0
 # hold it open.
 SSE_READ_TIMEOUT_S = 60.0
 SSE_STREAM_TIMEOUT_S = 120.0
-# Deleted objects must read as 404 within this budget, the same one T01's
-# _poll_until_not_found (test_catalog_ingest_retrieval.py) allows for catalog
-# deletes. It covers one fixture's deletions together, so a platform that stopped
-# deleting costs a teardown this long once per fixture, not once per URN.
+# Deleted objects must read as 404 within this budget, which is T01's
+# _poll_until_not_found budget (test_catalog_ingest_retrieval.py, 15 reads 2s apart)
+# rounded up, but shared: it covers one fixture's deletions together rather than
+# allowing it per URN, so a platform that stopped deleting costs a teardown this
+# long once per fixture.
 ABSENCE_TIMEOUT_S = 30.0
 ABSENCE_POLL_INTERVAL_S = 2.0
 # The SDK wraps requests exceptions raised while sending in APIError. Errors raised
@@ -103,6 +104,9 @@ ABSENCE_POLL_INTERVAL_S = 2.0
 # CA bundle path as a plain OSError, and some urllib3 errors unwrapped.
 TRANSPORT_ERRORS = (KamiwazaError, OSError, Urllib3HTTPError)
 CLEANUP_ERRORS = (*TRANSPORT_ERRORS, ValidationError)
+# A frame the SDK cannot decode or validate fails the stream read like a transport
+# error, so it is reported by _fail_stream rather than raised through the SDK frames.
+STREAM_ERRORS = (*TRANSPORT_ERRORS, ValidationError, UnicodeDecodeError)
 
 
 def _delete_and_confirm_absent(
@@ -144,8 +148,12 @@ def _absence_problem(read: Callable[[str], object], urn: str, deadline: float) -
     """Read ``urn`` until it returns 404; return why it did not, or "" once it does.
 
     Any other read error ends the poll at once. A delete the catalog shows late still
-    counts as gone while ``deadline`` (a monotonic time) has not passed.
+    counts as gone while ``deadline`` (a monotonic time) has not passed. The failure
+    reports the reads this URN actually got, which is one for a URN whose turn came
+    after the shared deadline had passed.
     """
+    started = time.monotonic()
+    reads = 0
     while True:
         try:
             read(urn)
@@ -153,8 +161,10 @@ def _absence_problem(read: Callable[[str], object], urn: str, deadline: float) -
             return ""
         except CLEANUP_ERRORS as exc:
             return f"read back failed: {type(exc).__name__}: {exc}"
+        reads += 1
         if time.monotonic() >= deadline:
-            return f"still readable after delete (polled for {ABSENCE_TIMEOUT_S:.0f}s)"
+            polled_s = time.monotonic() - started
+            return f"still readable after delete ({reads} reads over {polled_s:.0f}s)"
         time.sleep(ABSENCE_POLL_INTERVAL_S)
 
 
@@ -471,7 +481,7 @@ def _collect_stream(
             ended_at = time.monotonic()
             timed.stop()
             stream.close()
-    except TRANSPORT_ERRORS as exc:
+    except STREAM_ERRORS as exc:
         failure = f"failed: {type(exc).__name__}: {exc}"
     finally:
         ended_at = ended_at or time.monotonic()
@@ -505,7 +515,12 @@ def _chunk_rows(chunk: RetrievalStreamEvent, context: str) -> list[dict[str, Any
 def _stream_rows(
     events: list[RetrievalStreamEvent], context: str
 ) -> list[dict[str, Any]]:
-    """Check the stream ends with one complete event counting its chunks; return rows."""
+    """Check the stream ends with one complete event counting its chunks; return rows.
+
+    Like the chunk shape in _chunk_rows, the count this compares ``sequence`` against
+    was read from the 1.2.1 retrieval source and has not been seen on a live stream,
+    because SSE fails on the evidence instance (ENG-12300).
+    """
     names = [event.event for event in events]
     chunks = [event for event in events if event.event == "chunk"]
     assert chunks, (
@@ -604,6 +619,8 @@ def _create_container_or_skip(client: KamiwazaClient) -> str:
     At 1.2.1, ``reject_global_write`` refuses a container write to the Global
     workroom with 403 unless the caller has the ``admin`` role. So a 403 skips
     for an identity without that role and fails for an identity that has it.
+    Roles are compared case-insensitively, as the SDK's own AuthService.require_admin
+    does; /auth/users/me returns them unnormalised.
     """
     try:
         return client.catalog.containers.create(
@@ -615,10 +632,11 @@ def _create_container_or_skip(client: KamiwazaClient) -> str:
         if exc.status_code != 403:
             raise
         refusal = f"{type(exc).__name__}: {exc}"
-    # Outside the except block: the identity lookup reports its own failure, and a
-    # described refusal keeps the SDK frames (and the bearer they carry) unprinted.
+    # Outside the except block: the identity lookup reports its own failure, and
+    # describing this refusal keeps its SDK frames (and the bearer they carry)
+    # unprinted. A refusal that is not a 403 re-raises above, and still prints them.
     roles = client.auth.get_current_user().roles
-    if "admin" in roles:
+    if "admin" in {role.lower() for role in roles}:
         pytest.fail(f"container create refused for an admin identity -- {refusal}")
     pytest.skip(
         f"Container create returned 403 for an identity with roles {sorted(roles)}; "

@@ -28,7 +28,7 @@ RETRIEVAL = ("retrieval.async-retrieval-jobs",)
 # The scenario_name of each entry, in map order, keyed by the claims it makes: the
 # emitter derives the record's scenario_id from it, so renaming one silently writes
 # a different record.
-SCENARIO_NAMES = {
+SCENARIO_NAMES: dict[tuple[str, ...], str] = {
     REGISTRY: "Multi-source catalog ingestion",
     RETRIEVAL: "Multi-source inline and SSE retrieval",
 }
@@ -86,7 +86,9 @@ def _defined_in_module(predicate: Callable[[object], bool], prefix: str) -> set[
 
 
 def test_every_t02_test_is_listed() -> None:
-    defined = _defined_in_module(inspect.isfunction, "test_")
+    # "test", not "test_": pytest's default python_functions is test*, so a
+    # function named testcatalog_x would collect and feed both entries.
+    defined = _defined_in_module(inspect.isfunction, "test")
 
     assert defined == set(EXPECTED_CLAIMS), (
         f"unlisted: {sorted(defined - set(EXPECTED_CLAIMS))}; "
