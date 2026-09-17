@@ -242,9 +242,9 @@ def _ingest_s3(client: KamiwazaClient, seed: _S3Seed, prefix: str) -> list[str]:
         secret_name=seed.secret_urn,
     )
     seed.created.extend(response.urns)
-    assert response.errors == [], (
-        f"S3 ingestion of {prefix!r} reported errors: {response.errors}"
-    )
+    assert (
+        response.errors == []
+    ), f"S3 ingestion of {prefix!r} reported errors: {response.errors}"
     assert response.urns, f"S3 ingestion of {prefix!r} returned no datasets"
     return response.urns
 
@@ -284,13 +284,13 @@ def _ingest_postgres_orders(
         schema=pg["schema"],
     )
     created.extend(response.urns)
-    assert response.errors == [], (
-        f"Postgres ingestion reported errors: {response.errors}"
-    )
+    assert (
+        response.errors == []
+    ), f"Postgres ingestion reported errors: {response.errors}"
     orders = [urn for urn in response.urns if "catalog_test_orders" in urn]
-    assert len(orders) == 1, (
-        f"expected one catalog_test_orders dataset among {response.urns}"
-    )
+    assert (
+        len(orders) == 1
+    ), f"expected one catalog_test_orders dataset among {response.urns}"
     return client.catalog.datasets.get(orders[0])
 
 
@@ -314,9 +314,9 @@ def _completed_inline_job(client: KamiwazaClient, urn: str, *, fmt: str) -> Inli
     assert isinstance(inline.data, list)
     assert inline.row_count == len(inline.data)
     status = client.retrieval.get_job(job.job_id)
-    assert status.status == "COMPLETED", (
-        f"job {job.job_id} reads back as {status.status}"
-    )
+    assert (
+        status.status == "COMPLETED"
+    ), f"job {job.job_id} reads back as {status.status}"
     assert status.progress.rows_processed == inline.row_count
     return inline
 
@@ -585,9 +585,9 @@ def _stream_rows(
         f"SSE stream emitted no chunk events ({context}); {SSE_SYMPTOM_REPORT} "
         "records this symptom on the Azure 1.2.1 evidence instance"
     )
-    assert names[-1] == "complete" and names.count("complete") == 1, (
-        f"SSE stream did not end with exactly one terminal complete event ({context})"
-    )
+    assert (
+        names[-1] == "complete" and names.count("complete") == 1
+    ), f"SSE stream did not end with exactly one terminal complete event ({context})"
     sequence = events[-1].data.get("sequence")
     assert sequence == len(chunks), (
         f"complete event sequence {sequence!r} does not count the {len(chunks)} "
@@ -859,9 +859,9 @@ def test_catalog_kafka_ingestion_metadata(
     created_datasets.extend(response.urns)
     assert response.errors == [], f"Kafka ingestion reported errors: {response.errors}"
     topics = [urn for urn in response.urns if kafka["topic"] in urn]
-    assert len(topics) == 1, (
-        f"expected one dataset for topic {kafka['topic']!r} among {response.urns}"
-    )
+    assert (
+        len(topics) == 1
+    ), f"expected one dataset for topic {kafka['topic']!r} among {response.urns}"
     dataset = live_kamiwaza_client.catalog.datasets.get(topics[0])
     assert dataset.platform == "kafka"
 
