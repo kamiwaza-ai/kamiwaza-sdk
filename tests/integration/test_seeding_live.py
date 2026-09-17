@@ -16,6 +16,7 @@ import pytest
 
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.seeding import scoped_client_for_workroom
+from kamiwaza_sdk.seeding.workroom_binding import enter_projected_workroom
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -119,7 +120,9 @@ def test_pat_workroom_enter_is_rejected(live_write_client, disposable_workroom):
     workroom = disposable_workroom(name=name, workroom_type="persistent")
 
     with pytest.raises(APIError) as exc_info:
-        live_write_client.workrooms.enter(workroom.id)
+        # New workroom grants may still be projecting to SpiceDB.
+        # Wait only at the pre-binding boundary; PAT rejection must still win.
+        enter_projected_workroom(live_write_client, workroom.id)
 
     assert exc_info.value.status_code == 409
     assert _is_binding_invalid(exc_info.value)

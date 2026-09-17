@@ -153,6 +153,29 @@
   scenario_name: "OpenAI-compatible inference operation set"
   unverified_operations: [embeddings, transcription, image_generation]
 
+# ENG-12327 (T09). Deploys a llama.cpp GGUF target: the explicit fleet target
+# when one is set, else GGUF_LLM_TARGET; an explicit target on another engine
+# skips the test as not applicable. Before anything is created the test checks
+# that the target's weights and at least one model config are already on the
+# cluster; a missing prerequisite skips an optional target and fails a
+# fleet-required one, and no SDK download method is called. Every run makes a
+# fresh deployment, so the test cannot pass on a warm cluster without
+# deploying, and the deployment is checked to carry the requested config,
+# weights file and engine. The test creates, reads, lists and updates a
+# disposable model config, deploys with it to DEPLOYED, checks the deployment,
+# active listing and instances, serves one chat completion through the
+# deployment (the reply must contain the sum of two per-run numbers, which the
+# prompt does not), reads captured logs and the log stream, stops it without
+# force to STOPPED, and deletes the config. The chat call shows the deployment
+# serves; it does not claim models.openai-compatible-inference, whose document
+# allows a pass only with a representative call per declared operation (chat,
+# embeddings, transcription, image generation), which develop's capability map
+# enforces since ENG-12269.
+- pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_model_config_and_local_deployment_lifecycle"
+  capability_ids: [models.local-deployment]
+  scenario_name: "Model config and local deployment lifecycle through the SDK"
+  evidence_provenance: cycle-authored
+
 # The two catalog ingest-to-retrieval tests are mapped separately under the
 # PER-TEST RULE. Each writes its own run-unique parquet object, ingests exactly
 # that object with ingestion.run_active, and reads the dataset back through
@@ -230,6 +253,26 @@
     - "*::test_catalog_metadata_and_health"
     - "*::test_catalog_secret_list"
     - "*::test_catalog_secret_endpoints"
+
+# ENG-12327 (T06). Where test_catalog_endpoints.py drives most dataset and
+# container routes over raw HTTP, these two drive them through the SDK clients,
+# one test per file (shared helpers in catalog_sdk_lifecycle_support.py). Each
+# asserted write is read back through a separate call: a dataset's description,
+# tags, path and schema; a container's platform, description, tags and dataset
+# membership (added, then removed). Each URN path helper's output must equal
+# the standard percent-encoding of the URN, and must return the same entity on
+# the live /v2 route. Each delete is proven by NotFound on a URN the test read
+# successfully earlier. Written this cycle to evidence the registry through the
+# SDK.
+- pattern: "tests/integration/test_catalog_dataset_sdk_lifecycle_live.py::test_dataset_lifecycle_through_dataset_client"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Catalog dataset lifecycle through the SDK dataset client"
+  evidence_provenance: cycle-authored
+
+- pattern: "tests/integration/test_catalog_container_sdk_lifecycle_live.py::test_container_lifecycle_and_membership_through_container_client"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Catalog container lifecycle and dataset membership through the SDK container client"
+  evidence_provenance: cycle-authored
 
 # Justification (ENG-12320, T02): the retained tests each ingest a seeded
 # source through client.ingestion and assert only what the catalog retained --
