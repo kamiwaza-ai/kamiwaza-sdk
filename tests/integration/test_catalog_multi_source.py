@@ -46,6 +46,10 @@ from uuid import uuid4
 
 import pytest
 import requests
+from pydantic import ValidationError
+from requests.adapters import HTTPAdapter
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
+
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.exceptions import (
     KamiwazaError,
@@ -61,9 +65,6 @@ from kamiwaza_sdk.schemas.retrieval import (
     RetrievalStreamEvent,
     TransportType,
 )
-from pydantic import ValidationError
-from requests.adapters import HTTPAdapter
-from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -99,6 +100,9 @@ SSE_STREAM_TIMEOUT_S = 120.0
 # long once per fixture.
 ABSENCE_TIMEOUT_S = 30.0
 ABSENCE_POLL_INTERVAL_S = 2.0
+# A stream cut off by the deadline can hold thousands of events; the failure names
+# this many and counts the rest.
+FAILURE_EVENTS_SHOWN = 50
 # The SDK wraps requests exceptions raised while sending in APIError. Errors raised
 # while a stream is read arrive as requests exceptions (OSError subclasses), a bad
 # CA bundle path as a plain OSError, and some urllib3 errors unwrapped.
@@ -456,12 +460,37 @@ def _fail_stream(job_id: str, failure: str, events: list[RetrievalStreamEvent]) 
 
     A chained SDK error makes pytest print the arguments of urllib3's frames, which
     include the Authorization header, so the cause is described rather than raised.
+    Only the first FAILURE_EVENTS_SHOWN names are listed: a fast stream cut off by
+    the deadline can collect enough to bury the failure it is reported with.
     """
     __tracebackhide__ = True
-    pytest.fail(
-        f"SSE stream for job {job_id} {failure}; events so far="
-        f"{[seen.event for seen in events]}"
-    )
+    shown = [seen.event for seen in events[:FAILURE_EVENTS_SHOWN]]
+    extra = len(events) - len(shown)
+    more = f" (+{extra} more)" if extra else ""
+    pytest.fail(f"SSE stream for job {job_id} {failure}; events so far={shown}{more}")
+
+
+def _drain(
+    stream: Generator[RetrievalStreamEvent, None, None],
+    timed: "_StreamDeadlineAdapter",
+    events: list[RetrievalStreamEvent],
+) -> float:
+    """Read ``stream`` into ``events`` until it ends or the deadline fires.
+
+    Returns when the read stopped, before the timer is cancelled, so the caller can
+    tell a deadline that ended this read from one that fired after it had ended.
+    """
+    try:
+        for event in stream:
+            events.append(event)
+            if timed.expired_at:
+                break  # the deadline stops a stream the SDK keeps yielding
+    finally:
+        ended_at = time.monotonic()
+        # Stop first: the timer must not cut off a stream that is closing.
+        timed.stop()
+        stream.close()
+    return ended_at
 
 
 def _collect_stream(
@@ -487,21 +516,12 @@ def _collect_stream(
     ended_at = 0.0
     try:
         with _mounted(client.session, timed):
-            # stream_events sends the request; closing its generator closes the response.
+            # stream_events sends the request; closing its generator ends the response.
             stream = cast(
                 Generator[RetrievalStreamEvent, None, None],
                 client.retrieval.stream_events(job_id),
             )
-            try:
-                for event in stream:
-                    events.append(event)
-                    if timed.expired_at:
-                        break  # the deadline stops a stream the SDK keeps yielding
-            finally:
-                # Stop first: the timer must not cut off a stream that is closing.
-                ended_at = time.monotonic()
-                timed.stop()
-                stream.close()
+            ended_at = _drain(stream, timed, events)
     except STREAM_ERRORS as exc:
         failure = f"failed: {type(exc).__name__}: {exc}"
     ended_at = ended_at or time.monotonic()
@@ -539,10 +559,10 @@ def _stream_rows(
     was read from the 1.2.1 retrieval source and has not been seen on a live stream,
     because SSE fails on the evidence instance (ENG-12300).
     """
-    # _collect_stream drains to the end of the response rather than stopping at the
-    # first complete event, which is what lets this require complete to be last. A
-    # server that holds the stream open after it fails the deadline instead, with
-    # the events it did send named in the failure.
+    # _collect_stream reads to the end of the response rather than stopping at the
+    # first complete event, which is what lets this require complete to be last. It
+    # stops early only when the deadline fires, and that fails the test, so every
+    # event the server sent before its terminal one is present here.
     names = [event.event for event in events]
     chunks = [event for event in events if event.event == "chunk"]
     assert chunks, (
@@ -581,9 +601,9 @@ def test_catalog_file_ingestion_metadata(
     root = os.environ.get(FILE_INGESTION_ROOT_ENV, "").strip()
     if not root:
         pytest.skip(
-            f"Optional path, not T02 coverage: set {FILE_INGESTION_ROOT_ENV} to a directory "
-            "the platform's ingestion workers can read, with RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS "
-            "covering it"
+            f"Optional path, not T02 coverage: set {FILE_INGESTION_ROOT_ENV} to a "
+            "directory the platform's ingestion workers can read, with "
+            "RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS covering it"
         )
 
     response = live_kamiwaza_client.ingestion.run_active(
@@ -791,9 +811,9 @@ def test_catalog_inline_large_object_hits_threshold(
     if not oversized.is_file() or oversized.stat().st_size <= INLINE_MAX_BYTES_1_2_1:
         pytest.skip(
             f"Optional oversized-object path, not T02 coverage: {oversized.name} is "
-            f"missing or not larger than {INLINE_MAX_BYTES_1_2_1} bytes (assumes the server "
-            "uses the 1.2.1 default inline_max_bytes); catalog-stack setup needs pandas, "
-            "numpy and pyarrow to generate it"
+            f"missing or not larger than {INLINE_MAX_BYTES_1_2_1} bytes (assumes the "
+            "server uses the 1.2.1 default inline_max_bytes); catalog-stack setup "
+            "needs pandas, numpy and pyarrow to generate it"
         )
 
     large_key = s3_seed.cfg["large_key"]
@@ -866,8 +886,8 @@ def test_catalog_slack_ingestion_metadata(
 ) -> None:
     if not all(os.environ.get(name) for name in SLACK_REQUIRED_ENV):
         pytest.skip(
-            "Optional path, not T02 coverage: provide SLACK_TEST_TOKEN, SLACK_TEST_CHANNEL and "
-            "SLACK_TEST_TEAM to exercise Slack ingestion"
+            "Optional path, not T02 coverage: provide SLACK_TEST_TOKEN, "
+            "SLACK_TEST_CHANNEL and SLACK_TEST_TEAM to exercise Slack ingestion"
         )
 
     channels = _slack_channels(os.environ["SLACK_TEST_CHANNEL"])

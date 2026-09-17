@@ -102,12 +102,12 @@ Missing integration coverage: 108
 | --- | --- | --- | --- | --- |
 | TS3.001 | [x] | GET | /catalog/ | test_catalog_endpoints.py::test_catalog_metadata_and_health (direct) |
 | TS3.002 | [x] | GET | /catalog/containers/ | test_catalog_endpoints.py::test_catalog_container_endpoints (catalog.containers.list) |
-| TS3.003 | [x] | POST | /catalog/containers/ | test_catalog_endpoints.py::test_catalog_container_endpoints (catalog.containers.create); test_catalog_multi_source.py::_create_container_or_skip (catalog.containers.create) |
-| TS3.004 | [x] | DELETE | /catalog/containers/by-urn | test_catalog_endpoints.py::test_catalog_container_endpoints (direct cleanup); test_catalog_multi_source.py::created_containers (catalog.containers.delete) |
-| TS3.005 | [x] | GET | /catalog/containers/by-urn | test_catalog_endpoints.py::test_catalog_container_endpoints (direct); test_catalog_multi_source.py::created_containers (catalog.containers.get); test_catalog_multi_source.py::test_catalog_container_link_sets_dataset_container_urn (catalog.containers.get) |
+| TS3.003 | [x] | POST | /catalog/containers/ | test_catalog_endpoints.py::_create_container (catalog.containers.create); test_catalog_multi_source.py::_create_container_or_skip (catalog.containers.create) |
+| TS3.004 | [x] | DELETE | /catalog/containers/by-urn | test_catalog_endpoints.py::_delete_container (direct cleanup); test_catalog_multi_source.py::created_containers (catalog.containers.delete) |
+| TS3.005 | [x] | GET | /catalog/containers/by-urn | test_catalog_endpoints.py::test_catalog_container_by_urn_and_path_endpoints (direct); test_catalog_multi_source.py::created_containers (catalog.containers.get); test_catalog_multi_source.py::test_catalog_container_link_sets_dataset_container_urn (catalog.containers.get) |
 | TS3.006 | [x] | PATCH | /catalog/containers/by-urn | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
-| TS3.007 | [x] | DELETE | /catalog/containers/by-urn/datasets | test_catalog_endpoints.py::test_catalog_container_endpoints (direct); test_catalog_multi_source.py::test_catalog_container_link_sets_dataset_container_urn (catalog.containers.remove_dataset) |
-| TS3.008 | [x] | POST | /catalog/containers/by-urn/datasets | test_catalog_endpoints.py::test_catalog_container_endpoints (direct); test_catalog_multi_source.py::test_catalog_container_link_sets_dataset_container_urn (catalog.containers.add_dataset) |
+| TS3.007 | [x] | DELETE | /catalog/containers/by-urn/datasets | test_catalog_endpoints.py::test_catalog_container_by_urn_and_path_endpoints (direct); test_catalog_multi_source.py::test_catalog_container_link_sets_dataset_container_urn (catalog.containers.remove_dataset) |
+| TS3.008 | [x] | POST | /catalog/containers/by-urn/datasets | test_catalog_endpoints.py::test_catalog_container_by_urn_and_path_endpoints (direct); test_catalog_multi_source.py::test_catalog_container_link_sets_dataset_container_urn (catalog.containers.add_dataset) |
 | TS3.009 | [x] | DELETE | /catalog/containers/v2/{container_urn:container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
 | TS3.010 | [x] | GET | /catalog/containers/v2/{container_urn:container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
 | TS3.011 | [x] | PATCH | /catalog/containers/v2/{container_urn:container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
