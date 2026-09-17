@@ -207,19 +207,19 @@
     - "*::test_catalog_secret_endpoints"
 
 # Justification (ENG-12320, T02): the retained tests each ingest a seeded
-# source through client.ingestion and assert the catalog retained its metadata
-# -- object_ingestion_inline_retrieval, parquet_ingestion_inline_retrieval and
-# inline_small_object_succeeds (platform, s3:// path, format),
-# postgres_ingestion_metadata (schema, table, column names), and
+# source through client.ingestion and assert only what the catalog retained --
+# object_ingestion_metadata and parquet_ingestion_metadata (platform, s3:// path,
+# format), postgres_ingestion_metadata (schema, table, column names), and
 # container_link_sets_dataset_container_urn (container membership both ways).
-# Excluded -- optional paths that skip before their ingestion or retrieval
-# starts and are not T02 coverage: file_ingestion_metadata (needs CATALOG_FILE_INGESTION_ROOT),
-# kafka (retrieval not implemented at 1.2.1), slack (needs SLACK_TEST_* tokens),
-# and inline_large_object_hits_threshold (oversized object). Also excluded:
-# sse_retrieval_emits_terminal_event, whose ingestion is setup for an SSE claim
-# and asserts no registry behavior.
-# Cycle-authored, not harvested: the metadata assertions these records rest
-# on were written for ENG-12320; the earlier module asserted status strings.
+# None of them retrieves, so a retrieval failure cannot fail this record.
+# Excluded: the retrieval tests mapped below, and the optional paths, which skip
+# before their ingestion or retrieval starts and are not T02 coverage --
+# file_ingestion_metadata (needs CATALOG_FILE_INGESTION_ROOT), kafka (needs a
+# reachable broker), slack (needs SLACK_TEST_* tokens) and
+# inline_large_object_hits_threshold (needs an object over the inline limit).
+# Cycle-authored, not harvested: these assertions were written for ENG-12320; the
+# earlier module checked platform names, container_urn and non-empty results,
+# not retained paths, schemas or cleanup.
 # Split from the retrieval entry below: `exclude` is per-entry, so a single
 # entry claiming two capabilities cannot satisfy the per-test rule for both.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
@@ -231,28 +231,42 @@
     - "*::test_catalog_kafka_ingestion_metadata"
     - "*::test_catalog_slack_ingestion_metadata"
     - "*::test_catalog_inline_large_object_hits_threshold"
+    - "*::test_catalog_object_ingestion_inline_retrieval"
+    - "*::test_catalog_parquet_ingestion_inline_retrieval"
+    - "*::test_catalog_inline_small_object_succeeds"
+    - "*::test_catalog_postgres_inline_retrieval"
     - "*::test_catalog_sse_retrieval_emits_terminal_event"
 
 # Justification (ENG-12320, T02): the retained tests each run a retrieval job
-# through client.retrieval over seeded data and assert the outcome, not a
-# status string -- the three inline S3 tests and postgres_ingestion_metadata
-# (job COMPLETED on create and read-back, rows_processed equal to row_count,
-# content equal to the seed), and sse_retrieval_emits_terminal_event (chunk
-# events, a terminal `complete` event, job COMPLETED). On the Azure 1.2.1
-# evidence instance the SSE test fails (ENG-12300, cause not yet established),
-# so a record captured there is `failed`.
-# Excluded: the same four optional paths as the registry entry, plus
-# container_link, which never submits a retrieval job.
+# through client.retrieval over seeded data. The inline object, parquet,
+# small-object and postgres tests require the job COMPLETED on create and on
+# read-back with rows_processed equal to row_count, and compare content with the
+# seed: the whole sample.json document, parquet row count, column names and id
+# values (other parquet columns are random per seed), and the postgres
+# name/total pairs. sse_retrieval_emits_terminal_event requires chunk events
+# whose rows match the seed the same way, one terminal complete event counting
+# them, and a COMPLETED job. Ingestion and the catalog path lookup are setup
+# here: retrieval needs a registered dataset.
+# The capability also covers cancel and Arrow Flight, which these tests do not
+# exercise; unverified_operations names them, so this record stays failed until
+# a mapped test performs them. On the Azure 1.2.1 evidence instance the SSE test
+# fails as well (ENG-12300, cause not yet established).
+# Excluded: the registry tests above, container_link (it submits no retrieval
+# job), and the same optional paths as the registry entry.
 # Cycle-authored for the same reason as the registry entry above.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [retrieval.async-retrieval-jobs]
   scenario_name: "Multi-source inline and SSE retrieval"
   evidence_provenance: cycle-authored
+  unverified_operations: [cancel, arrow_flight]
   exclude:
     - "*::test_catalog_file_ingestion_metadata"
     - "*::test_catalog_kafka_ingestion_metadata"
     - "*::test_catalog_slack_ingestion_metadata"
     - "*::test_catalog_inline_large_object_hits_threshold"
+    - "*::test_catalog_object_ingestion_metadata"
+    - "*::test_catalog_parquet_ingestion_metadata"
+    - "*::test_catalog_postgres_ingestion_metadata"
     - "*::test_catalog_container_link_sets_dataset_container_urn"
 
 # Justification: TestWorkroomCrudIsolation — create/get/list/update/archive

@@ -1,26 +1,43 @@
 """Multi-source catalog ingestion and retrieval against a live platform (T02).
 
-Every retained test proves an outcome rather than a status string: ingestion must
-return datasets, the catalog must retain source metadata, retrieval jobs must
-reach COMPLETED, and the retrieved content must equal what the catalog stack
-seeded. Optional paths (file roots, Kafka, Slack, oversized objects) skip before
-their ingestion or retrieval starts and name the prerequisite they are missing;
-they are excluded from the evidence map in tests/e2e/capability_map.yaml.
+Registry tests ingest a seeded source and assert the catalog retained its source
+metadata; retrieval tests run a retrieval job over seeded data and assert the job
+completed and returned the seeded rows. Keeping the two apart means a retrieval
+failure cannot fail the registry evidence, and the reverse. Parquet content is
+compared by row count, column names and ``id`` values; the other parquet columns
+are random per seed and are not compared.
+
+Optional paths (file roots, Kafka, Slack, oversized objects) skip before their
+ingestion or retrieval starts and name the prerequisite they are missing; they are
+excluded from the evidence map in tests/e2e/capability_map.yaml.
+
+Every dataset and container a test creates is deleted and confirmed absent in
+fixture teardown, so a cleanup failure fails the test (``KEEP_CATALOG_DATASETS=1``
+skips dataset cleanup for debugging). The catalog stack, its object keys and the
+resulting dataset URNs are shared by every checkout on a host: concurrent runs can
+reseed or delete data under each other, so capture evidence with no other catalog
+run in progress.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import socket
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
+import requests
 from kamiwaza_sdk import KamiwazaClient
-from kamiwaza_sdk.exceptions import NotFoundError, TransportNotSupportedError
+from kamiwaza_sdk.exceptions import (
+    KamiwazaError,
+    NotFoundError,
+    TransportNotSupportedError,
+)
 from kamiwaza_sdk.schemas.catalog import ContainerCreate, Dataset
 from kamiwaza_sdk.schemas.retrieval import (
     InlineData,
@@ -29,6 +46,7 @@ from kamiwaza_sdk.schemas.retrieval import (
     RetrievalStreamEvent,
     TransportType,
 )
+from tests.integration import conftest as integration_conftest
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -40,33 +58,63 @@ SEEDED_ORDERS = frozenset(
 ORDERS_FIELDS = ("order_id", "customer_name", "total", "created_at")
 
 FILE_INGESTION_ROOT_ENV = "CATALOG_FILE_INGESTION_ROOT"
-SSE_DEFECT_TICKET = "ENG-12300"
+# Default retrieval ``inline_max_bytes`` at 1.2.1; an object must exceed it for the
+# oversized-object test to mean anything.
+INLINE_MAX_BYTES_1_2_1 = 1_000_000
+# The SSE symptom (HTTP 200, no events, job FAILED) was first observed on the Azure
+# 1.2.1 evidence instance and is investigated there; its cause is not established.
+SSE_SYMPTOM_REPORT = "ENG-12300"
 TERMINAL_JOB_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELED"})
 CATALOG_PROPAGATION_TIMEOUT_S = 30.0
 
 
+def _delete_and_confirm_absent(
+    kind: str,
+    urns: Iterable[str],
+    delete: Callable[[str], None],
+    read: Callable[[str], object],
+) -> None:
+    """Attempt every deletion, then fail once listing whatever was not confirmed gone."""
+    problems: list[str] = []
+    for urn in dict.fromkeys(urns):
+        try:
+            delete(urn)
+        except (KamiwazaError, requests.RequestException) as exc:
+            problems.append(f"delete {kind} {urn}: {exc}")
+            continue
+        try:
+            read(urn)
+        except NotFoundError:
+            continue
+        except (KamiwazaError, requests.RequestException) as exc:
+            problems.append(f"read back {kind} {urn}: {exc}")
+        else:
+            problems.append(f"{kind} {urn} is still readable after delete")
+    if problems:
+        pytest.fail(f"{kind} cleanup incomplete:\n" + "\n".join(problems))
+
+
 @pytest.fixture
 def created_datasets(live_kamiwaza_client: KamiwazaClient) -> Iterator[list[str]]:
-    """Collect ingested dataset URNs; delete each and confirm it is gone."""
+    """Collect ingested dataset URNs; delete and confirm each is gone.
+
+    ``KEEP_CATALOG_DATASETS=1`` skips both steps.
+    """
     urns: list[str] = []
     yield urns
     if os.environ.get("KEEP_CATALOG_DATASETS") == "1":
         return
-    for urn in dict.fromkeys(urns):
-        live_kamiwaza_client.catalog.datasets.delete(urn)
-        with pytest.raises(NotFoundError):
-            live_kamiwaza_client.catalog.datasets.get(urn)
+    datasets = live_kamiwaza_client.catalog.datasets
+    _delete_and_confirm_absent("dataset", urns, datasets.delete, datasets.get)
 
 
 @pytest.fixture
 def created_containers(live_kamiwaza_client: KamiwazaClient) -> Iterator[list[str]]:
-    """Collect container URNs; delete each and confirm it is gone."""
+    """Collect container URNs; delete and confirm each is gone."""
     urns: list[str] = []
     yield urns
-    for urn in dict.fromkeys(urns):
-        live_kamiwaza_client.catalog.containers.delete(urn)
-        with pytest.raises(NotFoundError):
-            live_kamiwaza_client.catalog.containers.get(urn)
+    containers = live_kamiwaza_client.catalog.containers
+    _delete_and_confirm_absent("container", urns, containers.delete, containers.get)
 
 
 def _ingest_s3(
@@ -108,6 +156,44 @@ def _dataset_at_path(
     return matches[0]
 
 
+def _ingest_s3_object(
+    client: KamiwazaClient,
+    cfg: dict[str, Any],
+    *,
+    prefix: str,
+    key: str,
+    secret_urn: str,
+    created: list[str],
+) -> Dataset:
+    urns = _ingest_s3(
+        client, cfg, prefix=prefix, secret_urn=secret_urn, created=created
+    )
+    return _dataset_at_path(client, urns, bucket=cfg["bucket"], key=key)
+
+
+def _ingest_postgres_orders(
+    client: KamiwazaClient, pg: dict[str, Any], created: list[str]
+) -> Dataset:
+    response = client.ingestion.run_active(
+        "postgres",
+        host=pg["host"],
+        port=pg["port"],
+        database=pg["database"],
+        user=pg["user"],
+        password_secret_name=pg["password_secret_name"],
+        schema=pg["schema"],
+    )
+    created.extend(response.urns)
+    assert response.errors == [], (
+        f"Postgres ingestion reported errors: {response.errors}"
+    )
+    orders = [urn for urn in response.urns if "catalog_test_orders" in urn]
+    assert len(orders) == 1, (
+        f"expected one catalog_test_orders dataset among {response.urns}"
+    )
+    return client.catalog.datasets.get(orders[0])
+
+
 def _assert_s3_source_retained(
     dataset: Dataset, *, bucket: str, key: str, fmt: str
 ) -> None:
@@ -147,12 +233,9 @@ def _seeded_parquet(path: Path) -> tuple[int, set[str], list[int]]:
     )
 
 
-def _assert_rows_match_seed(inline: InlineData, seeded: Path) -> None:
+def _assert_rows_match_seed(rows: list[dict[str, Any]], seeded: Path) -> None:
     num_rows, columns, ids = _seeded_parquet(seeded)
-    rows = inline.data
-    assert inline.row_count == num_rows, (
-        f"{inline.row_count} rows retrieved, {num_rows} seeded"
-    )
+    assert len(rows) == num_rows, f"{len(rows)} rows retrieved, {num_rows} seeded"
     assert {key for row in rows for key in row} == columns
     assert sorted(row["id"] for row in rows) == ids
 
@@ -171,12 +254,30 @@ def _wait_for(
 
 
 def _terminal_status(client: KamiwazaClient, job_id: str) -> RetrievalJobStatus:
-    status = client.retrieval.get_job(job_id)
     deadline = time.monotonic() + CATALOG_PROPAGATION_TIMEOUT_S
-    while status.status not in TERMINAL_JOB_STATUSES and time.monotonic() < deadline:
+    status = client.retrieval.get_job(job_id)
+    while status.status not in TERMINAL_JOB_STATUSES:
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                f"job {job_id} still {status.status} after "
+                f"{CATALOG_PROPAGATION_TIMEOUT_S:.0f}s waiting for a terminal status"
+            )
         time.sleep(1)
         status = client.retrieval.get_job(job_id)
     return status
+
+
+def _broker_reachable(bootstrap: str, timeout_s: float = 3.0) -> bool:
+    for endpoint in bootstrap.split(","):
+        host, _, port = endpoint.strip().rpartition(":")
+        if not host or not port.isdigit():
+            continue
+        try:
+            with socket.create_connection((host, int(port)), timeout=timeout_s):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def test_catalog_file_ingestion_metadata(
@@ -212,7 +313,10 @@ def test_catalog_file_ingestion_metadata(
     assert inline.data, f"file dataset {target[0]} retrieved no rows"
 
 
-def test_catalog_object_ingestion_inline_retrieval(
+# --- Registry: ingestion retains source metadata ---------------------------------
+
+
+def test_catalog_object_ingestion_metadata(
     live_kamiwaza_client: KamiwazaClient,
     catalog_stack_environment: dict[str, Any],
     catalog_s3_secret_urn: str,
@@ -220,24 +324,18 @@ def test_catalog_object_ingestion_inline_retrieval(
 ) -> None:
     cfg = catalog_stack_environment["object"]
     key = f"{cfg['prefix']}/objects/sample.json"
-    urns = _ingest_s3(
+    dataset = _ingest_s3_object(
         live_kamiwaza_client,
         cfg,
         prefix=f"{cfg['prefix']}/objects",
+        key=key,
         secret_urn=catalog_s3_secret_urn,
         created=created_datasets,
     )
-    dataset = _dataset_at_path(
-        live_kamiwaza_client, urns, bucket=cfg["bucket"], key=key
-    )
     _assert_s3_source_retained(dataset, bucket=cfg["bucket"], key=key, fmt="json")
 
-    inline = _completed_inline_job(live_kamiwaza_client, dataset.urn, fmt="json")
-    seeded = Path(catalog_stack_environment["file_root"]) / "objects" / "sample.json"
-    assert inline.data == [json.loads(seeded.read_text())]
 
-
-def test_catalog_parquet_ingestion_inline_retrieval(
+def test_catalog_parquet_ingestion_metadata(
     live_kamiwaza_client: KamiwazaClient,
     catalog_stack_environment: dict[str, Any],
     catalog_s3_secret_urn: str,
@@ -245,124 +343,30 @@ def test_catalog_parquet_ingestion_inline_retrieval(
 ) -> None:
     cfg = catalog_stack_environment["object"]
     key = f"{cfg['prefix']}/sales_data_10k.parquet"
-    urns = _ingest_s3(
+    dataset = _ingest_s3_object(
         live_kamiwaza_client,
         cfg,
         prefix=key,
+        key=key,
         secret_urn=catalog_s3_secret_urn,
         created=created_datasets,
-    )
-    dataset = _dataset_at_path(
-        live_kamiwaza_client, urns, bucket=cfg["bucket"], key=key
     )
     _assert_s3_source_retained(dataset, bucket=cfg["bucket"], key=key, fmt="parquet")
 
-    inline = _completed_inline_job(live_kamiwaza_client, dataset.urn, fmt="parquet")
-    _assert_rows_match_seed(
-        inline, Path(catalog_stack_environment["file_root"]) / "sales_data_10k.parquet"
-    )
 
-
-def test_catalog_inline_small_object_succeeds(
+def test_catalog_postgres_ingestion_metadata(
     live_kamiwaza_client: KamiwazaClient,
     catalog_stack_environment: dict[str, Any],
-    catalog_s3_secret_urn: str,
     created_datasets: list[str],
 ) -> None:
-    cfg = catalog_stack_environment["object"]
-    key = cfg["small_key"]
-    urns = _ingest_s3(
-        live_kamiwaza_client,
-        cfg,
-        prefix=key,
-        secret_urn=catalog_s3_secret_urn,
-        created=created_datasets,
-    )
-    dataset = _dataset_at_path(
-        live_kamiwaza_client, urns, bucket=cfg["bucket"], key=key
-    )
-    _assert_s3_source_retained(dataset, bucket=cfg["bucket"], key=key, fmt="parquet")
-
-    inline = _completed_inline_job(live_kamiwaza_client, dataset.urn, fmt="parquet")
-    _assert_rows_match_seed(
-        inline, Path(catalog_stack_environment["file_root"]) / "inline-small.parquet"
-    )
-
-
-def test_catalog_inline_large_object_hits_threshold(
-    live_kamiwaza_client: KamiwazaClient,
-    catalog_stack_environment: dict[str, Any],
-    catalog_s3_secret_urn: str,
-    created_datasets: list[str],
-) -> None:
-    oversized = Path(catalog_stack_environment["file_root"]) / "inline-large.parquet"
-    if not oversized.is_file():
-        pytest.skip(
-            f"Optional oversized-object path, not T02 coverage: {oversized} was not seeded "
-            "(catalog-stack setup needs pandas, numpy and pyarrow to generate it)"
-        )
-
-    cfg = catalog_stack_environment["object"]
-    key = cfg["large_key"]
-    urns = _ingest_s3(
-        live_kamiwaza_client,
-        cfg,
-        prefix=key,
-        secret_urn=catalog_s3_secret_urn,
-        created=created_datasets,
-    )
-    dataset = _dataset_at_path(
-        live_kamiwaza_client, urns, bucket=cfg["bucket"], key=key
-    )
-    with pytest.raises(TransportNotSupportedError, match="inline threshold"):
-        live_kamiwaza_client.retrieval.create_job(
-            RetrievalRequest(
-                dataset_urn=dataset.urn, transport="inline", format_hint="parquet"
-            )
-        )
-
-
-def test_catalog_sse_retrieval_emits_terminal_event(
-    live_kamiwaza_client: KamiwazaClient,
-    catalog_stack_environment: dict[str, Any],
-    catalog_s3_secret_urn: str,
-    created_datasets: list[str],
-) -> None:
-    cfg = catalog_stack_environment["object"]
-    key = cfg["small_key"]
-    urns = _ingest_s3(
-        live_kamiwaza_client,
-        cfg,
-        prefix=key,
-        secret_urn=catalog_s3_secret_urn,
-        created=created_datasets,
-    )
-    dataset = _dataset_at_path(
-        live_kamiwaza_client, urns, bucket=cfg["bucket"], key=key
-    )
-
-    job = live_kamiwaza_client.retrieval.create_job(
-        RetrievalRequest(
-            dataset_urn=dataset.urn, transport="sse", format_hint="parquet"
-        )
-    )
-    assert job.transport == TransportType.SSE
-    events: list[RetrievalStreamEvent] = list(
-        live_kamiwaza_client.retrieval.stream_events(job.job_id)
-    )
-    status = _terminal_status(live_kamiwaza_client, job.job_id)
-
-    observed = f"events={[event.event for event in events]}, job status={status.status}"
-    assert any(event.event == "chunk" for event in events), (
-        f"SSE stream for job {job.job_id} emitted no chunk events ({observed}); "
-        f"tracked in {SSE_DEFECT_TICKET}"
-    )
-    assert events[-1].event == "complete", (
-        f"SSE stream for job {job.job_id} ended without a terminal complete event ({observed}); "
-        f"tracked in {SSE_DEFECT_TICKET}"
-    )
-    assert isinstance(events[-1].data.get("sequence"), int)
-    assert status.status == "COMPLETED", f"SSE job {job.job_id}: {observed}"
+    pg = catalog_stack_environment["postgres"]
+    dataset = _ingest_postgres_orders(live_kamiwaza_client, pg, created_datasets)
+    properties = dataset.properties or {}
+    assert dataset.platform == "postgres"
+    assert properties.get("schema") == pg["schema"]
+    assert properties.get("table") == "catalog_test_orders"
+    assert dataset.dataset_schema is not None
+    assert tuple(field.name for field in dataset.dataset_schema.fields) == ORDERS_FIELDS
 
 
 def test_catalog_container_link_sets_dataset_container_urn(
@@ -373,16 +377,13 @@ def test_catalog_container_link_sets_dataset_container_urn(
     created_containers: list[str],
 ) -> None:
     cfg = catalog_stack_environment["object"]
-    key = cfg["small_key"]
-    urns = _ingest_s3(
+    dataset = _ingest_s3_object(
         live_kamiwaza_client,
         cfg,
-        prefix=key,
+        prefix=cfg["small_key"],
+        key=cfg["small_key"],
         secret_urn=catalog_s3_secret_urn,
         created=created_datasets,
-    )
-    dataset = _dataset_at_path(
-        live_kamiwaza_client, urns, bucket=cfg["bucket"], key=key
     )
     containers = live_kamiwaza_client.catalog.containers
 
@@ -411,38 +412,81 @@ def test_catalog_container_link_sets_dataset_container_urn(
     )
 
 
-def test_catalog_postgres_ingestion_metadata(
+# --- Retrieval: jobs complete and return the seeded rows -------------------------
+
+
+def test_catalog_object_ingestion_inline_retrieval(
+    live_kamiwaza_client: KamiwazaClient,
+    catalog_stack_environment: dict[str, Any],
+    catalog_s3_secret_urn: str,
+    created_datasets: list[str],
+) -> None:
+    cfg = catalog_stack_environment["object"]
+    dataset = _ingest_s3_object(
+        live_kamiwaza_client,
+        cfg,
+        prefix=f"{cfg['prefix']}/objects",
+        key=f"{cfg['prefix']}/objects/sample.json",
+        secret_urn=catalog_s3_secret_urn,
+        created=created_datasets,
+    )
+    inline = _completed_inline_job(live_kamiwaza_client, dataset.urn, fmt="json")
+    seeded = Path(catalog_stack_environment["file_root"]) / "objects" / "sample.json"
+    assert inline.data == [json.loads(seeded.read_text())]
+
+
+def test_catalog_parquet_ingestion_inline_retrieval(
+    live_kamiwaza_client: KamiwazaClient,
+    catalog_stack_environment: dict[str, Any],
+    catalog_s3_secret_urn: str,
+    created_datasets: list[str],
+) -> None:
+    cfg = catalog_stack_environment["object"]
+    key = f"{cfg['prefix']}/sales_data_10k.parquet"
+    dataset = _ingest_s3_object(
+        live_kamiwaza_client,
+        cfg,
+        prefix=key,
+        key=key,
+        secret_urn=catalog_s3_secret_urn,
+        created=created_datasets,
+    )
+    inline = _completed_inline_job(live_kamiwaza_client, dataset.urn, fmt="parquet")
+    _assert_rows_match_seed(
+        inline.data,
+        Path(catalog_stack_environment["file_root"]) / "sales_data_10k.parquet",
+    )
+
+
+def test_catalog_inline_small_object_succeeds(
+    live_kamiwaza_client: KamiwazaClient,
+    catalog_stack_environment: dict[str, Any],
+    catalog_s3_secret_urn: str,
+    created_datasets: list[str],
+) -> None:
+    cfg = catalog_stack_environment["object"]
+    dataset = _ingest_s3_object(
+        live_kamiwaza_client,
+        cfg,
+        prefix=cfg["small_key"],
+        key=cfg["small_key"],
+        secret_urn=catalog_s3_secret_urn,
+        created=created_datasets,
+    )
+    inline = _completed_inline_job(live_kamiwaza_client, dataset.urn, fmt="parquet")
+    _assert_rows_match_seed(
+        inline.data,
+        Path(catalog_stack_environment["file_root"]) / "inline-small.parquet",
+    )
+
+
+def test_catalog_postgres_inline_retrieval(
     live_kamiwaza_client: KamiwazaClient,
     catalog_stack_environment: dict[str, Any],
     created_datasets: list[str],
 ) -> None:
     pg = catalog_stack_environment["postgres"]
-    response = live_kamiwaza_client.ingestion.run_active(
-        "postgres",
-        host=pg["host"],
-        port=pg["port"],
-        database=pg["database"],
-        user=pg["user"],
-        password_secret_name=pg["password_secret_name"],
-        schema=pg["schema"],
-    )
-    created_datasets.extend(response.urns)
-    assert response.errors == [], (
-        f"Postgres ingestion reported errors: {response.errors}"
-    )
-    orders = [urn for urn in response.urns if "catalog_test_orders" in urn]
-    assert len(orders) == 1, (
-        f"expected one catalog_test_orders dataset among {response.urns}"
-    )
-
-    dataset = live_kamiwaza_client.catalog.datasets.get(orders[0])
-    properties = dataset.properties or {}
-    assert dataset.platform == "postgres"
-    assert properties.get("schema") == pg["schema"]
-    assert properties.get("table") == "catalog_test_orders"
-    assert dataset.dataset_schema is not None
-    assert tuple(field.name for field in dataset.dataset_schema.fields) == ORDERS_FIELDS
-
+    dataset = _ingest_postgres_orders(live_kamiwaza_client, pg, created_datasets)
     inline = _completed_inline_job(live_kamiwaza_client, dataset.urn, fmt="parquet")
     assert {
         (row["customer_name"], row["total"]) for row in inline.data
@@ -450,29 +494,129 @@ def test_catalog_postgres_ingestion_metadata(
     assert inline.row_count == len(SEEDED_ORDERS)
 
 
-@pytest.mark.skip(
-    reason=(
-        "Optional path, not T02 coverage: Kafka retrieval is not implemented at 1.2.1 and the "
-        "SDK rejects Kafka dataset URNs before job creation; see "
-        "docs-local/00-server-defects.md#kafka-retrieval-missing"
+def test_catalog_sse_retrieval_emits_terminal_event(
+    live_kamiwaza_client: KamiwazaClient,
+    catalog_stack_environment: dict[str, Any],
+    catalog_s3_secret_urn: str,
+    created_datasets: list[str],
+) -> None:
+    cfg = catalog_stack_environment["object"]
+    dataset = _ingest_s3_object(
+        live_kamiwaza_client,
+        cfg,
+        prefix=cfg["small_key"],
+        key=cfg["small_key"],
+        secret_urn=catalog_s3_secret_urn,
+        created=created_datasets,
     )
-)
+
+    job = live_kamiwaza_client.retrieval.create_job(
+        RetrievalRequest(
+            dataset_urn=dataset.urn, transport="sse", format_hint="parquet"
+        )
+    )
+    assert job.transport == TransportType.SSE
+    events: list[RetrievalStreamEvent] = list(
+        live_kamiwaza_client.retrieval.stream_events(job.job_id)
+    )
+    status = _terminal_status(live_kamiwaza_client, job.job_id)
+
+    names = [event.event for event in events]
+    context = (
+        f"job {job.job_id}: events={names}, job status={status.status}; "
+        f"see {SSE_SYMPTOM_REPORT} for the same symptom on the 1.2.1 evidence instance"
+    )
+    chunks = [event for event in events if event.event == "chunk"]
+    assert chunks, f"SSE stream emitted no chunk events ({context})"
+    assert names[-1] == "complete" and names.count("complete") == 1, (
+        f"SSE stream did not end with exactly one terminal complete event ({context})"
+    )
+    sequence = events[-1].data.get("sequence")
+    assert sequence == len(chunks), (
+        f"complete event sequence {sequence!r} does not count the {len(chunks)} "
+        f"chunk events ({context})"
+    )
+
+    # Chunk payload per the 1.2.1 retrieval source (transports/sse_query.py encode,
+    # engine/ray_adapter.py iter_records): {"media_type": "application/json",
+    # "data": [row dicts], ...} for tabular datasets. Derived from source, not yet
+    # observed live, because SSE fails on the evidence instance.
+    rows: list[dict[str, Any]] = []
+    for chunk in chunks:
+        assert chunk.data.get("media_type") == "application/json", (
+            f"chunk {chunk.data.get('sequence')!r} media_type "
+            f"{chunk.data.get('media_type')!r} ({context})"
+        )
+        chunk_rows = chunk.data.get("data")
+        assert isinstance(chunk_rows, list), (
+            f"chunk {chunk.data.get('sequence')!r} carries no row list ({context})"
+        )
+        rows.extend(chunk_rows)
+    _assert_rows_match_seed(
+        rows, Path(catalog_stack_environment["file_root"]) / "inline-small.parquet"
+    )
+    assert status.status == "COMPLETED", f"SSE job did not complete ({context})"
+
+
+# --- Optional paths: not T02 coverage, excluded from the evidence map ------------
+
+
+def test_catalog_inline_large_object_hits_threshold(
+    live_kamiwaza_client: KamiwazaClient,
+    catalog_stack_environment: dict[str, Any],
+    catalog_s3_secret_urn: str,
+    created_datasets: list[str],
+) -> None:
+    oversized = Path(catalog_stack_environment["file_root"]) / "inline-large.parquet"
+    if not oversized.is_file() or oversized.stat().st_size <= INLINE_MAX_BYTES_1_2_1:
+        pytest.skip(
+            f"Optional oversized-object path, not T02 coverage: {oversized.name} is "
+            f"missing or not larger than {INLINE_MAX_BYTES_1_2_1} bytes (the 1.2.1 default "
+            "inline_max_bytes); catalog-stack setup needs pandas, numpy and pyarrow to "
+            "generate it"
+        )
+
+    cfg = catalog_stack_environment["object"]
+    dataset = _ingest_s3_object(
+        live_kamiwaza_client,
+        cfg,
+        prefix=cfg["large_key"],
+        key=cfg["large_key"],
+        secret_urn=catalog_s3_secret_urn,
+        created=created_datasets,
+    )
+    with pytest.raises(TransportNotSupportedError, match="inline threshold"):
+        live_kamiwaza_client.retrieval.create_job(
+            RetrievalRequest(
+                dataset_urn=dataset.urn, transport="inline", format_hint="parquet"
+            )
+        )
+
+
 def test_catalog_kafka_ingestion_metadata(
     live_kamiwaza_client: KamiwazaClient,
     catalog_stack_environment: dict[str, Any],
     created_datasets: list[str],
 ) -> None:
+    bootstrap = integration_conftest.CATALOG_KAFKA_BOOTSTRAP
+    if not _broker_reachable(bootstrap):
+        pytest.skip(
+            f"Optional path, not T02 coverage: no Kafka broker reachable at {bootstrap} "
+            "(set CATALOG_STACK_KAFKA_BOOTSTRAP)"
+        )
+
     kafka = catalog_stack_environment["kafka"]
     response = live_kamiwaza_client.ingestion.run_active(
         "kafka",
         bootstrap_servers=kafka["bootstrap"],
     )
     created_datasets.extend(response.urns)
-    assert response.urns, "Kafka ingestion did not return datasets"
-    topic = next(
-        (urn for urn in response.urns if kafka["topic"] in urn), response.urns[0]
+    assert response.errors == [], f"Kafka ingestion reported errors: {response.errors}"
+    topics = [urn for urn in response.urns if kafka["topic"] in urn]
+    assert len(topics) == 1, (
+        f"expected one dataset for topic {kafka['topic']!r} among {response.urns}"
     )
-    dataset = live_kamiwaza_client.catalog.datasets.get(topic)
+    dataset = live_kamiwaza_client.catalog.datasets.get(topics[0])
     assert dataset.platform == "kafka"
 
 
