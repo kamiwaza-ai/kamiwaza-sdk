@@ -274,31 +274,74 @@
   scenario_name: "Catalog container lifecycle and dataset membership through the SDK container client"
   evidence_provenance: cycle-authored
 
-# Justification: every test in the module ingests from some source
-# (file/object/parquet/postgres/kafka/slack) and asserts the resulting
-# dataset's catalog metadata, so the whole module evidences the registry.
+# Justification (ENG-12320, T02): the retained tests each ingest a seeded
+# source through client.ingestion and assert only what the catalog retained --
+# object_ingestion_metadata and parquet_ingestion_metadata (platform, s3:// path,
+# format), postgres_ingestion_metadata (schema, table, column names), and
+# container_link_sets_dataset_container_urn (container membership both ways).
+# None of them retrieves, so a retrieval failure cannot fail this record.
+# Excluded: the retrieval tests mapped below, and the optional paths, which are
+# not T02 coverage -- file_ingestion_metadata (skips without
+# CATALOG_FILE_INGESTION_ROOT), kafka (ingestion metadata only; optional per the
+# T02 plan), slack (skips without SLACK_TEST_* tokens) and
+# inline_large_object_hits_threshold (the oversized-object path: it asserts that
+# inline retrieval of an object over the inline limit is refused, so it evidences
+# no retrieval, and it skips when no such object was generated).
+# Cycle-authored, not harvested: these assertions were written for ENG-12320; the
+# earlier module checked platform names, container_urn and non-empty results,
+# not retained paths, schemas or cleanup.
 # Split from the retrieval entry below: `exclude` is per-entry, so a single
 # entry claiming two capabilities cannot satisfy the per-test rule for both.
+# Both entries match every test in the module unless excluded, so a new or renamed
+# test would feed both claims; tests/e2e/test_catalog_multi_source_evidence_map.py
+# fails until each test in the module is listed with the claims it feeds.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [catalog.dataset-registry]
   scenario_name: "Multi-source catalog ingestion"
+  evidence_provenance: cycle-authored
+  exclude:
+    - "*::test_catalog_file_ingestion_metadata"
+    - "*::test_catalog_kafka_ingestion_metadata"
+    - "*::test_catalog_slack_ingestion_metadata"
+    - "*::test_catalog_inline_large_object_hits_threshold"
+    - "*::test_catalog_object_ingestion_inline_retrieval"
+    - "*::test_catalog_parquet_ingestion_inline_retrieval"
+    - "*::test_catalog_inline_small_object_succeeds"
+    - "*::test_catalog_postgres_inline_retrieval"
+    - "*::test_catalog_sse_retrieval_emits_terminal_event"
 
-# Justification: the subset that actually submits a retrieval job over the
-# ingested data and asserts the result — the two *_inline_retrieval tests,
-# inline_small_object and file_ingestion_metadata (both POST /retrieval/jobs
-# and assert row_count), large_object_sse_retrieval, and
-# postgres_ingestion_metadata.
-# Excluded: kafka (xfails before any retrieval), slack, and container_link
-# never submit a job at all, and inline_large_object_hits_threshold asserts a
-# 422 rejection rather than a successful retrieval.
+# Justification (ENG-12320, T02): the retained tests each run a retrieval job
+# through client.retrieval over seeded data. The inline object, parquet,
+# small-object and postgres tests require the job COMPLETED on create and on
+# read-back with rows_processed equal to row_count, and compare content with the
+# seed: the whole sample.json document, parquet row count, column names and id
+# values (other parquet columns are not compared), and the postgres
+# name/total pairs. sse_retrieval_emits_terminal_event requires chunk events
+# whose rows match the seed the same way, one terminal complete event counting
+# them, and a COMPLETED job. Ingestion and the catalog dataset lookup are setup
+# here: retrieval needs a registered dataset.
+# These tests do not exercise cancel or Arrow Flight. Like the T01 inline entry,
+# this entry does not declare them as unverified_operations: the retained tests
+# earn the retrieval claim on their own, and Arrow Flight has its own record from
+# test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc. On the
+# Azure 1.2.1 evidence instance the SSE test fails (ENG-12300, cause not yet
+# established), so this record is failed there.
+# Excluded: the registry tests above, container_link (it submits no retrieval
+# job), and the same optional paths as the registry entry.
+# Cycle-authored for the same reason as the registry entry above.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [retrieval.async-retrieval-jobs]
   scenario_name: "Multi-source inline and SSE retrieval"
+  evidence_provenance: cycle-authored
   exclude:
+    - "*::test_catalog_file_ingestion_metadata"
     - "*::test_catalog_kafka_ingestion_metadata"
     - "*::test_catalog_slack_ingestion_metadata"
-    - "*::test_catalog_container_link_sets_dataset_container_urn"
     - "*::test_catalog_inline_large_object_hits_threshold"
+    - "*::test_catalog_object_ingestion_metadata"
+    - "*::test_catalog_parquet_ingestion_metadata"
+    - "*::test_catalog_postgres_ingestion_metadata"
+    - "*::test_catalog_container_link_sets_dataset_container_urn"
 
 # Justification: TestWorkroomCrudIsolation — create/get/list/update/archive
 # workrooms. Every retained test creates one, either through the workroom_a /
