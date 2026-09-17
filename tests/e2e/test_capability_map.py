@@ -132,3 +132,59 @@ def test_repo_capability_map_is_valid_and_references_real_files():
         assert (
             REPO_ROOT / file_part
         ).is_file(), f"capability_map.yaml pattern references missing file: {file_part}"
+
+
+def test_engine_matrix_chat_smoke_does_not_claim_full_inference():
+    """ENG-12269: one chat path cannot prove all declared inference operations."""
+    entries = emitter.load_capability_map(emitter.DEFAULT_MAP_PATH)
+    matrix_entries = [
+        entry for entry in entries if "test_inference_matrix_live.py" in entry.pattern
+    ]
+    assert len(matrix_entries) == 2
+    local = next(
+        entry
+        for entry in matrix_entries
+        if entry.capability_ids == ("models.local-deployment",)
+    )
+    inference = next(
+        entry
+        for entry in matrix_entries
+        if entry.capability_ids == ("models.openai-compatible-inference",)
+    )
+    assert local.pattern.endswith("::test_deploy_and_infer_llamacpp_gguf")
+    assert inference.unverified_operations == (
+        "embeddings",
+        "transcription",
+        "image_generation",
+    )
+
+
+def test_warm_model_and_unbound_workroom_tests_do_not_claim_full_capabilities():
+    """ENG-12269: these tests omit acquisition and session binding, respectively."""
+    entries = emitter.load_capability_map(emitter.DEFAULT_MAP_PATH)
+    forbidden = {
+        "models.discover-and-download": (
+            "test_models_live.py",
+            "test_model_files_live.py",
+            "test_models_extended_live.py",
+        ),
+        "workrooms.session-scoping": ("test_workroom_isolation_live.py",),
+    }
+    for capability_id, file_names in forbidden.items():
+        assert not any(
+            capability_id in entry.capability_ids
+            for entry in entries
+            if any(file_name in entry.pattern for file_name in file_names)
+        )
+
+
+def test_partial_sdk_scenarios_cannot_pass_full_openai_inference():
+    """ENG-12269: the one inference mapping carries all unverified operations."""
+    entries = emitter.load_capability_map(emitter.DEFAULT_MAP_PATH)
+    inference = [
+        entry
+        for entry in entries
+        if "models.openai-compatible-inference" in entry.capability_ids
+    ]
+    assert len(inference) == 1
+    assert inference[0].unverified_operations

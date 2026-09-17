@@ -119,9 +119,9 @@ Missing integration coverage: 163
 | TS3.017 | [x] | DELETE | /catalog/containers/{container_urn:path}/datasets/{dataset_urn:path} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
 | TS3.018 | [x] | DELETE | /catalog/containers/{container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
 | TS3.019 | [x] | GET | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.list) |
-| TS3.020 | [x] | POST | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.create); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.create_dataset) |
+| TS3.020 | [x] | POST | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.create); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset) |
 | TS3.021 | [x] | DELETE | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (direct); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (direct); test_catalog_multi_source.py::_cleanup_datasets (direct) |
-| TS3.022 | [x] | GET | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (direct); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.create_dataset); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.get_dataset); test_catalog_multi_source.py::_fetch_dataset (direct) |
+| TS3.022 | [x] | GET | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (direct); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.get_dataset); test_catalog_multi_source.py::_fetch_dataset (direct) |
 | TS3.023 | [x] | PATCH | /catalog/datasets/by-urn | test_catalog_multi_source.py::_ensure_retrieval_metadata (direct); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (direct) |
 | TS3.024 | [x] | GET | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
 | TS3.025 | [x] | PUT | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
@@ -134,7 +134,7 @@ Missing integration coverage: 163
 | TS3.032 | [x] | GET | /catalog/datasets/{dataset_urn:path} | test_catalog_endpoints.py::test_catalog_dataset_variant_endpoints (direct) |
 | TS3.033 | [x] | PATCH | /catalog/datasets/{dataset_urn:path} | test_catalog_endpoints.py::test_catalog_dataset_variant_endpoints (direct) |
 | TS3.034 | [x] | GET | /catalog/health | test_catalog_endpoints.py::test_catalog_metadata_and_health (direct) |
-| TS3.035 | [x] | GET | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_list (catalog.secrets.list); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.list_secrets) |
+| TS3.035 | [x] | GET | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_list (catalog.secrets.list); test_catalog_live.py::test_catalog_secret_lifecycle (catalog.list_secrets) |
 | TS3.036 | [x] | POST | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_endpoints (catalog.secrets.create) |
 | TS3.037 | [x] | DELETE | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
 | TS3.038 | [x] | GET | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
