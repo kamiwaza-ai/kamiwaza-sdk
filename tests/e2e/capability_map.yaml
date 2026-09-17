@@ -189,20 +189,24 @@
   capability_ids: [models.local-deployment, models.openai-compatible-inference]
   scenario_name: "Engine matrix deploy and infer with fractional co-location"
 
-# ENG-12327 (T09). Both tests deploy weights already present on the cluster and
-# fail if anything attempts a download, so they cannot pass on a warm cluster
-# without deploying (the gap that retired the 1.2.1 model records). They are
-# split one capability per test so an inference failure cannot mark local
-# deployment as failing, or the reverse. The lifecycle test creates, reads,
-# lists and updates a disposable model config, deploys with it to DEPLOYED,
-# checks the deployment, instances and logs, stops it, and deletes the config.
+# ENG-12327 (T09). Both tests deploy the llama.cpp GGUF target from weights
+# already on the cluster (checked before anything is created; no SDK download
+# method is called), and every run deploys, so neither can pass on a warm
+# cluster without deploying - the gap that retired the 1.2.1 model records.
+# One capability per test, so an inference failure cannot mark local deployment
+# as failing; the inference test must deploy first, so a deployment failure
+# fails both. The lifecycle test creates, reads, lists and updates a disposable
+# model config, deploys with it to DEPLOYED, checks the deployment, active
+# listing, instances, captured logs, log-pattern analysis and log stream, stops
+# it to STOPPED, and deletes the config.
 - pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_model_config_and_local_deployment_lifecycle"
   capability_ids: [models.local-deployment]
   scenario_name: "Model config and local deployment lifecycle through the SDK"
   evidence_provenance: cycle-authored
 
-# One real chat completion, with non-empty content, through the
-# OpenAI-compatible client the SDK returns for a fresh deployment.
+# One chat completion through the OpenAI-compatible client the SDK returns
+# for a fresh deployment; the reply must contain a sentinel word chosen for the
+# run, and the response must report prompt and completion tokens.
 - pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_openai_compatible_inference_through_sdk_client"
   capability_ids: [models.openai-compatible-inference]
   scenario_name: "OpenAI-compatible chat completion through the SDK client"
