@@ -161,3 +161,24 @@ Common models live in `kamiwaza_sdk.schemas.skills`:
 - `SkillPackageDownload`
 
 All response models allow extra fields so the SDK stays forward-compatible with backend additions.
+
+## Current markings and portable snapshots (core 1.3)
+
+`export_skill_package` and `export_skills_bundle` return version-2 snapshot ZIPs:
+`manifest.json` contains current metadata and full marking envelopes; `skills/`
+contains the unchanged original package ZIPs with SHA256 checksums. The stored
+source checksum continues to identify the original package. A source download
+through `download_skill_package` does not include subsequent metadata changes.
+
+Pass a single-entry snapshot directly to `import_skill_package`; its current
+marking is applied before the first persistence and the result is a draft.
+Multi-entry snapshots require per-entry imports, not an atomic transaction.
+Version-1 wrappers are unsupported.
+
+For a raw package, supply `marking=Marking(...)` (or a full envelope dictionary)
+to apply final protection in the initial multipart request. Omit `marking` to use
+the package/snapshot value. Explicit `marking=None` sends JSON null, which the
+server rejects if it would erase existing package protection. Invalid source
+content or provider metadata is rejected before writes; an override cannot
+bypass source validation or conflict with a snapshot's marking. Do not implement
+initial protection as a separate metadata update after upload.

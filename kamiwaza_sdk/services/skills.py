@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
+from enum import Enum
 from typing import Sequence
 from urllib.parse import unquote
 from uuid import UUID
@@ -11,6 +13,7 @@ from uuid import UUID
 import requests
 
 from ..exceptions import APIError, NotFoundError
+from ..schemas.markings import Marking
 from ..schemas.skills import (
     SkillLibraryDetailResponse,
     SkillLibraryExportRequest,
@@ -23,6 +26,10 @@ from .base_service import BaseService
 
 _FILENAME_STAR_RE = re.compile(r"filename\*=([^;]+)", re.IGNORECASE)
 _FILENAME_RE = re.compile(r'filename="([^"]+)"|filename=([^;]+)', re.IGNORECASE)
+
+
+class _OmittedMarking(Enum):
+    VALUE = "omitted"
 
 
 class SkillsService(BaseService):
@@ -67,12 +74,24 @@ class SkillsService(BaseService):
         filename: str,
         file_content: SkillPackageContent,
         content_type: str = "application/zip",
+        marking: Marking | dict | None | _OmittedMarking = _OmittedMarking.VALUE,
     ) -> SkillLibraryDetailResponse:
-        """Import a skill package as a new draft skill."""
+        """Import a raw package or one-entry version-2 snapshot as a draft.
+
+        ``marking`` is the full final envelope, applied before the first write.
+        Omit it to preserve the package/snapshot marking. Explicit ``None`` sends
+        null; the server refuses removal of existing package protection. A
+        snapshot already carries its current marking and needs no override.
+        """
         upload_filename = self._sanitize_filename(filename, default="skill.zip")
+        form = {}
+        if marking is not _OmittedMarking.VALUE:
+            normalized = None if marking is None else Marking.model_validate(marking).model_dump(mode="json")
+            form["data"] = {"marking": json.dumps(normalized)}
         response = self.client.post(
             "/skills/import",
             files={"file": (upload_filename, file_content, content_type)},
+            **form,
         )
         return SkillLibraryDetailResponse.model_validate(response)
 
@@ -93,7 +112,7 @@ class SkillsService(BaseService):
         )
 
     def export_skill_package(self, skill_id: UUID | str) -> SkillPackageDownload:
-        """Export the current package for a skill."""
+        """Export a version-2 snapshot with current metadata and unchanged source ZIP."""
         try:
             response = self.client.get(
                 f"/skills/{skill_id}/export",
@@ -112,7 +131,7 @@ class SkillsService(BaseService):
         self,
         skill_ids: Sequence[UUID | str],
     ) -> SkillPackageDownload:
-        """Export one or more skills as a bundle."""
+        """Export version-2 snapshots; multi-entry imports are performed individually."""
         payload = SkillLibraryExportRequest.model_validate(
             {"skill_ids": list(skill_ids)}
         )
