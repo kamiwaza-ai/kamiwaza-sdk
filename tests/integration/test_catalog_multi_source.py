@@ -14,8 +14,10 @@ before their ingestion or retrieval starts and name the prerequisite they are
 missing. The Kafka test has no skip of its own: catalog-stack setup waits for the
 Kafka port, and when setup fails every test that uses the stack skips at setup.
 
-Every dataset and container a test creates is deleted in fixture teardown and
-confirmed absent by a read that returns 404, so a cleanup failure fails the test.
+Every dataset and container a test creates is deleted in fixture teardown and must
+then read as 404 through the test's client, so a cleanup failure fails the test.
+Catalog reads are scoped to the caller's visible workrooms, so this confirms the
+object is gone for that client, not that no copy exists in another workroom.
 ``KEEP_CATALOG_DATASETS=1`` skips dataset cleanup for debugging; under
 ``--emit-evidence`` it stops the run with a usage error, so no evidence is written.
 The catalog stack, its object keys and the resulting dataset URNs are shared by
@@ -71,8 +73,11 @@ SSE_SYMPTOM_REPORT = "ENG-12300"
 TERMINAL_JOB_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELED"})
 CATALOG_PROPAGATION_TIMEOUT_S = 30.0
 # The SDK sets no timeout on the SSE request. The 1.2.1 stream sends only chunk and
-# complete events, so it is silent while a chunk is prepared: allow that much
-# silence per read, and bound the whole read so a stream that never ends fails.
+# complete events and is silent while a chunk is prepared; a silence longer than
+# SSE_READ_TIMEOUT_S fails the test even if the stream would have resumed. The
+# SSE_STREAM_TIMEOUT_S deadline is checked as each event arrives, so it fails a
+# stream that keeps sending events; bytes that complete no event (the 1.2.1 stream
+# sends none) are bounded only per read.
 SSE_READ_TIMEOUT_S = 60.0
 SSE_STREAM_TIMEOUT_S = 120.0
 CLEANUP_ERRORS = (KamiwazaError, requests.RequestException, ValidationError)
@@ -84,10 +89,11 @@ def _delete_and_confirm_absent(
     delete: Callable[[str], None],
     read: Callable[[str], object],
 ) -> None:
-    """Attempt every deletion, then fail once listing whatever was not confirmed gone.
+    """Attempt every deletion, then fail once listing whatever still reads back.
 
-    Only a read that returns 404 confirms absence. A 404 from delete does not: the
-    1.2.1 catalog also answers 404 when it refuses a delete.
+    Only a read that returns 404 counts as gone. A 404 from delete does not: the
+    1.2.1 catalog also answers 404 when it refuses a delete. Reads are scoped to the
+    caller's visible workrooms, so gone means gone for this client.
     """
     problems: list[str] = []
     for urn in dict.fromkeys(urns):
@@ -115,7 +121,7 @@ def _delete_and_confirm_absent(
 def created_datasets(
     live_kamiwaza_client: KamiwazaClient, request: pytest.FixtureRequest
 ) -> Iterator[list[str]]:
-    """Collect ingested dataset URNs; delete and confirm each is gone.
+    """Collect ingested dataset URNs; delete each and confirm it no longer reads back.
 
     ``KEEP_CATALOG_DATASETS=1`` skips both steps. Evidence claims cleanup was
     verified, so under ``--emit-evidence`` the run stops with a usage error instead:
@@ -137,7 +143,7 @@ def created_datasets(
 
 @pytest.fixture
 def created_containers(live_kamiwaza_client: KamiwazaClient) -> Iterator[list[str]]:
-    """Collect container URNs; delete and confirm each is gone."""
+    """Collect container URNs; delete each and confirm it no longer reads back."""
     urns: list[str] = []
     yield urns
     containers = live_kamiwaza_client.catalog.containers
@@ -320,21 +326,22 @@ def _collect_stream(
     timeout_s: float = SSE_STREAM_TIMEOUT_S,
     read_timeout_s: float = SSE_READ_TIMEOUT_S,
 ) -> list[RetrievalStreamEvent]:
-    """Read the SSE stream to its end, then close it; fail if it does not end in time.
+    """Read the SSE stream to its end, then close it.
 
-    A timeout adapter is mounted on the client's session for the read, so a stream
-    silent for ``read_timeout_s`` fails; one still sending events after ``timeout_s``
-    fails when the next event arrives. The stream is closed and the session's
-    adapters restored before this returns or fails.
+    A timeout adapter is mounted on the client's session for the read, so the test
+    fails if the stream is silent for ``read_timeout_s``, or if it is still sending
+    events once ``timeout_s`` has passed (checked as each event arrives). The stream
+    is closed and the session's adapters restored before this returns or fails.
     """
     session = client.session
     adapters = {prefix: session.adapters[prefix] for prefix in ("https://", "http://")}
     timed = _ReadTimeoutAdapter(read_timeout_s)
-    for prefix in adapters:
-        session.mount(prefix, timed)
     events: list[RetrievalStreamEvent] = []
+    failure = ""
     deadline = time.monotonic() + timeout_s
     try:
+        for prefix in adapters:
+            session.mount(prefix, timed)
         # stream_events returns the SDK's SSE generator; closing it closes the response.
         stream = cast(
             Generator[RetrievalStreamEvent, None, None],
@@ -344,22 +351,23 @@ def _collect_stream(
             for event in stream:
                 events.append(event)
                 if time.monotonic() >= deadline:
-                    pytest.fail(
-                        f"SSE stream for job {job_id} still open after "
-                        f"{timeout_s:.0f}s; events so far="
-                        f"{[seen.event for seen in events]}"
-                    )
+                    failure = f"still open after {timeout_s:.0f}s"
+                    break
         finally:
             stream.close()
     except (KamiwazaError, requests.RequestException) as exc:
-        pytest.fail(
-            f"SSE stream for job {job_id} failed after events="
-            f"{[seen.event for seen in events]}: {exc}"
-        )
+        failure = f"failed: {exc}"
     finally:
         for prefix, adapter in adapters.items():
             session.mount(prefix, adapter)
         timed.close()
+    # Fail outside the except block: a chained SDK error makes pytest print the
+    # arguments of urllib3's frames, which include the Authorization header.
+    if failure:
+        pytest.fail(
+            f"SSE stream for job {job_id} {failure}; events so far="
+            f"{[seen.event for seen in events]}"
+        )
     return events
 
 
@@ -728,7 +736,7 @@ def test_catalog_slack_ingestion_metadata(
         )
     except (KamiwazaError, ValidationError) as exc:
         # pytest prints each traceback frame's arguments, and the SDK frames hold the
-        # token; ``from None`` drops them so a failure cannot print it.
+        # token; ``from None`` drops them from SDK and response-validation failures.
         status = exc.status_code if isinstance(exc, KamiwazaError) else None
         raise AssertionError(
             f"Slack ingestion failed: {type(exc).__name__} (status {status})"
