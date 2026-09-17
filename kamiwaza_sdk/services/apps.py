@@ -387,7 +387,7 @@ class AppService(BaseService):
 
     def delete_template(self, template_id: UUID) -> dict:
         """
-        Delete an application template by ID.
+        Delete an application template, so nothing new can deploy from it.
 
         Args:
             template_id: UUID of the template

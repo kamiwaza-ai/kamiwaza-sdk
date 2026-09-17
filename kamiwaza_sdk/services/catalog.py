@@ -150,14 +150,22 @@ class DatasetClient(_ByUrnClient):
         return urn
 
     def add_publisher(self, subject_user_id: str) -> None:
-        """Grant a subject the cluster-level ``publisher`` relation (admin)."""
+        """Grant a subject the cluster-wide publisher relation for datasets.
+
+        Administrator only. The relation lets the subject publish any dataset
+        in the catalogue, not one dataset.
+        """
         self.client.post(
             f"{self._BASE_PATH}/publishers",
             json={"subject_user_id": subject_user_id},
         )
 
     def remove_publisher(self, subject_user_id: str) -> None:
-        """Revoke a subject's cluster-level ``publisher`` relation (admin)."""
+        """Revoke a subject's cluster-wide dataset publisher relation.
+
+        Administrator only. The subject keeps any dataset it already
+        published; this ends its ability to publish more.
+        """
         self.client.delete(
             f"{self._BASE_PATH}/publishers",
             json={"subject_user_id": subject_user_id},
@@ -581,11 +589,20 @@ class CatalogService(BaseService):
         return self.datasets.register_from_spec(spec)
 
     def add_publisher(self, subject_user_id: str) -> None:
-        """Grant a subject the cluster-level ``publisher`` relation (admin)."""
+        """Grant the dataset publisher relation, from the catalogue entry point.
+
+        Administrator only. The same act as ``catalog.datasets.add_publisher``,
+        reachable without naming the datasets sub-client.
+        """
         self.datasets.add_publisher(subject_user_id)
 
     def remove_publisher(self, subject_user_id: str) -> None:
-        """Revoke a subject's cluster-level ``publisher`` relation (admin)."""
+        """Revoke the dataset publisher relation, from the catalogue entry point.
+
+        Administrator only. The same act as
+        ``catalog.datasets.remove_publisher``, reachable without naming the
+        datasets sub-client.
+        """
         self.datasets.remove_publisher(subject_user_id)
 
     def list_containers(self, query: Optional[str] = None) -> List[Container]:

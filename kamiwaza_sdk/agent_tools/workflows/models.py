@@ -25,6 +25,15 @@ __all__ = [
 def endpoint_of(instances: list[Any]) -> str | None:
     """Return the first reachable endpoint among deployment instances.
 
+    ``listen_port`` is the field :class:`~kamiwaza_sdk.schemas.serving.serving.ModelInstance`
+    declares and the field a live platform returns. ``port`` is read as well,
+    and second, because nothing in the schema promises it — this used to read
+    ``port`` only, so every deployment workflow reported no endpoint at all
+    against a real cluster while the instance in front of it was serving on
+    ``listen_port: 8080``. Found by a persona audit against a live deployment,
+    where an operator asking for an endpoint is the whole point of the warm
+    path (FR-014, Story 2).
+
     Args:
         instances: Model instances from the platform.
 
@@ -34,7 +43,7 @@ def endpoint_of(instances: list[Any]) -> str | None:
     """
     for instance in instances:
         host = getattr(instance, "host_name", None) or getattr(instance, "host", None)
-        port = getattr(instance, "port", None)
+        port = getattr(instance, "listen_port", None) or getattr(instance, "port", None)
         if host and port:
             return f"http://{host}:{port}"
     return None
@@ -271,7 +280,17 @@ def diagnose_deployment(client: Any, deployment_id: str) -> dict[str, Any]:
     Returns:
         Mapping with ``conclusion``, ``evidence`` and ``next_action``.
     """
-    deployment = client.serving.get_deployment_status(deployment_id)
+    # `get_deployment`, not `get_deployment_status`: the platform answers
+    # `/serving/deployment/{id}/status` with a bare JSON string — measured,
+    # `"DEPLOYED"` — while that method validates the response into a
+    # `ModelDeployment`, so it raised a pydantic ValidationError for every
+    # deployment that exists and this diagnosis could never succeed. Found by a
+    # persona audit driving a live cluster: the operator's one headline tool
+    # failed on a healthy deployment, and the failure was reported as a
+    # platform fault worth retrying. `/serving/deployment/{id}` returns the
+    # whole object, whose `status` is the same string with the rest of the
+    # facts beside it.
+    deployment = client.serving.get_deployment(deployment_id)
     instances = list(client.serving.list_model_instances(deployment_id=deployment_id))
     evidence = {
         "status": getattr(deployment, "status", None),

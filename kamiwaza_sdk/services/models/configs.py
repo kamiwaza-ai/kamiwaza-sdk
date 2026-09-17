@@ -84,7 +84,7 @@ class ModelConfigMixin:
     
     def delete_model_config(self, model_config_id: Union[str, UUID]) -> None:
         """
-        Delete a model configuration by its ID.
+        Delete one model configuration, leaving the model and its files.
         
         Args:
             model_config_id (Union[str, UUID]): The ID of the model configuration to delete.

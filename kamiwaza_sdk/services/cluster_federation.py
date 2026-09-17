@@ -155,7 +155,7 @@ class ClusterAPI(ClusterService):
         authority: str = "local_admin",
         schema_version: str = "1.0",
     ) -> AttributeSchema:
-        """Register an attribute in the realm's declared vocabulary (ENG-4946).
+        """Register an attribute in the realm's declared vocabulary.
 
         Required BEFORE ``kz.subjects.upsert(...)`` writes for any attribute
         name not already declared. Idempotent on identical shape; shape
@@ -175,7 +175,7 @@ class ClusterAPI(ClusterService):
     def list_attributes(
         self, *, include_deprecated: bool = True
     ) -> List[AttributeSchema]:
-        """List the realm's declared vocabulary (ENG-4946)."""
+        """List the realm's declared attribute vocabulary."""
         params = {"include_deprecated": "true" if include_deprecated else "false"}
         response = self.client._request(
             "GET", "/cluster/attribute-schema", params=params
@@ -183,7 +183,7 @@ class ClusterAPI(ClusterService):
         return AttributeSchemaList.model_validate(response).attributes
 
     def deprecate_attribute(self, name: str) -> AttributeSchema:
-        """Transition an attribute from declared → deprecated (ENG-4946).
+        """Mark an attribute deprecated, so nothing new declares it.
 
         H4 (PR feedback): the DELETE endpoint only returns
         ``{state, subjects_holding_value}`` so the SDK reads the full
@@ -216,7 +216,7 @@ class ClusterAPI(ClusterService):
         force: bool = False,
         subjects_holding_value: int = 0,
     ) -> Dict[str, Any]:
-        """Transition an attribute to withdrawn state (ENG-4946).
+        """Withdraw an attribute, ending its use on new and existing subjects.
 
         Default refuses with 409 when subjects hold values; force=True
         proceeds with explicit audit capturing the count + intent.

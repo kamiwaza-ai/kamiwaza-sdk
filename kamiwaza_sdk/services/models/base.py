@@ -197,7 +197,7 @@ class ModelService(BaseService,
 
     def delete_model(self, model_id: Union[str, UUID]) -> dict:
         """
-        Delete a specific model by its ID.
+        Delete a model, with its configurations and downloaded files.
         
         Args:
             model_id (Union[str, UUID]): The ID of the model to delete.

@@ -357,10 +357,24 @@ class ServingService(BaseService):
             
         return self.client.delete(f"/serving/deployment/{deployment_id}", params={"force": force})
 
-    def get_deployment_status(self, deployment_id: UUID) -> ModelDeployment:
-        """Get the status of a specific model deployment."""
+    def get_deployment_status(self, deployment_id: UUID) -> str:
+        """Get the status of a specific model deployment.
+
+        The platform answers this route with a bare JSON string — measured
+        against a live cluster, ``"DEPLOYED"``. This used to declare
+        ``ModelDeployment`` and validate the response into one, so the call
+        raised a pydantic ``ValidationError`` for every deployment that exists
+        and no caller could ever have succeeded. Use
+        :meth:`get_deployment` when the rest of the deployment is wanted.
+
+        Args:
+            deployment_id: Identifier of the deployment.
+
+        Returns:
+            The status string, as the platform reports it.
+        """
         response = self.client.get(f"/serving/deployment/{deployment_id}/status")
-        return ModelDeployment.model_validate(response)
+        return response if isinstance(response, str) else str(response)
 
     def get_deployment_logs(self, deployment_id: UUID) -> ContainerLogResponse:
         """Fetch captured logs for a deployment."""

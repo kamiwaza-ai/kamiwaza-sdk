@@ -32,7 +32,7 @@ class ModelFileMixin:
     
     def delete_model_file(self, model_file_id: Union[str, UUID]) -> dict:
         """
-        Delete a model file by its ID.
+        Delete one downloaded model file, leaving the model registered.
         
         Args:
             model_file_id (Union[str, UUID]): The ID of the model file to delete.
