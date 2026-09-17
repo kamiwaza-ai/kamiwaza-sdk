@@ -8,10 +8,10 @@ deleted, with errors propagating, then proven absent.
 The two tests feed separate evidence records (tests/e2e/capability_map.yaml):
 the inline test's record claims catalog registration and retrieval, and the
 gRPC test, the only one that exercises Arrow Flight, has a retrieval record of
-its own. On the Azure 1.2.1 evidence instance the
-gRPC leg fails with HTTP 503 (ENG-12300). It is reported as a failure on
-purpose: the retrieval capability includes Arrow Flight, so an unavailable
-transport must not be converted into a skip.
+its own. On the Azure 1.2.1 evidence instance the gRPC leg fails with HTTP 503
+(ENG-12300). It is reported as a failure on purpose: the retrieval capability
+includes Arrow Flight, so an unavailable transport must not be converted into a
+skip.
 
 Arrow Flight verifies TLS. When the cluster certificate is not publicly
 trusted, set REQUESTS_CA_BUNDLE to the cluster CA bundle.

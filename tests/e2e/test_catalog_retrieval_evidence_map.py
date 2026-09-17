@@ -56,7 +56,7 @@ def _matching_entries(test_name: str) -> list[emitter.MapEntry]:
 
 
 @pytest.mark.parametrize("test_name", sorted(EXPECTED_CLAIMS))
-def test_t01_test_feeds_exactly_its_own_claim(test_name: str) -> None:
+def test_t01_test_feeds_exactly_its_expected_claims(test_name: str) -> None:
     matching = _matching_entries(test_name)
 
     assert [entry.capability_ids for entry in matching] == [
