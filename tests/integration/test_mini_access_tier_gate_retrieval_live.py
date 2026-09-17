@@ -2,7 +2,7 @@
 
 Proves the full install -> file-source -> gate-bind -> invoke path on ONE live
 cluster (a gate is a dataset feature, so the data-plane is provable without a
-mesh): install the acme-gates==1.1.0 wheel, back a ``platform="file"`` dataset
+mesh): install the acme-gates==1.2.0 wheel, back a ``platform="file"`` dataset
 with the deterministic 5-row [PUBLIC,PUBLIC,PUBLIC,PRIVATE,CONFIDENTIAL] parquet/csv, bind MiniAccessTierGate,
 then retrieve as PUBLIC/PRIVATE/CONFIDENTIAL personas and assert the exact post-gate counts
 (PUBLIC:3/2, PRIVATE:4/1, CONFIDENTIAL:5/0) with zero leakage.
@@ -10,7 +10,7 @@ then retrieve as PUBLIC/PRIVATE/CONFIDENTIAL personas and assert the exact post-
 Soft-skips (contributor boxes stay green) unless the operator has provisioned:
   * the WS-M5 gate-packages PVC and set ``M5_TEST_KUBECTL`` for automatic
     session provisioning. The SDK-owned helper builds the 1.0.0, 1.0.1, and
-    1.1.0 wheels and publishes the simple index;
+    1.2.0 wheels and publishes the simple index;
   * a filesystem-source file the ray-head can read: place the fixture (see
     _mini_access_tier.write_dataset_file) at an absolute path under the cluster's
     RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS and pass it via MINI_ACCESS_TIER_DATASET_PATH.
@@ -45,7 +45,7 @@ def _prereqs() -> tuple[str, str, str]:
     if wi is None:
         pytest.skip(
             "gate-packages wheel/index not configured (set M5_TEST_WHEEL_DIR + "
-            "M5_TEST_INDEX_URL to the served acme-gates 1.1.0 wheel)"
+            "M5_TEST_INDEX_URL to the served acme-gates 1.2.0 wheel)"
         )
     dataset_path = os.getenv("MINI_ACCESS_TIER_DATASET_PATH", "").strip()
     if not dataset_path:

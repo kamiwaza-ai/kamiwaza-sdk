@@ -18,7 +18,7 @@ from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.registry import model_digest
 
 FEDERATION_PROVIDER_ID = "sdk.federation.shared-idp"
-FEDERATION_PROVIDER_REVISION = "sdk.federation.shared-idp@v1"
+FEDERATION_PROVIDER_REVISION = "sdk.federation.shared-idp@v2"
 FEDERATION_SCENARIO_ID = "sdk.federation.shared-idp/v1"
 
 # These are the stable public case IDs for the nine-case inventory currently

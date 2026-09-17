@@ -374,15 +374,19 @@ def _ensure_gate(receiver: Any) -> bool:
 
 def _find_gate_package(packages: Any) -> Any | None:
     items = getattr(packages, "items", packages) or []
-    return next(
-        (
-            item
-            for item in items
-            if getattr(item, "name", None) == GATE_PACKAGE_NAME
-            and GATE_CLASSPATH in (getattr(item, "classpaths", None) or [])
-        ),
-        None,
-    )
+    for item in items:
+        if getattr(item, "name", None) != GATE_PACKAGE_NAME:
+            continue
+        if GATE_CLASSPATH in (getattr(item, "classpaths", None) or []):
+            return item
+        version = getattr(item, "version", "unknown")
+        raise ProviderContractError(
+            f"Incompatible retained fixture {GATE_PACKAGE_NAME}=={version}: "
+            f"missing {GATE_CLASSPATH}. On an isolated test cluster, remove old "
+            "fixture dataset bindings and uninstall the old gate package, then "
+            f"provision {GATE_PACKAGE_SPEC}. No package changes were attempted."
+        )
+    return None
 
 
 def _install_gate_package(receiver: Any) -> None:

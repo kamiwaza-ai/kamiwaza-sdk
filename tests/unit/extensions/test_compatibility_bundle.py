@@ -162,15 +162,15 @@ class TestPythonRuntimeLibCheck:
         return DoctorChecker(config_dir=tmp_path / ".kamiwaza")
 
     def test_in_range_version_passes(self, checker, tmp_path):
-        # Runtime-lib 0.5 adds the relocation contract; its exact minor
-        # window is the canonical fully-supported pin.
+        # Runtime-lib 0.6 coordinates generic identity transport with the
+        # existing relocation contract; this minor window is supported.
         req = tmp_path / "requirements.txt"
         req.write_text("kamiwaza-extensions-lib>=0.6,<0.7\nfastapi>=0.100\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
     def test_out_of_range_pinned_version_warns(self, checker, tmp_path):
-        # 0.1.0 is below the bundle's >= 0.2 floor — a project pinned this far
+        # 0.1.0 is below the bundle's >= 0.6 floor — a project pinned this far
         # back will get the runtime-lib equivalent of "your toolchain is stale".
         req = tmp_path / "requirements.txt"
         req.write_text("kamiwaza-extensions-lib==0.1.0\n")
@@ -226,7 +226,7 @@ class TestPythonRuntimeLibCheck:
     def test_pep508_extras_are_handled(self, checker, tmp_path):
         """`kamiwaza-extensions-lib[fastapi]>=0.6,<0.7` parses
         cleanly via packaging.requirements.Requirement.
-        (The 0.5 floor ensures the runtime relocation helpers are present.)
+        (The 0.6 floor supplies the paired generic identity contract.)
         """
         req = tmp_path / "requirements.txt"
         req.write_text("kamiwaza-extensions-lib[fastapi]>=0.6,<0.7\n")
@@ -244,7 +244,7 @@ class TestPythonRuntimeLibCheck:
     def test_upper_bound_only_below_supported_warns(self, checker, tmp_path):
         """Round-3 H1 — an upper-bound-only pin like `<0.5` slips past
         the lower-bound probe (no >=/> in the spec) but every allowed
-        version is below the supported floor of `>=0.5`. Must warn.
+        version is below the supported floor of `>=0.6`. Must warn.
         """
         req = tmp_path / "requirements.txt"
         req.write_text("kamiwaza-extensions-lib<0.5\n")
@@ -254,18 +254,18 @@ class TestPythonRuntimeLibCheck:
     @pytest.mark.parametrize(
         "spec",
         [
-            "kamiwaza-extensions-lib>=0.5",  # bare lower, unbounded above
-            "kamiwaza-extensions-lib~=0.5",  # ~=0.5 = >=0.5,<1.0 (admits 0.6+)
-            "kamiwaza-extensions-lib>0.5",  # strict lower, no upper
-            "kamiwaza-extensions-lib>=0.5,<0.7",  # above supported's 0.6 ceiling
+            "kamiwaza-extensions-lib>=0.6",  # supported lower, unbounded above
+            "kamiwaza-extensions-lib~=0.6",  # >=0.6,<1.0 exceeds upper bound
+            "kamiwaza-extensions-lib>0.6",  # strict lower, no upper
+            "kamiwaza-extensions-lib>=0.6,<0.8",  # above supported ceiling
         ],
     )
     def test_open_ended_or_too_wide_specs_warn(self, checker, tmp_path, spec):
         """Round-4 H2 — open-ended specs (no upper bound, or upper above
         supported's ceiling) admit versions outside the supported window.
-        Pip can legally resolve a future 0.6+ release for these declared
+        Pip can legally resolve a future 0.7+ release for these declared
         ranges; the doctor must surface the drift.
-        The 0.5 floor also excludes all earlier releases.
+        The 0.6 floor also excludes all earlier releases.
         """
         req = tmp_path / "requirements.txt"
         req.write_text(spec + "\n")
@@ -273,15 +273,18 @@ class TestPythonRuntimeLibCheck:
         assert result.status == "warn", (
             f"declared {spec!r} extends beyond supported `>=0.6,<0.7` but "
             f"the doctor reported {result.status} (false-negative — could "
-            f"resolve a 0.6+ version that's outside the CLI's compat window)"
+            f"resolve a 0.7+ version that's outside the CLI's compat window)"
         )
 
     @pytest.mark.parametrize(
         "spec,expected",
         [
+            ("kamiwaza-extensions-lib==0.5.0", "warn"),
+            ("kamiwaza-extensions-lib~=0.5.0", "warn"),
+            ("kamiwaza-extensions-lib~=0.5.5", "warn"),
             ("kamiwaza-extensions-lib~=0.6.0", "pass"),  # >=0.6.0,<0.7
-            ("kamiwaza-extensions-lib~=0.6.5", "pass"),  # >=0.6.5,<0.6
-            # Below the 0.5 floor — these ranges lack relocation support.
+            ("kamiwaza-extensions-lib~=0.6.5", "pass"),  # >=0.6.5,<0.7
+            # Older releases lack the current generic identity contract.
             ("kamiwaza-extensions-lib~=0.4.5", "warn"),
             ("kamiwaza-extensions-lib~=0.3.0", "warn"),  # >=0.3.0,<0.4 — below floor
             ("kamiwaza-extensions-lib~=0.2.0", "warn"),  # >=0.2.0,<0.3 — below floor
@@ -371,10 +374,13 @@ class TestTypeScriptRuntimeLibCheck:
     @pytest.mark.parametrize(
         "spec,expected",
         [
-            (">=0.4", "warn"),  # bare lower, unbounded above
-            (">0.4", "warn"),  # strict lower, no upper
-            (">=0.4,<0.6", "warn"),  # upper above supported's 0.5
+            (">=0.6", "warn"),  # supported lower, unbounded above
+            (">0.6", "warn"),  # strict lower, no upper
+            (">=0.6 <0.8", "warn"),  # above supported ceiling
             ("*", "warn"),  # any-version
+            ("^0.5.0", "warn"),
+            ("~0.5.0", "warn"),
+            ("0.5.0", "warn"),
             ("^0.2.0", "warn"),  # caret 0.2 below supported floor
             (
                 "^0.3.0",
@@ -399,8 +405,8 @@ class TestTypeScriptRuntimeLibCheck:
         """Round-4 H3 — TS check uses full-containment (was: lower-only
         probe). Open-ended specs (no upper, or upper above the supported
         ceiling) warn. Caret/tilde/exact specs that are fully contained
-        pass. The supported window is ``>=0.6,<0.7`` because 0.5 adds the
-        dual-artifact runtime relocation contract required by generated apps.
+        pass. The supported window is ``>=0.6,<0.7`` because 0.6 adds the
+        paired generic identity contract required by generated apps.
         """
         pkg = tmp_path / "package.json"
         pkg.write_text(
@@ -413,7 +419,7 @@ class TestTypeScriptRuntimeLibCheck:
         result = checker._check_ts_runtime_lib(pkg)
         assert result.status == expected, (
             f"declared {spec!r} expected={expected} actual={result.status} "
-            f"(supported window is `>=0.4.3,<0.5`)"
+            f"(supported window is `>=0.6,<0.7`)"
         )
 
     def test_fresh_scaffold_ts_pin_passes_doctor(self, checker, tmp_path):

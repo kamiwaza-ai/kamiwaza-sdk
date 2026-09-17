@@ -198,3 +198,19 @@ for up to 30 seconds: Core emits it before recording or dispatching a job.
 Once a job ID is accepted, polling occurs outside that retry boundary. Denials,
 other 503 reasons and ambiguous transport failures propagate without resubmission.
 Run both paths when qualifying a provisioned federation smoke.
+
+## Provider revision 2 cutover
+
+SDK 1.2.0 emits `sdk.federation.shared-idp@v2` plans and fixture state. Case IDs
+and persona names changed with the neutral access-tier fixture. This revision
+is distinct from the unchanged scenario ID `sdk.federation.shared-idp/v1`,
+protocol version `v1`, ownership scheme, and JSON schema versions. Existing
+profile `include` entries continue to select the same scenario.
+
+Before upgrading an owned fixture, clean it with the matching previous provider
+and retain its evidence. Generate fresh plans and state with the new provider;
+prepare/run refuse previous-revision plans, and run/teardown refuse old fixture
+state before opening clients or mutating resources. Do not edit revision strings
+in saved state to bypass ownership checks. This release has no automatic
+state conversion or takeover of old/foreign fixtures. Externally managed identity
+fixtures remain externally owned and are never deleted as part of this cutover.

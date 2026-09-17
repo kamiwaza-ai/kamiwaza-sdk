@@ -216,8 +216,8 @@ INSTALLED_NEXT="$(node -p "require('next/package.json').version")"
     || fail "installed next@$INSTALLED_NEXT does not match fixture pin next@$EXPECTED_NEXT"
 INSTALLED_EXTLIB="$(node -p \
     "require('./node_modules/@kamiwaza-ai/extensions-lib/package.json').version")"
-[[ "$INSTALLED_EXTLIB" =~ ^0\.5\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
-    || fail "installed extensions-lib@$INSTALLED_EXTLIB does not satisfy the 0.5.x canary contract"
+[[ "$INSTALLED_EXTLIB" =~ ^0\.6\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
+    || fail "installed extensions-lib@$INSTALLED_EXTLIB does not satisfy the 0.6.x canary contract"
 log "installed next@$INSTALLED_NEXT with extensions-lib@$INSTALLED_EXTLIB"
 TOOLS="$WORK/app/node_modules/@kamiwaza-ai/extensions-lib/scripts"
 [[ -f "$TOOLS/index-next-runtime.mjs" && -f "$TOOLS/start-next-runtime.mjs" ]] \

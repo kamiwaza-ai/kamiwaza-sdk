@@ -13,7 +13,7 @@ DEFAULT_TENANT_ID = "__default__"
 GATE_CLASSPATH = "acme_gates.mini_access_tier_gate.MiniAccessTierGate"
 GATE_NAME = "mini_access_tier_gate"
 GATE_PACKAGE_NAME = "acme-gates"
-GATE_PACKAGE_SPEC = "acme-gates==1.1.0"
+GATE_PACKAGE_SPEC = "acme-gates==1.2.0"
 
 PERSONAS = {
     "PUBLIC": "fed-tier-public",

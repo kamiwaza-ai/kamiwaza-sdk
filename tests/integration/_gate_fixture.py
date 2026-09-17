@@ -65,14 +65,14 @@ from typing import Any
 
 # The SDK owns both live fixture families.  The M5 lifecycle test exercises
 # install 1.0.0 -> replace 1.0.1, while the federation known-answer tests use
-# the fail-closed MiniAccessTierGate in 1.1.0.  One provision command publishes
+# the fail-closed MiniAccessTierGate in 1.2.0.  One provision command publishes
 # all three exact artifacts so no package test needs to skip for missing
 # fixture wheels.
-PACKAGE_VERSIONS = ("1.0.0", "1.0.1", "1.1.0")
+PACKAGE_VERSIONS = ("1.0.0", "1.0.1", "1.2.0")
 WHEEL_NAMES = {
     version: f"acme_gates-{version}-py3-none-any.whl" for version in PACKAGE_VERSIONS
 }
-WHEEL_NAME = WHEEL_NAMES["1.1.0"]
+WHEEL_NAME = WHEEL_NAMES["1.2.0"]
 NAMESPACE = "kamiwaza"
 # The gate-packages PVC: already mounted, already writable, and its presence IS
 # the prerequisite for gate-package install.
@@ -199,7 +199,7 @@ def _stage_source(src: Path, version: str, stage_name: str) -> Path:
         text,
         count=1,
     )
-    if count != 1 and version != "1.1.0":
+    if count != 1 and version != "1.2.0":
         raise SystemExit(f"could not set acme-gates version {version} in {metadata}")
     if count == 1:
         metadata.write_text(rewritten, encoding="utf-8")
@@ -221,7 +221,7 @@ def _build_version(src: Path, version: str, stage_name: str) -> tuple[Path, str]
     return wheel, f"sha256:{digest}"
 
 
-def build_wheel(src: Path, version: str = "1.1.0") -> tuple[Path, str]:
+def build_wheel(src: Path, version: str = "1.2.0") -> tuple[Path, str]:
     """Build out-of-tree and return (wheel_path, 'sha256:<hex>').
 
     Staged out of tree because an in-tree build leaves build/ and *.egg-info in
@@ -602,13 +602,13 @@ def _print_environment(values: dict[str, str]) -> None:
 def provision(argv: list[str]) -> dict[str, str]:
     """Refresh cluster-side fixtures and return their pytest environment."""
     wheels = build_wheels(locate_source())
-    wheel, digest = wheels["1.1.0"]
+    wheel, digest = wheels["1.2.0"]
     for version, (built_wheel, built_digest) in wheels.items():
         print(f"  built {version}: {built_wheel.name}  {built_digest}")
 
     preflight(argv)
     additional = {
-        version: artifact for version, artifact in wheels.items() if version != "1.1.0"
+        version: artifact for version, artifact in wheels.items() if version != "1.2.0"
     }
     network_index_url = publish(argv, stage_index(wheel, digest, additional))
     verify(

@@ -42,7 +42,7 @@ from kamiwaza_sdk.validation.retrieval_diagnostics import (
     log_missing_audit_job_state,
 )
 
-WHEEL_NAME = "acme_gates-1.1.0-py3-none-any.whl"
+WHEEL_NAME = "acme_gates-1.2.0-py3-none-any.whl"
 PACKAGE_SPEC = GATE_PACKAGE_SPEC
 
 # FastAPI auth denials are normally a few hundred bytes. Keep enough room for
@@ -99,7 +99,7 @@ def write_dataset_file(path: Path) -> str:
 
 
 def wheel_and_index() -> Optional[tuple[str, str]]:
-    """(M5_TEST_WHEEL_DIR, M5_TEST_INDEX_URL) iff both set and the 1.1.0 wheel is present."""
+    """(M5_TEST_WHEEL_DIR, M5_TEST_INDEX_URL) iff both set and the 1.2.0 wheel is present."""
     wheel_dir = os.getenv("M5_TEST_WHEEL_DIR", "").strip()
     index_url = os.getenv("M5_TEST_INDEX_URL", "").strip()
     if not wheel_dir or not index_url:
@@ -129,22 +129,31 @@ def _already_installed(kz: Any) -> bool:
     except Exception:  # noqa: BLE001 — treat an unreadable listing as not-installed
         return False
     for pkg in getattr(listing, "items", listing) or []:
-        if getattr(pkg, "name", None) == GATE_PACKAGE_NAME and GATE_CLASSPATH in (
-            getattr(pkg, "classpaths", None) or []
-        ):
+        if getattr(pkg, "name", None) != GATE_PACKAGE_NAME:
+            continue
+        if GATE_CLASSPATH in (getattr(pkg, "classpaths", None) or []):
             return True
+        version = getattr(pkg, "version", "unknown")
+        raise RuntimeError(
+            f"Incompatible retained fixture {GATE_PACKAGE_NAME}=={version}: "
+            f"missing {GATE_CLASSPATH}. On an isolated test cluster, remove old "
+            "fixture dataset bindings and uninstall the old gate package, then "
+            f"provision {PACKAGE_SPEC}. No package changes were attempted."
+        )
     return False
 
 
 def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
-    """Ensure acme-gates==1.1.0 is installed and MiniAccessTierGate is discoverable.
+    """Ensure acme-gates==1.2.0 is installed and MiniAccessTierGate is discoverable.
 
     The dataset gate-bind endpoint enforces the classpath allowlist against
     ``cluster_gate_packages.classpaths`` (populated by the install's discover
     step), so the package MUST be present before ``set_gate`` — otherwise the
     bind 403s ``classpath_not_allowed``. Idempotent: if a prior run already
     installed it (with our classpath) we keep it, since uninstalling it can be
-    refused while an orphaned dataset still binds the gate.
+    refused while an orphaned dataset still binds the gate. A retained package
+    missing this classpath requires explicit isolated-fixture cleanup; we never
+    replace it automatically or remove its bindings.
     """
     if not _already_installed(kz):
         result = kz.gates.packages.install(

@@ -9,6 +9,9 @@ Extends T5.18-skeleton (WS-M1, federation-only) by adding the M3
 ergonomics layers: subject upsert via SDK, cluster execution-gate
 binding via SDK, dataset creation + attribute-gate binding via SDK.
 Mirrors the README's eight-step walkthrough exactly.
+The dataset's cluster must have the SDK fixture package acme-gates 1.2.0
+installed through the owned-fixture setup; this walkthrough does not adopt or
+replace an existing package.
 
 The test is marked ``@pytest.mark.live`` and gated on env vars — it
 no-ops in standard CI and only runs when the operator points the SDK
@@ -246,12 +249,11 @@ def test_m3_full_walkthrough_against_live_fleet(
                 ds_binding = lyra.datasets.set_gate(
                     dataset_urn,
                     type=(
-                        "kamiwaza_extensions.classified_conjunction_gate."
-                        "ClassifiedConjunctionGate"
+                        "acme_gates.mini_access_tier_gate."
+                        "MiniAccessTierGate"
                     ),
                     config={
-                        "classification_field": "classification",
-                        "releasable_to_field": "releasable_to",
+                        "tier_field": "tier",
                     },
                 )
                 assert ds_binding.kind == "attribute"
@@ -259,7 +261,7 @@ def test_m3_full_walkthrough_against_live_fleet(
                 if exc.status_code != 404:
                     raise
                 pytest.skip(
-                    "ClassifiedConjunctionGate extension not installed on the "
+                    "MiniAccessTierGate extension not installed on the "
                     "fleet; partial M3 walkthrough run. Install the gate "
                     "extension to exercise the full ship gate."
                 )

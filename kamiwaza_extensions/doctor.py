@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import operator
 import re
 import subprocess
 import sys
@@ -229,9 +230,17 @@ def _python_spec_outside_supported(
 
     declared_lower, declared_upper = _spec_bounds(declared)
     supported_lower, supported_upper = _spec_bounds(supported)
-    return _bounds_outside_supported(
+    reason = _bounds_outside_supported(
         declared_lower, declared_upper, supported_lower, supported_upper
     )
+    if reason is not None:
+        return reason
+    for endpoint in (supported_lower, supported_upper):
+        if endpoint is None:
+            continue
+        if endpoint in declared and endpoint not in supported:
+            return f"declared includes excluded supported endpoint {endpoint}"
+    return None
 
 
 def _npm_bounds(spec: str) -> tuple[Optional[Version], Optional[Version]]:
@@ -306,6 +315,52 @@ def _npm_bounds(spec: str) -> tuple[Optional[Version], Optional[Version]]:
                 lower = v
                 upper = v
     return (lower, upper)
+
+
+def _npm_comparator_includes(part: str, endpoint: Version) -> bool:
+    """Test one already-supported npm comparator at a boundary."""
+    match = re.fullmatch(r"(>=|<=|>|<|=)?(.+)", part)
+    if match is None:
+        return False
+    version = _npm_lower_bound(match[2])
+    if version is None:
+        return False
+    compare = {
+        ">=": operator.ge,
+        ">": operator.gt,
+        "<=": operator.le,
+        "<": operator.lt,
+        "=": operator.eq,
+    }[match[1] or "="]
+    return compare(endpoint, version)
+
+
+def _npm_endpoint_included(spec: str, endpoint: Version) -> bool:
+    """Preserve inclusivity for the simple ranges parsed by _npm_bounds."""
+    spec = spec.strip()
+    if spec.startswith(("^", "~")):
+        lower, upper = _npm_bounds(spec)
+        if lower is None or upper is None:
+            return False
+        return lower <= endpoint < upper
+    parts = [part for part in re.split(r"[,\s]+", spec) if part]
+    return all(_npm_comparator_includes(part, endpoint) for part in parts)
+
+
+def _npm_spec_outside_supported(declared: str, supported: str) -> Optional[str]:
+    """Compare bounds, then reject an included but unsupported endpoint."""
+    supported_bounds = _npm_bounds(supported)
+    reason = _bounds_outside_supported(*_npm_bounds(declared), *supported_bounds)
+    if reason is not None:
+        return reason
+    for endpoint in supported_bounds:
+        if endpoint is None:
+            continue
+        if not _npm_endpoint_included(declared, endpoint):
+            continue
+        if not _npm_endpoint_included(supported, endpoint):
+            return f"declared includes excluded supported endpoint {endpoint}"
+    return None
 
 
 def _npm_lower_bound(spec: str) -> Optional[Version]:
@@ -1386,13 +1441,7 @@ class DoctorChecker:
                 # Parse npm semver bounds from `declared` and compare both
                 # endpoints against `supported` to catch open-ended specs
                 # like ">=0.2" or "0.2" that admit future major releases.
-                declared_lower, declared_upper = _npm_bounds(declared)
-                reason = _bounds_outside_supported(
-                    declared_lower,
-                    declared_upper,
-                    supported_lower,
-                    supported_upper,
-                )
+                reason = _npm_spec_outside_supported(declared, compat_range)
                 if reason is not None:
                     # ENG-3901 / F-003: same CLI-version hint as the
                     # Python check — a stale ``kz-ext`` ships a stale

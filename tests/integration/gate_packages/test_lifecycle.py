@@ -16,7 +16,7 @@ Skipped by default (marker: ``integration``). Requires:
 - A live cluster with the WS-M5 chart applied (gate-packages PVC +
   bind-mounts + GatePackageAPI registered + cluster_gate_packages
   table)
-- The exact SDK-owned ``acme_gates`` 1.0.0, 1.0.1, and 1.1.0 wheels plus the
+- The exact SDK-owned ``acme_gates`` 1.0.0, 1.0.1, and 1.2.0 wheels plus the
   simple index provisioned after rollout. Set ``M5_TEST_KUBECTL`` to let the
   integration session provision them, or invoke ``_gate_fixture.py provision``
   beforehand and forward its emitted environment (the Kajiya smoke path).
