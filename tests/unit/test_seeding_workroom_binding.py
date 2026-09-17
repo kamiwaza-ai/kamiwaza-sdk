@@ -65,3 +65,22 @@ def test_persistent_outage_preserves_error_at_deadline(monkeypatch):
     assert caught.value is error
     sleep.assert_called_once_with(0.25)
     assert client.workrooms.enter.call_count == 2
+
+
+def test_live_pat_contract_waits_for_projection_then_requires_rejection(monkeypatch):
+    from tests.integration.test_seeding_live import test_pat_workroom_enter_is_rejected
+
+    client = Mock()
+    rejected = APIError(
+        "PAT cannot bind a session",
+        status_code=409,
+        response_data={"detail": "workroom_binding_invalid"},
+    )
+    client.workrooms.enter.side_effect = [_pending(), rejected]
+    create = Mock(return_value=Mock(id="room"))
+    monkeypatch.setattr(binding.time, "sleep", Mock())
+
+    test_pat_workroom_enter_is_rejected(client, create)
+
+    assert client.workrooms.enter.call_count == 2
+    client.workrooms.enter.assert_called_with("room")
