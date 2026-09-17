@@ -1,23 +1,23 @@
 {
   "categories": {
-    "access": 41,
+    "access": 40,
     "agents": 25,
     "collaboration": 25,
     "data": 105,
     "extensions": 38,
     "infrastructure": 41,
-    "models": 65
+    "models": 63
   },
   "counts": {
     "documented": 357,
     "operations": 362,
-    "published": 340,
+    "published": 337,
     "services": 34,
-    "unpublished": 22
+    "unpublished": 25
   },
   "descriptions": {
     "absent": 0,
-    "docstring": 336,
+    "docstring": 333,
     "interface_description": 4,
     "interface_summary": 0,
     "thin": 0
@@ -403,7 +403,10 @@
     "catalog.secrets.encode_path_urn",
     "cluster.rotate_preshared_key",
     "embedding.HuggingFaceEmbedding",
+    "embedding.call",
+    "embedding.get_embedder",
     "models.auto_selector",
+    "subjects.grants",
     "tools.check_health",
     "tools.deploy",
     "tools.deploy_from_template",

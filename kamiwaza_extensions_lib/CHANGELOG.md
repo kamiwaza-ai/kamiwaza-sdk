@@ -6,6 +6,25 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
+## [0.6.0] — 2026-09-17
+
+### Removed
+
+* `Identity.system_high` and the `X-User-System-High` header it read. The
+  platform no longer sends that header on the identity envelope, so the field
+  could only ever be `None` here, and a field that is always `None` invites
+  callers to branch on something that never happens. Callers that read it must
+  delete that branch; there is no replacement value to read. The TypeScript
+  runtime removed `Identity.systemHigh` in its own 0.6.0, so both language
+  runtimes lose the field together.
+
+### Notes
+
+* Compat floor in `kamiwaza_extensions/compatibility.json` raised to
+  `>=0.6,<0.7`, and the scaffold, example, and SDK pins move with it, so no
+  consumer resolves a 0.5.x wheel whose `Identity` still carries the removed
+  field.
+
 ## [0.5.0] — 2026-07-28
 
 ### Added

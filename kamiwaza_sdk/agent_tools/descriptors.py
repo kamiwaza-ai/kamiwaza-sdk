@@ -77,23 +77,18 @@ _READ_VERBS = frozenset(
         "grants",
         "filter",
         "evaluate",
-        "require",
         "by",
         "stream",
-        "chat",
-        "call",
-        "encode",
-        # `flight`, `ontology`, `slack` and `auto` name a subject, not an
+        # `flight`, `ontology`, `agentic` and `slack` name a subject, not an
         # action, so they stay only because every operation that leads with
         # them reads: `retrieval.flight_batches`, `context.ontology_health`,
-        # `retrieval.slack_messages`, `models.auto_selector`. A new operation
+        # `context.agentic_search`, `retrieval.slack_messages`. A new operation
         # leading with one of these must be checked by hand rather than
         # inheriting a read.
         "flight",
         "ontology",
         "agentic",
         "slack",
-        "auto",
         # The connector-surface reads that arrived with the surface browsing
         # API. Each one reads and returns: `browse_surface` lists a surface's
         # items, `fetch_surface_content` reads one node by its opaque id, and
@@ -296,11 +291,12 @@ HINT_OVERRIDES: dict[str, BehaviourHints] = {
     "auth.refresh_access_token": BehaviourHints(
         read_only=False, destructive=False, idempotent=False, open_world=False
     ),
-    # `admin` and `declare` used to sit in the read set, which published a
-    # `DELETE /admin/workrooms/{id}` as a free, approval-exempt read. They are
-    # subjects and moods, not actions, so they are stated here one operation at
-    # a time instead. Nothing else leads with either token; a new one fails
-    # closed as an unknown verb and `unknown_verbs()` reports it.
+    # `admin`, `declare`, `chat` and `call` are subjects, moods and transports
+    # rather than actions, so no verb set holds them and every operation that
+    # leads with one is stated here instead. A new one fails closed as an
+    # unknown verb and `unknown_verbs()` reports it.
+    #
+    # `admin_delete` is `DELETE /admin/workrooms/{id}`; `admin_list` reads.
     "workrooms.admin_delete": BehaviourHints(
         read_only=False, destructive=True, idempotent=True, open_world=False
     ),
@@ -312,6 +308,25 @@ HINT_OVERRIDES: dict[str, BehaviourHints] = {
     # never read-only.
     "cluster.declare_attribute": BehaviourHints(
         read_only=False, destructive=False, idempotent=True, open_world=False
+    ),
+    # `chat` posts a message into a member's conversation with
+    # `POST /conversations/{id}/messages` and then triggers an agent run whose
+    # own tool use is unbounded, so it is the last operation that should skip
+    # the approval gate. Each call appends a turn, so a repeat is not a no-op.
+    "conversations.chat": BehaviourHints(
+        read_only=False, destructive=False, idempotent=False, open_world=False
+    ),
+    # Same write on canonical Kaizen: submits an input and runs the agent. The
+    # optional idempotency key is the caller's to supply, so the operation
+    # itself is not idempotent.
+    "conversations.chat_canonical": BehaviourHints(
+        read_only=False, destructive=False, idempotent=False, open_world=False
+    ),
+    # Raises `DeprecationWarning` on every call and reaches no platform route
+    # at all, so it changes nothing and a repeat raises the same way. Withheld
+    # for that raise, and the hints are stated regardless of who reads them.
+    "embedding.call": BehaviourHints(
+        read_only=True, destructive=False, idempotent=True, open_world=False
     ),
 }
 

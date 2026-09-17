@@ -321,7 +321,7 @@ def test_app_update_warns_when_creating_missing_dockerignore(
 def test_app_update_upgrades_runtime_dependencies_without_losing_author_edits(
     tmp_path, monkeypatch
 ):
-    """The overwritten 0.5 Dockerfiles and preserved dependency manifests
+    """The overwritten 0.6 Dockerfiles and preserved dependency manifests
     must advance as one contract during ``kz-ext update``."""
     scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app")
     package_path = scaffold / "frontend" / "package.json"
@@ -412,7 +412,7 @@ def test_requirements_merge_preserves_crlf_for_author_edited_file():
     rendered = (
         "fastapi>=0.115.0\n"
         "uvicorn[standard]>=0.30.0\n"
-        "kamiwaza-extensions-lib>=0.5.0,<0.6\n"
+        "kamiwaza-extensions-lib>=0.6.0,<0.7\n"
     )
 
     merged = _merge_requirements(existing, rendered)
@@ -420,7 +420,7 @@ def test_requirements_merge_preserves_crlf_for_author_edited_file():
     assert merged is not None
     assert "\n" not in merged.replace("\r\n", "")
     assert "author-package==2.3.4\r\n" in merged
-    assert "kamiwaza-extensions-lib>=0.5.0,<0.6\r\n" in merged
+    assert "kamiwaza-extensions-lib>=0.6.0,<0.7\r\n" in merged
 
 
 # ---------------------------------------------------------------------------

@@ -163,7 +163,7 @@ def published_id(op_selector: str) -> str:
 
 #: Operations deliberately not published, each with a stated reason.
 #:
-#: Three families, per FR-005e, each read from the client rather than assumed.
+#: Four groups, per FR-005e, each read from the client rather than assumed.
 #:
 #: ``tools`` is :class:`~kamiwaza_sdk.services.tools.ToolService`, whose own
 #: class docstring carries a ``.. deprecated::`` notice: the Docker
@@ -177,13 +177,17 @@ def published_id(op_selector: str) -> str:
 #: goes further, because a credential that reaches an agent can be replayed
 #: outside any recorded call. Each was confirmed against its response model.
 #:
-#: The last family makes no platform call at all. Each one is a local helper
+#: The third group makes no platform call at all. Each one is a local helper
 #: that happens to live on a service object: it encodes a string, builds a
 #: local object, or checks a header the caller already holds. An agent asking
 #: for platform operations cannot use one, yet each costs catalog tokens and
 #: competes in keyword search, where ``auth.require_admin`` ranks for "admin"
 #: ahead of the operations that administer anything. Each method body was read
 #: to confirm it never touches ``self.client``.
+#:
+#: The last group never returns a result. ``embedding.call`` is the whole of
+#: it: its body is one ``raise``, so a published call hands an agent an
+#: exception every time it is invoked.
 UNPUBLISHED: dict[str, UnpublishedReason] = {
     f"tools.{method}": UnpublishedReason(
         reason=(
@@ -235,10 +239,26 @@ UNPUBLISHED: dict[str, UnpublishedReason] = {
     ),
     "embedding.HuggingFaceEmbedding": UnpublishedReason(
         reason=(
-            "Deprecated factory whose own docstring directs callers elsewhere, "
-            "and a constructor rather than a platform operation."
+            "Deprecated factory whose own docstring directs callers to "
+            "get_embedder, and a constructor rather than a platform "
+            "operation. It returns a local EmbeddingProvider, so no "
+            "published operation replaces it."
         ),
-        superseded_by="embedding.get_embedder",
+    ),
+    "embedding.get_embedder": UnpublishedReason(
+        reason=(
+            "Constructs a local EmbeddingProvider over this service and "
+            "returns it without touching the client. The object cannot cross "
+            "a tool boundary, and the index does not reach the methods on it "
+            "because it is returned rather than held as an attribute."
+        ),
+    ),
+    "embedding.call": UnpublishedReason(
+        reason=(
+            "Raises DeprecationWarning for every argument, because that raise "
+            "is the whole body. A published call can only return an "
+            "exception, never an embedding."
+        ),
     ),
     "auth.require_admin": UnpublishedReason(
         reason=(
@@ -282,6 +302,21 @@ UNPUBLISHED: dict[str, UnpublishedReason] = {
             "guide operations it wraps are published in their own right."
         ),
         superseded_by="models.list_guides",
+    ),
+    # The create, list and delete calls on the returned SubjectGrantsAPI are
+    # absent from the index, because the walk follows sub-clients held as
+    # attributes and this one comes from a method call. AGENTS.md, "Known gap:
+    # grants returned by a method are outside the index", carries the detail;
+    # the reason text below is served to agents, so it stays self-contained.
+    "subjects.grants": UnpublishedReason(
+        reason=(
+            "Constructs a local SubjectGrantsAPI bound to one username and "
+            "returns it without touching the client. An agent receives an "
+            "object it cannot invoke, and the grant create, list and delete "
+            "calls on that object are outside the published surface either "
+            "way, so withholding this factory hides nothing that was "
+            "reachable."
+        ),
     ),
 }
 

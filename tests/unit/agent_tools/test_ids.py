@@ -116,9 +116,33 @@ def test_local_helpers_are_withheld_by_name() -> None:
         "catalog.containers.encode_path_urn",
         "catalog.secrets.encode_path_urn",
         "models.auto_selector",
+        "embedding.get_embedder",
+        "subjects.grants",
     ):
         reason = unpublished_reason(op_selector)
         assert reason is not None, f"{op_selector} makes no platform call"
+
+
+def test_an_operation_whose_body_only_raises_is_withheld() -> None:
+    """``embedding.call`` raises DeprecationWarning for every argument.
+
+    Named rather than counted, because publishing it gives an agent an
+    exception in place of an embedding.
+    """
+    reason = unpublished_reason("embedding.call")
+    assert reason is not None, "embedding.call only raises"
+    assert "exception" in reason.message()
+
+
+def test_no_withheld_reason_directs_an_agent_to_a_withheld_operation() -> None:
+    """A replacement pointer is useless if the replacement is withheld too."""
+    for op_selector, reason in UNPUBLISHED.items():
+        target = reason.superseded_by
+        if target is None:
+            continue
+        assert target not in UNPUBLISHED, (
+            f"{op_selector} directs an agent to {target}, which is withheld"
+        )
 
 
 def test_deprecated_tool_service_names_its_replacement() -> None:

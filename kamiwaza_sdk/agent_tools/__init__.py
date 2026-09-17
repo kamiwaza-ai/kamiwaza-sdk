@@ -43,8 +43,10 @@ Layout as this fills in
   five outcome kinds, as plain data.
 - ``workflows``     hand-written multi-call workflow tools composed from the
   service layer, each naming one polling step and its resume behaviour.
-- ``spec_index``    the searchable operation index built from the committed
-  ``kamiwaza-openapi-spec.json``; queried on demand, never emitted in bulk.
+- ``spec_index``    the searchable operation index, built by reflecting over the
+  client's own services rather than read from a file; queried on demand, never
+  emitted in bulk. The committed ``kamiwaza-openapi-spec.json`` is the schema
+  source and the drift subject, not the index source.
 - ``catalog``       the full per-operation descriptor set, categorised and
   filterable, for a consumer that deliberately wants it.
 """

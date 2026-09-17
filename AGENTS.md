@@ -205,6 +205,22 @@ inherit an MCP dependency it does not use; an MCP protocol revision would become
 an SDK release; and a descriptor is useful to someone building a custom agent
 with no MCP in sight.
 
+### Known gap: grants returned by a method are outside the index
+
+`SubjectsAPI.grants(username)` returns a `SubjectGrantsAPI`, and that object
+carries `create`, `list` and `delete` for ReBAC grants. None of those three
+appears in the published surface. The index walks sub-clients held as
+attributes on a service, and this one is produced by a method call, so the walk
+never sees it. The result is that three authorization mutations on the SDK have
+no published operation at all.
+
+`subjects.grants` itself is withheld, because it hands back a local object an
+agent cannot invoke. That withholding does not close this gap: it removes a
+useless entry and leaves the three grant calls as unreachable as they were.
+Closing it needs the index to follow sub-clients returned by a method, which
+changes the walk for every service, so it is recorded here rather than done in
+passing.
+
 ### What this means when you add or change a method
 
 - **Adding a service method** — write the docstring summary in the same change.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import re
 import warnings
 
@@ -10,9 +11,12 @@ from kamiwaza_sdk.agent_tools.descriptors import (
     HINT_OVERRIDES,
     OPEN_WORLD_OPERATIONS,
     BehaviourHints,
+    _PAGING_PARAMETERS,
+    _request_signature,
     derive_hints,
     describe,
     describe_all,
+    resolve_service,
     unknown_verbs,
 )
 from kamiwaza_sdk.agent_tools.spec_index import build_index
@@ -21,12 +25,93 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(scope="module")
-def index():
+def client():
     from kamiwaza_sdk.client import KamiwazaClient
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return build_index(KamiwazaClient(base_url="http://localhost:7777/api"))
+        return KamiwazaClient(base_url="http://localhost:7777/api")
+
+
+@pytest.fixture(scope="module")
+def index(client):
+    return build_index(client)
+
+
+#: Imperative openings that say the method changes something, taken from the
+#: docstring rather than from the method name the hints are derived from.
+#:
+#: Deliberately narrow: only words no read in this client opens with, so a
+#: disagreement is a wrong hint and never a wording accident.
+_WRITE_DOCSTRING_OPENINGS = frozenset(
+    {
+        "add",
+        "archive",
+        "cancel",
+        "create",
+        "delete",
+        "deploy",
+        "edit",
+        "enqueue",
+        "grant",
+        "insert",
+        "install",
+        "patch",
+        "provision",
+        "register",
+        "remove",
+        "replace",
+        "revoke",
+        "schedule",
+        "send",
+        "stop",
+        "store",
+        "submit",
+        "subscribe",
+        "trigger",
+        "uninstall",
+        "unload",
+        "update",
+        "upload",
+        "write",
+    }
+)
+
+#: HTTP methods that cannot be a read. ``POST`` is missing on purpose: this
+#: platform posts a request body for search and retrieval, so a POST is no
+#: evidence either way.
+_WRITE_HTTP_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
+
+
+def _write_evidence(client, selector: str, method_name: str) -> str | None:
+    """Return why the method's own code says it writes, or ``None``.
+
+    Reads two sources outside the hint tables: the first word of the method's
+    docstring, and the HTTP method of the literal request it issues.
+
+    Args:
+        client: The client the index was built from.
+        selector: Dotted ``service.method`` selector.
+        method_name: The method's name on its service.
+
+    Returns:
+        A short reason string when either source says the method changes
+        state, otherwise ``None``.
+    """
+    service = resolve_service(client, selector.rsplit(".", 1)[0])
+    if service is None:
+        return None
+    function = getattr(type(service), method_name, None)
+    if function is None:
+        return None
+    signature = _request_signature(service, method_name)
+    if signature is not None and signature[0] in _WRITE_HTTP_METHODS:
+        return f"calls {signature[0]} {signature[1]}"
+    words = (inspect.getdoc(function) or "").split()
+    opening = words[0].strip(".,:").lower() if words else ""
+    if opening in _WRITE_DOCSTRING_OPENINGS:
+        return f'docstring opens with "{opening}"'
+    return None
 
 
 def test_every_published_operation_derives_hints(index) -> None:
@@ -147,24 +232,26 @@ def test_open_world_defaults_to_false(index) -> None:
     assert open_world == set(OPEN_WORLD_OPERATIONS) & published
 
 
-def test_approval_covers_every_mutation_and_the_disclosing_reads(index) -> None:
-    """FR-006g: 'not read-only, or named in the approval-required-reads set'.
+def test_a_write_is_gated_on_its_own_code_not_on_its_name(index, client) -> None:
+    """FR-006g, checked against evidence the hint tables cannot see.
 
-    Asserted as two observable facts rather than by recomputing the rule, which
-    is what let a wrong table ship green: nothing that mutates is free, and
-    every named read is gated.
+    The hints come from the method name's leading verb. Here each operation is
+    asked what it does through its own docstring and request line, so a verb
+    that reads like a read while the body posts a message is a failure rather
+    than a free, approval-exempt operation.
     """
-    descriptors = describe_all(index)
-    free_mutations = [
-        d.entry.selector
-        for d in descriptors
-        if not d.hints.read_only and not d.requires_approval
-    ]
-    assert free_mutations == []
-    gated = {d.entry.selector for d in descriptors if d.requires_approval}
-    assert set(APPROVAL_REQUIRED_READS) <= gated
-
-
+    free_writes = []
+    for descriptor in describe_all(index):
+        evidence = _write_evidence(client, descriptor.selector, descriptor.entry.method)
+        if evidence is None:
+            continue
+        if descriptor.hints.read_only or not descriptor.requires_approval:
+            free_writes.append(
+                f"{descriptor.selector} ({evidence}): "
+                f"read_only={descriptor.hints.read_only}, "
+                f"requires_approval={descriptor.requires_approval}"
+            )
+    assert free_writes == []
 
 
 def test_approval_required_reads_are_read_only(index) -> None:
@@ -185,13 +272,19 @@ def test_every_override_names_a_real_operation(index) -> None:
         assert configured <= selectors, f"{name} names operations that do not exist"
 
 
-def test_paging_is_detected_from_parameters(index) -> None:
+def test_paging_matches_the_live_method_signature(index, client) -> None:
+    """The claim must match the real callable, not the index's copy of it.
+
+    A paging argument the index failed to capture would otherwise publish an
+    operation as unpaged while the method accepts `limit` and returns one page.
+    """
     for descriptor in describe_all(index):
-        has_paging = bool(
-            {"page", "per_page", "limit", "offset", "cursor"}
-            & set(descriptor.entry.parameters)
+        service = resolve_service(client, descriptor.selector.rsplit(".", 1)[0])
+        function = getattr(type(service), descriptor.entry.method)
+        accepted = set(inspect.signature(function).parameters)
+        assert descriptor.paginated is bool(_PAGING_PARAMETERS & accepted), (
+            descriptor.selector
         )
-        assert descriptor.paginated is has_paging
 
 
 def test_unpublished_operations_are_not_described(index) -> None:
