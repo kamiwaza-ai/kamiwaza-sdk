@@ -2,11 +2,11 @@
 
 An evidence record is composed from whichever mapped tests actually ran, so a
 claim is honest only when each test earns it on its own (the PER-TEST RULE in
-capability_map.yaml). T01's retrieval claim is scoped to its Arrow Flight leg:
-the inline test proves catalog registration, readback and deletion, and only
-the gRPC test exercises Flight. If the inline test fed T01's
-``retrieval.async-retrieval-jobs`` claim, a run that deselected or skipped the
-gRPC test would report that claim as passing without its Flight leg.
+capability_map.yaml). The inline test proves catalog registration, readback
+and deletion and a completed inline retrieval job, so it feeds both claims. The
+gRPC test is the only one that exercises Arrow Flight and feeds the retrieval
+claim through its own entry, so a Flight failure yields its own failed record
+instead of disappearing into, or failing, the inline record.
 """
 
 from __future__ import annotations
@@ -22,7 +22,10 @@ pytestmark = pytest.mark.unit
 
 T01_MODULE = "tests/integration/test_catalog_ingest_retrieval.py"
 EXPECTED_CLAIMS = {
-    "test_s3_ingest_and_retrieve_inline": ("catalog.dataset-registry",),
+    "test_s3_ingest_and_retrieve_inline": (
+        "catalog.dataset-registry",
+        "retrieval.async-retrieval-jobs",
+    ),
     "test_s3_ingest_and_retrieve_grpc": ("retrieval.async-retrieval-jobs",),
 }
 # A skipped or xfailed step never evidences anything (the emitter records an
