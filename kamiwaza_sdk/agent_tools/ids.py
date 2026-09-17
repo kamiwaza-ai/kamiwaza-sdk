@@ -318,6 +318,20 @@ UNPUBLISHED: dict[str, UnpublishedReason] = {
             "reachable."
         ),
     ),
+    # `probe` and `disconnect` on the returned FederationProxy are absent from
+    # the index for the same reason as the grant calls above: the walk follows
+    # sub-clients held as attributes, and this one comes from a method call.
+    # `disconnect` is a mutation, so this gap hides a write rather than a read.
+    # AGENTS.md carries both under the same known gap.
+    "federations.by_id": UnpublishedReason(
+        reason=(
+            "Parses a federation id and returns a local FederationProxy bound "
+            "to it, touching the client for nothing. An agent receives an "
+            "object it cannot invoke, and the proxy's probe and disconnect "
+            "calls are outside the published surface either way, so "
+            "withholding this factory hides nothing that was reachable."
+        ),
+    ),
 }
 
 

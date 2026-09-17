@@ -205,7 +205,7 @@ inherit an MCP dependency it does not use; an MCP protocol revision would become
 an SDK release; and a descriptor is useful to someone building a custom agent
 with no MCP in sight.
 
-### Known gap: grants returned by a method are outside the index
+### Known gap: sub-clients returned by a method are outside the index
 
 `SubjectsAPI.grants(username)` returns a `SubjectGrantsAPI`, and that object
 carries `create`, `list` and `delete` for ReBAC grants. None of those three
@@ -220,6 +220,13 @@ useless entry and leaves the three grant calls as unreachable as they were.
 Closing it needs the index to follow sub-clients returned by a method, which
 changes the walk for every service, so it is recorded here rather than done in
 passing.
+
+`FederationsAPI.by_id(federation_id)` is the same shape: it returns a
+`FederationProxy`, whose `probe` and `disconnect` are likewise unpublished.
+`disconnect` is a mutation, so this half of the gap hides a write rather than
+a read. `federations.by_id` is withheld for the same reason and with the same
+limit: withholding the factory removes an entry an agent could not use and
+leaves both proxy calls where they were.
 
 ### What this means when you add or change a method
 

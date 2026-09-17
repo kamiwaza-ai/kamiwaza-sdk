@@ -26,6 +26,7 @@ from kamiwaza_sdk.agent_tools.workflows import (
     rag_query,
     retire_deployment,
 )
+from kamiwaza_sdk.agent_tools.workflows._contract import search_workflows
 
 pytestmark = pytest.mark.unit
 
@@ -391,3 +392,40 @@ def test_the_spec_refuses_an_approval_step_on_a_read_only_workflow() -> None:
             idempotent=True,
             reads_only=True,
         )
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("diagnose deployment", "diagnose_deployment"),
+        ("why is my deployment not serving", "diagnose_deployment"),
+        ("ask a question over my documents", "rag_query"),
+        ("create a workroom", "create_workroom_and_enter"),
+        ("deploy an app from the garden", "deploy_app_from_garden"),
+    ],
+)
+def test_a_workflow_is_found_by_the_words_a_caller_uses(
+    query: str, expected: str
+) -> None:
+    """A workflow an agent cannot find is a workflow it reimplements by hand.
+
+    Each query is the goal stated the way a caller states it, not the tool's
+    own name, because the tool's name is what a caller searching does not
+    know.
+    """
+    found = search_workflows(query)
+
+    assert found, f"{query!r} found no workflow"
+    assert found[0].name == expected
+
+
+def test_a_query_matching_no_workflow_returns_nothing() -> None:
+    """FR-040: the honest answer, not the least-bad workflow."""
+    assert search_workflows("xylophone repair scheduling") == ()
+    assert search_workflows("   ") == ()
+
+
+def test_the_search_limit_is_honoured() -> None:
+    """Three workflows deploy a model, so this query has a list to cut."""
+    assert len(search_workflows("deploy a model")) > 1
+    assert len(search_workflows("deploy a model", limit=1)) == 1

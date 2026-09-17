@@ -272,18 +272,32 @@ def test_every_override_names_a_real_operation(index) -> None:
         assert configured <= selectors, f"{name} names operations that do not exist"
 
 
-def test_paging_matches_the_live_method_signature(index, client) -> None:
-    """The claim must match the real callable, not the index's copy of it.
+def test_the_index_records_every_parameter_the_method_accepts(index, client) -> None:
+    """The index's parameter list must match the callable it was read from.
 
-    A paging argument the index failed to capture would otherwise publish an
-    operation as unpaged while the method accepts `limit` and returns one page.
+    Asserting `paginated` against the live signature looks independent but is
+    not: the flag is derived from the index's own parameter list, which comes
+    from the same `inspect.signature`, so both sides move together and the
+    assertion cannot fail. What can go wrong is the index dropping a parameter,
+    which publishes a paged operation as unpaged, so that is what this checks.
     """
     for descriptor in describe_all(index):
         service = resolve_service(client, descriptor.selector.rsplit(".", 1)[0])
         function = getattr(type(service), descriptor.entry.method)
-        accepted = set(inspect.signature(function).parameters)
-        assert descriptor.paginated is bool(_PAGING_PARAMETERS & accepted), (
-            descriptor.selector
+        accepted = {
+            name
+            for name, parameter in inspect.signature(function).parameters.items()
+            if name != "self" and parameter.kind is not parameter.VAR_KEYWORD
+        }
+        recorded = set(descriptor.entry.parameters)
+        assert recorded <= accepted, (
+            f"{descriptor.selector} records parameters the method does not "
+            f"accept: {sorted(recorded - accepted)}"
+        )
+        missed = (_PAGING_PARAMETERS & accepted) - recorded
+        assert not missed, (
+            f"{descriptor.selector} accepts {sorted(missed)} but the index did "
+            "not record it, so the operation publishes as unpaged"
         )
 
 

@@ -6,7 +6,13 @@ import warnings
 import pytest
 
 from kamiwaza_sdk.agent_tools.ids import UNPUBLISHED, UnpublishedOperationError
-from kamiwaza_sdk.agent_tools.spec_index import DESCRIPTOR_VERSION, build_index
+from kamiwaza_sdk.agent_tools.spec_index import (
+    DESCRIPTOR_VERSION,
+    _CALLER_VOCABULARY,
+    _NOISE_TERMS,
+    build_index,
+    meaningful_terms,
+)
 from tests._agent_tools_reachability import reachable_selectors
 
 pytestmark = pytest.mark.unit
@@ -166,6 +172,111 @@ def test_the_requirement_widens_only_when_nothing_matches_everything(index) -> N
     partial = index.search("ingest a dataset and index it", limit=len(index.published))
     assert partial, "a four-word phrase with real platform nouns returned nothing"
     assert index.search("zzzqqq wibblefrotz") == ()
+
+
+def test_the_action_the_caller_named_outranks_a_shorter_reader(index) -> None:
+    """A caller who says "stop" wants the stopping operation, not the getter.
+
+    Measured before the leading-term signal existed: "stop deployment"
+    returned three operations led by `get_deployment_apps`, because equal
+    scores broke on the shorter identifier and every generic reader is
+    shorter than the verb asked for.
+    """
+    assert index.search("stop deployment")[0].published_id.startswith("stop")
+    assert index.search("delete user")[0].published_id == "delete_user_auth"
+
+
+def test_a_relaxed_search_says_how_many_terms_it_required(index) -> None:
+    """An unknown word answers on the rest, and the answer admits it.
+
+    "wibble" names no operation and is no member's word for one, so the
+    search falls back to "deployment" alone. That is still an answer and not
+    a nothing-found (FR-040), but it reads exactly like a precise hit unless
+    the ranking reports the level it answered at, which is what a surface
+    labels the results with.
+    """
+    relaxed = index.search_ranking("wibble deployment")
+    assert relaxed.entries, "a known platform noun with an unknown verb returned nothing"
+    assert relaxed.terms == ("wibble", "deployment")
+    assert relaxed.required_terms == 1
+    assert relaxed.relaxed
+    assert relaxed.matched_count >= len(relaxed.entries)
+    assert all(
+        "deployment" in f"{e.published_id} {e.summary or ''}".lower() for e in relaxed.entries
+    )
+    assert index.search_ranking("remove user").relaxed
+
+
+def test_a_members_verb_reaches_the_operation_the_platform_named(index) -> None:
+    """The words members used, ranked against the verbs the client uses.
+
+    Measured before the vocabulary existed: each of these dropped the verb it
+    could not match, searched the bare noun, and led with a generic reader —
+    "shut down a deployment" answered with `get_deployment_apps`.
+    """
+    for query in ("shut down a deployment", "turn off a deployment to free up GPU"):
+        assert index.search(query)[0].published_id.startswith("stop"), query
+    assert index.search("make a new workspace for the security team")[0].published_id == (
+        "create_workrooms"
+    )
+    assert index.search("add a new user to the platform")[0].published_id == (
+        "create_local_user_auth"
+    )
+
+
+def test_an_expanded_term_counts_as_the_term_the_caller_gave(index) -> None:
+    """Expansion narrows the search; it does not fake a relaxation.
+
+    "shut down a deployment" matches every term it was given once "shut" and
+    "down" carry "stop", so the surface must report it as a precise hit — and
+    the platform's own wording must be untouched by the table.
+    """
+    shut = index.search_ranking("shut down a deployment")
+    assert shut.terms == ("shut", "down", "deployment")
+    assert shut.required_terms == 3
+    assert not shut.relaxed
+    assert index.search("stop deployment")[0].published_id.startswith("stop")
+    assert any("add" in e.published_id for e in index.search("add publisher", limit=5))
+
+
+def test_every_vocabulary_entry_maps_onto_a_published_operation(index) -> None:
+    """An entry that no operation name carries is dead weight, so it must fail.
+
+    This is the rule the table is written under: it maps towards words this
+    client actually uses. Nothing else keeps it honest as the client changes.
+    """
+    names = " ".join(f"{e.published_id} {e.selector}" for e in index.published).lower()
+    dead = {
+        form
+        for forms in _CALLER_VOCABULARY.values()
+        for form in forms
+        if form not in names
+    }
+    assert not dead, f"vocabulary maps onto nothing published: {sorted(dead)}"
+    overlap = set(_CALLER_VOCABULARY) & _NOISE_TERMS
+    assert not overlap, f"a term cannot be both expanded and dropped: {sorted(overlap)}"
+
+
+def test_a_query_of_nothing_but_function_words_still_searches(index) -> None:
+    """Dropping every term would match everything, which is worse than noise."""
+    assert index.search("the", limit=5)
+    assert meaningful_terms("make a new workspace for the security team") == [
+        "make",
+        "new",
+        "workspace",
+        "security",
+        "team",
+    ]
+
+
+def test_a_precise_query_reports_no_relaxation(index) -> None:
+    precise = index.search_ranking("stop deployment")
+    assert precise.required_terms == len(precise.terms) == 2
+    assert not precise.relaxed
+    assert precise.matched_count == len(precise.entries)
+    empty = index.search_ranking("   ")
+    assert empty.entries == () and empty.terms == () and empty.required_terms == 0
+    assert not empty.relaxed
 
 
 def test_index_stamps_its_provenance(index) -> None:

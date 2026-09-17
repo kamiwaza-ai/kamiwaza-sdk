@@ -2,6 +2,11 @@
 
 Split from the workflows themselves so the rules live in one place and each
 domain module carries only its own behaviour.
+
+Searching the registry lives here too, next to the dict it reads. A workflow is
+found by the same words as an operation, so the ranking reuses
+:func:`kamiwaza_sdk.agent_tools.spec_index.score_terms` rather than keeping a
+second scorer in step with the first.
 """
 
 from __future__ import annotations
@@ -10,12 +15,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..spec_index import meaningful_terms, score_terms
+
 __all__ = [
     "WORKFLOWS",
     "DeploymentOutcome",
     "Refusal",
     "WorkflowSpec",
     "register",
+    "search_workflows",
 ]
 
 
@@ -114,6 +122,52 @@ def register(spec: WorkflowSpec) -> Callable[[Any], Any]:
         return function
 
     return decorate
+
+
+def search_workflows(query: str, *, limit: int = 20) -> tuple[WorkflowSpec, ...]:
+    """Rank the registered workflows against a plain-language query.
+
+    A workflow is the answer to a whole question — "why is this deployment not
+    serving", "answer this over my documents" — so a caller who cannot find it
+    by words finds it only by reading the whole tool listing. The ranking is
+    the operation ranking applied to the two fields a spec already carries:
+    the name is the identifier and the summary is the prose, scored by
+    :func:`~kamiwaza_sdk.agent_tools.spec_index.score_terms` and ordered on the
+    same keys, so a caller asking for one word sees workflows and operations
+    sorted by the same rule.
+
+    Every term is required first; when nothing matches them all the
+    requirement drops by one, down to a single term. Seventeen workflows is a
+    small set and the relaxation is what makes a caller's own phrasing land:
+    "answer a question over my documents" shares only two words with
+    ``rag_query``'s summary. Nothing matching even one term returns nothing,
+    which is the honest answer rather than the least-bad workflow.
+
+    Args:
+        query: Plain-language words. Case and order do not matter.
+        limit: Most workflows to return.
+
+    Returns:
+        Up to ``limit`` specs, best first. Empty when the query has no
+        searchable terms or when no workflow matches a single one.
+    """
+    terms = meaningful_terms(query)
+    if not terms:
+        return ()
+    graded = [
+        (score_terms(terms, (spec.name,), spec.summary), spec)
+        for spec in WORKFLOWS.values()
+    ]
+    for required in range(len(terms), 0, -1):
+        rows = [
+            (-score, -lead, len(spec.name), spec.name, spec)
+            for (score, hits, lead), spec in graded
+            if hits >= required
+        ]
+        if rows:
+            rows.sort()
+            return tuple(spec for *_, spec in rows[:limit])
+    return ()
 
 
 @dataclass(frozen=True, slots=True)

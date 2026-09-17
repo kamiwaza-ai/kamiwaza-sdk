@@ -5,19 +5,19 @@
     "collaboration": 25,
     "data": 105,
     "extensions": 38,
-    "infrastructure": 41,
+    "infrastructure": 40,
     "models": 63
   },
   "counts": {
     "documented": 357,
     "operations": 362,
-    "published": 337,
+    "published": 336,
     "services": 34,
-    "unpublished": 25
+    "unpublished": 26
   },
   "descriptions": {
     "absent": 0,
-    "docstring": 333,
+    "docstring": 332,
     "interface_description": 4,
     "interface_summary": 0,
     "thin": 0
@@ -405,6 +405,7 @@
     "embedding.HuggingFaceEmbedding",
     "embedding.call",
     "embedding.get_embedder",
+    "federations.by_id",
     "models.auto_selector",
     "subjects.grants",
     "tools.check_health",
