@@ -55,7 +55,7 @@ def test_release_121_sdk_gap_manifest_is_complete() -> None:
             "product-failed",
             "partial",
             "producer-missing",
-            "live-passed",
+            "evidence-emitted",
         }
         assert entry["next"].strip()
         if probe := entry.get("probe"):

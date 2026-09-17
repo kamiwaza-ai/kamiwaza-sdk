@@ -22,9 +22,9 @@ capabilities:
     probe: tests/integration/test_connector_workroom_surface_live.py::test_connected_m365_files_browse_and_scoped_search
     next: Add positive content fetch and two-member provider ACL denial.
   - id: context.workroom-document-search
-    state: live-passed
+    state: evidence-emitted
     probe: tests/integration/test_context_live.py::test_context_uploaded_document_is_searchable_only_in_its_workroom
-    next: Emit and collect exact-build evidence from the passing indexed-hit and foreign-denial run.
+    next: Import the passed exact-build SDK record into the capability-kit scorecard after review.
   - id: delegation.brokered-resource-access
     state: producer-missing
     next: Prove delegated access without exposing source credentials.
