@@ -189,18 +189,19 @@
   capability_ids: [models.local-deployment, models.openai-compatible-inference]
   scenario_name: "Engine matrix deploy and infer with fractional co-location"
 
-# ENG-12327 (T09). Both tests deploy a llama.cpp GGUF target (the explicit fleet
-# target when it names llama.cpp, else GGUF_LLM_TARGET) from weights already on
-# the cluster (checked before anything is created; no SDK download method is
-# called), and every run deploys, so neither can pass on a warm cluster without
-# deploying - the gap that retired the 1.2.1 model records. Each deployment is
-# checked to carry the requested config, weights file and engine. One
-# capability per test, so an inference failure cannot mark local deployment as
-# failing; the inference test must deploy first, so a deployment failure fails
-# both. The lifecycle test creates, reads, lists and updates a disposable model
-# config, deploys with it to DEPLOYED, checks the deployment, active listing,
-# instances, captured logs, log-pattern analysis and log stream, stops it
-# without force to STOPPED, and deletes the config.
+# ENG-12327 (T09). Both tests deploy a llama.cpp GGUF target from weights
+# already on the cluster (checked before anything is created; no SDK download
+# method is called). The target is the explicit fleet target when one is set,
+# else GGUF_LLM_TARGET; an explicit target on another engine skips both tests as
+# not applicable. Every run deploys, so neither can pass on a warm cluster
+# without deploying - the gap that retired the 1.2.1 model records. Each
+# deployment is checked to carry the requested config, weights file and engine.
+# One capability per test, so an inference failure cannot mark local deployment
+# as failing; the inference test must deploy first, so a deployment failure
+# fails both. The lifecycle test creates, reads, lists and updates a disposable
+# model config, deploys with it to DEPLOYED, checks the deployment, active
+# listing, instances, captured logs and log stream, stops it without force to
+# STOPPED, and deletes the config.
 - pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_model_config_and_local_deployment_lifecycle"
   capability_ids: [models.local-deployment]
   scenario_name: "Model config and local deployment lifecycle through the SDK"

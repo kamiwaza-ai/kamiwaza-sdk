@@ -5,8 +5,9 @@ the explicit fleet target when ``KAMIWAZA_TEST_LLM_REPO`` /
 ``KAMIWAZA_TEST_LLM_ENGINE`` name a llama.cpp model, and otherwise the suite's
 ``GGUF_LLM_TARGET``; an explicit fleet target on another engine is skipped as
 not applicable. Before creating anything each test confirms the target's GGUF
-weights are already on the cluster: a missing optional target skips, a missing
-fleet-required target fails. Neither test calls an SDK download method.
+weights and at least one model config are already on the cluster: a missing
+prerequisite skips an optional target and fails a fleet-required one. Neither
+test calls an SDK download method.
 
 Each test carries one capability, so an inference failure cannot mark local
 deployment as failing. The inference test has to deploy before it can infer, so
@@ -15,12 +16,12 @@ a deployment failure fails both records.
 * ``test_model_config_and_local_deployment_lifecycle`` -- a disposable model
   config is created, read, listed and updated; a fresh deployment using it
   reaches DEPLOYED with the requested engine and weights file and is checked
-  through the deployment, active-deployment, instance, captured-log, log-pattern
-  and log-stream methods; it is stopped (without force) to STOPPED, and the
-  config is deleted and proven NotFound. On 1.2.1 the log-pattern route reads
-  only a local log file or Kubernetes pod logs, so on a topology where the
-  engine runs outside a pod (for example host-spawned Metal inference) it
-  answers 404 and this test fails there.
+  through the deployment, active-deployment, instance, captured-log and
+  log-stream methods; it is stopped (without force) to STOPPED, and the config
+  is deleted and proven NotFound. The log-pattern route is deliberately not
+  called: on 1.2.1 it reads only a local log file or Kubernetes pod logs, so it
+  answers 404 where the engine runs outside a pod, which would fail this
+  capability for a reason unrelated to deployment.
 * ``test_openai_compatible_inference_through_sdk_client`` -- one chat completion,
   through the OpenAI-compatible client the SDK returns for a fresh deployment,
   asking for the sum of two numbers chosen for this run; the reply must contain
@@ -35,7 +36,7 @@ import secrets
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any, NoReturn, TypeVar
 from uuid import UUID, uuid4
 
 import pytest
@@ -139,11 +140,13 @@ def _cleanup_failures(client, registry: _Created) -> list[str]:
             continue
         try:
             client.models.delete_model_config(config_id)
-        except NotFoundError:
-            continue
         except (KamiwazaError, SchemaValidationError) as exc:
-            failures.append(f"could not delete config {config_id}: {exc!r}")
-            continue
+            # On 1.2.1 a mutation refused by the permission check also answers
+            # 404, so NotFound here is not proof of absence: it falls through to
+            # the read-back below like a successful delete.
+            if not isinstance(exc, NotFoundError):
+                failures.append(f"could not delete config {config_id}: {exc!r}")
+                continue
         try:
             client.models.get_model_config(config_id)
         except NotFoundError:
@@ -203,14 +206,19 @@ def _ready_target(
     )
     file_id = target_model_file_id(model, target.quantization) if model else None
     if model is None or file_id is None:
-        reason = (
+        _missing_prerequisite(
+            target,
             f"prerequisite: GGUF weights for {target.repo_id} ({target.quantization}) "
-            "are not already on this cluster; this test never downloads"
+            "are not already on this cluster; this test never downloads",
         )
-        if target.required:
-            pytest.fail(reason)
-        pytest.skip(reason)
     return model, UUID(file_id)
+
+
+def _missing_prerequisite(target: InferenceTarget, reason: str) -> NoReturn:
+    """Fail for a fleet-required target, skip otherwise."""
+    if target.required:
+        pytest.fail(reason)
+    pytest.skip(reason)
 
 
 def _deploy_fresh(
@@ -291,8 +299,9 @@ def test_model_config_and_local_deployment_lifecycle(
 
     existing = client.models.get_model_configs(model.id)
     if not existing:
-        pytest.skip(
-            f"prerequisite: {model.repo_modelId} has no model config to copy settings from"
+        _missing_prerequisite(
+            target,
+            f"prerequisite: {model.repo_modelId} has no model config to copy settings from",
         )
     template = next((c for c in existing if c.default), existing[0])
 
@@ -361,12 +370,6 @@ def test_model_config_and_local_deployment_lifecycle(
         "serving.get_deployment_logs for the new deployment",
     )
     assert logs.deployment_id == deployment_id
-    patterns = client.serving.get_deployment_log_patterns(deployment_id)
-    # On 1.2.1 the analyzer always reports this detector, and it fires only on
-    # a literal "failed to load model" line.
-    assert patterns.patterns_detected.get("model_loading_failure") is False, (
-        f"a DEPLOYED, serving model was flagged as failing to load: {patterns!r}"
-    )
     streamed = list(
         itertools.islice(
             client.serving.stream_deployment_logs(
@@ -401,8 +404,9 @@ def test_openai_compatible_inference_through_sdk_client(
 
     configs = client.models.get_model_configs(model.id)
     if not configs:
-        pytest.skip(
-            f"prerequisite: {model.repo_modelId} has no model config to deploy with"
+        _missing_prerequisite(
+            target,
+            f"prerequisite: {model.repo_modelId} has no model config to deploy with",
         )
     config = next((c for c in configs if c.default), configs[0])
 
