@@ -51,6 +51,7 @@ __all__ = [
     "description_coverage",
     "interface_descriptions",
     "resolve_description",
+    "resolve_service",
     "unknown_verbs",
 ]
 
@@ -82,13 +83,17 @@ _READ_VERBS = frozenset(
         "chat",
         "call",
         "encode",
+        # `flight`, `ontology`, `slack` and `auto` name a subject, not an
+        # action, so they stay only because every operation that leads with
+        # them reads: `retrieval.flight_batches`, `context.ontology_health`,
+        # `retrieval.slack_messages`, `models.auto_selector`. A new operation
+        # leading with one of these must be checked by hand rather than
+        # inheriting a read.
         "flight",
         "ontology",
         "agentic",
         "slack",
-        "admin",
         "auto",
-        "declare",
         # The connector-surface reads that arrived with the surface browsing
         # API. Each one reads and returns: `browse_surface` lists a surface's
         # items, `fetch_surface_content` reads one node by its opaque id, and
@@ -211,13 +216,14 @@ OPEN_WORLD_OPERATIONS: frozenset[str] = frozenset(
 
 #: Reads that require approval anyway, per FR-006g and FR-020.
 #:
-#: A read that discloses something a member would want to be asked about is not
-#: a free call. Kept as data so the rule stays "not read-only, or named here".
 APPROVAL_REQUIRED_READS: frozenset[str] = frozenset(
     {
         # Enumerates every secret held by the platform. The values are absent,
-        # but the inventory itself is disclosure.
+        # but the inventory itself is disclosure. Both selectors list the same
+        # secrets — the facade and the nested client — so naming only one left
+        # the other a free call for the identical disclosure.
         "catalog.list_secrets",
+        "catalog.secrets.list",
         # Enumerates members and their identity records.
         "auth.list_users",
         "auth.get_user",
@@ -289,6 +295,23 @@ HINT_OVERRIDES: dict[str, BehaviourHints] = {
     # right regardless of whether anything currently reads them.
     "auth.refresh_access_token": BehaviourHints(
         read_only=False, destructive=False, idempotent=False, open_world=False
+    ),
+    # `admin` and `declare` used to sit in the read set, which published a
+    # `DELETE /admin/workrooms/{id}` as a free, approval-exempt read. They are
+    # subjects and moods, not actions, so they are stated here one operation at
+    # a time instead. Nothing else leads with either token; a new one fails
+    # closed as an unknown verb and `unknown_verbs()` reports it.
+    "workrooms.admin_delete": BehaviourHints(
+        read_only=False, destructive=True, idempotent=True, open_world=False
+    ),
+    "workrooms.admin_list": BehaviourHints(
+        read_only=True, destructive=False, idempotent=True, open_world=False
+    ),
+    # Registers realm vocabulary with `PUT /cluster/attribute-schema/{name}`:
+    # a write, and re-declaring the same schema is a no-op, so idempotent but
+    # never read-only.
+    "cluster.declare_attribute": BehaviourHints(
+        read_only=False, destructive=False, idempotent=True, open_world=False
     ),
 }
 
@@ -572,6 +595,32 @@ def _request_signature(service: Any, method_name: str) -> tuple[str, str] | None
     return match.group(1).upper(), _normalise_path(match.group(2))
 
 
+def resolve_service(client: Any, service_path: str) -> Any | None:
+    """Return the service object a service path names on a client.
+
+    A path is dotted when the operation lives on a nested platform sub-client —
+    ``catalog.secrets``, ``enclaves.documents``, ``gates.packages`` — which
+    :mod:`.spec_index` records as ``parent.child``. One ``getattr`` with that
+    whole name never matches an attribute, so each segment is walked in turn.
+    Without the walk a nested operation reaches no service object and can only
+    resolve from its docstring, which puts the interface-document rungs of the
+    FR-006h precedence out of reach for it.
+
+    Args:
+        client: The client the index was built from.
+        service_path: Service attribute name, dotted for a nested sub-client.
+
+    Returns:
+        The resolved service object, or ``None`` when any segment is missing.
+    """
+    resolved: Any = client
+    for segment in service_path.split("."):
+        resolved = getattr(resolved, segment, None)
+        if resolved is None:
+            return None
+    return resolved
+
+
 def resolve_description(
     entry: OperationEntry,
     service: Any = None,
@@ -635,7 +684,7 @@ def description_coverage(index: OperationIndex, client: Any) -> dict[str, int]:
     counts = {source.value: 0 for source in DescriptionSource}
     counts["thin"] = 0
     for entry in index.published:
-        service = getattr(client, entry.service, None)
+        service = resolve_service(client, entry.service)
         description, source = resolve_description(entry, service)
         counts[source.value] += 1
         if description and len(description.split()) < 6:

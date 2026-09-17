@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import warnings
 
 import pytest
@@ -112,30 +113,58 @@ def test_hint_override_replaces_the_derivation(index) -> None:
     assert describe(entry).hints == override
 
 
-def test_open_world_defaults_to_false(index) -> None:
-    """FR-006f: the allowlist is curated, so the default must be closed."""
-    for descriptor in describe_all(index):
-        expected = descriptor.entry.selector in OPEN_WORLD_OPERATIONS
-        assert descriptor.hints.open_world is expected
+def test_a_removal_is_never_published_as_a_free_read(index) -> None:
+    """The property the tables exist to hold, asserted against the real index.
 
-
-def test_approval_is_every_mutation_plus_the_named_reads(index) -> None:
-    """FR-006g: 'not read-only, or named in the approval-required-reads set'."""
-    for descriptor in describe_all(index):
-        expected = (
-            not descriptor.hints.read_only
-            or descriptor.entry.selector in APPROVAL_REQUIRED_READS
-        )
-        assert descriptor.requires_approval is expected
-
-
-def test_no_mutation_escapes_approval(index) -> None:
-    unapproved = [
-        d.selector
+    Stated as a rule about the method name rather than a list of selectors:
+    `admin` and `declare` sat in the read verb set once, which published
+    `workrooms.admin_delete` — a `DELETE /admin/workrooms/{id}` that purges
+    any workroom regardless of owner — as a read-only, approval-exempt call.
+    Every assertion around this one compared a table against itself and so
+    passed.
+    """
+    removal = re.compile(r"(?:^|_)(delete|purge|revoke|remove|destroy|drop)(?:_|$)")
+    wrong = [
+        d.entry.selector
         for d in describe_all(index)
+        if removal.search(d.entry.method)
+        and (d.hints.read_only or not d.requires_approval)
+    ]
+    assert wrong == [], (
+        "operations whose name says they remove something, published as a "
+        f"read or without approval: {wrong}"
+    )
+
+
+def test_open_world_defaults_to_false(index) -> None:
+    """FR-006f: the allowlist is curated, so the default must be closed.
+
+    Scoped to the published set: the allowlist also names operations on the
+    deprecated `tools` service, which is withheld and so never described.
+    """
+    published = {e.selector for e in index if e.is_published}
+    open_world = {d.entry.selector for d in describe_all(index) if d.hints.open_world}
+    assert open_world == set(OPEN_WORLD_OPERATIONS) & published
+
+
+def test_approval_covers_every_mutation_and_the_disclosing_reads(index) -> None:
+    """FR-006g: 'not read-only, or named in the approval-required-reads set'.
+
+    Asserted as two observable facts rather than by recomputing the rule, which
+    is what let a wrong table ship green: nothing that mutates is free, and
+    every named read is gated.
+    """
+    descriptors = describe_all(index)
+    free_mutations = [
+        d.entry.selector
+        for d in descriptors
         if not d.hints.read_only and not d.requires_approval
     ]
-    assert unapproved == []
+    assert free_mutations == []
+    gated = {d.entry.selector for d in descriptors if d.requires_approval}
+    assert set(APPROVAL_REQUIRED_READS) <= gated
+
+
 
 
 def test_approval_required_reads_are_read_only(index) -> None:

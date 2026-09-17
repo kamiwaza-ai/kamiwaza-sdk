@@ -9,6 +9,7 @@ from kamiwaza_sdk.agent_tools.descriptors import (
     description_coverage,
     interface_descriptions,
     resolve_description,
+    resolve_service,
 )
 from kamiwaza_sdk.agent_tools.spec_index import OperationEntry, build_index
 
@@ -47,9 +48,14 @@ def test_the_interface_document_ships_with_the_package() -> None:
     """FR-005a: the consumer installs the wheel, so the document must be in it.
 
     A vendored copy in the consuming server would be a second source of truth,
-    and an absent document would silently degrade every description.
+    and an absent document would silently degrade every description. Asserted
+    on a table that carries a known operation rather than on a row count, which
+    moves with every platform spec regeneration.
     """
-    assert len(interface_descriptions()) == 233
+    table = interface_descriptions()
+    assert table
+    description, summary = table[("POST", "/auth/users/me/password")]
+    assert description or summary
 
 
 def test_docstring_wins_over_the_interface_document(client) -> None:
@@ -78,9 +84,7 @@ def test_interface_document_is_used_when_a_docstring_is_missing(client, index) -
     assert description
 
     for published in index.published:
-        service = getattr(client, published.service.split(".")[0], None)
-        if "." in published.service:
-            service = getattr(service, published.service.split(".")[1], None)
+        service = resolve_service(client, published.service)
         resolved, _ = resolve_description(published, service)
         assert resolved, f"{published.selector} resolves no description"
 

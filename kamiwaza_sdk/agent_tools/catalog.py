@@ -18,7 +18,12 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from .descriptors import OperationDescriptor, describe_all, resolve_description
+from .descriptors import (
+    OperationDescriptor,
+    describe_all,
+    resolve_description,
+    resolve_service,
+)
 from .spec_index import OperationIndex
 
 __all__ = [
@@ -158,7 +163,7 @@ def _entry_for(descriptor: OperationDescriptor, client: Any) -> CatalogEntry:
     Returns:
         The catalog entry.
     """
-    service = getattr(client, descriptor.entry.service, None)
+    service = resolve_service(client, descriptor.entry.service)
     description, _ = resolve_description(descriptor.entry, service)
     return CatalogEntry(
         published_id=descriptor.published_id,
