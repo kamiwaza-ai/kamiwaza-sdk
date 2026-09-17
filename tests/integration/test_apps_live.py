@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import suppress
 from uuid import UUID, uuid4
 
 import pytest
@@ -82,7 +83,9 @@ def test_apps_template_crud_and_images(live_kamiwaza_client) -> None:
         assert client.apps.pull_images(typed_id).template_id == typed_id
     finally:
         if template_id:
-            client.apps.delete_template(UUID(template_id))
+            # Best-effort: a teardown error must not replace the test failure.
+            with suppress(APIError):
+                client.apps.delete_template(UUID(template_id))
 
 
 def test_apps_deploy_and_deployment_error_paths(

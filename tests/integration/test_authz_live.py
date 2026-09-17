@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from uuid import uuid4
 
 import pytest
@@ -65,4 +66,6 @@ def test_rebac_grant_check_revoke_live(live_kamiwaza_client) -> None:
         )
         _assert_denied(client, allowed_check)
     finally:
-        client.authz.delete_object(RelationshipObjectDelete(object=object_ref))
+        # Best-effort: a teardown error must not replace the test failure.
+        with suppress(APIError):
+            client.authz.delete_object(RelationshipObjectDelete(object=object_ref))

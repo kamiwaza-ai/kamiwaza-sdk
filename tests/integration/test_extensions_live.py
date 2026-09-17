@@ -10,6 +10,7 @@ Tests cover:
 from __future__ import annotations
 
 import time
+from contextlib import suppress
 from uuid import uuid4
 
 import pytest
@@ -70,7 +71,11 @@ def _create_test_extension_payload(name: str) -> CreateExtension:
 
 
 def _wait_for_replica_count(service, name: str, expected: int) -> None:
-    """Observe the persisted service spec, not merely the PATCH response."""
+    """Observe the persisted service spec, not merely the PATCH response.
+
+    The status schema defaults ``replicas`` to 0, so callers must first observe
+    the pre-PATCH value to prove a later 0 is a real transition.
+    """
     for _ in range(30):
         status = service.get_extension_status(name)
         echo = next((item for item in status.services if item.name == "echo"), None)
@@ -205,6 +210,7 @@ def test_extension_crud_lifecycle_typed(live_kamiwaza_client) -> None:
         status = service.get_extension_status(ext_name)
         assert status.name == ext_name
         assert status.phase
+        _wait_for_replica_count(service, ext_name, 1)
 
         patched = service.patch_extension(
             ext_name,
@@ -213,10 +219,14 @@ def test_extension_crud_lifecycle_typed(live_kamiwaza_client) -> None:
         assert patched.name == ext_name
         _wait_for_replica_count(service, ext_name, 0)
 
+        _delete_and_wait_for_absence(service, ext_name)
+        created = None
     finally:
-        # Cleanup
+        # Best-effort cleanup only when the verified delete above did not run,
+        # so a teardown error never replaces the original failure.
         if created is not None:
-            _delete_and_wait_for_absence(service, ext_name)
+            with suppress(APIError):
+                service.delete_extension(ext_name)
 
 
 def test_extension_crud_lifecycle_raw(live_kamiwaza_client) -> None:

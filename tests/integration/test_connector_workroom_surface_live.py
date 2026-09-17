@@ -25,17 +25,12 @@ _GLOBAL_WORKROOM_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 
 def _enabled_m365_ids(client) -> set[UUID]:
-    registered = {
-        item.id
-        for item in client.connectors.list()
-        if item.enabled and item.connector_type.lower() in _M365_TYPES
-    }
-    available = {
+    # Member-safe discovery: the admin-only full connector view is not needed.
+    return {
         item.id
         for item in client.connectors.list_available()
         if item.enabled and item.connector_type.lower() in _M365_TYPES
     }
-    return registered.intersection(available)
 
 
 def _connected_files_ref(client, eligible: set[UUID]) -> ConnectorSurfaceRef | None:
