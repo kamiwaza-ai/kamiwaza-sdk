@@ -64,7 +64,7 @@
 #   * test_retrieval_live.py — TestRetrievalJobOperations::test_create_and_get_job
 #     does create a real job and poll it, but its status assertion is
 #     `isinstance(status, str)`, so a job that ran and FAILED passes. Every
-#     test under the two retained retrieval entries below asserts a real
+#     test under the retained retrieval entries below asserts a real
 #     retrieval *artifact* instead — rows returned (row_count > 0), SSE events
 #     emitted, or a gRPC transport handshake — which is strictly stronger;
 #     mapping this one alongside them would only weaken the claim, so
@@ -153,13 +153,38 @@
   scenario_name: "OpenAI-compatible inference operation set"
   unverified_operations: [embeddings, transcription, image_generation]
 
-# Justification: test_s3_ingest_and_retrieve_inline / _grpc ingest a sample
-# dataset into the catalog and then run retrieval jobs streaming results
-# inline and over gRPC (per test_retrieval_live.py's docstring these carry
-# TS17.001/TS17.003 coverage).
-- pattern: "tests/integration/test_catalog_ingest_retrieval.py::*"
+# The two catalog ingest-to-retrieval tests are mapped separately under the
+# PER-TEST RULE. Each writes its own run-unique parquet object, ingests exactly
+# that object with ingestion.run_active, and reads the dataset back through
+# catalog.datasets.get before deleting the dataset, the object, and the catalog
+# secret and proving each absent. They differ in how the rows come back.
+#
+# The inline test retrieves through retrieval.create_job/get_job with the inline
+# transport and requires COMPLETED, the exact seeded rows, and the job's
+# processed-row count. Returned rows meet the retrieval bar in the
+# test_retrieval_live.py note above, so it claims both capabilities. A run
+# without the gRPC test can therefore report retrieval as passing from this
+# inline slice alone; Arrow Flight is evidenced only by the gRPC entry below. The
+# record still fails if the test's inline retrieval or its cleanup of the
+# dataset, object, or secret fails, because a record reflects the whole test.
+# It is deliberately not modelled as an incomplete operation set (ENG-12269's
+# unverified_operations, which fails the record): like the multi-source entry,
+# the inline slice earns the retrieval claim, and Arrow Flight gets its own
+# record instead.
+- pattern: "tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline"
   capability_ids: [catalog.dataset-registry, retrieval.async-retrieval-jobs]
-  scenario_name: "Catalog ingest to retrieval round-trip (inline and gRPC)"
+  scenario_name: "Catalog S3 dataset registration, inline retrieval, and deletion"
+  evidence_provenance: cycle-authored
+
+# The gRPC test creates a grpc-transport retrieval job, requires the arrow-flight
+# handshake, reads the seeded rows over Arrow Flight with flight_batches, and
+# requires the job to reach COMPLETED. It is the only T01 test that exercises
+# Arrow Flight, and its own entry gives the Flight leg a separate record, so a
+# Flight failure stays visible beside a passing inline record.
+- pattern: "tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc"
+  capability_ids: [retrieval.async-retrieval-jobs]
+  scenario_name: "Arrow Flight retrieval of an ingested S3 dataset"
+  evidence_provenance: cycle-authored
 
 # Justification: test_catalog_dataset_lifecycle registers a dataset, reads it
 # back through the catalog, and verifies its path/location metadata.
