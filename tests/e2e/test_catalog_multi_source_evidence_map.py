@@ -12,6 +12,7 @@ each test feeds and fails when the module has a test it does not name.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,13 @@ pytestmark = pytest.mark.unit
 T02_MODULE = "tests/integration/test_catalog_multi_source.py"
 REGISTRY = ("catalog.dataset-registry",)
 RETRIEVAL = ("retrieval.async-retrieval-jobs",)
+# The scenario_name of each entry, in map order, keyed by the claims it makes: the
+# emitter derives the record's scenario_id from it, so renaming one silently writes
+# a different record.
+SCENARIO_NAMES = {
+    REGISTRY: "Multi-source catalog ingestion",
+    RETRIEVAL: "Multi-source inline and SSE retrieval",
+}
 # The claims of every entry a test matches, in map order. The optional paths
 # (file, Kafka, Slack, oversized object) feed none.
 EXPECTED_CLAIMS: dict[str, tuple[tuple[str, ...], ...]] = {
@@ -69,16 +77,35 @@ def _matching_entries(test_name: str) -> list[emitter.MapEntry]:
     return [entry for entry in entries if entry.matches(item)]
 
 
-def test_every_t02_test_is_listed() -> None:
-    defined = {
+def _defined_in_module(predicate: Callable[[object], bool], prefix: str) -> set[str]:
+    return {
         name
-        for name, member in inspect.getmembers(t02_module, inspect.isfunction)
-        if name.startswith("test_") and member.__module__ == t02_module.__name__
+        for name, member in inspect.getmembers(t02_module, predicate)
+        if name.startswith(prefix) and member.__module__ == t02_module.__name__
     }
+
+
+def test_every_t02_test_is_listed() -> None:
+    defined = _defined_in_module(inspect.isfunction, "test_")
 
     assert defined == set(EXPECTED_CLAIMS), (
         f"unlisted: {sorted(defined - set(EXPECTED_CLAIMS))}; "
         f"listed but missing: {sorted(set(EXPECTED_CLAIMS) - defined)}"
+    )
+
+
+def test_t02_module_defines_no_test_classes() -> None:
+    """A test in a class would escape the listing above and feed both entries.
+
+    ``EXPECTED_CLAIMS`` is keyed by module-level function name, and both map entries
+    match any nodeid under this module that their exclude lists do not name, so
+    ``TestX::test_y`` would feed the registry and the retrieval record at once.
+    """
+    classes = _defined_in_module(inspect.isclass, "Test")
+
+    assert not classes, (
+        f"{sorted(classes)} would collect as nodeids this guard does not check; "
+        "keep T02 tests as module-level functions, or extend EXPECTED_CLAIMS"
     )
 
 
@@ -96,6 +123,10 @@ def test_t02_test_feeds_exactly_its_expected_claims(test_name: str) -> None:
         assert entry.evidence_provenance == "cycle-authored", (
             f"{entry.scenario_name!r} is stamped {entry.evidence_provenance!r}; "
             "the T02 assertions were written in-cycle to evidence the capability"
+        )
+        assert entry.scenario_name == SCENARIO_NAMES[entry.capability_ids], (
+            f"{entry.capability_ids} is named {entry.scenario_name!r}; the emitter "
+            "derives the record's scenario_id from this name"
         )
 
 

@@ -18,7 +18,7 @@ identity without the admin role is refused a container write.
 
 The datasets an ingestion returns and the containers a test creates directly are
 deleted in fixture teardown and must then read as 404 through the test's client
-within ABSENCE_POLLS reads, so a cleanup failure fails the test. Catalog reads are
+within ABSENCE_TIMEOUT_S, so a cleanup failure fails the test. Catalog reads are
 scoped to the caller's visible workrooms, so this confirms the object is gone for
 that client, not that no copy exists in another workroom. Containers that ingestion
 creates for the source are not returned by it and are left in place: at 1.2.1, S3
@@ -92,9 +92,11 @@ CATALOG_PROPAGATION_TIMEOUT_S = 30.0
 # hold it open.
 SSE_READ_TIMEOUT_S = 60.0
 SSE_STREAM_TIMEOUT_S = 120.0
-# A deleted object must read as 404 within this budget, the same one T01's
-# _poll_until_not_found (test_catalog_ingest_retrieval.py) allows for catalog deletes.
-ABSENCE_POLLS = 15
+# Deleted objects must read as 404 within this budget, the same one T01's
+# _poll_until_not_found (test_catalog_ingest_retrieval.py) allows for catalog
+# deletes. It covers one fixture's deletions together, so a platform that stopped
+# deleting costs a teardown this long once per fixture, not once per URN.
+ABSENCE_TIMEOUT_S = 30.0
 ABSENCE_POLL_INTERVAL_S = 2.0
 # The SDK wraps requests exceptions raised while sending in APIError. Errors raised
 # while a stream is read arrive as requests exceptions (OSError subclasses), a bad
@@ -109,13 +111,16 @@ def _delete_and_confirm_absent(
     delete: Callable[[str], None],
     read: Callable[[str], object],
 ) -> None:
-    """Attempt every deletion, then fail once listing every URN not confirmed gone.
+    """Delete every URN, then fail once listing every one not confirmed gone.
 
-    Only a read that returns 404 counts as gone. A 404 from delete does not: the
-    1.2.1 catalog also answers 404 when it refuses a delete. Reads are scoped to the
-    caller's visible workrooms, so gone means gone for this client.
+    Deletes are issued first and the read-backs polled afterwards, so the whole
+    fixture shares one ABSENCE_TIMEOUT_S budget. Only a read that returns 404 counts
+    as gone. A 404 from delete does not: the 1.2.1 catalog also answers 404 when it
+    refuses a delete. Reads are scoped to the caller's visible workrooms, so gone
+    means gone for this client.
     """
     problems: list[str] = []
+    deleted: list[tuple[str, str]] = []
     for urn in dict.fromkeys(urns):
         delete_note = ""
         try:
@@ -125,30 +130,32 @@ def _delete_and_confirm_absent(
         except CLEANUP_ERRORS as exc:
             problems.append(f"delete {kind} {urn}: {type(exc).__name__}: {exc}")
             continue
-        problem = _absence_problem(read, urn)
+        deleted.append((urn, delete_note))
+    deadline = time.monotonic() + ABSENCE_TIMEOUT_S
+    for urn, delete_note in deleted:
+        problem = _absence_problem(read, urn, deadline)
         if problem:
             problems.append(f"{kind} {urn}{delete_note}: {problem}")
     if problems:
         pytest.fail(f"{kind} cleanup incomplete:\n" + "\n".join(problems))
 
 
-def _absence_problem(read: Callable[[str], object], urn: str) -> str:
+def _absence_problem(read: Callable[[str], object], urn: str, deadline: float) -> str:
     """Read ``urn`` until it returns 404; return why it did not, or "" once it does.
 
-    Any other read error ends the poll at once. A delete the catalog shows late
-    still counts as gone if it reads as 404 within the ABSENCE_POLLS budget.
+    Any other read error ends the poll at once. A delete the catalog shows late still
+    counts as gone while ``deadline`` (a monotonic time) has not passed.
     """
-    for attempt in range(ABSENCE_POLLS):
+    while True:
         try:
             read(urn)
         except NotFoundError:
             return ""
         except CLEANUP_ERRORS as exc:
             return f"read back failed: {type(exc).__name__}: {exc}"
-        if attempt < ABSENCE_POLLS - 1:
-            time.sleep(ABSENCE_POLL_INTERVAL_S)
-    waited_s = (ABSENCE_POLLS - 1) * ABSENCE_POLL_INTERVAL_S
-    return f"still readable after delete ({ABSENCE_POLLS} reads over {waited_s:.0f}s)"
+        if time.monotonic() >= deadline:
+            return f"still readable after delete (polled for {ABSENCE_TIMEOUT_S:.0f}s)"
+        time.sleep(ABSENCE_POLL_INTERVAL_S)
 
 
 @pytest.fixture
@@ -362,17 +369,18 @@ class _StreamDeadlineAdapter(HTTPAdapter):
     """Time out a silent read, and cut every response off at a wall-clock deadline.
 
     A request that sets no timeout gets ``read_timeout_s`` as its connect and read
-    timeout. A timer started on construction sets ``expired`` after ``deadline_s``
-    and shuts down the socket of each response sent through this adapter, which ends
-    a read however the server keeps it busy; a response sent after that is shut down
-    as it returns. ``stop`` cancels the timer, and ``expired`` stays False if
-    ``stop`` came first.
+    timeout. A timer started on construction shuts down the socket of each response
+    sent through this adapter once ``deadline_s`` passes, which ends a read however
+    the server keeps it busy; a response sent after that is shut down as it returns.
+    ``stop`` cancels the timer. ``expired_at`` is when the timer fired, or 0.0 if
+    ``stop`` came first, so a caller can tell a cut-off read from one that had
+    already ended.
     """
 
     def __init__(self, read_timeout_s: float, deadline_s: float) -> None:
         super().__init__()
         self.read_timeout_s = read_timeout_s
-        self.expired = False
+        self.expired_at = 0.0
         self._stopped = False
         self._lock = threading.Lock()
         self._responses: list[requests.Response] = []
@@ -389,7 +397,7 @@ class _StreamDeadlineAdapter(HTTPAdapter):
         response = super().send(request, **kwargs)
         with self._lock:
             self._responses.append(response)
-            expired = self.expired
+            expired = bool(self.expired_at)
         if expired:
             _shut_down_socket(response)
         return response
@@ -398,7 +406,7 @@ class _StreamDeadlineAdapter(HTTPAdapter):
         with self._lock:
             if self._stopped:
                 return
-            self.expired = True
+            self.expired_at = time.monotonic()
             responses = list(self._responses)
         for response in responses:
             _shut_down_socket(response)
@@ -412,6 +420,19 @@ class _StreamDeadlineAdapter(HTTPAdapter):
     def close(self) -> None:
         self.stop()
         super().close()
+
+
+def _fail_stream(job_id: str, failure: str, events: list[RetrievalStreamEvent]) -> None:
+    """Report a stream failure from the caller's frame, outside any ``except``.
+
+    A chained SDK error makes pytest print the arguments of urllib3's frames, which
+    include the Authorization header, so the cause is described rather than raised.
+    """
+    __tracebackhide__ = True
+    pytest.fail(
+        f"SSE stream for job {job_id} {failure}; events so far="
+        f"{[seen.event for seen in events]}"
+    )
 
 
 def _collect_stream(
@@ -434,6 +455,7 @@ def _collect_stream(
     timed = _StreamDeadlineAdapter(read_timeout_s, timeout_s)
     events: list[RetrievalStreamEvent] = []
     failure = ""
+    ended_at = 0.0
     try:
         for prefix in adapters:
             session.mount(prefix, timed)
@@ -446,24 +468,21 @@ def _collect_stream(
             events.extend(stream)  # keeps the events parsed before an error
         finally:
             # Stop first: the timer must not cut off a stream that ended or is closing.
+            ended_at = time.monotonic()
             timed.stop()
             stream.close()
     except TRANSPORT_ERRORS as exc:
         failure = f"failed: {type(exc).__name__}: {exc}"
     finally:
+        ended_at = ended_at or time.monotonic()
         for prefix, adapter in adapters.items():
             session.mount(prefix, adapter)
         timed.close()
-    if timed.expired:
-        # A shut-down stream ends quietly or with a transport error; report the cause.
+    if timed.expired_at and timed.expired_at <= ended_at:
+        # The deadline ended this read; a timer that fired after it ended is noise.
         failure = f"still open after {timeout_s:.0f}s"
-    # Fail outside the except block: a chained SDK error makes pytest print the
-    # arguments of urllib3's frames, which include the Authorization header.
     if failure:
-        pytest.fail(
-            f"SSE stream for job {job_id} {failure}; events so far="
-            f"{[seen.event for seen in events]}"
-        )
+        _fail_stream(job_id, failure, events)
     return events
 
 
@@ -593,11 +612,17 @@ def _create_container_or_skip(client: KamiwazaClient) -> str:
             )
         )
     except KamiwazaError as exc:
-        if exc.status_code != 403 or "admin" in client.auth.get_current_user().roles:
+        if exc.status_code != 403:
             raise
+        refusal = f"{type(exc).__name__}: {exc}"
+    # Outside the except block: the identity lookup reports its own failure, and a
+    # described refusal keeps the SDK frames (and the bearer they carry) unprinted.
+    roles = client.auth.get_current_user().roles
+    if "admin" in roles:
+        pytest.fail(f"container create refused for an admin identity -- {refusal}")
     pytest.skip(
-        "Container create returned 403 for an identity without the admin role; "
-        "1.2.1 lets only admin create containers in the Global workroom"
+        f"Container create returned 403 for an identity with roles {sorted(roles)}; "
+        f"1.2.1 lets only admin create containers in the Global workroom -- {refusal}"
     )
 
 
