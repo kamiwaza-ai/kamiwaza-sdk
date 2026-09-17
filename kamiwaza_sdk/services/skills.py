@@ -46,7 +46,7 @@ class SkillsService(BaseService):
         page_size: int = 20,
     ) -> SkillLibraryListResponse:
         """List skills visible to the current caller."""
-        params = {"page": page, "page_size": page_size}
+        params: dict[str, int | str] = {"page": page, "page_size": page_size}
         if q is not None:
             params["q"] = q
         if category is not None:
@@ -86,7 +86,11 @@ class SkillsService(BaseService):
         upload_filename = self._sanitize_filename(filename, default="skill.zip")
         form = {}
         if marking is not _OmittedMarking.VALUE:
-            normalized = None if marking is None else Marking.model_validate(marking).model_dump(mode="json")
+            normalized = (
+                None
+                if marking is None
+                else Marking.model_validate(marking).model_dump(mode="json")
+            )
             form["data"] = {"marking": json.dumps(normalized)}
         response = self.client.post(
             "/skills/import",
