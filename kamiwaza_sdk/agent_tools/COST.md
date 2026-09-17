@@ -4,7 +4,7 @@ Why the full catalog is an escape hatch and not the default, in numbers taken
 from this package rather than from an estimate.
 
 Every number below was measured on branch `feat/agent-tools-contract` at commit
-`7574824`, with `cl100k_base`, entries serialised as compact JSON — the
+`a86e92a`, with `cl100k_base`, entries serialised as compact JSON — the
 encoding a JSON transport puts on the wire.
 
 This document is not gated. `scripts/regenerate_agent_tools_surface.py` writes
@@ -67,8 +67,8 @@ number measured at one does not describe another.
 | Level | What an entry carries | Total | Mean per entry | Against `full` |
 | --- | --- | --- | --- | --- |
 | `names` | identifier | **2,639** | 7 | −88% |
-| `brief` | identifier, category, description | **8,672** | 25 | −62% |
-| `full` | every field | **22,533** | 67 | — |
+| `brief` | identifier, category, description | **8,664** | 25 | −62% |
+| `full` | every field | **22,538** | 67 | — |
 
 The levels follow Anthropic's documented pattern for a large tool surface — a
 detail level returning "name only, name and description, or the full definition
@@ -85,11 +85,12 @@ the whole argument for FR-001.
 
 `measure_cost` prices the entries, measured one at a time and summed. A
 response carrying them adds its own envelope — on the MCP server's catalog
-route, counts and filters and this cost block come to 80 tokens — and a JSON
+route, counts and filters and this cost block come to 85 tokens — and a JSON
 array shares separators between entries, which tokenises slightly cheaper than
 the same entries measured apart. Measured on the 336-operation surface: the
-`full` array is 22,535 tokens on the wire against the 22,533 summed here, and
-the whole response body is 22,600.
+`full` array is 22,540 tokens on the wire against the 22,538 summed here, and
+the whole response body is 22,625 — the 85-token difference is that envelope,
+measured through the hosted route rather than estimated.
 
 At `names` the gap is wider in relative terms, because per-entry overhead is
 most of a short entry: 2,639 summed against 2,306 as one array. A caller
