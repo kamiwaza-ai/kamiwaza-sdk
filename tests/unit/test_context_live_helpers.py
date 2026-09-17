@@ -1,4 +1,6 @@
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -7,6 +9,7 @@ import tests.integration.test_context_live as context_live
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.services.context import ContextService
 from tests.integration.test_context_live import (
+    _assert_foreign_search_misses,
     _assert_global_scope_if_exposed,
     _create_temp_vectordb,
     _next_stopped_since,
@@ -571,3 +574,64 @@ def test_create_temp_vectordb_propagates_persistent_create_500(
     assert exc_info.value is error
     assert create_calls == 3
     assert sleeps == [2.0, 2.0]
+
+
+# --- T14 foreign-workroom isolation probe (ENG-12477) ---------------------
+#
+# A freshly created foreign workroom has no VectorDB bound, so core answers the
+# default-scope probe with a deliberate retryable 503 (VectorDBNotProvisioned).
+# That is a legitimate miss — no backend was resolved, so no document could be
+# returned — and the probe must not read it as a failed isolation check.
+
+
+def _search_raising(error: APIError) -> Callable[[], dict[str, Any]]:
+    def search() -> dict[str, Any]:
+        raise error
+
+    return search
+
+
+def test_foreign_search_tolerates_workroom_with_no_vectordb_bound() -> None:
+    error = APIError(
+        'API request failed with status 503: {"code":"vectordb_instance_not_found"}',
+        status_code=503,
+        response_data={
+            "code": "vectordb_instance_not_found",
+            "message": "no VectorDB instance is provisioned for this workroom",
+            "retry_after_seconds": 30,
+        },
+    )
+
+    _assert_foreign_search_misses(_search_raising(error), "t14probe")
+
+
+def test_foreign_search_tolerates_denial() -> None:
+    _assert_foreign_search_misses(
+        _search_raising(APIError("forbidden", status_code=403)), "t14probe"
+    )
+
+
+def test_foreign_search_rejects_unrelated_server_error() -> None:
+    error = APIError(
+        "context service is unavailable",
+        status_code=503,
+        response_data={"code": "search_backend_unreachable"},
+    )
+
+    with pytest.raises(AssertionError):
+        _assert_foreign_search_misses(_search_raising(error), "t14probe")
+
+
+def test_foreign_search_rejects_a_leaked_document() -> None:
+    def search() -> dict[str, Any]:
+        return {"results": [{"content": "The verification phrase is t14probe."}]}
+
+    with pytest.raises(AssertionError):
+        _assert_foreign_search_misses(search, "t14probe")
+
+
+def test_foreign_search_accepts_results_without_the_needle() -> None:
+    def search() -> dict[str, Any]:
+        return {"results": [{"content": "an unrelated document"}]}
+
+    _assert_foreign_search_misses(search, "t14probe")

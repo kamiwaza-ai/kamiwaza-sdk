@@ -36,6 +36,9 @@ DEFAULT_WORKROOM_ID = os.getenv(
 )
 TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
 
+# core's VectorDBNotProvisionedError payload code (ENG-12477).
+_NO_VECTORDB_CODE = "vectordb_instance_not_found"
+
 
 def _sample_vector() -> list[float]:
     return list(TEST_VECTOR)
@@ -1264,13 +1267,32 @@ def _assert_owner_can_find(doc: _IndexedDocument) -> None:
     assert document["filename"] == doc.filename
 
 
+def _is_unprovisioned_vectordb(error: KamiwazaError) -> bool:
+    """True for core's "this workroom has no VectorDB bound" refusal.
+
+    Core raises ``VectorDBNotProvisionedError`` as a deliberate retryable 503
+    rather than a 404, so an ephemeral room that never had a backend answers a
+    search this way. The probe resolved no backend at all, so it cannot have
+    returned anyone's document. Matching on the payload ``code`` keeps a
+    genuine service outage (any other 503) a failure.
+    """
+    if error.status_code != 503:
+        return False
+    body = error.body if isinstance(error.body, dict) else {}
+    if body.get("code") == _NO_VECTORDB_CODE:
+        return True
+    return _NO_VECTORDB_CODE in str(error)
+
+
 def _assert_foreign_search_misses(
     search: Callable[[], dict[str, Any]], needle: str
 ) -> None:
-    """A foreign workroom is denied outright or sees none of the document."""
+    """A foreign workroom is denied, has no backend at all, or sees nothing."""
     try:
         results = search()["results"]
     except KamiwazaError as error:
+        if _is_unprovisioned_vectordb(error):
+            return
         assert error.status_code in {403, 404}
     else:
         assert all(needle not in item["content"] for item in results)
