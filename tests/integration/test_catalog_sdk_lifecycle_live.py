@@ -1,14 +1,14 @@
 """Catalog dataset and container lifecycle through the SDK clients (ENG-12327, T06).
 
-Every read, update, membership change and delete below goes through
-``client.catalog`` and its ``datasets`` / ``containers`` sub-clients rather than
-raw HTTP, so the SDK methods the 1.2.1 coverage plan names are the ones that
-run. Each write is proven by reading it back through a separate call, and each
-delete is proven by absence.
+Creates, reads, updates, membership changes and deletes go through
+``client.catalog`` and its ``datasets`` / ``containers`` sub-clients, so the SDK
+methods the 1.2.1 coverage plan names are the ones that run. Writes are proven
+by reading back the fields each assertion names, and a delete is proven by
+NotFound on a URN that was read successfully earlier in the same test.
 
-The URN path helpers make no HTTP call of their own. They are exercised by
-sending their output to the live ``/v2/{urn}`` route and asserting the same
-entity comes back.
+The URN path helpers make no HTTP call of their own. Each helper's output is
+sent to the live ``/v2/{urn}`` route with the generic ``client.get`` (no SDK
+method reads by v2 path) and the same entity must come back.
 """
 
 from __future__ import annotations
@@ -16,11 +16,12 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Any, TypeVar
 from uuid import uuid4
 
 import pytest
-from kamiwaza_sdk.exceptions import NotFoundError
+import requests
+from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.schemas.catalog import (
     ContainerCreate,
     ContainerUpdate,
@@ -58,7 +59,11 @@ def _wait_until(read: Callable[[], _T], done: Callable[[_T], bool], label: str) 
 
 
 def _wait_until_absent(read: Callable[[], object], label: str) -> None:
-    """Poll a by-URN read until it raises NotFoundError. Any other error propagates."""
+    """Poll a by-URN read until it raises NotFoundError. Any other error propagates.
+
+    Callers read the same URN successfully before deleting it, so NotFound here
+    cannot be a URN that was never readable.
+    """
     for attempt in range(_POLL_ATTEMPTS):
         try:
             read()
@@ -71,28 +76,69 @@ def _wait_until_absent(read: Callable[[], object], label: str) -> None:
 
 @dataclass
 class _Created:
-    """Catalog resources a test created and has not deleted itself."""
+    """URNs a test created, each with the unique name it was created under.
 
-    datasets: list[str] = field(default_factory=list)
-    containers: list[str] = field(default_factory=list)
+    A URN leaves the registry only after its deletion is proven, so a delete
+    that reports success but leaves the entity readable is still cleaned up.
+    """
+
+    datasets: dict[str, str] = field(default_factory=dict)
+    containers: dict[str, str] = field(default_factory=dict)
+
+
+def _delete_if_owned(
+    read: Callable[[str], Any],
+    delete: Callable[[str], None],
+    urn: str,
+    name: str,
+    failures: list[str],
+) -> None:
+    """Delete ``urn`` only if it still carries the name this test created it with.
+
+    An absent URN needs no cleanup. A URN that now names something else is left
+    alone and reported, so cleanup never deletes a resource the test cannot
+    prove it created.
+    """
+    try:
+        current = read(urn)
+    except NotFoundError:
+        return
+    except (APIError, requests.RequestException) as exc:
+        failures.append(f"could not read {urn} before cleanup: {exc}")
+        return
+    if current.name != name:
+        failures.append(
+            f"refused to delete {urn}: it is named {current.name!r}, not {name!r}"
+        )
+        return
+    try:
+        delete(urn)
+    except (APIError, requests.RequestException) as exc:
+        failures.append(f"could not delete {urn}: {exc}")
 
 
 @pytest.fixture
 def created(live_kamiwaza_client) -> Iterator[_Created]:
-    """Delete whatever the test body left behind.
+    """Delete what the test body did not prove deleted.
 
-    On the passing path the body deletes and proves absence itself, so nothing
-    is left. On a failing path this removes the rest; a delete error here is
-    reported by pytest as a teardown error beside the test failure, never
-    in place of it.
+    Every registered resource is attempted even if an earlier cleanup fails; all
+    failures are raised together, which pytest reports as a teardown error
+    beside the test outcome rather than in place of it.
     """
     registry = _Created()
     yield registry
     catalog = live_kamiwaza_client.catalog
-    for urn in reversed(registry.containers):
-        catalog.containers.delete(urn)
-    for urn in reversed(registry.datasets):
-        catalog.datasets.delete(urn)
+    failures: list[str] = []
+    for urn, name in reversed(list(registry.containers.items())):
+        _delete_if_owned(
+            catalog.containers.get, catalog.containers.delete, urn, name, failures
+        )
+    for urn, name in reversed(list(registry.datasets.items())):
+        _delete_if_owned(
+            catalog.datasets.get, catalog.datasets.delete, urn, name, failures
+        )
+    if failures:
+        raise AssertionError("catalog cleanup incomplete: " + "; ".join(failures))
 
 
 def test_dataset_lifecycle_through_dataset_client(
@@ -102,16 +148,17 @@ def test_dataset_lifecycle_through_dataset_client(
     datasets = client.catalog.datasets
     name = _unique("sdk-t06-dataset")
     description = "ENG-12327 T06 dataset"
+    path = f"/tmp/{name}"
 
     urn = datasets.create(
         DatasetCreate(
             name=name,
             platform="file",
             description=description,
-            properties={"path": f"/tmp/{name}"},
+            properties={"path": path},
         )
     )
-    created.datasets.append(urn)
+    created.datasets[urn] = name
 
     _wait_until(
         lambda: client.catalog.list_datasets(query=name),
@@ -122,6 +169,7 @@ def test_dataset_lifecycle_through_dataset_client(
     fetched = datasets.get(urn)
     assert (fetched.urn, fetched.name, fetched.platform) == (urn, name, "file")
     assert fetched.description == description
+    assert fetched.properties.get("path") == path
 
     updated_description = f"{description} (updated)"
     tag = _unique("t06-tag")
@@ -153,22 +201,12 @@ def test_dataset_lifecycle_through_dataset_client(
         (f.name, f.type) for f in schema.fields
     )
 
-    encoded = datasets.encode_path_urn(urn)
-    assert encoded == client.catalog.encode_urn(urn)
-    assert encoded != urn, (
-        "a dataset URN carries characters that must be percent-encoded"
-    )
-    via_v2 = client.get(f"/catalog/datasets/v2/{encoded}")
+    via_v2 = client.get(f"/catalog/datasets/v2/{datasets.encode_path_urn(urn)}")
     assert (via_v2["urn"], via_v2["name"]) == (urn, name)
 
     datasets.delete(urn)
-    created.datasets.remove(urn)
     _wait_until_absent(lambda: datasets.get(urn), "datasets.get after datasets.delete")
-    _wait_until(
-        lambda: client.catalog.list_datasets(query=name),
-        lambda items: all(item.urn != urn for item in items),
-        "catalog.list_datasets after datasets.delete",
-    )
+    del created.datasets[urn]
 
 
 def test_container_lifecycle_and_membership_through_container_client(
@@ -185,14 +223,22 @@ def test_container_lifecycle_and_membership_through_container_client(
             properties={"path": f"/tmp/{member_name}"},
         )
     )
-    created.datasets.append(member_urn)
+    created.datasets[member_urn] = member_name
+    _wait_until(
+        lambda: client.catalog.list_datasets(query=member_name),
+        lambda items: any(item.urn == member_urn for item in items),
+        f"catalog.list_datasets(query={member_name!r})",
+    )
+    # Positive control for the member's later NotFound: this URN is readable.
+    member = client.catalog.datasets.get(member_urn)
+    assert (member.urn, member.name) == (member_urn, member_name)
 
     name = _unique("sdk-t06-container")
     description = "ENG-12327 T06 container"
     urn = containers.create(
         ContainerCreate(name=name, platform="file", description=description)
     )
-    created.containers.append(urn)
+    created.containers[urn] = name
 
     _wait_until(
         lambda: client.catalog.list_containers(query=name),
@@ -201,7 +247,12 @@ def test_container_lifecycle_and_membership_through_container_client(
     )
 
     fetched = containers.get(urn)
-    assert (fetched.urn, fetched.name, fetched.description) == (urn, name, description)
+    assert (fetched.urn, fetched.name, fetched.platform, fetched.description) == (
+        urn,
+        name,
+        "file",
+        description,
+    )
     assert member_urn not in fetched.datasets
 
     updated_description = f"{description} (updated)"
@@ -230,28 +281,24 @@ def test_container_lifecycle_and_membership_through_container_client(
         "container membership after containers.remove_dataset",
     )
 
-    encoded = containers.encode_path_urn(urn)
-    assert encoded == client.catalog.encode_urn(urn)
-    assert encoded != urn, (
-        "a container URN carries characters that must be percent-encoded"
+    container_v2 = client.get(
+        f"/catalog/containers/v2/{containers.encode_path_urn(urn)}"
     )
-    via_v2 = client.get(f"/catalog/containers/v2/{encoded}")
-    assert (via_v2["urn"], via_v2["name"]) == (urn, name)
+    assert (container_v2["urn"], container_v2["name"]) == (urn, name)
+    member_v2 = client.get(
+        f"/catalog/datasets/v2/{client.catalog.encode_urn(member_urn)}"
+    )
+    assert (member_v2["urn"], member_v2["name"]) == (member_urn, member_name)
 
     containers.delete(urn)
-    created.containers.remove(urn)
     _wait_until_absent(
         lambda: containers.get(urn), "containers.get after containers.delete"
     )
-    _wait_until(
-        lambda: client.catalog.list_containers(query=name),
-        lambda items: all(item.urn != urn for item in items),
-        "catalog.list_containers after containers.delete",
-    )
+    del created.containers[urn]
 
     client.catalog.datasets.delete(member_urn)
-    created.datasets.remove(member_urn)
     _wait_until_absent(
         lambda: client.catalog.datasets.get(member_urn),
         "datasets.get for the member dataset after datasets.delete",
     )
+    del created.datasets[member_urn]

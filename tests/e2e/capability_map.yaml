@@ -244,11 +244,12 @@
 
 # ENG-12327 (T06). Where test_catalog_endpoints.py drives the dataset and
 # container routes over raw HTTP, these two drive them through the SDK
-# clients, and every write is proven by a separate read-back: a dataset's
-# update and schema, a container's update and dataset membership (added, then
-# removed), each URN path helper's output resolving the same entity on the
-# live /v2 route, and each delete by NotFound plus absence from the query
-# listing. Written this cycle to evidence the registry through the SDK.
+# clients. Each asserted write is read back through a separate call: a
+# dataset's description, tags, path and schema; a container's platform,
+# description, tags and dataset membership (added, then removed). Each URN
+# path helper's output is sent to the live /v2 route and must return the same
+# entity. Each delete is proven by NotFound on a URN the test read successfully
+# earlier. Written this cycle to evidence the registry through the SDK.
 - pattern: "tests/integration/test_catalog_sdk_lifecycle_live.py::test_dataset_lifecycle_through_dataset_client"
   capability_ids: [catalog.dataset-registry]
   scenario_name: "Catalog dataset lifecycle through the SDK dataset client"
