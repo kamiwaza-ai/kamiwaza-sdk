@@ -69,6 +69,11 @@ class WorkflowSpec:
     def __post_init__(self) -> None:
         """Reject a spec that would break the workflow contract.
 
+        A table rather than a run of ``if`` statements, so each rule reads as
+        one fact beside the sentence it raises. The first failing rule raises,
+        which is right here: this runs at import, so a spec that breaks one
+        rule is not shipped whether or not it also breaks a second.
+
         Raises:
             ValueError: If a non-idempotent workflow does not say why, or one
                 that polls names no way to resume. Both are FR-016
@@ -78,21 +83,28 @@ class WorkflowSpec:
                 that leaves state unchanged has nothing for an approval step
                 to gate.
         """
-        if not self.idempotent and not self.not_idempotent_because:
-            raise ValueError(
-                f"{self.name} is not idempotent and must say why, per FR-016"
-            )
-        if self.polling_step and not self.resume_hint:
-            raise ValueError(
-                f"{self.name} polls and must name how to resume an expired wait"
-            )
-        if self.reads_only and self.destructive:
-            raise ValueError(f"{self.name} cannot both read only and be destructive")
-        if self.reads_only and self.approval_step:
-            raise ValueError(
+        broken = [
+            (
+                not self.idempotent and not self.not_idempotent_because,
+                f"{self.name} is not idempotent and must say why, per FR-016",
+            ),
+            (
+                bool(self.polling_step) and not self.resume_hint,
+                f"{self.name} polls and must name how to resume an expired wait",
+            ),
+            (
+                self.reads_only and self.destructive,
+                f"{self.name} cannot both read only and be destructive",
+            ),
+            (
+                self.reads_only and bool(self.approval_step),
                 f"{self.name} reads only and cannot need approval, because "
-                f"approval gates a change"
-            )
+                f"approval gates a change",
+            ),
+        ]
+        for rule_broken, complaint in broken:
+            if rule_broken:
+                raise ValueError(complaint)
 
 
 #: Every published workflow, keyed by name. The contract test asserts against

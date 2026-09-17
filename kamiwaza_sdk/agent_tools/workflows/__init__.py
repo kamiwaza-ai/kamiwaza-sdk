@@ -25,6 +25,19 @@ is a file with two responsibilities.
 
 Protocol-neutral: a workflow takes a client and returns plain data or an SDK
 model. Nothing here imports an MCP library or names a wire field.
+
+**A workflow's parameters are its published input schema**, which is why four
+of them carry more than the four arguments a complexity tool prefers:
+``grant_subject_access`` takes seven, ``enclave_ingest`` six,
+``rag_query`` and ``preflight_and_deploy_model`` five. The MCP server
+synthesises each tool's signature from these parameters, so the names here are
+the flat fields an agent fills — measured on a live deployment,
+``grant_subject_access`` publishes ``username``, ``relation``, ``object_type``,
+``object_id``, ``subject_type`` and ``attributes``. Grouping them into a value
+object would nest the published schema and make an agent construct an object
+to call a tool, which is the opposite of FR-006's requirement for a shape an
+agent can fill. The finding is accepted rather than fixed, and it is a fact
+about the surface rather than about this code's readability.
 """
 
 from __future__ import annotations
