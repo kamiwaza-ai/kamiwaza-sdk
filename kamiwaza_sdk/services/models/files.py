@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import TYPE_CHECKING, Any, List, Union
 from uuid import UUID
 from ...schemas.models.model_file import ModelFile, CreateModelFile
 from ...schemas.models.model_search import HubModelFileSearch
@@ -6,7 +6,12 @@ from ...schemas.models.model_search import HubModelFileSearch
 
 class ModelFileMixin:
     """Mixin for model file operations."""
-    
+
+    # Supplied by BaseService once the mixin is composed into ModelService;
+    # declared here so the calls below type-check, matching ModelDownloadMixin.
+    if TYPE_CHECKING:
+        client: Any
+
     def get_model_memory_usage(self, model_id: Union[str, UUID]) -> int:
         """
         Get the memory usage of a model.

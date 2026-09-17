@@ -1,11 +1,16 @@
-from typing import List, Union
+from typing import TYPE_CHECKING, Any, List, Union
 from uuid import UUID
 from ...schemas.models.model import ModelConfig, CreateModelConfig
 
 
 class ModelConfigMixin:
     """Mixin for model configuration operations."""
-    
+
+    # Supplied by BaseService once the mixin is composed into ModelService;
+    # declared here so the calls below type-check, matching ModelDownloadMixin.
+    if TYPE_CHECKING:
+        client: Any
+
     def create_model_config(self, config: CreateModelConfig) -> ModelConfig:
         """
         Register a serving configuration for an existing model.

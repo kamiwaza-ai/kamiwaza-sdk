@@ -108,8 +108,21 @@ def test_cost_of_an_empty_catalog_is_zero() -> None:
 def test_measured_cost_justifies_not_defaulting_to_the_catalog(catalog) -> None:
     """FR-001's premise, measured: the catalog is an order of magnitude larger
     than the fixed surface's 2,000-token budget, which is why it is opt-in."""
+    # The character count is exact and runs everywhere; the token count needs
+    # tiktoken's table, which `get_encoding` downloads on a machine that has
+    # not cached it — and CI blocks that call rather than reaching the network
+    # mid-test. Characters bound tokens from above, not below, so this first
+    # assertion is a size claim, not a token claim: 100,000+ characters of
+    # description is what makes the token measurement below worth trusting
+    # (it comes out at ~4.5 characters per token for this text).
+    characters = measure_cost(catalog, len)
+    assert characters["total"] > 100_000
+
     tiktoken = pytest.importorskip("tiktoken")
-    encoding = tiktoken.get_encoding("cl100k_base")
+    try:
+        encoding = tiktoken.get_encoding("cl100k_base")
+    except Exception as exc:  # pragma: no cover - depends on the host's cache
+        pytest.skip(f"cl100k_base is not available offline: {exc}")
     measured = measure_cost(catalog, lambda text: len(encoding.encode(text)))
     assert measured["total"] > 10_000
     assert 40 < measured["per_entry"] < 120

@@ -4,6 +4,16 @@ Versions follow semver. Published to npm as a standalone package
 (`@kamiwaza-ai/extensions-lib`) and versioned independently from
 `kamiwaza-sdk`.
 
+## [0.6.0] — 2026-09-17
+
+### Removed
+
+* `Identity.systemHigh` and the classification fields that travelled with it.
+  The platform no longer sends a classification on the identity envelope, so
+  the field could only ever be `null` here, and a field that is always null
+  invites callers to branch on something that never happens. Callers that read
+  it must delete that branch; there is no replacement value to read.
+
 ## [0.5.0] — 2026-09-01
 
 ### Added
