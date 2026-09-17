@@ -85,3 +85,26 @@ def test_foreign_search_accepts_results_without_the_needle() -> None:
         return {"results": [{"content": "an unrelated document"}]}
 
     _assert_foreign_search_misses(search, "t14probe")
+
+
+def test_foreign_search_tolerates_body_less_503_quoting_the_code() -> None:
+    """A non-JSON 503 has no parsed body, so the message text is all there is."""
+    error = APIError(
+        "API request failed with status 503: vectordb_instance_not_found",
+        status_code=503,
+        response_data=None,
+    )
+
+    _assert_foreign_search_misses(_search_raising(error), "t14probe")
+
+
+def test_foreign_search_rejects_a_body_less_500() -> None:
+    """Only 503 reaches the text fallback; other statuses stay strict."""
+    error = APIError(
+        "API request failed with status 500: vectordb_instance_not_found",
+        status_code=500,
+        response_data=None,
+    )
+
+    with pytest.raises(AssertionError):
+        _assert_foreign_search_misses(_search_raising(error), "t14probe")

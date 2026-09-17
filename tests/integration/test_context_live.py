@@ -1275,10 +1275,11 @@ def _is_unprovisioned_vectordb(error: KamiwazaError) -> bool:
     search this way. The probe resolved no backend at all, so it cannot have
     returned anyone's document.
 
-    A parsed body is authoritative: its ``code`` alone decides, so a different
-    structured code stays a failure even when the diagnostic text quotes this
-    one (``str(APIError)`` embeds the raw response). The text fallback covers
-    only a 503 that carried no parseable body at all.
+    A parsed mapping body is authoritative: its ``code`` alone decides, so a
+    different structured code stays a failure even when the diagnostic text
+    quotes this one (``str(APIError)`` embeds the raw response). The text
+    fallback covers only a 503 whose body did not parse into a mapping — in
+    practice a non-JSON payload, which the client surfaces as ``None``.
     """
     if error.status_code != 503:
         return False
