@@ -9,10 +9,14 @@ Versions follow semver. Published to npm as a standalone package
 ### Removed
 
 * `Identity.systemHigh` and the classification fields that travelled with it.
-  The platform no longer sends a classification on the identity envelope, so
-  the field could only ever be `null` here, and a field that is always null
-  invites callers to branch on something that never happens. Callers that read
-  it must delete that branch; there is no replacement value to read.
+  This is a deliberate removal of the classification vocabulary from the
+  runtime's public model, not a consequence of the header disappearing: the
+  platform still sets `X-User-System-High`, and it is still listed in the core
+  ForwardAuth middleware's `authResponseHeaders`, so it still reaches an
+  extension's request. What changes is that this runtime stops modelling it.
+  An extension that genuinely needs the value must read the raw header itself
+  and own that decision; the runtime no longer offers a typed field that
+  invites trust decisions on a classification string.
 
 ## [0.5.0] — 2026-09-01
 

@@ -10,13 +10,17 @@ follow semver. The library is published to PyPI as a standalone package
 
 ### Removed
 
-* `Identity.system_high` and the `X-User-System-High` header it read. The
-  platform no longer sends that header on the identity envelope, so the field
-  could only ever be `None` here, and a field that is always `None` invites
-  callers to branch on something that never happens. Callers that read it must
-  delete that branch; there is no replacement value to read. The TypeScript
-  runtime removed `Identity.systemHigh` in its own 0.6.0, so both language
-  runtimes lose the field together.
+* `Identity.system_high` and the `X-User-System-High` header it read. This is a
+  deliberate removal of the classification vocabulary from the runtime's public
+  model, not a consequence of the header disappearing: the platform still sets
+  it, and `X-User-System-High` is still listed in the core ForwardAuth
+  middleware's `authResponseHeaders`, so it still reaches an extension's
+  request. What changes is that this runtime stops modelling it. An extension
+  that genuinely needs the value must read the raw header itself and own that
+  decision; the runtime no longer offers a typed field that invites trust
+  decisions on a classification string. The TypeScript runtime removed
+  `Identity.systemHigh` in its own 0.6.0, so both language runtimes lose the
+  field together.
 
 ### Notes
 
