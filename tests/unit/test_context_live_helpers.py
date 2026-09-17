@@ -611,6 +611,22 @@ def test_foreign_search_tolerates_denial() -> None:
     )
 
 
+def test_foreign_search_rejects_unrelated_503_that_quotes_the_vectordb_code() -> None:
+    """A parsed body wins over diagnostic text that merely names the code."""
+    error = APIError(
+        'API request failed with status 503: {"code":"search_backend_unreachable",'
+        '"message":"upstream reported vectordb_instance_not_found"}',
+        status_code=503,
+        response_data={
+            "code": "search_backend_unreachable",
+            "message": "upstream reported vectordb_instance_not_found",
+        },
+    )
+
+    with pytest.raises(AssertionError):
+        _assert_foreign_search_misses(_search_raising(error), "t14probe")
+
+
 def test_foreign_search_rejects_unrelated_server_error() -> None:
     error = APIError(
         "context service is unavailable",

@@ -1273,14 +1273,17 @@ def _is_unprovisioned_vectordb(error: KamiwazaError) -> bool:
     Core raises ``VectorDBNotProvisionedError`` as a deliberate retryable 503
     rather than a 404, so an ephemeral room that never had a backend answers a
     search this way. The probe resolved no backend at all, so it cannot have
-    returned anyone's document. Matching on the payload ``code`` keeps a
-    genuine service outage (any other 503) a failure.
+    returned anyone's document.
+
+    A parsed body is authoritative: its ``code`` alone decides, so a different
+    structured code stays a failure even when the diagnostic text quotes this
+    one (``str(APIError)`` embeds the raw response). The text fallback covers
+    only a 503 that carried no parseable body at all.
     """
     if error.status_code != 503:
         return False
-    body = error.body if isinstance(error.body, dict) else {}
-    if body.get("code") == _NO_VECTORDB_CODE:
-        return True
+    if isinstance(error.body, dict):
+        return error.body.get("code") == _NO_VECTORDB_CODE
     return _NO_VECTORDB_CODE in str(error)
 
 
