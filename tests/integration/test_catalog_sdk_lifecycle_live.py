@@ -6,9 +6,13 @@ methods the 1.2.1 coverage plan names are the ones that run. Writes are proven
 by reading back the fields each assertion names, and a delete is proven by
 NotFound on a URN that was read successfully earlier in the same test.
 
-The URN path helpers make no HTTP call of their own. Each helper's output is
-sent to the live ``/v2/{urn}`` route with the generic ``client.get`` (no SDK
-method reads by v2 path) and the same entity must come back.
+The URN path helpers make no HTTP call of their own. Each helper's output must
+equal the standard percent-encoding of the URN (``urllib.parse.quote`` with no
+safe characters), and is then sent to the live ``/v2/{urn}`` route with the
+generic ``client.get`` (no SDK method reads by v2 path), where the same entity
+must come back. On 1.2.1 that route also accepts an unencoded URN, so the
+encoding itself rests on the first check and the v2 read shows the platform
+accepts the helper's output.
 """
 
 from __future__ import annotations
@@ -17,11 +21,11 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
+from urllib.parse import quote
 from uuid import uuid4
 
 import pytest
-import requests
-from kamiwaza_sdk.exceptions import APIError, NotFoundError
+from kamiwaza_sdk.exceptions import KamiwazaError, NotFoundError
 from kamiwaza_sdk.schemas.catalog import (
     ContainerCreate,
     ContainerUpdate,
@@ -30,6 +34,7 @@ from kamiwaza_sdk.schemas.catalog import (
     Schema,
     SchemaField,
 )
+from pydantic import ValidationError as SchemaValidationError
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -93,18 +98,20 @@ def _delete_if_owned(
     name: str,
     failures: list[str],
 ) -> None:
-    """Delete ``urn`` only if it still carries the name this test created it with.
+    """Delete ``urn`` only if it still carries the name this test created it with,
+    then prove the deletion.
 
     An absent URN needs no cleanup. A URN that now names something else is left
     alone and reported, so cleanup never deletes a resource the test cannot
-    prove it created.
+    prove it created. SDK errors and response-validation errors are collected so
+    the remaining resources are still attempted.
     """
     try:
         current = read(urn)
     except NotFoundError:
         return
-    except (APIError, requests.RequestException) as exc:
-        failures.append(f"could not read {urn} before cleanup: {exc}")
+    except (KamiwazaError, SchemaValidationError) as exc:
+        failures.append(f"could not read {urn} before cleanup: {exc!r}")
         return
     if current.name != name:
         failures.append(
@@ -113,8 +120,15 @@ def _delete_if_owned(
         return
     try:
         delete(urn)
-    except (APIError, requests.RequestException) as exc:
-        failures.append(f"could not delete {urn}: {exc}")
+    except NotFoundError:
+        return
+    except (KamiwazaError, SchemaValidationError) as exc:
+        failures.append(f"could not delete {urn}: {exc!r}")
+        return
+    try:
+        _wait_until_absent(lambda: read(urn), f"cleanup of {urn}")
+    except (AssertionError, KamiwazaError, SchemaValidationError) as exc:
+        failures.append(f"could not prove {urn} deleted: {exc!r}")
 
 
 @pytest.fixture
@@ -201,7 +215,9 @@ def test_dataset_lifecycle_through_dataset_client(
         (f.name, f.type) for f in schema.fields
     )
 
-    via_v2 = client.get(f"/catalog/datasets/v2/{datasets.encode_path_urn(urn)}")
+    encoded = datasets.encode_path_urn(urn)
+    assert encoded == quote(urn, safe="")
+    via_v2 = client.get(f"/catalog/datasets/v2/{encoded}")
     assert (via_v2["urn"], via_v2["name"]) == (urn, name)
 
     datasets.delete(urn)
@@ -281,13 +297,13 @@ def test_container_lifecycle_and_membership_through_container_client(
         "container membership after containers.remove_dataset",
     )
 
-    container_v2 = client.get(
-        f"/catalog/containers/v2/{containers.encode_path_urn(urn)}"
-    )
+    encoded_container = containers.encode_path_urn(urn)
+    assert encoded_container == quote(urn, safe="")
+    container_v2 = client.get(f"/catalog/containers/v2/{encoded_container}")
     assert (container_v2["urn"], container_v2["name"]) == (urn, name)
-    member_v2 = client.get(
-        f"/catalog/datasets/v2/{client.catalog.encode_urn(member_urn)}"
-    )
+    encoded_member = client.catalog.encode_urn(member_urn)
+    assert encoded_member == quote(member_urn, safe="")
+    member_v2 = client.get(f"/catalog/datasets/v2/{encoded_member}")
     assert (member_v2["urn"], member_v2["name"]) == (member_urn, member_name)
 
     containers.delete(urn)
