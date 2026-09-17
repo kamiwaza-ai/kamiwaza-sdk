@@ -1,6 +1,8 @@
 """ENG-10050: Offline contract for the required shared-IDP smoke edge."""
 
 import stat
+import subprocess
+import sys
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -87,11 +89,40 @@ def test_required_edge_plugin_is_registered_only_at_pytest_root() -> None:
     assert "pytest_plugins" not in integration_conftest
 
 
+def test_actual_required_edge_collection_matches_guard() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "tests/integration/" + required_edge.REQUIRED_EDGE_FILE,
+            "--require-federation-edge",
+            "--live-peer-base-url=https://collect-only.invalid/api",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    actual = {
+        line.split("::", 1)[1]
+        for line in result.stdout.splitlines()
+        if line.startswith(
+            "tests/integration/" + required_edge.REQUIRED_EDGE_FILE + "::"
+        )
+    }
+    assert actual == required_edge.REQUIRED_EDGE_CASES
+    assert len(actual) == 9
+
+
 def test_required_edge_collection_guard_requires_all_nine_cases() -> None:
     expected_cases = {
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[U]",
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[PUBLIC]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[PRIVATE]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[CONFIDENTIAL]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[missing-canonical]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[legacy-only]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[canonical-nondefault]",

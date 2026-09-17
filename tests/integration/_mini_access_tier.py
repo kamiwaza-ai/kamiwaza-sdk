@@ -6,9 +6,10 @@ against a live cluster, using the trivial deterministic fixture:
 
     5 records at three tiers -> post-gate counts PUBLIC:3/2 PRIVATE:4/1 CONFIDENTIAL:5/0
 
-The gate *logic* is covered offline in the kamiwaza repo
-(tests/unit/services/authz/gates/test_mini_access_tier_gate.py); these live layers
-exercise the wheel install, the ``platform="file"`` parquet/csv source, the
+The kamiwaza repo covers an analogous gate predicate offline in
+``tests/unit/services/authz/gates/test_mini_access_tier_gate.py``. Its core-local
+fixture has distinct semantics and is not the SDK live fixture artifact. These
+live layers exercise the SDK wheel install, the ``platform="file"`` parquet/csv source, the
 dataset gate-binding, and the server-side gate invocation at retrieval time.
 
 Every live prerequisite is a soft skip (never a hard fail on a contributor box):
@@ -37,6 +38,10 @@ from kamiwaza_sdk.validation.federation_fixture import (
 )
 from kamiwaza_sdk.validation.federation_fixture import KNOWN as SDK_KNOWN
 from kamiwaza_sdk.validation.federation_fixture import records as sdk_records
+from kamiwaza_sdk.validation.federation_gate import (
+    expected_gate_package,
+    validate_gate_package,
+)
 from kamiwaza_sdk.validation.retrieval_diagnostics import (
     diagnostic_lines,
     log_missing_audit_job_state,
@@ -114,56 +119,36 @@ def _wheel_sha256(wheel_dir: str) -> str:
     return f"sha256:{digest}"
 
 
-def _already_installed(kz: Any) -> bool:
-    """True iff acme-gates is installed with MiniAccessTierGate's classpath present.
-
-    The desired end-state is idempotent: the gate package being present (with our
-    classpath) is what setup needs, regardless of how it got there. Checking this
-    first makes the fixture resilient to a package left behind by an interrupted
-    prior run — where an uninstall-first would 409 ``uninstall_blocked`` (an
-    orphaned dataset still binds the gate) and a bare install would 409
-    ``package_exists``.
-    """
-    try:
-        listing = kz.gates.packages.list()
-    except Exception:  # noqa: BLE001 — treat an unreadable listing as not-installed
-        return False
+def _already_installed(kz: Any, expected: dict[str, str]) -> bool:
+    """Reuse only the exact SDK artifact; unreadable inventories abort setup."""
+    listing = kz.gates.packages.list()
     for pkg in getattr(listing, "items", listing) or []:
         if getattr(pkg, "name", None) != GATE_PACKAGE_NAME:
             continue
-        if GATE_CLASSPATH in (getattr(pkg, "classpaths", None) or []):
-            return True
-        version = getattr(pkg, "version", "unknown")
-        raise RuntimeError(
-            f"Incompatible retained fixture {GATE_PACKAGE_NAME}=={version}: "
-            f"missing {GATE_CLASSPATH}. On an isolated test cluster, remove old "
-            "fixture dataset bindings and uninstall the old gate package, then "
-            f"provision {PACKAGE_SPEC}. No package changes were attempted."
-        )
+        validate_gate_package(pkg, expected)
+        return True
     return False
 
 
 def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
-    """Ensure acme-gates==1.2.0 is installed and MiniAccessTierGate is discoverable.
+    """Install or reuse the exact local fixture wheel before discovering its gate.
 
-    The dataset gate-bind endpoint enforces the classpath allowlist against
-    ``cluster_gate_packages.classpaths`` (populated by the install's discover
-    step), so the package MUST be present before ``set_gate`` — otherwise the
-    bind 403s ``classpath_not_allowed``. Idempotent: if a prior run already
-    installed it (with our classpath) we keep it, since uninstalling it can be
-    refused while an orphaned dataset still binds the gate. A retained package
-    missing this classpath requires explicit isolated-fixture cleanup; we never
-    replace it automatically or remove its bindings.
+    Interrupted fixtures are retained only when their complete package identity
+    matches the requested artifact. Different bytes can expose the same classpath
+    with different behavior, so names alone never authorize reuse. Incompatible
+    retained fixtures need explicit isolated-fixture cleanup; this helper never
+    replaces packages or removes their bindings. If metadata or discovery fails
+    after a fresh install, the caller owns explicit isolated-fixture cleanup;
+    this helper has no persistent ownership journal.
     """
-    if not _already_installed(kz):
+    expected = expected_gate_package(PACKAGE_SPEC, _wheel_sha256(wheel_dir))
+    if not _already_installed(kz, expected):
         result = kz.gates.packages.install(
             PACKAGE_SPEC,
-            hash_digest=_wheel_sha256(wheel_dir),
+            hash_digest=expected["hash_digest"],
             index_url=index_url,
         )
-        assert (
-            GATE_CLASSPATH in result.package.classpaths
-        ), f"{GATE_CLASSPATH} not recorded in installed classpaths: {result.package.classpaths}"
+        validate_gate_package(getattr(result, "package", None), expected)
     gate = kz.gates.discover(GATE_CLASSPATH)
     assert gate.name == GATE_NAME
 

@@ -87,6 +87,7 @@ def test_external_prepare_never_mutates_idp_and_uses_external_client_reference(
         "KAMIWAZA_SHARED_IDP_EXTERNAL_ISSUER",
         "https://customer-idp.test/realms/shared",
     )
+    monkeypatch.setenv("KAMIWAZA_FEDERATION_GATE_HASH", "sha256:" + "0" * 64)
     factory = _ClusterFactory()
     admin = _Admin()
     provider = FederationLifecycleProvider(
@@ -113,6 +114,7 @@ def test_teardown_is_idempotent_after_resources_are_already_absent(
 ) -> None:
     monkeypatch.setenv("KAMIWAZA_SHARED_IDP_PUBLIC_URL", "https://idp.test")
     monkeypatch.setenv("KAMIWAZA_VALIDATION_RUN_ID", "run-federation-1")
+    monkeypatch.setenv("KAMIWAZA_FEDERATION_GATE_HASH", "sha256:" + "0" * 64)
     factory = _ClusterFactory()
     admin = _Admin()
     provider = FederationLifecycleProvider(
@@ -138,6 +140,7 @@ def test_legacy_owned_state_without_provider_tag_remains_reconcilable(
 ) -> None:
     monkeypatch.setenv("KAMIWAZA_SHARED_IDP_PUBLIC_URL", "https://idp.test")
     monkeypatch.setenv("KAMIWAZA_VALIDATION_RUN_ID", "run-federation-1")
+    monkeypatch.setenv("KAMIWAZA_FEDERATION_GATE_HASH", "sha256:" + "0" * 64)
     factory = _ClusterFactory()
     admin = _Admin()
     provider = FederationLifecycleProvider(

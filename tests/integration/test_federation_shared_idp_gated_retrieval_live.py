@@ -2,9 +2,9 @@
 
 The lane carries both topology markers, provisions every prerequisite before
 selection, and treats any skip or denial as failure. It drains mesh retrieval
-SSE for exact U/S/TS rows and runs a recoverable job to ``SUCCEEDED`` with a
+SSE for exact PUBLIC/PRIVATE/CONFIDENTIAL rows and runs a recoverable job to ``SUCCEEDED`` with a
 unique receiver marker. Every access_tier persona receives viewer authority only
-for the unique dataset; the U submitter additionally receives the explicit
+for the unique dataset; the PUBLIC submitter additionally receives the explicit
 cluster-job executor relation. Tenant-negative personas are receiver-allowlisted
 with no initial tuples so the producer tenant boundary is the exact denial under
 test. The receiver execution gate still governs dispatch, and the job service

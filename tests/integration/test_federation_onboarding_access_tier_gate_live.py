@@ -1,9 +1,9 @@
 """ENG-10096 — receiver-assigned onboarding access_tier reaches a mesh gate.
 
-The receiver approves one self-service guest with ``access_tier=S`` and a viewer
+The receiver approves one self-service guest with ``access_tier=PRIVATE`` and a viewer
 grant on a MiniAccessTierGate dataset. The requester claims the receiver-realm
 credential, presents it on the mesh retrieval, and must receive exactly the
-known-answer U/S rows plus the filtered audit footer.
+known-answer PUBLIC/PRIVATE rows plus the filtered audit footer.
 
 ``MINI_ACCESS_TIER_DATASET_PATH`` is the receiver-visible CSV written from
 ``mini_access_tier_records.json`` by ``tests.integration._gate_fixture``. The test

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +25,10 @@ from kamiwaza_sdk.validation.federation_fixture import (
     GATE_PACKAGE_SPEC,
     PERSONAS,
     TENANT_NEGATIVE_PERSONAS,
+)
+from kamiwaza_sdk.validation.federation_gate import (
+    expected_gate_package,
+    validate_gate_package,
 )
 from kamiwaza_sdk.validation.federation_runtime import read_file_reference
 from kamiwaza_sdk.validation.federation_spec import (
@@ -261,14 +265,9 @@ def _configure_edge(
     if include_dataset_fixture:
         for client in (context.initiator, context.receiver):
             client.cluster.declare_attribute("access_tier", type="string")
-        if _ensure_gate(context.receiver):
-            context.state = _record(
-                context.store,
-                context.state,
-                MutationSpec(
-                    context.selected.target_id, "gate-package", GATE_PACKAGE_NAME
-                ),
-            )
+        _ensure_gate(
+            context.receiver, on_installed=lambda: _record_gate_package(context)
+        )
         dataset_path = os.environ.get(_DATASET_PATH_ENV, _DATASET_DEFAULT_PATH).strip()
         if not dataset_path:
             raise ProviderContractError("shared-IdP dataset path is empty")
@@ -364,40 +363,51 @@ def _seed_brokered_user(
     )
 
 
-def _ensure_gate(receiver: Any) -> bool:
-    installed = _find_gate_package(receiver.gates.packages.list())
+def _record_gate_package(context: EdgeContext) -> None:
+    context.state = _record(
+        context.store,
+        context.state,
+        MutationSpec(context.selected.target_id, "gate-package", GATE_PACKAGE_NAME),
+    )
+
+
+def _ensure_gate(receiver: Any, on_installed: Callable[[], None] | None = None) -> bool:
+    packages = receiver.gates.packages.list()
+    expected = expected_gate_package(
+        os.environ.get(_GATE_SPEC_ENV, GATE_PACKAGE_SPEC).strip(),
+        os.environ.get(_GATE_HASH_ENV, "").strip(),
+    )
+    installed = _find_gate_package(packages, expected)
     if installed is None:
-        _install_gate_package(receiver)
+        _install_gate_package(receiver, expected, on_installed)
     _validate_gate_discovery(receiver)
     return installed is None
 
 
-def _find_gate_package(packages: Any) -> Any | None:
+def _find_gate_package(packages: Any, expected: dict[str, str]) -> Any | None:
     items = getattr(packages, "items", packages) or []
     for item in items:
         if getattr(item, "name", None) != GATE_PACKAGE_NAME:
             continue
-        if GATE_CLASSPATH in (getattr(item, "classpaths", None) or []):
-            return item
-        version = getattr(item, "version", "unknown")
-        raise ProviderContractError(
-            f"Incompatible retained fixture {GATE_PACKAGE_NAME}=={version}: "
-            f"missing {GATE_CLASSPATH}. On an isolated test cluster, remove old "
-            "fixture dataset bindings and uninstall the old gate package, then "
-            f"provision {GATE_PACKAGE_SPEC}. No package changes were attempted."
-        )
+        validate_gate_package(item, expected)
+        return item
     return None
 
 
-def _install_gate_package(receiver: Any) -> None:
-    digest = os.environ.get(_GATE_HASH_ENV, "").strip()
+def _install_gate_package(
+    receiver: Any, expected: dict[str, str], on_installed: Callable[[], None] | None
+) -> None:
     index = os.environ.get(_GATE_INDEX_ENV, "").strip()
-    if not digest or not index:
+    if not index:
         raise ProviderContractError(
-            "shared-IdP gate package is absent; configure gate index and hash"
+            "shared-IdP gate package is absent; configure gate index"
         )
-    spec = os.environ.get(_GATE_SPEC_ENV, GATE_PACKAGE_SPEC).strip()
-    receiver.gates.packages.install(spec, hash_digest=digest, index_url=index)
+    result = receiver.gates.packages.install(
+        expected["package_spec"], hash_digest=expected["hash_digest"], index_url=index
+    )
+    if on_installed is not None:
+        on_installed()
+    validate_gate_package(getattr(result, "package", None), expected)
 
 
 def _validate_gate_discovery(receiver: Any) -> None:

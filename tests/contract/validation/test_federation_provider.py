@@ -21,6 +21,7 @@ from kamiwaza_sdk.validation import (
 )
 from kamiwaza_sdk.validation.federation_fixture import (
     GATE_CLASSPATH,
+    GATE_PACKAGE_SPEC,
     KNOWN,
     PERSONAS,
     TENANT_NEGATIVE_PERSONAS,
@@ -272,7 +273,16 @@ class _ClusterAPI:
 
 class _Packages:
     def list(self) -> list[Any]:
-        return [SimpleNamespace(name="acme-gates", classpaths=[GATE_CLASSPATH])]
+        return [
+            SimpleNamespace(
+                name="acme-gates",
+                package_spec=GATE_PACKAGE_SPEC,
+                version="1.2.0",
+                hash_digest="sha256:" + "0" * 64,
+                status="active",
+                classpaths=[GATE_CLASSPATH],
+            )
+        ]
 
     def uninstall(self, package_name: str) -> None:
         del package_name
@@ -513,6 +523,7 @@ def test_prepare_and_teardown_journal_every_owned_resource(
 ) -> None:
     monkeypatch.setenv("KAMIWAZA_SHARED_IDP_PUBLIC_URL", "https://idp.test")
     monkeypatch.setenv("KAMIWAZA_VALIDATION_RUN_ID", "run-federation-1")
+    monkeypatch.setenv("KAMIWAZA_FEDERATION_GATE_HASH", "sha256:" + "0" * 64)
     factory = _ClusterFactory()
     admin = _Admin()
     provider = FederationLifecycleProvider(
@@ -561,6 +572,7 @@ def test_run_emits_all_nine_cases_with_redacted_failure_details(
 ) -> None:
     monkeypatch.setenv("KAMIWAZA_SHARED_IDP_PUBLIC_URL", "https://idp.test")
     monkeypatch.setenv("KAMIWAZA_VALIDATION_RUN_ID", "run-federation-1")
+    monkeypatch.setenv("KAMIWAZA_FEDERATION_GATE_HASH", "sha256:" + "0" * 64)
     factory = _ClusterFactory()
     admin = _Admin()
     provider = FederationLifecycleProvider(
