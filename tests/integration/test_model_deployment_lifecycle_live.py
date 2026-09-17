@@ -49,6 +49,8 @@ from uuid import UUID, uuid4
 import pytest
 from kamiwaza_sdk.exceptions import KamiwazaError, NotFoundError
 from kamiwaza_sdk.schemas.models.model import CreateModelConfig
+from kamiwaza_sdk.utils.model_file_readiness import model_file_download_satisfied
+from kamiwaza_sdk.utils.quant_manager import QuantizationManager
 from model_targets import InferenceTarget, select_inference_target
 from pydantic import ValidationError as SchemaValidationError
 
@@ -156,8 +158,14 @@ def _stop_failure(client, deployment_id: UUID) -> str | None:
 def _config_cleanup_failure(client, config_id: UUID, name: str) -> str | None:
     try:
         current = client.models.get_model_config(config_id)
-    except NotFoundError:
-        return None
+    except NotFoundError as exc:
+        # The body unregisters a config right after proving it deleted, so a
+        # registered config should still be readable here. On 1.2.1 a refused
+        # read also answers 404, so this cannot be taken as proof it is gone.
+        return (
+            f"could not confirm config {config_id} exists or was removed: "
+            f"its cleanup read answered {exc!r}"
+        )
     except (KamiwazaError, SchemaValidationError) as exc:
         return f"could not read config {config_id} before cleanup: {exc!r}"
     if current.name != name:
@@ -236,13 +244,44 @@ def _ready_lane(client, target: InferenceTarget, target_model_file_id) -> _Lane:
         None,
     )
     file_id = target_model_file_id(model, target.quantization) if model else None
-    if model is None or file_id is None:
+    if not _weights_ready(model, file_id, target.quantization):
         _missing_prerequisite(
             target,
             f"prerequisite: GGUF weights for {target.repo_id} ({target.quantization}) "
-            "are not already on this cluster; this test never downloads",
+            "are not all downloaded on this cluster; this test never downloads",
         )
     return _Lane(target=target, model=model, file_id=UUID(file_id))
+
+
+def _weights_ready(model, file_id: str | None, quantization: str) -> bool:
+    """A weights file was selected and every file of the quantization is ready.
+
+    ``target_model_file_id`` picks one ready file, so a split GGUF with some
+    shards still downloading would otherwise pass and fail at deploy time.
+    """
+    if model is None or file_id is None:
+        return False
+    return _all_target_files_ready(model, quantization)
+
+
+def _all_target_files_ready(model, quantization: str) -> bool:
+    """Every file of ``quantization`` is downloaded (split GGUF shards included).
+
+    Mirrors the integration conftest's ``_model_has_ready_target_files``, which
+    this module cannot import; a unit test pins the two to the same answers.
+    """
+    files = list(getattr(model, "m_files", None) or [])
+    gguf_files = [
+        f for f in files if str(getattr(f, "name", "") or "").lower().endswith(".gguf")
+    ]
+    target_files = files
+    if gguf_files:
+        target_files = QuantizationManager().filter_files_by_quantization(
+            gguf_files, quantization, apply_fallback=False
+        )
+    if not target_files:
+        return False
+    return all(model_file_download_satisfied(f) for f in target_files)
 
 
 def _missing_prerequisite(target: InferenceTarget, reason: str) -> NoReturn:
@@ -391,7 +430,7 @@ def _serve_one_chat(client, deployment_id: UUID) -> None:
             model=served[0].id,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=16,
+            max_tokens=256,
             timeout=_CHAT_TIMEOUT_SECONDS,
         )
     finally:
