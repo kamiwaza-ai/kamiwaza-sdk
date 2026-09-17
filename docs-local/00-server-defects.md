@@ -132,7 +132,7 @@ pytest tests/integration/test_catalog_multi_source.py -k file_ingestion_metadata
 ```
 Recent backend change whitelisted `tests/integration/catalog_stack/state/test-data`, so the File ingester now accepts the path we exercise in CI without the "Path outside allowed directories" error. Keep an eye on regressions if the allowlist changes again.
 
-**Status – 2026-09-16 (ENG-12320):** `test_catalog_file_ingestion_metadata` no longer ingests this path. It runs only when `CATALOG_FILE_INGESTION_ROOT` names a directory the platform's ingestion workers can read, and skips otherwise.
+**Status – 2026-09-16 (ENG-12320):** `test_catalog_file_ingestion_metadata` no longer ingests this path. It skips unless `CATALOG_FILE_INGESTION_ROOT` is set. Set it to a directory the platform's ingestion workers can read: a root the platform rejects or cannot read fails the test rather than skipping it.
 
 ### File retrieval missing _(resolved 2025-11-14)_ {#file-retrieval-missing}
 File ingests that point at `tests/integration/catalog_stack/state/test-data` can return inline payloads via `/retrieval/jobs` once the backend sets `RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS` to include that path. Regression covered by `tests/integration/test_catalog_multi_source.py::test_catalog_file_ingestion_metadata`, which ingests the sample tree and asserts `row_count >= 1` from the inline job response (skips when the server has filesystem retrieval disabled).
@@ -149,7 +149,7 @@ Ingesting `objects/sample.json` via the S3 plugin succeeds, but calling `/retrie
 ### Kafka retrieval missing {#kafka-retrieval-missing}
 Kafka ingestion populates catalog containers/topics, but `/retrieval/jobs` can't materialize topic metadata or events (`pytest tests/integration/test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata`). Until we have a streaming transport, keep the SDK test marked xfail to flag regressions.
 
-**Status – 2026-09-16 (ENG-12320):** the test no longer xfails. It asserts ingestion metadata only (one dataset for the seeded topic, platform `kafka`) and is not mapped as evidence. It runs whenever the catalog stack is up; stack setup waits for the Kafka broker, so without one every test in the module skips at setup. The SDK still rejects Kafka dataset URNs before job creation.
+**Status – 2026-09-16 (ENG-12320):** the test no longer xfails. It asserts ingestion metadata only (one dataset for the seeded topic, platform `kafka`) and is not mapped as evidence. It has no skip of its own: catalog-stack setup waits for the Kafka port, and when setup fails every test that uses the stack skips at setup. The SDK still rejects Kafka dataset URNs before job creation.
 
 ### Slack retrieval missing _(resolved 2025-11-14)_ {#slack-retrieval-missing}
 Slack ingestion can now stream conversations (and optional replies) via the retrieval API when supplied with a bot token. Regression coverage: `tests/integration/test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata` ingests a channel and asserts that `/retrieval/jobs` returns inline rows when `SLACK_TEST_TOKEN`/`SLACK_TEST_CHANNEL`/`SLACK_TEST_TEAM` env vars are provided.

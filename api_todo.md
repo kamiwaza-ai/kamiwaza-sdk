@@ -5,8 +5,8 @@ Coverage: tests in tests/integration (direct client calls + SDK service method m
 Note: CLI/authenticator flows are mapped manually; OpenAI client calls are listed separately.
 
 Total endpoints: 266
-Covered by integration tests: 103
-Missing integration coverage: 163
+Covered by integration tests: 158
+Missing integration coverage: 108
 
 
 ## (TS0) ACTIVITY
@@ -120,9 +120,9 @@ Missing integration coverage: 163
 | TS3.018 | [x] | DELETE | /catalog/containers/{container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
 | TS3.019 | [x] | GET | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.list) |
 | TS3.020 | [x] | POST | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.create); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset) |
-| TS3.021 | [x] | DELETE | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (direct); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (direct); test_catalog_multi_source.py::_cleanup_datasets (direct) |
-| TS3.022 | [x] | GET | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (direct); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.get_dataset); test_catalog_multi_source.py::_fetch_dataset (direct) |
-| TS3.023 | [x] | PATCH | /catalog/datasets/by-urn | test_catalog_multi_source.py::_ensure_retrieval_metadata (direct); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (direct) |
+| TS3.021 | [x] | DELETE | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (direct); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (direct); test_catalog_multi_source.py::created_datasets (catalog.datasets.delete) |
+| TS3.022 | [x] | GET | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (direct); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.get_dataset); test_catalog_multi_source.py::_dataset_at_path (catalog.datasets.get); test_catalog_multi_source.py::created_datasets (catalog.datasets.get) |
+| TS3.023 | [ ] | PATCH | /catalog/datasets/by-urn |  |
 | TS3.024 | [x] | GET | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
 | TS3.025 | [x] | PUT | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
 | TS3.026 | [x] | DELETE | /catalog/datasets/v2/{dataset_urn:dataset_urn} | test_catalog_endpoints.py::test_catalog_dataset_delete_variants (direct) |
@@ -221,7 +221,7 @@ Missing integration coverage: 163
 | TS8.010 | [ ] | GET | /ingestion/health |  |
 | TS8.011 | [ ] | POST | /ingestion/ingest/emit |  |
 | TS8.012 | [ ] | POST | /ingestion/ingest/jobs |  |
-| TS8.013 | [x] | POST | /ingestion/ingest/run | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (ingestion.run_active); test_catalog_multi_source.py::_ingest_object_dataset (ingestion.run_active); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_object_ingestion_inline_retrieval (ingestion.run_active); test_catalog_multi_source.py::test_catalog_parquet_ingestion_inline_retrieval (ingestion.run_active); test_catalog_multi_source.py::test_catalog_postgres_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata (ingestion.run_slack_ingest) |
+| TS8.013 | [x] | POST | /ingestion/ingest/run | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (ingestion.run_active); test_catalog_multi_source.py::_ingest_s3 (ingestion.run_active); test_catalog_multi_source.py::_ingest_postgres_orders (ingestion.run_active); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata (ingestion.run_slack_ingest) |
 | TS8.014 | [ ] | GET | /ingestion/ingest/status/{job_id} |  |
 
 ## (TS9) LOGGER
@@ -319,9 +319,9 @@ Missing integration coverage: 163
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS17.001 | [x] | POST | /retrieval/jobs | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (direct); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (direct); test_catalog_multi_source.py::_run_inline_retrieval (direct); test_catalog_multi_source.py::_run_sse_retrieval (direct); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (direct); test_catalog_multi_source.py::test_catalog_postgres_ingestion_metadata (direct); test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata (retrieval.slack_messages) |
-| TS17.002 | [x] | GET | /retrieval/jobs/{job_id} | test_retrieval_live.py::TestRetrievalJobStatus::test_get_job_via_direct_api (direct); test_retrieval_live.py::TestRetrievalJobStatus::test_get_nonexistent_job_status (retrieval.get_job) |
-| TS17.003 | [x] | GET | /retrieval/jobs/{job_id}/stream | test_catalog_multi_source.py::_run_sse_retrieval (direct) |
+| TS17.001 | [x] | POST | /retrieval/jobs | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (direct); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (direct); test_catalog_multi_source.py::_completed_inline_job (retrieval.create_job); test_catalog_multi_source.py::test_catalog_sse_retrieval_emits_terminal_event (retrieval.create_job); test_catalog_multi_source.py::test_catalog_inline_large_object_hits_threshold (retrieval.create_job); test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata (retrieval.slack_messages) |
+| TS17.002 | [x] | GET | /retrieval/jobs/{job_id} | test_retrieval_live.py::TestRetrievalJobStatus::test_get_job_via_direct_api (direct); test_retrieval_live.py::TestRetrievalJobStatus::test_get_nonexistent_job_status (retrieval.get_job); test_catalog_multi_source.py::_completed_inline_job (retrieval.get_job); test_catalog_multi_source.py::_terminal_status (retrieval.get_job) |
+| TS17.003 | [x] | GET | /retrieval/jobs/{job_id}/stream | test_catalog_multi_source.py::_collect_stream (retrieval.stream_events) |
 
 ## (TS18) SECURITY
 

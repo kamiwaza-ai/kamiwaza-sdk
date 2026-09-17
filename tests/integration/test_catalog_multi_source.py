@@ -11,26 +11,26 @@ dataset registry). Parquet content is compared by row count, column names and
 Optional paths are not T02 coverage and are excluded from the evidence map in
 tests/e2e/capability_map.yaml. The file, Slack and oversized-object tests skip
 before their ingestion or retrieval starts and name the prerequisite they are
-missing. The Kafka test runs whenever the catalog stack is up: stack setup waits for
-the Kafka broker, so without one every test in this module skips at setup.
+missing. The Kafka test has no skip of its own: catalog-stack setup waits for the
+Kafka port, and when setup fails every test that uses the stack skips at setup.
 
-Every dataset and container a test creates is deleted and confirmed absent in
-fixture teardown, so a cleanup failure fails the test. ``KEEP_CATALOG_DATASETS=1``
-skips dataset cleanup for debugging and is refused under ``--emit-evidence``. The
-catalog stack, its object keys and the resulting dataset URNs are shared by every
-checkout on a host: concurrent runs can reseed or delete data under each other, so
-capture evidence with no other catalog run in progress.
+Every dataset and container a test creates is deleted in fixture teardown and
+confirmed absent by a read that returns 404, so a cleanup failure fails the test.
+``KEEP_CATALOG_DATASETS=1`` skips dataset cleanup for debugging; under
+``--emit-evidence`` it stops the run with a usage error, so no evidence is written.
+The catalog stack, its object keys and the resulting dataset URNs are shared by
+every checkout on a host: concurrent runs can reseed or delete data under each
+other, so capture evidence with no other catalog run in progress.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import threading
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -50,6 +50,7 @@ from kamiwaza_sdk.schemas.retrieval import (
     TransportType,
 )
 from pydantic import ValidationError
+from requests.adapters import HTTPAdapter
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -69,8 +70,10 @@ INLINE_MAX_BYTES_1_2_1 = 1_000_000
 SSE_SYMPTOM_REPORT = "ENG-12300"
 TERMINAL_JOB_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELED"})
 CATALOG_PROPAGATION_TIMEOUT_S = 30.0
-# The SDK sets no timeout on the SSE request; bound the whole read so a stream that
-# never closes fails the test instead of hanging the run.
+# The SDK sets no timeout on the SSE request. The 1.2.1 stream sends only chunk and
+# complete events, so it is silent while a chunk is prepared: allow that much
+# silence per read, and bound the whole read so a stream that never ends fails.
+SSE_READ_TIMEOUT_S = 60.0
 SSE_STREAM_TIMEOUT_S = 120.0
 CLEANUP_ERRORS = (KamiwazaError, requests.RequestException, ValidationError)
 
@@ -81,13 +84,18 @@ def _delete_and_confirm_absent(
     delete: Callable[[str], None],
     read: Callable[[str], object],
 ) -> None:
-    """Attempt every deletion, then fail once listing whatever was not confirmed gone."""
+    """Attempt every deletion, then fail once listing whatever was not confirmed gone.
+
+    Only a read that returns 404 confirms absence. A 404 from delete does not: the
+    1.2.1 catalog also answers 404 when it refuses a delete.
+    """
     problems: list[str] = []
     for urn in dict.fromkeys(urns):
+        delete_note = ""
         try:
             delete(urn)
         except NotFoundError:
-            continue  # already absent
+            delete_note = " (delete returned 404)"
         except CLEANUP_ERRORS as exc:
             problems.append(f"delete {kind} {urn}: {exc}")
             continue
@@ -96,9 +104,9 @@ def _delete_and_confirm_absent(
         except NotFoundError:
             continue
         except CLEANUP_ERRORS as exc:
-            problems.append(f"read back {kind} {urn}: {exc}")
+            problems.append(f"read back {kind} {urn}{delete_note}: {exc}")
         else:
-            problems.append(f"{kind} {urn} is still readable after delete")
+            problems.append(f"{kind} {urn} is still readable after delete{delete_note}")
     if problems:
         pytest.fail(f"{kind} cleanup incomplete:\n" + "\n".join(problems))
 
@@ -109,13 +117,15 @@ def created_datasets(
 ) -> Iterator[list[str]]:
     """Collect ingested dataset URNs; delete and confirm each is gone.
 
-    ``KEEP_CATALOG_DATASETS=1`` skips both steps, so it is refused when the run emits
-    evidence: the evidence claims cleanup was verified.
+    ``KEEP_CATALOG_DATASETS=1`` skips both steps. Evidence claims cleanup was
+    verified, so under ``--emit-evidence`` the run stops with a usage error instead:
+    a failed setup would be recorded as failed evidence, an aborted run records none.
     """
     keep = os.environ.get("KEEP_CATALOG_DATASETS") == "1"
     if keep and request.config.getoption("emit_evidence", default=False):
-        pytest.fail(
-            "KEEP_CATALOG_DATASETS=1 skips the cleanup that --emit-evidence records"
+        pytest.exit(
+            "KEEP_CATALOG_DATASETS=1 skips the cleanup that --emit-evidence records",
+            returncode=pytest.ExitCode.USAGE_ERROR,
         )
     urns: list[str] = []
     yield urns
@@ -287,35 +297,69 @@ def _terminal_status(
     return status
 
 
+class _ReadTimeoutAdapter(HTTPAdapter):
+    """Give a request that sets no timeout a connect and read timeout."""
+
+    def __init__(self, timeout_s: float) -> None:
+        super().__init__()
+        self.timeout_s = timeout_s
+
+    def send(  # type: ignore[override]
+        self, request: requests.PreparedRequest, **kwargs: Any
+    ) -> requests.Response:
+        # requests always passes ``timeout``, as None when the caller set none.
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = self.timeout_s
+        return super().send(request, **kwargs)
+
+
 def _collect_stream(
-    client: KamiwazaClient, job_id: str, *, timeout_s: float = SSE_STREAM_TIMEOUT_S
+    client: KamiwazaClient,
+    job_id: str,
+    *,
+    timeout_s: float = SSE_STREAM_TIMEOUT_S,
+    read_timeout_s: float = SSE_READ_TIMEOUT_S,
 ) -> list[RetrievalStreamEvent]:
-    """Read the whole SSE stream, failing if it is still open after ``timeout_s``.
+    """Read the SSE stream to its end, then close it; fail if it does not end in time.
 
-    A daemon thread does the blocking read so a stream that never closes cannot stop
-    the interpreter from exiting; its error, if any, is re-raised here.
+    A timeout adapter is mounted on the client's session for the read, so a stream
+    silent for ``read_timeout_s`` fails; one still sending events after ``timeout_s``
+    fails when the next event arrives. The stream is closed and the session's
+    adapters restored before this returns or fails.
     """
+    session = client.session
+    adapters = {prefix: session.adapters[prefix] for prefix in ("https://", "http://")}
+    timed = _ReadTimeoutAdapter(read_timeout_s)
+    for prefix in adapters:
+        session.mount(prefix, timed)
     events: list[RetrievalStreamEvent] = []
-    failure: list[BaseException] = []
-
-    def consume() -> None:
-        try:
-            for event in client.retrieval.stream_events(job_id):
-                events.append(event)
-        except BaseException as exc:
-            failure.append(exc)
-            raise
-
-    reader = threading.Thread(target=consume, name=f"sse-{job_id}", daemon=True)
-    reader.start()
-    reader.join(timeout_s)
-    if reader.is_alive():
-        pytest.fail(
-            f"SSE stream for job {job_id} still open after {timeout_s:.0f}s; "
-            f"events so far={[event.event for event in events]}"
+    deadline = time.monotonic() + timeout_s
+    try:
+        # stream_events returns the SDK's SSE generator; closing it closes the response.
+        stream = cast(
+            Generator[RetrievalStreamEvent, None, None],
+            client.retrieval.stream_events(job_id),
         )
-    if failure:
-        raise failure[0]
+        try:
+            for event in stream:
+                events.append(event)
+                if time.monotonic() >= deadline:
+                    pytest.fail(
+                        f"SSE stream for job {job_id} still open after "
+                        f"{timeout_s:.0f}s; events so far="
+                        f"{[seen.event for seen in events]}"
+                    )
+        finally:
+            stream.close()
+    except (KamiwazaError, requests.RequestException) as exc:
+        pytest.fail(
+            f"SSE stream for job {job_id} failed after events="
+            f"{[seen.event for seen in events]}: {exc}"
+        )
+    finally:
+        for prefix, adapter in adapters.items():
+            session.mount(prefix, adapter)
+        timed.close()
     return events
 
 
@@ -637,8 +681,8 @@ def test_catalog_kafka_ingestion_metadata(
     catalog_stack_environment: dict[str, Any],
     created_datasets: list[str],
 ) -> None:
-    # Runs whenever the catalog stack is up: setup-test-data.sh waits for the Kafka
-    # broker, so without one the stack fixture skips this module before reaching here.
+    # No skip of its own: setup-test-data.sh waits for the Kafka port, and the stack
+    # fixture skips this test when setup fails.
     kafka = catalog_stack_environment["kafka"]
     response = live_kamiwaza_client.ingestion.run_active(
         "kafka",
@@ -675,12 +719,20 @@ def test_catalog_slack_ingestion_metadata(
     if not channel_list:
         channel_list = [channel]
 
-    response = live_kamiwaza_client.ingestion.run_slack_ingest(
-        channels=channel_list,
-        token=token,
-        team_id=team_id,
-        max_messages=3,
-    )
+    try:
+        response = live_kamiwaza_client.ingestion.run_slack_ingest(
+            channels=channel_list,
+            token=token,
+            team_id=team_id,
+            max_messages=3,
+        )
+    except (KamiwazaError, ValidationError) as exc:
+        # pytest prints each traceback frame's arguments, and the SDK frames hold the
+        # token; ``from None`` drops them so a failure cannot print it.
+        status = exc.status_code if isinstance(exc, KamiwazaError) else None
+        raise AssertionError(
+            f"Slack ingestion failed: {type(exc).__name__} (status {status})"
+        ) from None
     created_datasets.extend(response.urns)
     assert response.urns, "Slack ingestion returned no datasets"
     dataset = live_kamiwaza_client.catalog.datasets.get(response.urns[0])
