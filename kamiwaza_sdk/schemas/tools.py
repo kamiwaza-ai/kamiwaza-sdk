@@ -4,7 +4,6 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 from uuid import UUID
-from enum import Enum
 
 
 class CreateToolDeployment(BaseModel):
@@ -75,7 +74,8 @@ class DeployFromTemplateRequest(BaseModel):
 class ToolTemplate(BaseModel):
     """Pre-built Tool template information."""
     name: str
-    version: str
+    # The legacy 1.2.1 available-template catalog omits version.
+    version: Optional[str] = None
     description: str
     category: Optional[str] = None
     tags: List[str] = []
