@@ -37,16 +37,6 @@
 # answer — do not "fix" without new tests):
 #   * models.external-endpoints — no existing e2e/live test registers or
 #     exercises an external/BYO OpenAI-compatible endpoint.
-#   * context.workroom-document-search — the search/retrieve/agentic-search
-#     contract tests run against `search_contract_vectordb`, whose own
-#     docstring says it exists to give them a CLEAN backend so that "earlier
-#     vector insert/query tests cannot leave collections that turn a shape
-#     check into a data-search assertion". They search a deliberately empty
-#     vectordb and assert only isinstance(results, list), so they pass without
-#     finding anything; the vectordb insert/query tests likewise assert only
-#     that the result is a list. No existing test searches indexed content and
-#     asserts what came back, so this capability has no honest mapping until
-#     one is written.
 #   * auth.enterprise-sso — test_auth_live.py covers password + PAT auth
 #     and test_auth_endpoints_live.py the auth endpoint surface; neither
 #     is an enterprise SSO/IdP login. The federation shared-IdP suites
@@ -61,6 +51,7 @@
 #   * test_serving_endpoints_live.py — reads serving status/health/logs of
 #     whatever is already deployed; it observes but does not demonstrate
 #     models.local-deployment, so it stays unmapped.
+
 #   * test_retrieval_live.py — TestRetrievalJobOperations::test_create_and_get_job
 #     does create a real job and poll it, but its status assertion is
 #     `isinstance(status, str)`, so a job that ran and FAILED passes. Every
@@ -94,6 +85,15 @@
 # ENG-12269: these warm-cluster tests can return before a download starts.
 # Restore a models.discover-and-download mapping only for a cold-cluster test
 # that initiates, polls, and verifies acquisition in the same run.
+
+# A unique uploaded document is indexed and found by content and source-file
+# metadata via both search and retrieve, then neither search nor direct fetch
+# can disclose it from a second workroom. Unlike the old empty-index contract
+# probes, this single test proves the source-attributed search substrate.
+- pattern: "tests/integration/test_context_live.py::test_context_uploaded_document_is_searchable_only_in_its_workroom"
+  capability_ids: [context.workroom-document-search]
+  scenario_name: "Index a document and enforce workroom-scoped search"
+  evidence_provenance: cycle-authored
 
 # ENG-12269: the tests below prove individual chat or image paths, not every
 # operation declared by models.openai-compatible-inference (chat, embeddings,
