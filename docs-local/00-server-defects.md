@@ -93,7 +93,7 @@ The earlier `location` mismatch defect still applies; ingestion writes `properti
   Result: API responds 400 `"Dataset is missing a location property"`. Retrieval service expects `properties["location"]`, but ingestion writes `path`. Manual PATCH adding `location` works around it.  
   **Status – 2025-11-16**: Server now backfills `properties.location` directly. Removed the SDK-side patching in `tests/integration/test_catalog_ingest_retrieval.py` + `test_catalog_multi_source.py` and reran `pytest tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline` twice with clean passes.
 
-### Retrieval gRPC transport fails {#retrieval-grpc-transport-fails}
+### Retrieval gRPC transport fails _(superseded 2026-09-16, see [below](#t01-retrieval-evidence-20260916))_ {#retrieval-grpc-transport-fails}
 ```
 POST /retrieval/jobs HTTP/1.1
 Content-Type: application/json
@@ -112,7 +112,7 @@ HTTP/1.1 500 Internal Server Error
 {"detail":"Internal Server Error"}
 ```
 
-The same dataset/materialisation succeeds via inline transport, but requesting `transport="grpc"` never returns a handshake. `tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc` is marked `pytest.skip` until the server can establish a gRPC job. Tracked as `INC-006` in `docs-local/03-sdk-inconsistencies.md`.
+The same dataset/materialisation succeeds via inline transport, but requesting `transport="grpc"` never returns a handshake. `tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc` was marked `pytest.skip` on this basis and tracked as `INC-006` in a tracking file that no longer exists. The skip was removed on 2026-09-16, see [below](#t01-retrieval-evidence-20260916).
 
 ### Ingestion router mounted as `/ingestion/ingest` _(resolved 2025-11-12)_
 Spec `kamiwaza-openapi-spec.json` already reflects the `/ingestion/ingest/*` prefix, so the doc drift noted earlier has been cleared. Any lingering references to `/ingest/*` in docs should be updated; the SDK now consistently calls `/ingestion/ingest/run` and friends.
@@ -154,3 +154,12 @@ Branch: `chore/reenable-tests`.
 - **Slack ingest regressed despite provided env.** `tests/integration/test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata` fails with `500` and detail `Unexpected ingestion failure: Event loop is closed` while the Slack plugin creates the DataHub secret. Slack `auth.test` succeeds; `team.info` also reports missing `team:read`, which is a secondary token-scope issue rather than the 500 root cause.
 - **Llama.cpp deploy path has platform blockers.** After the harness gate/quant fixes, deploy reached the live platform but the host requested `kamiwaza_gpus: 1.0` on a no-GPU/UMA setup, and Ray autoscaler reported no node type could satisfy it. Core logs also showed GGUF download failures under `/app/models/unsloth/...` with permission denied. The deployment status read was also affected by the external auth `403` blocker above.
 - **Catalog file/Kafka remain expected xfails.** File ingestion metadata still returns no retrievable datasets in this topology, and Kafka still exposes metadata without a retrieval transport.
+
+## 2026-09-16 - 1.2.1 T01 retrieval evidence {#t01-retrieval-evidence-20260916}
+
+Branch: `test/eng-12319-t01-catalog-retrieval` (ENG-12319).
+
+### Retrieval gRPC returns 503 on 1.2.1 (ENG-12300)
+- **Symptom.** On the Azure 1.2.1 instance, `POST /retrieval/jobs` with `transport: "grpc"` returns HTTP 503 `Arrow Flight retrieval is not configured: set RETRIEVAL_FLIGHT_ADVERTISED_LOCATIONS and run the retrieval streamer, or explicitly enable insecure local mode for development`, although that variable is set for the API processes.
+- **Cause.** The API's stored `retrieval` runtime config does not contain `flight_advertised_locations_raw`, and the platform settings loader resets every field before applying the stored keys, so the environment value is discarded. Diagnosis and evidence are in ENG-12300.
+- **SDK coverage.** `tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc` is no longer skipped. The retrieval capability includes Arrow Flight, so on this 503 the test fails with a message naming ENG-12300. Repro: `pytest tests/integration/test_catalog_ingest_retrieval.py --live-base-url <cluster>/api`; result on the Azure 1.2.1 instance, 2026-09-16: `1 failed, 1 passed` (inline passed, gRPC failed on the 503).
