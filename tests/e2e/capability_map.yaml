@@ -273,11 +273,12 @@
 # whose rows match the seed the same way, one terminal complete event counting
 # them, and a COMPLETED job. Ingestion and the catalog dataset lookup are setup
 # here: retrieval needs a registered dataset.
-# The capability also covers cancel and Arrow Flight, which these tests do not
-# exercise; unverified_operations names them, and the emitter always adds them as
-# skipped required steps, so this record stays failed. Remove a name only once a
-# mapped test performs that operation. On the Azure 1.2.1 evidence instance the
-# SSE test fails as well (ENG-12300, cause not yet established).
+# These tests do not exercise cancel or Arrow Flight. Like the T01 inline entry,
+# this entry does not declare them as unverified_operations: the retained tests
+# earn the retrieval claim on their own, and Arrow Flight has its own record from
+# test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc. On the
+# Azure 1.2.1 evidence instance the SSE test fails (ENG-12300, cause not yet
+# established), so this record is failed there.
 # Excluded: the registry tests above, container_link (it submits no retrieval
 # job), and the same optional paths as the registry entry.
 # Cycle-authored for the same reason as the registry entry above.
@@ -285,7 +286,6 @@
   capability_ids: [retrieval.async-retrieval-jobs]
   scenario_name: "Multi-source inline and SSE retrieval"
   evidence_provenance: cycle-authored
-  unverified_operations: [cancel, arrow_flight]
   exclude:
     - "*::test_catalog_file_ingestion_metadata"
     - "*::test_catalog_kafka_ingestion_metadata"
