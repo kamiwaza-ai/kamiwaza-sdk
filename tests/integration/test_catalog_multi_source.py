@@ -165,7 +165,7 @@ def created_containers(live_kamiwaza_client: KamiwazaClient) -> Iterator[list[st
 
 @dataclass(frozen=True)
 class _S3Seed:
-    """The seeded bucket, the catalog secret for it, and the dataset URNs to clean up."""
+    """Seeded bucket config, local seed files, catalog secret, and URNs to clean up."""
 
     cfg: dict[str, Any]
     file_root: Path
@@ -353,7 +353,9 @@ def _collect_stream(
     A timeout adapter is mounted on the client's session for the read, so the test
     fails if the stream is silent for ``read_timeout_s``, or if it is still sending
     events once ``timeout_s`` has passed (checked as each event arrives). The stream
-    is closed and the session's adapters restored before this returns or fails.
+    is closed and the session's adapters restored before this returns or fails. The
+    events reported on failure are those the SDK had parsed; an event still in its
+    read buffer is not listed.
     """
     session = client.session
     adapters = {prefix: session.adapters[prefix] for prefix in ("https://", "http://")}
@@ -666,7 +668,7 @@ def test_catalog_kafka_ingestion_metadata(
 
 
 def _slack_channels(channel: str) -> list[str]:
-    """SLACK_TEST_CHANNELS as a list, or just ``channel`` when that is unset."""
+    """SLACK_TEST_CHANNELS as a list, or just ``channel`` when it names no channel."""
     configured = os.environ.get("SLACK_TEST_CHANNELS", "").split(",")
     return [item.strip() for item in configured if item.strip()] or [channel]
 
@@ -677,9 +679,9 @@ def _ingest_slack(
     """Ingest with SLACK_TEST_TOKEN; any failure is re-raised without the token.
 
     pytest prints each traceback frame's arguments, and its locals under
-    --showlocals, so the token is read inline and never becomes either here; this
-    frame is hidden unless --full-trace is set, and the SDK, requests and urllib3
-    frames below that do hold the token are dropped with ``from None``.
+    --showlocals, so the token is read inline and never becomes either here, and the
+    SDK, requests and urllib3 frames below that do hold the token are dropped with
+    ``from None``.
     """
     __tracebackhide__ = True
     try:

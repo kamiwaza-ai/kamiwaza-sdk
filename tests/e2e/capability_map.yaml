@@ -246,7 +246,7 @@
 # values (other parquet columns are not compared), and the postgres
 # name/total pairs. sse_retrieval_emits_terminal_event requires chunk events
 # whose rows match the seed the same way, one terminal complete event counting
-# them, and a COMPLETED job. Ingestion and the catalog path lookup are setup
+# them, and a COMPLETED job. Ingestion and the catalog dataset lookup are setup
 # here: retrieval needs a registered dataset.
 # The capability also covers cancel and Arrow Flight, which these tests do not
 # exercise; unverified_operations names them, and the emitter always adds them as
