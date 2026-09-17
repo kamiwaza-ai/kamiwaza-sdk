@@ -7,6 +7,11 @@ from unittest.mock import Mock
 
 import pytest
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
+
 from kamiwaza_sdk.validation import federation_fixture, federation_setup
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from tests.integration import _gate_fixture, _mini_access_tier
@@ -26,7 +31,12 @@ def _client(items: list) -> SimpleNamespace:
 
 
 def test_fresh_fixture_uses_new_artifact_identity(tmp_path: Path) -> None:
-    assert federation_fixture.GATE_PACKAGE_SPEC == "acme-gates==1.2.0"
+    fixture_project = (
+        Path(__file__).parents[1] / "integration/fixtures/acme-gates/pyproject.toml"
+    )
+    version = tomllib.loads(fixture_project.read_text())["project"]["version"]
+    assert federation_fixture.GATE_PACKAGE_SPEC == f"acme-gates=={version}"
+    assert version == "1.2.0"
     assert _mini_access_tier.WHEEL_NAME == _gate_fixture.WHEEL_NAME
     wheel = tmp_path / _gate_fixture.WHEEL_NAME
     wheel.write_bytes(b"new-fixture-wheel")

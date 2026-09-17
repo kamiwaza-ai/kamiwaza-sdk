@@ -24,7 +24,7 @@ from kamiwaza_sdk.validation.models import (
 from kamiwaza_sdk.validation.provider import ProviderContractError
 
 DELEGATED_PROVIDER_ID = "sdk.federation.delegated-workload"
-DELEGATED_PROVIDER_REVISION = "sdk.federation.delegated-workload@v1"
+DELEGATED_PROVIDER_REVISION = "sdk.federation.delegated-workload@v2"
 DELEGATED_SCENARIO_ID = "sdk.federation.delegated-workload/v1"
 DELEGATED_CASE_IDS = ("delegated-job-approved-package",)
 DELEGATED_FEATURE_ID = "federation/delegated-workload:v1"

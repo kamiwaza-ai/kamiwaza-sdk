@@ -22,7 +22,7 @@ from kamiwaza_sdk.validation.models import (
 from kamiwaza_sdk.validation.provider import ProviderContractError
 
 MODEL_MESH_PROVIDER_ID = "sdk.federation.model-mesh"
-MODEL_MESH_PROVIDER_REVISION = "sdk.federation.model-mesh@v1"
+MODEL_MESH_PROVIDER_REVISION = "sdk.federation.model-mesh@v2"
 MODEL_MESH_SCENARIO_ID = "sdk.federation.model-mesh/v1"
 
 # The inventory is deliberately small and exact.  Discovery proves the

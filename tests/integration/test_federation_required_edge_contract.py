@@ -1,11 +1,17 @@
 """ENG-10050: Offline contract for the required shared-IDP smoke edge."""
 
 import stat
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 from _kamiwaza_pytest_options import PROJECT_ROOT
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError
@@ -480,10 +486,14 @@ def _write_gate_wheel(tmp_path: Path) -> str:
 
 
 def _gate_package(wheel_dir: str, **overrides) -> SimpleNamespace:
+    fixture_project = (
+        PROJECT_ROOT / "tests/integration/fixtures/acme-gates/pyproject.toml"
+    )
+    version = tomllib.loads(fixture_project.read_text())["project"]["version"]
     state = {
         "name": "acme-gates",
         "package_spec": edge.mc.PACKAGE_SPEC,
-        "version": "1.1.0",
+        "version": version,
         "hash_digest": edge.mc._wheel_sha256(wheel_dir),
         "status": "active",
         "classpaths": [edge.mc.GATE_CLASSPATH],
@@ -505,19 +515,61 @@ def _gate_receiver(package: SimpleNamespace | None) -> SimpleNamespace:
     return SimpleNamespace(gates=gates)
 
 
+def test_fresh_gate_package_uses_fixture_metadata_and_owned_cleanup(tmp_path) -> None:
+    wheel_dir = _write_gate_wheel(tmp_path)
+    receiver = _gate_receiver(None)
+    receiver.gates.packages.install.return_value = SimpleNamespace(
+        package=_gate_package(wheel_dir)
+    )
+    with ExitStack() as cleanup:
+        required_setup._ensure_gate_package(cleanup, receiver, wheel_dir, "index")
+        receiver.gates.packages.install.assert_called_once_with(
+            edge.mc.PACKAGE_SPEC,
+            hash_digest=edge.mc._wheel_sha256(wheel_dir),
+            index_url="index",
+        )
+        receiver.gates.discover.assert_called_once_with(edge.mc.GATE_CLASSPATH)
+        receiver.gates.packages.replace.assert_not_called()
+        receiver.gates.packages.uninstall.assert_not_called()
+    receiver.gates.packages.uninstall.assert_called_once_with("acme-gates")
+
+
 def test_preexisting_gate_package_must_match_and_is_never_owned(tmp_path) -> None:
     wheel_dir = _write_gate_wheel(tmp_path)
     receiver = _gate_receiver(_gate_package(wheel_dir))
-    cleanup = Mock()
-
-    required_setup._ensure_gate_package(cleanup, receiver, wheel_dir, "index")
-    receiver.gates.packages.install.assert_not_called()
-    cleanup.callback.assert_not_called()
-
-    receiver = _gate_receiver(_gate_package(wheel_dir, version="9.9.9"))
-    with pytest.raises(AssertionError):
+    with ExitStack() as cleanup:
+        cleanup.callback = Mock(wraps=cleanup.callback)
         required_setup._ensure_gate_package(cleanup, receiver, wheel_dir, "index")
+        cleanup.callback.assert_not_called()
+        receiver.gates.discover.assert_called_once_with(edge.mc.GATE_CLASSPATH)
     receiver.gates.packages.install.assert_not_called()
+    receiver.gates.packages.replace.assert_not_called()
+    receiver.gates.packages.uninstall.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"package_spec": "acme-gates==1.1.0", "version": "1.1.0"},
+        {"version": "1.1.0"},
+        {"hash_digest": "sha256:wrong"},
+        {"status": "inactive"},
+        {"classpaths": []},
+    ],
+    ids=["stale", "contradictory", "wrong-hash", "inactive", "wrong-classpath"],
+)
+def test_incompatible_reused_gate_package_is_retained(tmp_path, overrides) -> None:
+    wheel_dir = _write_gate_wheel(tmp_path)
+    receiver = _gate_receiver(_gate_package(wheel_dir, **overrides))
+    with ExitStack() as cleanup:
+        cleanup.callback = Mock(wraps=cleanup.callback)
+        with pytest.raises(AssertionError):
+            required_setup._ensure_gate_package(cleanup, receiver, wheel_dir, "index")
+        cleanup.callback.assert_not_called()
+    receiver.gates.packages.install.assert_not_called()
+    receiver.gates.packages.replace.assert_not_called()
+    receiver.gates.packages.uninstall.assert_not_called()
+    receiver.gates.discover.assert_not_called()
 
 
 def test_gate_package_read_or_install_failure_never_registers_cleanup(
@@ -567,20 +619,15 @@ def test_owned_gate_package_cleanup_is_registered_before_post_install_failure(
         package.hash_digest = "sha256:wrong"
     else:
         receiver.gates.discover.side_effect = RuntimeError("discover failed")
-    cleanup = Mock()
-
     with pytest.raises((AssertionError, RuntimeError)):
-        required_setup._ensure_gate_package(
-            cleanup,
-            receiver,
-            wheel_dir,
-            "index",
-        )
-
-    cleanup.callback.assert_called_once_with(
-        required_setup._uninstall_owned_gate_package,
-        receiver,
-    )
+        with ExitStack() as cleanup:
+            required_setup._ensure_gate_package(
+                cleanup,
+                receiver,
+                wheel_dir,
+                "index",
+            )
+    receiver.gates.packages.uninstall.assert_called_once_with("acme-gates")
 
 
 def test_pairing_requires_two_distinct_cluster_identities() -> None:

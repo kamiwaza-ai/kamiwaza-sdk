@@ -137,7 +137,7 @@ def test_model_mesh_provider_publishes_the_exact_model_mesh_plan(
 
     plan = ModelMeshLifecycleProvider().resolve(_profile())
 
-    assert plan.provider_revision == "sdk.federation.model-mesh@v1"
+    assert plan.provider_revision == "sdk.federation.model-mesh@v2"
     assert len(plan.selected) == 1
     assert plan.selected[0].scenario_id == MODEL_MESH_SCENARIO_ID
     # Install requirements are consumed by Kajiya's strict allowlist.  The

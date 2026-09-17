@@ -44,7 +44,7 @@ def _installed_gate_package(receiver: Any) -> Any | None:
 
 def _assert_desired_gate_package(package: Any, wheel_dir: str) -> None:
     assert getattr(package, "package_spec", None) == mc.PACKAGE_SPEC
-    assert getattr(package, "version", None) == "1.1.0"
+    assert getattr(package, "version", None) == mc.PACKAGE_SPEC.split("==", 1)[1]
     assert getattr(package, "hash_digest", None) == mc._wheel_sha256(wheel_dir)
     assert getattr(package, "status", None) == "active"
     assert mc.GATE_CLASSPATH in (getattr(package, "classpaths", None) or [])

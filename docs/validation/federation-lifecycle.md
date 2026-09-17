@@ -201,11 +201,19 @@ Run both paths when qualifying a provisioned federation smoke.
 
 ## Provider revision 2 cutover
 
-SDK 1.2.0 emits `sdk.federation.shared-idp@v2` plans and fixture state. Case IDs
-and persona names changed with the neutral access-tier fixture. This revision
-is distinct from the unchanged scenario ID `sdk.federation.shared-idp/v1`,
-protocol version `v1`, ownership scheme, and JSON schema versions. Existing
-profile `include` entries continue to select the same scenario.
+SDK 1.2.0 emits revision 2 plans and fixture state for these providers:
+
+- `sdk.federation.shared-idp@v2`
+- `sdk.federation.model-mesh@v2`
+- `sdk.federation.delegated-workload@v2`
+
+All three consume the neutral access-tier fixture and updated persona names.
+Shared-IdP case IDs changed; model-mesh and delegated-workload case IDs remain
+unchanged. These implementation revisions are distinct from the unchanged
+scenario IDs ending in `/v1`, protocol version `v1`, ownership scheme, delegated
+feature ID, and JSON schema versions. Existing profile `include` entries
+continue to select the same scenarios. Inference and golden providers remain
+at revision 1.
 
 Before upgrading an owned fixture, clean it with the matching previous provider
 and retain its evidence. Generate fresh plans and state with the new provider;
