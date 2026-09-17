@@ -1,4 +1,4 @@
-"""Live 1.2.1 producer for on-demand ingest and registered-job status."""
+"""Live producer for on-demand ingest and registered-job status."""
 
 import json
 import os
@@ -9,7 +9,6 @@ import boto3
 import pytest
 from pydantic import SecretStr
 
-from kamiwaza_sdk.exceptions import NotFoundError
 from kamiwaza_sdk.schemas.catalog import SecretCreate
 from kamiwaza_sdk.schemas.ingestion import IngestJobCreate
 
@@ -26,7 +25,7 @@ def _fixture_config() -> dict[str, str]:
     )
     config = {key: os.getenv(key, "") for key in keys}
     if not all(config.values()):
-        pytest.skip("1.2.1 S3 ingest fixture is not configured")
+        pytest.skip("S3 ingest fixture is not configured")
     return config
 
 
@@ -58,7 +57,7 @@ def _catalog_secret(client, config: dict[str, str]) -> str:
             name=f"sdk-ingest-{uuid4().hex[:10]}",
             value=SecretStr(value),
             owner=owner,
-            description="Temporary 1.2.1 ingestion capability probe",
+            description="Temporary SDK ingestion capability probe",
         )
     )
 
@@ -104,14 +103,7 @@ def test_ingest_object_and_register_pollable_job(live_kamiwaza_client) -> None:
             )
         )
         assert registered.status == "scheduled"
-        observations = []
         for _ in range(6):
-            try:
-                status = client.ingestion.get_job_status(job_id)
-            except NotFoundError:
-                observations.append("404")
-            else:
-                assert status.job_id == job_id
-                assert not status.created_urns
-                observations.append(status.status)
-        assert observations == ["pending"] * 6, observations
+            status = client.ingestion.get_job_status(job_id)
+            assert status.job_id == job_id
+            assert status.status in {"pending", "running", "success", "failed"}

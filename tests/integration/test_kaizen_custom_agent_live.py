@@ -1,7 +1,7 @@
 """Live producer candidate for canonical Kaizen custom agents with a skill binding.
 
-This intentionally does not emit capability evidence until it passes on the
-release build. A create/list-only probe is insufficient for the claim.
+This intentionally does not emit capability evidence until it passes on a
+configured live platform. A create/list-only probe is insufficient for the claim.
 """
 
 from __future__ import annotations
