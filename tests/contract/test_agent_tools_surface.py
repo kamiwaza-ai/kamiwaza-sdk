@@ -13,7 +13,6 @@ change here is a change to somebody else's integration:
 
 from __future__ import annotations
 
-import inspect
 import json
 import warnings
 from pathlib import Path
@@ -27,6 +26,7 @@ from kamiwaza_sdk.agent_tools.ids import (
     published_id,
 )
 from kamiwaza_sdk.agent_tools.spec_index import build_index
+from tests._agent_tools_reachability import reachable_selectors
 
 pytestmark = pytest.mark.contract
 
@@ -71,30 +71,12 @@ def test_index_reaches_the_whole_callable_surface(client, index) -> None:
     Counts nested platform sub-clients too, since those are as callable as any
     other operation. Before the index walked them, this test passed at 310
     while 38 operations — including every gate-package call — were unreachable.
+
+    The walk is shared with the unit suite, which compares the selectors
+    themselves. Two copies of it could agree with each other while both
+    drifted from the client.
     """
-
-    def public_methods(obj) -> int:
-        return sum(
-            1
-            for name, _ in inspect.getmembers(type(obj), predicate=inspect.isfunction)
-            if not name.startswith("_")
-        )
-
-    reachable = 0
-    for name, value in vars(type(client)).items():
-        if not isinstance(value, property) or name.startswith("_"):
-            continue
-        service = getattr(client, name)
-        reachable += public_methods(service)
-        for attribute in dir(service):
-            if attribute.startswith("_") or attribute == "client":
-                continue
-            nested = getattr(service, attribute, None)
-            if nested is None or not type(nested).__module__.startswith("kamiwaza"):
-                continue
-            if hasattr(nested, "client") or hasattr(nested, "_client"):
-                reachable += public_methods(nested)
-    assert len(index) == reachable
+    assert len(index) == len(reachable_selectors(client))
 
 
 def test_the_index_is_larger_than_the_interface_document(
