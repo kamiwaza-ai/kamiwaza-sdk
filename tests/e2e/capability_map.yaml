@@ -33,8 +33,8 @@
 # harvested from coverage that already existed. The accepted values are the
 # schema's own (harness.EVIDENCE_PROVENANCES); anything else is a refusal.
 #
-# DELIBERATELY UNMAPPED (reviewed 2026-08-10; empty mapping is the honest
-# answer — do not "fix" without new tests):
+# DELIBERATELY UNMAPPED (reviewed 2026-08-10, auth entries 2026-09-17; empty
+# mapping is the honest answer — do not "fix" without new tests):
 #   * models.external-endpoints — no existing e2e/live test registers or
 #     exercises an external/BYO OpenAI-compatible endpoint.
 #   * context.workroom-document-search — the search/retrieve/agentic-search
@@ -47,11 +47,35 @@
 #     that the result is a list. No existing test searches indexed content and
 #     asserts what came back, so this capability has no honest mapping until
 #     one is written.
-#   * auth.enterprise-sso — test_auth_live.py covers password + PAT auth
-#     and test_auth_endpoints_live.py the auth endpoint surface; neither
-#     is an enterprise SSO/IdP login. The federation shared-IdP suites
+#   * auth.enterprise-sso — test_auth_live.py covers password + PAT auth,
+#     test_auth_endpoints_live.py the auth endpoint surface, and
+#     test_auth_admin_live.py / test_auth_sessions_live.py administer and end
+#     LOCAL accounts; none is an enterprise SSO/IdP login. The federation
+#     shared-IdP suites
 #     (test_federation_idp_lifecycle_live.py, ..._shared_idp_gated_...)
 #     provision Keycloak trust for FEDERATION, not enterprise SSO sign-in.
+#   * test_auth_admin_live.py::test_deleted_local_user_sign_in_attempt and
+#     test_auth_admin_live.py::test_deleted_local_user_pat_request — strict
+#     xfails pinning behavior on the deployment under test. An xfail folds to a
+#     skipped step, so mapping them would add nothing now. If the pinned
+#     behavior changes and a marker is removed, either would pass on its own and
+#     over-claim auth.local-user-administration, which the mapped lifecycle test
+#     in that file already carries.
+#   * test_auth_sessions_live.py::test_sdk_logout_then_refresh — the same kind
+#     of strict xfail. Nothing in test_auth_sessions_live.py is mapped (see the
+#     next note), so it has no entry to over-claim against; it stays unmapped
+#     because an xfail establishes nothing either way.
+#   * test_auth_sessions_live.py::test_session_revocation_lifecycle — it has
+#     never run. The platform session store is off by default
+#     (AUTH_REBAC_SESSION_ENABLED=false) and was off on the deployment under
+#     test, so its precheck skips before anything is created and its assertions
+#     are derived from the v1.2.1 session code rather than observed. Review also
+#     found two ways a wrong platform still satisfies them: both steps log out
+#     the first-opened session of their pair, so a store that drops the oldest
+#     record passes; and the control is a session a purge already counted as
+#     revoked. Mapping it would let a test that has never executed carry
+#     auth.session-revocation. Close both gaps and re-map once a store-enabled
+#     deployment can run it.
 #   * tests/e2e/scenarios/test_s1..s5 drivers — they already emit native
 #     scenario-evidence.v2 records through the harness (cycle-authored);
 #     mapping them here would double-count the same runs.
@@ -225,6 +249,36 @@
 - pattern: "tests/integration/test_auth_live.py::test_pat_lifecycle_supports_api_key_auth"
   capability_ids: [auth.personal-access-tokens]
   scenario_name: "Personal access token authentication and revocation"
+
+# Three PATs are minted and all are listed as the caller's. The raw list
+# response (the typed model would silently drop an extra field) contains no
+# minted token, no JWT-shaped value outside the caller-chosen PAT name, and no
+# token- or secret-named key at any depth. The PAT configuration is read, and
+# its field types, scopes and TTL bounds are checked. The middle PAT is revoked
+# (so revoking by position cannot pass), and the listing plus real
+# authentications prove exactly that one stopped working while the other two
+# still authenticate as the same user. Cleanup revokes every minted PAT without
+# trusting the listing.
+- pattern: "tests/integration/test_auth_live.py::test_pat_inventory_lists_without_token_material_and_revokes_one"
+  capability_ids: [auth.personal-access-tokens]
+  scenario_name: "Personal access token inventory and individual revocation"
+  evidence_provenance: cycle-authored
+
+# One disposable local user is created, read back, and listed, and it signs
+# in as itself (the login's username is the account's). As that non-admin it
+# gets 403 from list, read, update (an attempt to grant itself the admin role),
+# password reset, and delete on its own account; read-backs show its roles
+# unchanged and its password still signing in. The
+# SDK's client-side admin guard rejects its roles and accepts an admin's. Its
+# email update and password reset are read back (new password works, old one
+# is rejected); then it is deleted and proven absent from the admin views.
+# Account creation by a non-admin is not attempted. The unmapped
+# test_deleted_local_user_* siblings pin 1.2.1 deletion behavior. Opt-in:
+# KAMIWAZA_TEST_DISPOSABLE_IDENTITIES=1.
+- pattern: "tests/integration/test_auth_admin_live.py::test_local_user_administration_lifecycle"
+  capability_ids: [auth.local-user-administration]
+  scenario_name: "Local user administration with non-admin denial"
+  evidence_provenance: cycle-authored
 
 # Justification: dataset schema/variant endpoints, container list/URN/path/v2
 # endpoints, and secret endpoints — the catalog registry API surface
