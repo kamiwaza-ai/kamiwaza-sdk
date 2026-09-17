@@ -243,7 +243,7 @@
 # small-object and postgres tests require the job COMPLETED on create and on
 # read-back with rows_processed equal to row_count, and compare content with the
 # seed: the whole sample.json document, parquet row count, column names and id
-# values (other parquet columns are random per seed), and the postgres
+# values (other parquet columns are not compared), and the postgres
 # name/total pairs. sse_retrieval_emits_terminal_event requires chunk events
 # whose rows match the seed the same way, one terminal complete event counting
 # them, and a COMPLETED job. Ingestion and the catalog path lookup are setup
