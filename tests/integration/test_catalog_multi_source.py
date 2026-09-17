@@ -455,42 +455,58 @@ def _mounted(
         adapter.close()
 
 
+def _event_names(events: list[RetrievalStreamEvent]) -> str:
+    """Render the event names for a message, capped at FAILURE_EVENTS_SHOWN.
+
+    Both ends are kept: a stream cut off by the deadline can collect enough events
+    to bury the failure, and the last ones say whether a terminal event ever came.
+    """
+    names = [event.event for event in events]
+    if len(names) <= FAILURE_EVENTS_SHOWN:
+        return f"{names}"
+    half = FAILURE_EVENTS_SHOWN // 2
+    omitted = len(names) - 2 * half
+    return f"{names[:half]}..+{omitted} more..{names[-half:]}"
+
+
 def _fail_stream(job_id: str, failure: str, events: list[RetrievalStreamEvent]) -> None:
     """Report a stream failure from the caller's frame, outside any ``except``.
 
     A chained SDK error makes pytest print the arguments of urllib3's frames, which
     include the Authorization header, so the cause is described rather than raised.
-    Only the first FAILURE_EVENTS_SHOWN names are listed: a fast stream cut off by
-    the deadline can collect enough to bury the failure it is reported with.
     """
     __tracebackhide__ = True
-    shown = [seen.event for seen in events[:FAILURE_EVENTS_SHOWN]]
-    extra = len(events) - len(shown)
-    more = f" (+{extra} more)" if extra else ""
-    pytest.fail(f"SSE stream for job {job_id} {failure}; events so far={shown}{more}")
+    pytest.fail(
+        f"SSE stream for job {job_id} {failure}; events so far={_event_names(events)}"
+    )
 
 
 def _drain(
     stream: Generator[RetrievalStreamEvent, None, None],
     timed: "_StreamDeadlineAdapter",
     events: list[RetrievalStreamEvent],
-) -> float:
-    """Read ``stream`` into ``events`` until it ends or the deadline fires.
+) -> tuple[float, str]:
+    """Read ``stream`` into ``events`` until it ends, raises, or the deadline fires.
 
     Returns when the read stopped, before the timer is cancelled, so the caller can
-    tell a deadline that ended this read from one that fired after it had ended.
+    tell a deadline that ended this read from one that fired after it had ended, and
+    the transport failure if there was one. A read that raises still reports when it
+    stopped, which is what decides between those two causes.
     """
+    failure = ""
     try:
         for event in stream:
             events.append(event)
             if timed.expired_at:
                 break  # the deadline stops a stream the SDK keeps yielding
+    except STREAM_ERRORS as exc:
+        failure = f"failed: {type(exc).__name__}: {exc}"
     finally:
         ended_at = time.monotonic()
         # Stop first: the timer must not cut off a stream that is closing.
         timed.stop()
         stream.close()
-    return ended_at
+    return ended_at, failure
 
 
 def _collect_stream(
@@ -521,7 +537,7 @@ def _collect_stream(
                 Generator[RetrievalStreamEvent, None, None],
                 client.retrieval.stream_events(job_id),
             )
-            ended_at = _drain(stream, timed, events)
+            ended_at, failure = _drain(stream, timed, events)
     except STREAM_ERRORS as exc:
         failure = f"failed: {type(exc).__name__}: {exc}"
     ended_at = ended_at or time.monotonic()
@@ -790,7 +806,7 @@ def test_catalog_sse_retrieval_emits_terminal_event(
     )
     assert job.transport == TransportType.SSE
     events = _collect_stream(live_kamiwaza_client, job.job_id)
-    names = [event.event for event in events]
+    names = _event_names(events)
     status = _terminal_status(
         live_kamiwaza_client, job.job_id, context=f"job {job.job_id}: events={names}"
     )
