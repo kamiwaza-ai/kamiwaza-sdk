@@ -163,7 +163,7 @@ def published_id(op_selector: str) -> str:
 
 #: Operations deliberately not published, each with a stated reason.
 #:
-#: Two families, per FR-005e, both read from the client rather than assumed.
+#: Three families, per FR-005e, each read from the client rather than assumed.
 #:
 #: ``tools`` is :class:`~kamiwaza_sdk.services.tools.ToolService`, whose own
 #: class docstring carries a ``.. deprecated::`` notice: the Docker
@@ -172,10 +172,18 @@ def published_id(op_selector: str) -> str:
 #: Publishing a deprecated surface beside its replacement would offer an agent
 #: two rival ways to do the same thing, and it would pick by description text.
 #:
-#: The rest return a credential in their result. FR-020 treats a
+#: The second family returns a credential in its result. FR-020 treats a
 #: credential-bearing result as a mutation regardless of verb; withholding them
 #: goes further, because a credential that reaches an agent can be replayed
 #: outside any recorded call. Each was confirmed against its response model.
+#:
+#: The last family makes no platform call at all. Each one is a local helper
+#: that happens to live on a service object: it encodes a string, builds a
+#: local object, or checks a header the caller already holds. An agent asking
+#: for platform operations cannot use one, yet each costs catalog tokens and
+#: competes in keyword search, where ``auth.require_admin`` ranks for "admin"
+#: ahead of the operations that administer anything. Each method body was read
+#: to confirm it never touches ``self.client``.
 UNPUBLISHED: dict[str, UnpublishedReason] = {
     f"tools.{method}": UnpublishedReason(
         reason=(
@@ -231,6 +239,49 @@ UNPUBLISHED: dict[str, UnpublishedReason] = {
             "and a constructor rather than a platform operation."
         ),
         superseded_by="embedding.get_embedder",
+    ),
+    "auth.require_admin": UnpublishedReason(
+        reason=(
+            "Asserts that ForwardAuth headers the caller already holds carry "
+            "the admin role, and raises when they do not. It reads its "
+            "argument and makes no platform call, so an agent has nothing to "
+            "invoke it with, and it would still rank first for \"admin\"."
+        ),
+    ),
+    "catalog.encode_urn": UnpublishedReason(
+        reason=(
+            "Percent-encodes a URN for use in a request path. The catalog "
+            "operations encode their own arguments, so this is a string "
+            "helper left on the facade rather than an operation."
+        ),
+    ),
+    "catalog.datasets.encode_path_urn": UnpublishedReason(
+        reason=(
+            "Percent-encodes a dataset URN for a request path. It is a string "
+            "helper for a caller assembling its own URL, not a platform call."
+        ),
+    ),
+    "catalog.containers.encode_path_urn": UnpublishedReason(
+        reason=(
+            "Percent-encodes a container URN for a request path. It is a "
+            "string helper for a caller assembling its own URL, not a "
+            "platform call."
+        ),
+    ),
+    "catalog.secrets.encode_path_urn": UnpublishedReason(
+        reason=(
+            "Returns a secret URN unchanged, because secret URNs are already "
+            "path-safe on that route. It exists so the three catalog "
+            "sub-clients share one shape, and it calls nothing."
+        ),
+    ),
+    "models.auto_selector": UnpublishedReason(
+        reason=(
+            "Constructs a local ModelAutoSelector over this service and "
+            "returns it. The object cannot cross a tool boundary, and the "
+            "guide operations it wraps are published in their own right."
+        ),
+        superseded_by="models.list_guides",
     ),
 }
 

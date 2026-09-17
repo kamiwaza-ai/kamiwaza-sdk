@@ -101,6 +101,26 @@ def test_unpublished_reason_returns_none_for_a_published_operation() -> None:
     assert unpublished_reason("models.list_models") is None
 
 
+def test_local_helpers_are_withheld_by_name() -> None:
+    """A method that makes no platform call is not an operation to publish.
+
+    Named rather than counted: each of these reads its own argument, encodes a
+    string, or builds a local object, so an agent asking for platform
+    operations can do nothing with it. ``auth.require_admin`` is the one that
+    shows the cost, because it wins a keyword search for "admin".
+    """
+    for op_selector in (
+        "auth.require_admin",
+        "catalog.encode_urn",
+        "catalog.datasets.encode_path_urn",
+        "catalog.containers.encode_path_urn",
+        "catalog.secrets.encode_path_urn",
+        "models.auto_selector",
+    ):
+        reason = unpublished_reason(op_selector)
+        assert reason is not None, f"{op_selector} makes no platform call"
+
+
 def test_deprecated_tool_service_names_its_replacement() -> None:
     reason = unpublished_reason("tools.list_deployments")
     assert reason is not None

@@ -14,6 +14,7 @@ onto whatever its protocol revision calls a tool definition.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -245,8 +246,6 @@ def measure_cost(
         Mapping with ``entries``, ``total`` tokens, and ``per_entry`` as the
         integer mean, so a cost can be projected onto a larger surface.
     """
-    import json
-
     materialised = tuple(entries)
     total = sum(
         count_tokens(json.dumps(entry.as_definition(), separators=(",", ":")))

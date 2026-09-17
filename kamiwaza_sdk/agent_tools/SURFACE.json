@@ -1,23 +1,23 @@
 {
   "categories": {
-    "access": 43,
+    "access": 41,
     "agents": 25,
     "collaboration": 25,
-    "data": 107,
+    "data": 105,
     "extensions": 38,
     "infrastructure": 41,
-    "models": 67
+    "models": 65
   },
   "counts": {
     "documented": 357,
     "operations": 362,
-    "published": 346,
+    "published": 340,
     "services": 34,
-    "unpublished": 16
+    "unpublished": 22
   },
   "descriptions": {
     "absent": 0,
-    "docstring": 342,
+    "docstring": 336,
     "interface_description": 4,
     "interface_summary": 0,
     "thin": 0
@@ -396,8 +396,14 @@
     "auth.create_pat",
     "auth.login_with_password",
     "auth.refresh_access_token",
+    "auth.require_admin",
+    "catalog.containers.encode_path_urn",
+    "catalog.datasets.encode_path_urn",
+    "catalog.encode_urn",
+    "catalog.secrets.encode_path_urn",
     "cluster.rotate_preshared_key",
     "embedding.HuggingFaceEmbedding",
+    "models.auto_selector",
     "tools.check_health",
     "tools.deploy",
     "tools.deploy_from_template",

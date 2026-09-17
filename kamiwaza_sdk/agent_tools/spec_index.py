@@ -157,31 +157,6 @@ def meaningful_terms(query: str) -> list[str]:
     return longer or terms
 
 
-def _score(entry: OperationEntry, terms: list[str]) -> int:
-    """Score one operation against already-lowercased search terms.
-
-    Deliberately boring: no embeddings until a measured miss justifies the
-    dependency and the index-build cost.
-
-    Args:
-        entry: The operation to score.
-        terms: Lowercased search terms.
-
-    Returns:
-        The total score. Zero means no term matched, and the caller drops it.
-    """
-    identifiers = f"{entry.published_id} {entry.selector}".lower().replace("_", " ")
-    summary = (entry.summary or "").lower()
-    return sum(
-        _IDENTIFIER_WEIGHT
-        if _matches(term, identifiers)
-        else _SUMMARY_WEIGHT
-        if _matches(term, summary)
-        else 0
-        for term in terms
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class OperationIndex:
     """Every callable operation on one client, searchable by keyword.
