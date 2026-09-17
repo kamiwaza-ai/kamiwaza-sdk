@@ -199,10 +199,12 @@
 # deploying, and the deployment is checked to carry the requested config,
 # weights file and engine. The test creates, reads, lists and updates a
 # disposable model config, deploys with it to DEPLOYED, checks the deployment,
-# active listing, instances, captured logs and log stream, stops it without
-# force to STOPPED, and deletes the config. It makes no chat call and claims
-# only local deployment: the models.openai-compatible-inference document allows
-# a pass only with a representative call per declared operation (chat,
+# active listing and instances, serves one chat completion through the
+# deployment (the reply must contain the sum of two per-run numbers, which the
+# prompt does not), reads captured logs and the log stream, stops it without
+# force to STOPPED, and deletes the config. The chat call shows the deployment
+# serves; it does not claim models.openai-compatible-inference, whose document
+# allows a pass only with a representative call per declared operation (chat,
 # embeddings, transcription, image generation), which this map enforces since
 # ENG-12269.
 - pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_model_config_and_local_deployment_lifecycle"

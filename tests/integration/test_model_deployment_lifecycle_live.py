@@ -11,23 +11,33 @@ calls no SDK download method.
 
 A disposable model config is created, read, listed and updated; a fresh
 deployment using it reaches DEPLOYED with the requested engine and weights file
-and is checked through the deployment, active-deployment, instance, captured-log
-and log-stream methods; it is stopped (without force) to STOPPED, and the config
-is deleted and proven NotFound.
+and is checked through the deployment, active-deployment and instance methods;
+it serves one chat completion through the OpenAI-compatible client the SDK
+returns, asking for the sum of two numbers chosen for this run, and the reply
+must contain the sum, which the prompt does not; captured and streamed logs are
+read; it is stopped (without force) to STOPPED, and the config is deleted and
+proven NotFound.
 
-Two things are deliberately left out. The log-pattern route: on 1.2.1 it reads
-only a local log file or Kubernetes pod logs and, unlike the captured-log route,
-has no host-spawner source, so it answers 404 for a deployment whose logs only
-the host spawner holds, which would fail this capability for a reason unrelated
-to deployment. And chat inference: the capability document for
-``models.openai-compatible-inference`` allows a pass only with a representative
-call per declared operation (chat, embeddings, transcription and image
-generation), which the capability map enforces since ENG-12269.
+The chat completion shows the deployment serves requests. It does not claim
+``models.openai-compatible-inference``: that capability's document allows a pass
+only with a representative call per declared operation (chat, embeddings,
+transcription and image generation), which the capability map enforces since
+ENG-12269.
+
+Deliberately not called: the log-pattern route, which on 1.2.1 reads only a
+local log file or Kubernetes pod logs and, unlike the captured-log route, has no
+host-spawner source, so it answers 404 for a deployment whose logs only the host
+spawner holds. And ``serving.get_health``: on 1.2.1 it returns entries for
+deployments still INITIALIZING or whose check finds a problem, but none for a
+DEPLOYED local-engine deployment whose Ray Serve route is present, so no
+assertion about this test's deployment could fail for a broken health check.
 """
 
 from __future__ import annotations
 
 import itertools
+import re
+import secrets
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -282,6 +292,21 @@ def _deployment_logs_once_captured(client, deployment_id: UUID):
         return None
 
 
+def _sum_question() -> tuple[str, str]:
+    """A prompt asking for the sum of two numbers chosen for this run, and the sum.
+
+    The sum never appears in the prompt, so a reply that echoes the prompt or a
+    fixed reply cannot contain it except by chance.
+    """
+    while True:
+        left = 11 + secrets.randbelow(80)
+        right = 11 + secrets.randbelow(80)
+        answer = str(left + right)
+        prompt = f"What is {left} plus {right}? Reply with only the number."
+        if answer not in prompt:
+            return prompt, answer
+
+
 def test_model_config_and_local_deployment_lifecycle(
     live_kamiwaza_client,
     target_model_file_id,
@@ -357,6 +382,28 @@ def test_model_config_and_local_deployment_lifecycle(
     assert instances and all(i.deployment_id == deployment_id for i in instances)
     instance = client.serving.get_model_instance(instances[0].id)
     assert (instance.id, instance.deployment_id) == (instances[0].id, deployment_id)
+
+    prompt, answer = _sum_question()
+    openai_client = client.openai.get_client(deployment_id=deployment_id)
+    try:
+        served = openai_client.models.list().data
+        assert served, "the deployment's OpenAI-compatible endpoint lists no models"
+        reply = openai_client.chat.completions.create(
+            model=served[0].id,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=16,
+        )
+    finally:
+        openai_client.close()
+
+    assert reply.choices, "chat completion returned no choices"
+    content = reply.choices[0].message.content or ""
+    assert re.search(rf"(?<!\d){answer}(?!\d)", content), (
+        f"reply to {prompt!r} does not contain the sum {answer}: {reply!r}"
+    )
+    assert reply.usage is not None and reply.usage.prompt_tokens > 0, reply
+    assert reply.usage.completion_tokens > 0, reply
 
     logs = _wait_until(
         lambda: _deployment_logs_once_captured(client, deployment_id),
