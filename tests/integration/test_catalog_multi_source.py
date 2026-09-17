@@ -13,14 +13,17 @@ tests/e2e/capability_map.yaml. The file, Slack and oversized-object tests skip
 before their ingestion or retrieval starts and name the prerequisite they are
 missing. The Kafka test has no skip of its own: catalog-stack setup waits for the
 Kafka port, and when setup fails every test that uses the stack skips at setup.
+The container test is T02 coverage but skips, before it ingests anything, when an
+identity without the admin role is refused a container write.
 
 The datasets an ingestion returns and the containers a test creates directly are
-deleted in fixture teardown and must then read as 404 through the test's client, so
-a cleanup failure fails the test. Catalog reads are scoped to the caller's visible
-workrooms, so this confirms the object is gone for that client, not that no copy
-exists in another workroom. Containers that ingestion creates for the source are
-not returned by it and are left in place: at 1.2.1, S3 ingestion upserts a bucket
-container and one per key folder, and their names are fixed, so reruns reuse them.
+deleted in fixture teardown and must then read as 404 through the test's client
+within ABSENCE_POLLS reads, so a cleanup failure fails the test. Catalog reads are
+scoped to the caller's visible workrooms, so this confirms the object is gone for
+that client, not that no copy exists in another workroom. Containers that ingestion
+creates for the source are not returned by it and are left in place: at 1.2.1, S3
+ingestion upserts a bucket container and one per key folder, and their names are
+fixed, so reruns reuse them.
 ``KEEP_CATALOG_DATASETS=1`` skips dataset cleanup for debugging; under
 ``--emit-evidence`` it stops the run with a usage error, so no evidence is written.
 The catalog stack, its object keys and the resulting dataset URNs are shared by
@@ -30,8 +33,10 @@ other, so capture evidence with no other catalog run in progress.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import threading
 import time
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from dataclasses import dataclass
@@ -82,11 +87,15 @@ CATALOG_PROPAGATION_TIMEOUT_S = 30.0
 # The SDK sets no timeout on the SSE request. The 1.2.1 stream sends only chunk and
 # complete events and is silent while a chunk is prepared; a silence longer than
 # SSE_READ_TIMEOUT_S fails the test even if the stream would have resumed. The
-# SSE_STREAM_TIMEOUT_S deadline is checked as each event arrives, so it fails a
-# stream that keeps sending events; bytes that complete no event (the 1.2.1 stream
-# sends none) are bounded only per read.
+# stream must also end within SSE_STREAM_TIMEOUT_S: a timer shuts its socket down at
+# that deadline, so bytes that complete no event, such as keep-alive comments, cannot
+# hold it open.
 SSE_READ_TIMEOUT_S = 60.0
 SSE_STREAM_TIMEOUT_S = 120.0
+# A deleted object must read as 404 within this budget, the same one T01's
+# _poll_until_not_found (test_catalog_ingest_retrieval.py) allows for catalog deletes.
+ABSENCE_POLLS = 15
+ABSENCE_POLL_INTERVAL_S = 2.0
 # The SDK wraps requests exceptions raised while sending in APIError. Errors raised
 # while a stream is read arrive as requests exceptions (OSError subclasses), a bad
 # CA bundle path as a plain OSError, and some urllib3 errors unwrapped.
@@ -116,18 +125,30 @@ def _delete_and_confirm_absent(
         except CLEANUP_ERRORS as exc:
             problems.append(f"delete {kind} {urn}: {type(exc).__name__}: {exc}")
             continue
+        problem = _absence_problem(read, urn)
+        if problem:
+            problems.append(f"{kind} {urn}{delete_note}: {problem}")
+    if problems:
+        pytest.fail(f"{kind} cleanup incomplete:\n" + "\n".join(problems))
+
+
+def _absence_problem(read: Callable[[str], object], urn: str) -> str:
+    """Read ``urn`` until it returns 404; return why it did not, or "" once it does.
+
+    Any other read error ends the poll at once. A delete the catalog shows late
+    still counts as gone if it reads as 404 within the ABSENCE_POLLS budget.
+    """
+    for attempt in range(ABSENCE_POLLS):
         try:
             read(urn)
         except NotFoundError:
-            continue
+            return ""
         except CLEANUP_ERRORS as exc:
-            problems.append(
-                f"read back {kind} {urn}{delete_note}: {type(exc).__name__}: {exc}"
-            )
-        else:
-            problems.append(f"{kind} {urn} is still readable after delete{delete_note}")
-    if problems:
-        pytest.fail(f"{kind} cleanup incomplete:\n" + "\n".join(problems))
+            return f"read back failed: {type(exc).__name__}: {exc}"
+        if attempt < ABSENCE_POLLS - 1:
+            time.sleep(ABSENCE_POLL_INTERVAL_S)
+    waited_s = (ABSENCE_POLLS - 1) * ABSENCE_POLL_INTERVAL_S
+    return f"still readable after delete ({ABSENCE_POLLS} reads over {waited_s:.0f}s)"
 
 
 @pytest.fixture
@@ -325,20 +346,72 @@ def _terminal_status(
     return status
 
 
-class _ReadTimeoutAdapter(HTTPAdapter):
-    """Give a request that sets no timeout a connect and read timeout."""
+def _shut_down_socket(response: requests.Response) -> None:
+    """End a read blocked on the response's socket; safe to call from another thread.
 
-    def __init__(self, timeout_s: float) -> None:
+    urllib3's ``HTTPResponse.shutdown`` keeps the socket even when http.client has
+    detached it from the connection. It raises ValueError once the response is
+    closed, RuntimeError once its connection is back in the pool, and OSError for a
+    socket already closed: in each case the stream has already ended.
+    """
+    with contextlib.suppress(ValueError, RuntimeError, OSError):
+        response.raw.shutdown()
+
+
+class _StreamDeadlineAdapter(HTTPAdapter):
+    """Time out a silent read, and cut every response off at a wall-clock deadline.
+
+    A request that sets no timeout gets ``read_timeout_s`` as its connect and read
+    timeout. A timer started on construction sets ``expired`` after ``deadline_s``
+    and shuts down the socket of each response sent through this adapter, which ends
+    a read however the server keeps it busy; a response sent after that is shut down
+    as it returns. ``stop`` cancels the timer, and ``expired`` stays False if
+    ``stop`` came first.
+    """
+
+    def __init__(self, read_timeout_s: float, deadline_s: float) -> None:
         super().__init__()
-        self.timeout_s = timeout_s
+        self.read_timeout_s = read_timeout_s
+        self.expired = False
+        self._stopped = False
+        self._lock = threading.Lock()
+        self._responses: list[requests.Response] = []
+        self._timer = threading.Timer(deadline_s, self._expire)
+        self._timer.daemon = True
+        self._timer.start()
 
     def send(  # type: ignore[override]
         self, request: requests.PreparedRequest, **kwargs: Any
     ) -> requests.Response:
         # requests always passes ``timeout``, as None when the caller set none.
         if kwargs.get("timeout") is None:
-            kwargs["timeout"] = self.timeout_s
-        return super().send(request, **kwargs)
+            kwargs["timeout"] = self.read_timeout_s
+        response = super().send(request, **kwargs)
+        with self._lock:
+            self._responses.append(response)
+            expired = self.expired
+        if expired:
+            _shut_down_socket(response)
+        return response
+
+    def _expire(self) -> None:
+        with self._lock:
+            if self._stopped:
+                return
+            self.expired = True
+            responses = list(self._responses)
+        for response in responses:
+            _shut_down_socket(response)
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stopped = True
+        self._timer.cancel()
+        self._timer.join()
+
+    def close(self) -> None:
+        self.stop()
+        super().close()
 
 
 def _collect_stream(
@@ -350,34 +423,30 @@ def _collect_stream(
 ) -> list[RetrievalStreamEvent]:
     """Read the SSE stream to its end, then close it.
 
-    A timeout adapter is mounted on the client's session for the read, so the test
-    fails if the stream is silent for ``read_timeout_s``, or if it is still sending
-    events once ``timeout_s`` has passed (checked as each event arrives). The stream
-    is closed and the session's adapters restored before this returns or fails. The
+    Fails if the stream is silent for ``read_timeout_s``, or has not ended
+    ``timeout_s`` after this starts, whatever it sends meanwhile. The stream is
+    closed and the session's adapters restored before this returns or fails. The
     events reported on failure are those the SDK had parsed; an event still in its
     read buffer is not listed.
     """
     session = client.session
     adapters = {prefix: session.adapters[prefix] for prefix in ("https://", "http://")}
-    timed = _ReadTimeoutAdapter(read_timeout_s)
+    timed = _StreamDeadlineAdapter(read_timeout_s, timeout_s)
     events: list[RetrievalStreamEvent] = []
     failure = ""
-    deadline = time.monotonic() + timeout_s
     try:
         for prefix in adapters:
             session.mount(prefix, timed)
-        # stream_events returns the SDK's SSE generator; closing it closes the response.
+        # stream_events sends the request; closing its generator closes the response.
         stream = cast(
             Generator[RetrievalStreamEvent, None, None],
             client.retrieval.stream_events(job_id),
         )
         try:
-            for event in stream:
-                events.append(event)
-                if time.monotonic() >= deadline:
-                    failure = f"still open after {timeout_s:.0f}s"
-                    break
+            events.extend(stream)  # keeps the events parsed before an error
         finally:
+            # Stop first: the timer must not cut off a stream that ended or is closing.
+            timed.stop()
             stream.close()
     except TRANSPORT_ERRORS as exc:
         failure = f"failed: {type(exc).__name__}: {exc}"
@@ -385,6 +454,9 @@ def _collect_stream(
         for prefix, adapter in adapters.items():
             session.mount(prefix, adapter)
         timed.close()
+    if timed.expired:
+        # A shut-down stream ends quietly or with a transport error; report the cause.
+        failure = f"still open after {timeout_s:.0f}s"
     # Fail outside the except block: a chained SDK error makes pytest print the
     # arguments of urllib3's frames, which include the Authorization header.
     if failure:
@@ -507,21 +579,42 @@ def test_catalog_postgres_ingestion_metadata(
     assert tuple(field.name for field in dataset.dataset_schema.fields) == ORDERS_FIELDS
 
 
+def _create_container_or_skip(client: KamiwazaClient) -> str:
+    """Create a container, or skip if this identity may not create one.
+
+    At 1.2.1, ``reject_global_write`` refuses a container write to the Global
+    workroom with 403 unless the caller has the ``admin`` role. So a 403 skips
+    for an identity without that role and fails for an identity that has it.
+    """
+    try:
+        return client.catalog.containers.create(
+            ContainerCreate(
+                name=f"sdk-catalog-{uuid4().hex[:8]}", platform="integration"
+            )
+        )
+    except KamiwazaError as exc:
+        if exc.status_code != 403 or "admin" in client.auth.get_current_user().roles:
+            raise
+    pytest.skip(
+        "Container create returned 403 for an identity without the admin role; "
+        "1.2.1 lets only admin create containers in the Global workroom"
+    )
+
+
 def test_catalog_container_link_sets_dataset_container_urn(
     live_kamiwaza_client: KamiwazaClient,
     s3_seed: _S3Seed,
     created_containers: list[str],
 ) -> None:
+    # Created before ingestion, so a refused container write skips before the
+    # workflow starts.
+    container_urn = _create_container_or_skip(live_kamiwaza_client)
+    created_containers.append(container_urn)
     small_key = s3_seed.cfg["small_key"]
     dataset = _ingest_s3_object(
         live_kamiwaza_client, s3_seed, prefix=small_key, key=small_key
     )
     containers = live_kamiwaza_client.catalog.containers
-
-    container_urn = containers.create(
-        ContainerCreate(name=f"sdk-catalog-{uuid4().hex[:8]}", platform="integration")
-    )
-    created_containers.append(container_urn)
     containers.add_dataset(container_urn, dataset.urn)
 
     _wait_for(

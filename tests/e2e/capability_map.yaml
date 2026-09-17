@@ -241,13 +241,17 @@
 # not T02 coverage -- file_ingestion_metadata (skips without
 # CATALOG_FILE_INGESTION_ROOT), kafka (ingestion metadata only; optional per the
 # T02 plan), slack (skips without SLACK_TEST_* tokens) and
-# inline_large_object_hits_threshold (skips without an object over the inline
-# limit).
+# inline_large_object_hits_threshold (the oversized-object path: it asserts that
+# inline retrieval of an object over the inline limit is refused, so it evidences
+# no retrieval, and it skips when no such object was generated).
 # Cycle-authored, not harvested: these assertions were written for ENG-12320; the
 # earlier module checked platform names, container_urn and non-empty results,
 # not retained paths, schemas or cleanup.
 # Split from the retrieval entry below: `exclude` is per-entry, so a single
 # entry claiming two capabilities cannot satisfy the per-test rule for both.
+# Both entries match every test in the module unless excluded, so a new or renamed
+# test would feed both claims; tests/e2e/test_catalog_multi_source_evidence_map.py
+# fails until each test in the module is listed with the claims it feeds.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [catalog.dataset-registry]
   scenario_name: "Multi-source catalog ingestion"

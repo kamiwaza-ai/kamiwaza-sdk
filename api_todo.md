@@ -87,7 +87,7 @@ Missing integration coverage: 108
 | TS2.037 | [ ] | POST | /auth/tuples/revoke |  |
 | TS2.038 | [ ] | GET | /auth/users/ |  |
 | TS2.039 | [ ] | POST | /auth/users/local |  |
-| TS2.040 | [x] | GET | /auth/users/me | test_00_current_user.py::test_current_user_is_resolvable (auth.get_current_user); test_auth_live.py::test_password_authentication_allows_whoami (auth.get_current_user); test_auth_live.py::test_pat_lifecycle_supports_api_key_auth (auth.get_current_user); test_catalog_live.py::_resolve_owner (direct) |
+| TS2.040 | [x] | GET | /auth/users/me | test_00_current_user.py::test_current_user_is_resolvable (auth.get_current_user); test_auth_live.py::test_password_authentication_allows_whoami (auth.get_current_user); test_auth_live.py::test_pat_lifecycle_supports_api_key_auth (auth.get_current_user); test_catalog_live.py::_resolve_owner (direct); test_catalog_multi_source.py::_create_container_or_skip (auth.get_current_user) |
 | TS2.041 | [ ] | POST | /auth/users/me/password |  |
 | TS2.042 | [ ] | DELETE | /auth/users/{user_id} |  |
 | TS2.043 | [ ] | GET | /auth/users/{user_id} |  |
@@ -102,7 +102,7 @@ Missing integration coverage: 108
 | --- | --- | --- | --- | --- |
 | TS3.001 | [x] | GET | /catalog/ | test_catalog_endpoints.py::test_catalog_metadata_and_health (direct) |
 | TS3.002 | [x] | GET | /catalog/containers/ | test_catalog_endpoints.py::test_catalog_container_endpoints (catalog.containers.list) |
-| TS3.003 | [x] | POST | /catalog/containers/ | test_catalog_endpoints.py::test_catalog_container_endpoints (catalog.containers.create); test_catalog_multi_source.py::test_catalog_container_link_sets_dataset_container_urn (catalog.containers.create) |
+| TS3.003 | [x] | POST | /catalog/containers/ | test_catalog_endpoints.py::test_catalog_container_endpoints (catalog.containers.create); test_catalog_multi_source.py::_create_container_or_skip (catalog.containers.create) |
 | TS3.004 | [x] | DELETE | /catalog/containers/by-urn | test_catalog_endpoints.py::test_catalog_container_endpoints (direct cleanup); test_catalog_multi_source.py::created_containers (catalog.containers.delete) |
 | TS3.005 | [x] | GET | /catalog/containers/by-urn | test_catalog_endpoints.py::test_catalog_container_endpoints (direct); test_catalog_multi_source.py::created_containers (catalog.containers.get); test_catalog_multi_source.py::test_catalog_container_link_sets_dataset_container_urn (catalog.containers.get) |
 | TS3.006 | [x] | PATCH | /catalog/containers/by-urn | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
