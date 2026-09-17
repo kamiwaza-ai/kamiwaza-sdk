@@ -226,13 +226,16 @@ class SharedIdpAuthenticator(Authenticator):
 
     def get_access_token(self, session: requests.Session) -> str | None:
         """Return a current bearer token for callers that need token access."""
-        self.authenticate(session)
-        return self._access_token
+        with self._refresh_lock:
+            self.authenticate(session)
+            return self._access_token
 
     def invalidate_session(self, session: requests.Session) -> bool:
         """Expire the access token while retaining refresh capability."""
         with self._refresh_lock:
-            self._invalidated_token = self._current_token()
+            current_token = self._current_token()
+            if current_token is not None:
+                self._invalidated_token = current_token
             self._access_token = None
             self._expires_at = None
             session.headers.pop("Authorization", None)

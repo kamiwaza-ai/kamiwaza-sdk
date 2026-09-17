@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from kamiwaza_sdk.exceptions import DeploymentFailedError
+from kamiwaza_sdk.client import KamiwazaClient
+from kamiwaza_sdk.exceptions import DeploymentFailedError, KamiwazaError
 from kamiwaza_sdk.seeding import cli
 
 pytestmark = pytest.mark.unit
@@ -30,6 +31,12 @@ class RecordingService:
 
 class FakeClient:
     """A client whose service methods record their calls."""
+
+    base_url = "https://kamiwaza.test/api"
+    # The real implementation, not a stub: the CLI resolves the extension root
+    # against the platform origin before printing it, and a double that skipped
+    # that would pass while the shipped path failed.
+    _absolutize_base_url = KamiwazaClient._absolutize_base_url
 
     def __init__(self):
         self.auth = SimpleNamespace(
@@ -61,12 +68,21 @@ class FakeClient:
             install_by_name=RecordingService(SimpleNamespace(id="dep-1", name="kaizen"))
         )
         self.agents = SimpleNamespace(
-            create=RecordingService(SimpleNamespace(id="agent-1"))
+            create=RecordingService(SimpleNamespace(id="agent-1")),
+            create_canonical=RecordingService(SimpleNamespace(id="agent-1", version=1)),
+        )
+        self.kaizen_ops = SimpleNamespace(
+            set_chat_model=RecordingService({"chat": {"current": {"id": "dep-xyz"}}}),
+            set_embedding_model=RecordingService(
+                {"embedding": {"current": {"id": "dep-xyz"}}}
+            ),
         )
         self.conversations = SimpleNamespace(
             create=RecordingService(SimpleNamespace(id="conv-1")),
+            create_canonical=RecordingService(SimpleNamespace(id="conv-2")),
             wait_until_ready=RecordingService(SimpleNamespace(id="conv-1")),
             chat=RecordingService("Hello! I am claude."),
+            chat_canonical=RecordingService("Hello from canonical."),
         )
         self.skills = SimpleNamespace(
             import_skill_package=RecordingService(SimpleNamespace(id="skill-1"))
@@ -330,6 +346,8 @@ def test_create_agent_uses_kaizen_base_url(capsys, monkeypatch):
     _run(
         [
             "create-agent",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "https://kamiwaza.test/kaizen",
             "--name",
@@ -350,7 +368,11 @@ def test_create_agent_uses_kaizen_base_url(capsys, monkeypatch):
     assert call["base_url"] == "https://kamiwaza.test/kaizen"
     assert call["llm"].model == "llama-3"
     assert call["workroom_id"] == "wr-1"
-    assert json.loads(capsys.readouterr().out) == {"agent_id": "agent-1"}
+    # Both contracts emit the same keys; legacy has no content version.
+    assert json.loads(capsys.readouterr().out) == {
+        "agent_id": "agent-1",
+        "version": None,
+    }
 
 
 def test_create_agent_missing_llm_api_key_env_exits(monkeypatch):
@@ -362,6 +384,7 @@ def test_create_agent_missing_llm_api_key_env_exits(monkeypatch):
         _run(
             [
                 "create-agent",
+                "--extension-name", "kaizen-legacy",
                 "--kaizen-base-url", "https://kamiwaza.test/kaizen",
                 "--name", "a",
                 "--model", "m",
@@ -371,12 +394,545 @@ def test_create_agent_missing_llm_api_key_env_exits(monkeypatch):
         )
 
 
+def test_create_agent_defaults_to_canonical_content_contract(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "create-agent",
+            "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+            "--name", "uat-bedrock-agent",
+            "--persona", "You answer UAT smoke questions.",
+            "--workroom-id", "wr-1",
+        ],
+        client,
+    )
+
+    # Canonical is the default identity, so no legacy call is made at all.
+    assert client.agents.create.calls == []
+    call = client.agents.create_canonical.calls[0]
+    definition = call["args"][0]
+    assert definition.name == "uat-bedrock-agent"
+    assert definition.persona == "You answer UAT smoke questions."
+    assert call["kwargs"]["base_url"] == "https://kamiwaza.test/kaizen"
+    assert call["kwargs"]["workroom_id"] == "wr-1"
+    # agent_id stays the stable output the seeder profile parses.
+    assert json.loads(capsys.readouterr().out) == {"agent_id": "agent-1", "version": 1}
+
+
+def test_create_agent_canonical_rejects_per_agent_model_flags(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _run(
+            [
+                "create-agent",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--persona", "p",
+                "--model", "openai/bedrock-uat",
+                "--provider", "kamiwaza",
+            ],
+            client,
+        )
+
+    # The operator's model choice must never be silently dropped: the error
+    # names the flags and points at the instance-level binding instead.
+    message = str(excinfo.value)
+    assert "--model" in message and "--provider" in message
+    assert "bind-chat-model" in message
+    assert client.agents.create_canonical.calls == []
+
+
+def test_create_agent_canonical_rejects_custom_instructions(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    # custom_instructions only exists on the legacy body; the canonical content
+    # body has no field for it, so accepting it would drop it silently.
+    with pytest.raises(SystemExit, match="--custom-instructions"):
+        _run(
+            [
+                "create-agent",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--persona", "p",
+                "--custom-instructions", "be terse",
+            ],
+            client,
+        )
+
+    assert client.agents.create_canonical.calls == []
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [("--persona", "p"), ("--capability-ceiling", "write")],
+)
+def test_create_agent_legacy_rejects_canonical_only_flags(monkeypatch, flag, value):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    # The mirror of the canonical guard: the legacy body has nowhere to put a
+    # persona or a capability ceiling, so they must not be quietly accepted.
+    with pytest.raises(SystemExit, match=flag):
+        _run(
+            [
+                "create-agent",
+                "--extension-name", "kaizen-legacy",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--model", "m",
+                flag, value,
+            ],
+            client,
+        )
+
+    assert client.agents.create.calls == []
+
+
+def test_create_agent_validates_flags_before_scoping_the_client(monkeypatch):
+    scoped = []
+    monkeypatch.setattr(
+        cli,
+        "scoped_client_for_workroom",
+        lambda c, wid: (scoped.append(wid), c)[1],
+    )
+
+    # Scoping issues a workrooms.enter session bind, so a local flag mistake
+    # must never cost a server round trip.
+    with pytest.raises(SystemExit):
+        _run(
+            [
+                "create-agent",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--workroom-id", "wr-1",
+            ],
+            FakeClient(),
+        )
+
+    assert scoped == []
+
+
+def test_create_agent_canonical_requires_persona(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit, match="--persona"):
+        _run(
+            [
+                "create-agent",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+            ],
+            client,
+        )
+
+
+def test_create_agent_legacy_requires_model(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit, match="--model"):
+        _run(
+            [
+                "create-agent",
+                "--extension-name", "kaizen-legacy",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+            ],
+            client,
+        )
+
+
+def test_create_agent_rejects_unknown_extension_identity():
+    parser = cli.build_parser()
+
+    # argparse choices keep an unknown identity from ever reaching the contract
+    # resolver, so a typo can't silently pick a contract.
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "create-agent",
+                "--kaizen-base-url", "u",
+                "--name", "n",
+                "--extension-name", "kaizen-next",
+            ]
+        )
+
+
+def test_bind_chat_model_sends_only_the_deployment_id(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "bind-chat-model",
+            "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+            "--deployment-id", "dep-xyz",
+            "--workroom-id", "wr-1",
+        ],
+        client,
+    )
+
+    call = client.kaizen_ops.set_chat_model.calls[0]
+    assert call["args"] == ("dep-xyz",)
+    assert call["kwargs"]["base_url"] == "https://kamiwaza.test/kaizen"
+    assert call["kwargs"]["workroom_id"] == "wr-1"
+    # The write echoed the binding back, so no read-back was needed.
+    assert json.loads(capsys.readouterr().out) == {
+        "chat_deployment_id": "dep-xyz",
+        "confirmed": True,
+    }
+
+
+def _run_bind(client, command, *extra, capsys=None):
+    """Run one bind-*-model command and return its JSON output, if captured."""
+    _run(
+        [command, "--kaizen-base-url", "https://kamiwaza.test/kaizen", *extra],
+        client,
+    )
+    return json.loads(capsys.readouterr().out) if capsys else None
+
+
+def _bind(client, capsys=None):
+    return _run_bind(
+        client, "bind-chat-model", "--deployment-id", "dep-xyz", capsys=capsys
+    )
+
+
+@pytest.mark.parametrize(
+    "write_response",
+    [
+        {"chat": {"current": {"id": "some-other-dep"}}},
+        {"chat": {"current": {"id": "dep-old"}}},
+    ],
+)
+def test_bind_chat_model_fails_when_instance_reports_a_different_binding(
+    monkeypatch, write_response
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(write_response)
+
+    # The must-fail state: the instance contradicts us. Exiting 0 would let the
+    # caller create and chat-verify an agent backed by an unintended model.
+    with pytest.raises(SystemExit, match="contradicted"):
+        _bind(client)
+
+
+@pytest.mark.parametrize(
+    "write_response",
+    [None, {}, {"chat": {}}, {"chat": {"current": None}}, "not-a-dict"],
+)
+def test_bind_chat_model_reads_back_when_the_write_carries_no_binding(
+    monkeypatch, capsys, write_response
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(write_response)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        {"chat": {"current": {"id": "dep-xyz"}}}
+    )
+
+    # A 204 (or any body we can't read a binding out of) is an ordinary answer
+    # to a settings PUT — it must not be mistaken for a wrong binding.
+    out = _bind(client, capsys)
+
+    assert len(client.kaizen_ops.get_model_settings.calls) == 1
+    assert out == {"chat_deployment_id": "dep-xyz", "confirmed": True}
+
+
+def test_bind_chat_model_reports_unconfirmed_when_read_back_is_also_silent(
+    monkeypatch, capsys
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(None)
+    client.kaizen_ops.get_model_settings = RecordingService({"chat": {"current": None}})
+
+    # The write succeeded (a non-2xx would have raised); we simply can't
+    # confirm it. Say so rather than implying confirmation or failing a
+    # binding that probably worked.
+    out = _bind(client, capsys)
+
+    assert out == {"chat_deployment_id": "dep-xyz", "confirmed": False}
+
+
+def test_bind_chat_model_survives_a_failing_read_back(monkeypatch, capsys):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(None)
+    client.kaizen_ops.get_model_settings = _raiser(KamiwazaError("ops read failed"))
+
+    # Read stdout and stderr from one capture: the helper's own readouterr()
+    # would consume both before this test could inspect stderr.
+    _bind(client)
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+
+    # An expired token and an odd 204 body both land on confirmed=false, but
+    # only one is an operator emergency — the cause has to survive.
+    assert out == {
+        "chat_deployment_id": "dep-xyz",
+        "confirmed": False,
+        "unconfirmed_reason": "read-back failed: ops read failed",
+    }
+    assert "ops read failed" in captured.err
+
+
+def _bind_embedding(client, capsys=None):
+    return _run_bind(
+        client, "bind-embedding-model", "--deployment-id", "dep-xyz", capsys=capsys
+    )
+
+
+def test_bind_embedding_model_sends_only_the_deployment_id(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "bind-embedding-model",
+            "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+            "--deployment-id", "dep-xyz",
+            "--workroom-id", "wr-1",
+        ],
+        client,
+    )
+
+    # Binding chat does not bind embedding: without this call the instance has
+    # no embedding endpoint and semantic search degrades to lexical matching.
+    assert client.kaizen_ops.set_chat_model.calls == []
+    call = client.kaizen_ops.set_embedding_model.calls[0]
+    assert call["args"] == ("dep-xyz",)
+    assert call["kwargs"]["base_url"] == "https://kamiwaza.test/kaizen"
+    assert call["kwargs"]["workroom_id"] == "wr-1"
+    assert json.loads(capsys.readouterr().out) == {
+        "embedding_deployment_id": "dep-xyz",
+        "confirmed": True,
+    }
+
+
+def test_bind_embedding_model_fails_when_instance_reports_a_different_binding(
+    monkeypatch,
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_embedding_model = RecordingService(
+        {"embedding": {"current": {"id": "some-other-dep"}}}
+    )
+
+    # Reads the embedding role, not chat: documents indexed against one model
+    # and searched against another retrieve nothing useful, and every later
+    # check would still "pass".
+    with pytest.raises(SystemExit, match="embedding model binding contradicted"):
+        _bind_embedding(client)
+
+
+def test_bind_embedding_model_reads_back_when_the_write_carries_no_binding(
+    monkeypatch, capsys
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_embedding_model = RecordingService(None)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        # The read-back carries every role; only the embedding one answers here.
+        {"chat": {"current": {"id": "dep-chat"}}, "embedding": {"current": {"id": "dep-xyz"}}}
+    )
+
+    out = _bind_embedding(client, capsys)
+
+    assert len(client.kaizen_ops.get_model_settings.calls) == 1
+    assert out == {"embedding_deployment_id": "dep-xyz", "confirmed": True}
+
+
+def _discover(client, capsys=None):
+    """Bind embedding with no --deployment-id, so the command must discover one."""
+    return _run_bind(client, "bind-embedding-model", capsys=capsys)
+
+
+@pytest.mark.parametrize(
+    "settings, expected",
+    [
+        # Capability-tagged wins over an untagged sibling listed before it.
+        pytest.param(
+            {
+                "embedding_models": [
+                    {"id": "dep-unknown", "name": "mystery"},
+                    {
+                        "id": "dep-local",
+                        "name": "all-MiniLM-L6-v2",
+                        "capabilities": ["embeddings"],
+                    },
+                ]
+            },
+            "dep-local",
+            id="prefers-the-capability-tagged-candidate",
+        ),
+        # Untagged is still bindable: the instance already typed it as an
+        # embedding model, so silence is not a reason to fail a seed run.
+        pytest.param(
+            {"embedding_models": [{"id": "dep-quiet", "name": "quiet-embedder"}]},
+            "dep-quiet",
+            id="falls-back-to-an-absent-capability-list",
+        ),
+        # An explicit null means what an absent key means. The live anchor
+        # test accepts this shape, so discovery has to as well.
+        pytest.param(
+            {"embedding_models": [{"id": "dep-quiet", "capabilities": None}]},
+            "dep-quiet",
+            id="falls-back-to-a-null-capability-list",
+        ),
+        # Already bound beats everything: repointing would leave documents
+        # embedded by one model and searched against another, which is the
+        # corruption the contradiction check refuses — except reached by our
+        # own write, so nothing would report it.
+        pytest.param(
+            {
+                "embedding": {"current": {"id": "dep-already-bound"}},
+                "embedding_models": [
+                    {"id": "dep-newcomer", "capabilities": ["embeddings"]},
+                    {"id": "dep-already-bound", "capabilities": ["embeddings"]},
+                ],
+            },
+            "dep-already-bound",
+            id="keeps-an-existing-binding-on-a-re-seed",
+        ),
+        # ...unless the instance can no longer serve it, which is the
+        # release-state failure that started this ticket.
+        pytest.param(
+            {
+                "embedding": {"current": {"id": "dep-retired"}},
+                "embedding_models": [
+                    {"id": "dep-live", "capabilities": ["embeddings"]}
+                ],
+            },
+            "dep-live",
+            id="rebinds-when-the-bound-model-is-gone",
+        ),
+    ],
+)
+def test_bind_embedding_model_selection_precedence(
+    monkeypatch, capsys, settings, expected
+):
+    """Selection is by capability and by what is already bound, never by name.
+
+    The same seed run has to work against an offline box serving a local model
+    and one reaching a hosted endpoint, so no model name appears here.
+    """
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.get_model_settings = RecordingService(settings)
+    client.kaizen_ops.set_embedding_model = RecordingService(
+        {"embedding": {"current": {"id": expected}}}
+    )
+
+    out = _discover(client, capsys)
+
+    assert client.kaizen_ops.set_embedding_model.calls[0]["args"] == (expected,)
+    assert out["embedding_deployment_id"] == expected
+
+
+
+@pytest.mark.parametrize(
+    "inventory",
+    [
+        # Nothing offered at all.
+        [],
+        # Offered, but it has told us it cannot embed — not a fallback,
+        # unlike an entry that simply says nothing (the test above).
+        [{"id": "dep-chat-only", "capabilities": ["chat"]}],
+        # Offered without a usable deployment id.
+        [{"name": "nameless"}],
+    ],
+)
+def test_bind_embedding_model_fails_loudly_when_nothing_is_bindable(
+    monkeypatch, inventory
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        {"embedding_models": inventory}
+    )
+
+    # Skipping the bind is the defect this command exists to fix: it would
+    # leave every semantic search silently degraded to lexical matching.
+    with pytest.raises(SystemExit, match="no embedding model available to bind"):
+        _discover(client)
+
+    assert client.kaizen_ops.set_embedding_model.calls == []
+
+
+def test_bind_embedding_model_fails_loudly_when_the_inventory_is_unreadable(
+    monkeypatch,
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.get_model_settings = _raiser(KamiwazaError("inventory down"))
+
+    with pytest.raises(SystemExit, match="could not read the instance's model"):
+        _discover(client)
+
+    assert client.kaizen_ops.set_embedding_model.calls == []
+
+
+def test_bind_embedding_model_prefers_an_explicit_deployment_id(monkeypatch, capsys):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        {"embedding_models": [{"id": "dep-discovered"}]}
+    )
+
+    out = _bind_embedding(client, capsys)
+
+    # An explicit id skips discovery entirely — no inventory read, and the
+    # output carries no discovered_model to misattribute the choice to.
+    assert client.kaizen_ops.get_model_settings.calls == []
+    assert out == {"embedding_deployment_id": "dep-xyz", "confirmed": True}
+
+
+def test_create_agent_legacy_reads_the_secret_before_scoping_the_client(
+    monkeypatch,
+):
+    scoped = []
+    monkeypatch.setattr(
+        cli,
+        "scoped_client_for_workroom",
+        lambda c, wid: (scoped.append(wid), c)[1],
+    )
+    monkeypatch.delenv("MISSING_KEY_VAR", raising=False)
+
+    # The legacy half of the validate-before-scope ordering: a missing secret
+    # must fail locally, not after the workrooms.enter round trip.
+    with pytest.raises(SystemExit):
+        _run(
+            [
+                "create-agent",
+                "--extension-name", "kaizen-legacy",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--model", "m",
+                "--llm-api-key-env", "MISSING_KEY_VAR",
+                "--workroom-id", "wr-1",
+            ],
+            FakeClient(),
+        )
+
+    assert scoped == []
+
+
 def test_create_conversation(capsys):
     client = FakeClient()
 
     _run(
         [
             "create-conversation",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "https://kamiwaza.test/kaizen",
             "--agent-id",
@@ -562,6 +1118,8 @@ def test_chat_creates_conversation_and_returns_reply(capsys, monkeypatch):
     _run(
         [
             "chat",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "https://kamiwaza.test/kaizen",
             "--agent-id",
@@ -598,6 +1156,8 @@ def test_chat_sandbox_timeout_flag_controls_ready_wait(capsys, monkeypatch):
     _run(
         [
             "chat",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "u",
             "--agent-id",
@@ -624,7 +1184,7 @@ def test_chat_sandbox_wait_timeout_exits_before_messaging(monkeypatch):
 
     with pytest.raises(SystemExit, match="sandbox not ready"):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
 
@@ -636,7 +1196,7 @@ def test_chat_raw_prints_bare_reply(capsys, monkeypatch):
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
 
     _run(
-        ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m", "--raw"],
+        ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m", "--raw"],
         client,
     )
 
@@ -650,7 +1210,7 @@ def test_chat_empty_reply_exits_nonzero(monkeypatch):
 
     with pytest.raises(SystemExit):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
 
@@ -663,6 +1223,8 @@ def test_chat_fire_and_forget_allows_empty_reply(capsys, monkeypatch):
     _run(
         [
             "chat",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url", "u",
             "--agent-id", "a",
             "--message", "m",
@@ -688,7 +1250,7 @@ def test_chat_agent_error_exits_nonzero(monkeypatch):
 
     with pytest.raises(SystemExit, match="agent boom"):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
 
@@ -746,6 +1308,24 @@ def test_chat_timeout_exits_nonzero(monkeypatch):
 
     with pytest.raises(SystemExit, match="no reply in time"):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            ["chat", "--extension-name", "kaizen-legacy", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
             client,
         )
+
+
+
+def test_resolve_kaizen_url_absolutizes_relative_root(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    monkeypatch.setattr(
+        cli, "wait_for_base_url", lambda *a, **k: "/runtime/apps/kaizen-ddd84430"
+    )
+
+    # The value is consumed as URL="$(... --raw)" in a shell, where a bare path
+    # is not fetchable.
+    _run(["resolve-kaizen-url", "--workroom-id", "wr-1", "--raw"], client)
+
+    assert (
+        capsys.readouterr().out.strip()
+        == "https://kamiwaza.test/runtime/apps/kaizen-ddd84430"
+    )

@@ -14,21 +14,24 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, NoReturn
 from urllib.parse import urlparse
 
 import pytest
 import requests
 import urllib3
 from huggingface_hub import snapshot_download
+from pydantic import SecretStr
 from requests.adapters import HTTPAdapter
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError, KamiwazaError
 from kamiwaza_sdk.schemas.auth import PATCreate
+from kamiwaza_sdk.schemas.catalog import SecretCreate
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
 from kamiwaza_sdk.utils.model_file_readiness import model_file_download_satisfied
+from tests.integration import _gate_fixture
 
 # Co-located capability-marker helpers (M5). Add this directory to the path so
 # the import resolves regardless of pytest's package-import mode (this conftest
@@ -90,6 +93,44 @@ _PROBE_ERROR_TRUNCATE = 200
 _logger = logging.getLogger(__name__)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def gate_fixture_runtime() -> Iterator[None]:
+    """Refresh ephemeral gate fixtures after an explicitly selected rollout."""
+    values = _gate_fixture.auto_provision_from_env()
+    previous = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for name, old_value in previous.items():
+            if old_value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old_value
+
+
+def _fail_or_skip_required_edge(request: pytest.FixtureRequest, message: str) -> None:
+    from tests.integration.required_federation_edge import fail_or_skip
+
+    fail_or_skip(request, message)
+
+
+def _enforce_required_edge_collection(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    from tests.integration.required_federation_edge import enforce_collection
+
+    enforce_collection(config, items)
+
+
+def _enforce_delegated_workload_collection(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    from tests.integration.required_delegated_workload_edge import (
+        enforce_collection,
+    )
+
+    enforce_collection(config, items)
 
 
 class _TimeoutHTTPAdapter(HTTPAdapter):
@@ -516,7 +557,8 @@ def _compose_port(
 
 
 def _verify_ssl_enabled() -> bool:
-    return os.environ.get("KAMIWAZA_VERIFY_SSL", "true").lower() != "false"
+    value = os.environ.get("KAMIWAZA_VERIFY_SSL", "true")
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _api_error_detail(exc: APIError) -> str:
@@ -635,20 +677,62 @@ def _context_llm_target(
 ) -> _model_targets.InferenceTarget:
     """Select a context-test LLM repo/engine for the live host.
 
-    Explicit context overrides win; otherwise use the shared platform target.
+    Explicit context overrides win and are required. Otherwise preserve the
+    shared platform target's required/optional contract.
     """
     if _CONTEXT_TEST_LLM_REPO_OVERRIDE:
         return _model_targets.InferenceTarget(
             repo_id=_CONTEXT_TEST_LLM_REPO_OVERRIDE,
             engine_name=_CONTEXT_TEST_LLM_ENGINE_OVERRIDE,
             quantization=_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE or "q6_k",
+            required=True,
         )
     target = _model_targets.select_inference_target(snapshot)
     return _model_targets.InferenceTarget(
         repo_id=target.repo_id,
         engine_name=_CONTEXT_TEST_LLM_ENGINE_OVERRIDE or target.engine_name,
         quantization=_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE or target.quantization,
+        required=target.required,
     )
+
+
+def _fail_or_skip_context_target(
+    target: _model_targets.InferenceTarget,
+    message: str,
+) -> NoReturn:
+    if target.required:
+        pytest.fail(message)
+    pytest.skip(message)
+
+
+def _raise_or_skip_context_target(
+    target: _model_targets.InferenceTarget,
+    error: Exception,
+    message: str,
+) -> NoReturn:
+    if target.required:
+        raise error
+    pytest.skip(message)
+
+
+def _active_context_deployment_matches_target(
+    deployment: dict[str, str],
+    target: _model_targets.InferenceTarget,
+    prepared_model: Any | None,
+) -> bool:
+    """Require exact prepared weights when reusing a required context target."""
+    if deployment.get("repo_model_id") != target.repo_id:
+        return False
+    if (
+        target.engine_name
+        and deployment.get("engine_name") != target.engine_name
+    ):
+        return False
+    if not target.required:
+        return True
+
+    model_file_id = _target_model_file_id(prepared_model, target.quantization)
+    return model_file_id is None or deployment.get("m_file_id") == model_file_id
 
 
 def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
@@ -805,18 +889,22 @@ class _NoCacheTokenStore(TokenStore):
         return None
 
 
-def _resolve_kz_login_password() -> str | None:
-    """Attempt to load the current local admin password from deploy helper script."""
-
-    repo_root = Path(__file__).resolve().parents[2]
-    candidates = [
-        repo_root.parent / "deploy" / "scripts" / "kz-login",
-    ]
-    kamiwaza_root = os.environ.get("KAMIWAZA_ROOT")
+def _kz_login_candidates(sdk_root: Path, kamiwaza_root: str | None) -> list[Path]:
+    """Accept sibling deploy, parent-root, and deploy-root checkout layouts."""
+    candidates = [sdk_root.parent / "deploy" / "scripts" / "kz-login"]
     if kamiwaza_root:
-        candidates.append(
-            Path(kamiwaza_root).expanduser() / "deploy" / "scripts" / "kz-login"
+        root = Path(kamiwaza_root).expanduser()
+        candidates.extend(
+            [root / "deploy" / "scripts" / "kz-login", root / "scripts" / "kz-login"]
         )
+    return list(dict.fromkeys(path.resolve() for path in candidates))
+
+
+def _resolve_kz_login_password() -> str | None:
+    """Load the local admin password without exposing helper output in failures."""
+    candidates = _kz_login_candidates(
+        Path(__file__).resolve().parents[2], os.environ.get("KAMIWAZA_ROOT")
+    )
 
     for script in candidates:
         if not script.exists():
@@ -985,75 +1073,50 @@ def _api_key_auth_works(base_url: str, api_key: str) -> tuple[bool, str]:
     return result
 
 
+def _try_live_passwords(
+    base_url: str, username: str, configured_password: str
+) -> tuple[str, str | None]:
+    """Validate each distinct credential, preferring the kube-backed password."""
+    if not username:
+        return "", "live username is empty"
+
+    candidates = [
+        ("kz-login", _resolve_kz_login_password()),
+        ("configured", configured_password),
+    ]
+    errors: list[str] = []
+    attempted: set[str] = set()
+    for source, password in candidates:
+        if not password:
+            errors.append(f"{source} password unavailable")
+            continue
+        if password in attempted:
+            continue
+        attempted.add(password)
+        ok, error = _password_auth_works(base_url, username, password)
+        if ok:
+            if source == "kz-login":
+                os.environ["KAMIWAZA_PASSWORD"] = password
+            return password, None
+        errors.append(f"{source} password failed: {error}")
+    return "", "; ".join(errors)
+
+
 def _resolve_live_password_once(
     *,
     live_server_available: str,
     live_username: str,
     configured_password: str,
 ) -> tuple[str, str | None]:
-    """
-    Resolve password auth at most once for a given session configuration.
-
-    Pytest does not cache skipped fixture setup. Without this cache, a lockout or
-    bad fallback password can trigger dozens of extra password grants as each test
-    retries the same session-scoped fixture chain.
-    """
-
+    """Cache success and failure so callers cannot amplify an account lockout."""
     cache_key = (
         live_server_available,
         live_username.strip(),
         configured_password.strip(),
     )
-    cached = _LIVE_PASSWORD_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-
-    username = live_username.strip()
-    configured_password = configured_password.strip()
-    if not username:
-        result = ("", None)
-        _LIVE_PASSWORD_CACHE[cache_key] = result
-        return result
-
-    errors: list[str] = []
-
-    # The kube-backed password is the authoritative dev credential. Try it first
-    # when available, then fall through to the configured password if kz-login
-    # returned a stale/invalid value (e.g. freshly-rotated admin password not
-    # yet propagated to the cached fallback).
-    fallback_password = _resolve_kz_login_password()
-    if fallback_password:
-        ok, error = _password_auth_works(
-            live_server_available,
-            username,
-            fallback_password,
-        )
-        if ok:
-            os.environ["KAMIWAZA_PASSWORD"] = fallback_password
-            result = (fallback_password, None)
-            _LIVE_PASSWORD_CACHE[cache_key] = result
-            return result
-        errors.append(f"kz-login password failed: {error}")
-    else:
-        errors.append("kz-login fallback unavailable")
-
-    if configured_password:
-        ok, error = _password_auth_works(
-            live_server_available,
-            username,
-            configured_password,
-        )
-        if ok:
-            result = (configured_password, None)
-            _LIVE_PASSWORD_CACHE[cache_key] = result
-            return result
-        errors.append(f"configured password failed: {error}")
-    else:
-        errors.append("configured password is empty")
-
-    result = ("", "; ".join(errors))
-    _LIVE_PASSWORD_CACHE[cache_key] = result
-    return result
+    if cache_key not in _LIVE_PASSWORD_CACHE:
+        _LIVE_PASSWORD_CACHE[cache_key] = _try_live_passwords(*cache_key)
+    return _LIVE_PASSWORD_CACHE[cache_key]
 
 
 @pytest.fixture(scope="session")
@@ -1068,9 +1131,8 @@ def live_server_available(live_base_url: str) -> str:
     cause; tests that intentionally don't need a live server should not depend
     on this fixture.
 
-    Auth-related skips in sibling fixtures (``live_kamiwaza_client``,
-    ``resolved_live_password``) stay as ``pytest.skip`` — missing credentials
-    is a legitimate opt-out, distinct from "infrastructure is broken."
+    Selected password-auth tests also fail on unresolved credentials; callers
+    that only need a PAT can select those tests independently.
     """
 
     health_url = f"{live_base_url}/ping"
@@ -1290,14 +1352,11 @@ def context_llm_prerequisite(
     ensure_repo_ready,
     cluster_capability_snapshot: _cap.ClusterCapabilitySnapshot | None,
 ) -> Iterator[str]:
-    """Ensure a usable LLM deployment exists for context ontology operations, or skip once.
+    """Ensure a usable LLM deployment exists for context ontology operations.
 
     Mirrors ``embedding_model_prerequisite``: if no LLM is already deployed the
-    fixture attempts to provision one, but it **skips** (does not error) when the
-    platform cannot bring one up — e.g. a CPU-only smoke host with no inference
-    capacity, or an MLX-only test model on a non-Apple-Silicon runner. This keeps
-    the context ontology/vectordb tests as conditional skips on incapable hosts
-    instead of a cascade of fixture-setup ERRORs.
+    fixture attempts to provision one. Inventory-selected targets skip on hosts
+    without compatible inference capacity; explicit targets fail closed.
     """
     client = live_kamiwaza_session_client
     context_target = _context_llm_target(cluster_capability_snapshot)
@@ -1319,10 +1378,19 @@ def context_llm_prerequisite(
         preferred_repo_id=context_repo_id,
         preferred_engine_name=context_engine_name,
     )
-    if (
-        existing is not None
-        and existing.get("repo_model_id") == context_repo_id
-        and existing.get("engine_name") == context_engine_name
+    prepared_model: Any | None = None
+    if existing is not None and context_target.required:
+        # Resolve the selected quantization before reusing a required deployment.
+        # Repo + engine alone is ambiguous for multi-quant GGUF repositories.
+        prepared_model = ensure_repo_ready(
+            client,
+            context_repo_id,
+            quantization=context_target.quantization,
+        )
+    if existing is not None and _active_context_deployment_matches_target(
+        existing,
+        context_target,
+        prepared_model,
     ):
         yield existing["deployment_id"]
         return
@@ -1332,14 +1400,17 @@ def context_llm_prerequisite(
     # capacity-limited host) would be orphaned when we skip.
     provisioned_deployment_id: str | None = None
     try:
-        model = ensure_repo_ready(
-            client,
-            context_repo_id,
-            quantization=context_target.quantization,
-        )
+        model = prepared_model
+        if model is None:
+            model = ensure_repo_ready(
+                client,
+                context_repo_id,
+                quantization=context_target.quantization,
+            )
         configs = client.models.get_model_configs(model.id)
         if not configs:
-            pytest.skip(
+            _fail_or_skip_context_target(
+                context_target,
                 f"No model configs available for context LLM repo '{context_repo_id}'"
             )
         default_config = next(
@@ -1367,7 +1438,8 @@ def context_llm_prerequisite(
             deploy_kwargs["m_file_id"] = model_file_id
         raw_deployment_id = client.serving.deploy_model(**deploy_kwargs)
         if not raw_deployment_id:
-            pytest.skip(
+            _fail_or_skip_context_target(
+                context_target,
                 "deploy_model did not return a deployment id for context LLM repo "
                 f"'{context_repo_id}' (engine={context_engine_name or 'default'}, "
                 "deploy refused on this host)."
@@ -1380,30 +1452,35 @@ def context_llm_prerequisite(
         )
     except (TimeoutError, RuntimeError, ValueError) as exc:
         _stop_provisioned(provisioned_deployment_id)
-        pytest.skip(
-            "No active LLM deployment for context ontology tests and one could not "
-            f"be provisioned (repo={context_repo_id}, "
+        _raise_or_skip_context_target(
+            context_target,
+            exc,
+            "No active LLM deployment for context ontology tests and one could "
+            f"not be provisioned (repo={context_repo_id}, "
             f"engine={context_engine_name or 'default'}): "
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}: {exc}",
         )
     except APIError as exc:
         _stop_provisioned(provisioned_deployment_id)
         status_code = getattr(exc, "status_code", None)
         if status_code is not None and status_code < 500:
             raise
-        pytest.skip(
-            "No active LLM deployment for context ontology tests and one could not "
-            f"be provisioned (repo={context_repo_id}, "
+        _raise_or_skip_context_target(
+            context_target,
+            exc,
+            "No active LLM deployment for context ontology tests and one could "
+            f"not be provisioned (repo={context_repo_id}, "
             f"engine={context_engine_name or 'default'}): "
-            f"APIError {status_code or 'transport'}: {exc}"
+            f"APIError {status_code or 'transport'}: {exc}",
         )
 
     if not _platform_deployment_ready(deployment):
         _stop_provisioned(provisioned_deployment_id)
-        pytest.skip(
+        _fail_or_skip_context_target(
+            context_target,
             "Context ontology prerequisite LLM deployment did not become ready: "
             f"deployment_id={deployment.id}, status={deployment.status}, "
-            f"instance_statuses={[instance.status for instance in deployment.instances]}"
+            f"instance_statuses={[instance.status for instance in deployment.instances]}",
         )
 
     try:
@@ -1420,12 +1497,33 @@ def deployable_model_target(
     return _model_targets.select_inference_target(cluster_capability_snapshot)
 
 
+@pytest.fixture(scope="session")
+def ensure_model_lifecycle_target_ready(
+    ensure_repo_ready: Callable[..., object],
+    deployable_model_target: _model_targets.InferenceTarget,
+) -> Callable[[KamiwazaClient], object]:
+    """Prepare the model lifecycle target, failing if readiness cannot be proven.
+
+    Unlike ``ensure_deployable_model_ready``, readiness errors propagate because
+    lifecycle tests require a working target to verify their endpoint contracts.
+    """
+
+    def _ensure(client: KamiwazaClient) -> object:
+        return ensure_repo_ready(
+            client,
+            deployable_model_target.repo_id,
+            quantization=deployable_model_target.quantization,
+        )
+
+    return _ensure
+
+
 def _ensure_deployable_target_ready(
     client: KamiwazaClient,
     ensure_repo_ready: Callable[..., object],
     target: _model_targets.InferenceTarget,
 ) -> Any:
-    """Make the selected target artifact ready, or skip capability failures."""
+    """Make the selected target ready; required fleet targets fail closed."""
     try:
         return ensure_repo_ready(
             client,
@@ -1433,13 +1531,15 @@ def _ensure_deployable_target_ready(
             quantization=target.quantization,
         )
     except (TimeoutError, RuntimeError, ValueError) as exc:
+        if target.required:
+            raise
         pytest.skip(
             f"Host cannot make deployable target '{target.repo_id}' ready "
             f"(quantization={target.quantization}): {type(exc).__name__}: {exc}"
         )
     except APIError as exc:
         status_code = getattr(exc, "status_code", None)
-        if status_code is not None and status_code < 500:
+        if target.required or (status_code is not None and status_code < 500):
             raise
         pytest.skip(
             f"Host cannot make deployable target '{target.repo_id}' ready "
@@ -1452,7 +1552,11 @@ def ensure_deployable_model_ready(
     ensure_repo_ready: Callable[..., object],
     deployable_model_target: _model_targets.InferenceTarget,
 ) -> Callable[[KamiwazaClient], Any]:
-    """Return a target-aware, skip-not-fail live model readiness helper."""
+    """Return a live readiness helper that skips unavailable capability targets.
+
+    Unlike ``ensure_model_lifecycle_target_ready``, expected host-capability
+    readiness failures skip deployment-oriented tests instead of failing them.
+    """
 
     def _ensure(client: KamiwazaClient) -> object:
         return _ensure_deployable_target_ready(
@@ -1465,12 +1569,69 @@ def ensure_deployable_model_ready(
 
 
 def _default_model_config(
-    client: KamiwazaClient, model_id: object, repo_id: str
+    client: KamiwazaClient,
+    model_id: object,
+    target: _model_targets.InferenceTarget,
 ) -> Any:
     configs = client.models.get_model_configs(model_id)
     if not configs:
-        pytest.skip(f"No model configs available for deployable test model '{repo_id}'")
+        message = (
+            "No model configs available for deployable test model "
+            f"'{target.repo_id}'"
+        )
+        if target.required:
+            pytest.fail(message)
+        pytest.skip(message)
     return next((config for config in configs if config.default), configs[0])
+
+
+def _matching_active_deployable_target(
+    client: KamiwazaClient,
+    target: _model_targets.InferenceTarget,
+) -> bool:
+    existing = _preferred_active_model_deployment(
+        client,
+        desired_type="llm",
+        preferred_repo_id=target.repo_id,
+        preferred_engine_name=target.engine_name,
+    )
+    return bool(
+        existing is not None
+        and existing.get("repo_model_id") == target.repo_id
+        and existing.get("engine_name") == target.engine_name
+    )
+
+
+def _start_deployable_target_probe(
+    client: KamiwazaClient,
+    ensure_repo_ready: Callable[..., object],
+    target: _model_targets.InferenceTarget,
+) -> str:
+    model = _ensure_deployable_target_ready(client, ensure_repo_ready, target)
+    default_config = _default_model_config(client, model.id, target)
+    # Deliberately omit engine_name: the platform auto-selects it from the
+    # model's weight format. That exercises the same path as a real deploy.
+    raw_deployment_id = client.serving.deploy_model(
+        model_id=str(model.id),
+        m_config_id=default_config.id,
+        lb_port=0,
+        autoscaling=False,
+        min_copies=1,
+        starting_copies=1,
+        m_file_id=_target_model_file_id(model, target.quantization),
+        # The caller's wait_for_deployment owns the timeout, not the SDK default.
+        wait=False,
+    )
+    if raw_deployment_id:
+        return str(raw_deployment_id)
+
+    message = (
+        f"deploy_model returned no id for '{target.repo_id}' "
+        "(deploy refused on this host)."
+    )
+    if target.required:
+        pytest.fail(message)
+    pytest.skip(message)
 
 
 @pytest.fixture(scope="session")
@@ -1479,63 +1640,26 @@ def deployable_model_prerequisite(
     ensure_repo_ready,
     deployable_model_target: _model_targets.InferenceTarget,
 ) -> None:
-    """Skip once if this host cannot deploy the integration test model.
+    """Probe once whether this host can deploy the integration test model.
 
-    Probe deployability once per session and skip the marked tests instead of
-    failing them. The shared target fixture keeps the probe and tests on the
+    Inventory-selected targets skip capability failures so ordinary developer
+    environments remain portable. Explicit fleet targets fail those same
+    failures closed. The shared target fixture keeps the probe and tests on the
     exact same platform-compatible model and engine.
     """
     client = live_kamiwaza_session_client
     repo_id = deployable_model_target.repo_id
     engine_name = deployable_model_target.engine_name
-    existing = _preferred_active_model_deployment(
-        client,
-        desired_type="llm",
-        preferred_repo_id=repo_id,
-        preferred_engine_name=engine_name,
-    )
-    if (
-        existing is not None
-        and existing.get("repo_model_id") == repo_id
-        and existing.get("engine_name") == engine_name
-    ):
+    if _matching_active_deployable_target(client, deployable_model_target):
         return
 
     probe_deployment_id: str | None = None
     try:
-        model = _ensure_deployable_target_ready(
+        probe_deployment_id = _start_deployable_target_probe(
             client,
             ensure_repo_ready,
             deployable_model_target,
         )
-        default_config = _default_model_config(client, model.id, repo_id)
-        # Deliberately omit engine_name: the platform auto-selects the engine
-        # from the model's weight format (GGUF->llamacpp, safetensors->vLLM/MLX;
-        # kamiwaza.serving.engine_selector), which is exactly the target's
-        # engine_name by construction. Forcing it here is redundant with the
-        # model choice; letting the server pick exercises the same auto-selection
-        # real deploys use. engine_name stays the EXPECTED value for the
-        # existing-deployment match above. (ENG-9872)
-        raw_deployment_id = client.serving.deploy_model(
-            model_id=str(model.id),
-            m_config_id=default_config.id,
-            lb_port=0,
-            autoscaling=False,
-            min_copies=1,
-            starting_copies=1,
-            m_file_id=_target_model_file_id(
-                model, deployable_model_target.quantization
-            ),
-            # The probe's wait_for_deployment below owns the timeout
-            # (DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS), not the SDK default.
-            wait=False,
-        )
-        if not raw_deployment_id:
-            pytest.skip(
-                f"deploy_model returned no id for '{repo_id}' "
-                "(deploy refused on this host)."
-            )
-        probe_deployment_id = str(raw_deployment_id)
         deployment = client.serving.wait_for_deployment(
             probe_deployment_id,
             poll_interval=5,
@@ -1545,20 +1669,24 @@ def deployable_model_prerequisite(
         # Download/registration timeout, or the deployment entering FAILED/ERROR
         # status because the instance can't load the model on this host
         # (RuntimeError from wait_for_deployment, kamiwaza_sdk/services/serving.py)
-        # — capability/infra failure → skip + tear down.
+        # — capability/infra failure → tear down, then fail for an explicit
+        # fleet contract or skip for an inventory-selected local target.
         _stop_deployment_quietly(client, probe_deployment_id)
+        if deployable_model_target.required:
+            raise
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
             f"'{repo_id}' (engine={engine_name}): {type(exc).__name__}: {exc}"
         )
     except APIError as exc:
-        # Only a 5xx (server cannot bring the model up on this host) is a
-        # capability failure → skip. A 4xx (auth / scope / validation /
-        # request-shape) is a real regression and MUST fail, not be masked as a
-        # skip, so it is re-raised.
+        # A 4xx (auth / scope / validation / request-shape) is always a real
+        # regression. A 5xx/transport failure skips only for an optional,
+        # inventory-selected target; an explicit fleet contract fails closed.
         status_code = getattr(exc, "status_code", None)
         _stop_deployment_quietly(client, probe_deployment_id)
-        if status_code is not None and status_code < 500:
+        if deployable_model_target.required or (
+            status_code is not None and status_code < 500
+        ):
             raise
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
@@ -1569,10 +1697,13 @@ def deployable_model_prerequisite(
     ready = _platform_deployment_ready(deployment)
     _stop_deployment_quietly(client, probe_deployment_id)
     if not ready:
-        pytest.skip(
-            f"Integration test model '{repo_id}' (engine={engine_name}) did not become "
-            "ready on this host."
+        message = (
+            f"Integration test model '{repo_id}' (engine={engine_name}) did not "
+            "become ready on this host."
         )
+        if deployable_model_target.required:
+            pytest.fail(message)
+        pytest.skip(message)
 
 
 @pytest.fixture(autouse=True)
@@ -1617,6 +1748,22 @@ def _require_two_clusters_for_marked_tests(request: pytest.FixtureRequest) -> No
             "(preferred) or an admin access-token via --live-peer-api-key "
             "(a PAT is non-admin)."
         )
+
+
+def _mark_deferred_receiver_realm_tests(items: list[pytest.Item]) -> None:
+    """Skip receiver-realm UAT before any live fixtures or network calls."""
+    enabled = os.environ.get("KAMIWAZA_TEST_RECEIVER_REALM", "").strip().lower()
+    if enabled in {"1", "true", "yes", "on"}:
+        return
+    reason = (
+        "requires_receiver_realm: deferred until the Federation Keycloak Patterns "
+        "receiver-realm contract is live; follow ENG-10585 / ENG-9808 and set "
+        "KAMIWAZA_TEST_RECEIVER_REALM=1 only on a qualifying deployment"
+    )
+    skip_marker = pytest.mark.skip(reason=reason)
+    for item in items:
+        if "requires_receiver_realm" in item.keywords:
+            item.add_marker(skip_marker)
 
 
 @pytest.fixture(scope="session")
@@ -1691,7 +1838,9 @@ def live_kamiwaza_peer_client(
         admin PAT minting") and would 403 the pairing setup; an access-token
         also expires.
 
-    SSL verification is opted out per-client (dev self-signed certs).
+    SSL verification follows ``KAMIWAZA_VERIFY_SSL`` just like the primary
+    live client. Self-signed development clusters must opt out explicitly;
+    strict-TLS lanes can provide their CA through ``REQUESTS_CA_BUNDLE``.
     """
     if not live_peer_base_url:
         raise RuntimeError(
@@ -1705,7 +1854,10 @@ def live_kamiwaza_peer_client(
     password_client: KamiwazaClient | None = None
     probe_ok: bool | None = None
     if has_password:
-        password_client = KamiwazaClient(live_peer_base_url, verify=False)
+        password_client = KamiwazaClient(
+            live_peer_base_url,
+            verify=_verify_ssl_enabled(),
+        )
         password_client.authenticator = UserPasswordAuthenticator(
             live_username.strip(),
             live_password.strip(),
@@ -1719,7 +1871,7 @@ def live_kamiwaza_peer_client(
         # lazy-auth path and add no setup-time failure surface.
         if has_peer_key:
             try:
-                password_client.authenticator.authenticate(requests.Session())
+                password_client.authenticator.authenticate(password_client.session)
                 probe_ok = True
             except Exception:
                 probe_ok = False
@@ -1732,7 +1884,11 @@ def live_kamiwaza_peer_client(
     if choice == _peer_auth.PASSWORD:
         return password_client  # type: ignore[return-value]
     if choice == _peer_auth.PEER_KEY:
-        return KamiwazaClient(live_peer_base_url, api_key=peer_key, verify=False)
+        return KamiwazaClient(
+            live_peer_base_url,
+            api_key=peer_key,
+            verify=_verify_ssl_enabled(),
+        )
     message = (
         "requires_two_clusters: peer needs admin password "
         "(--live-username/--live-password) or an admin access-token "
@@ -1756,6 +1912,9 @@ def pytest_collection_modifyitems(
     halves makes those fixtures live across unrelated tests and can invalidate
     workroom-scoped state before the later half resumes.
     """
+    _mark_deferred_receiver_realm_tests(items)
+    _enforce_required_edge_collection(config, items)
+    _enforce_delegated_workload_collection(config, items)
     peer_url = str(config.getoption("live_peer_base_url")).strip()
     if not peer_url:
         kept: list[pytest.Item] = []
@@ -1795,39 +1954,34 @@ def pytest_collection_modifyitems(
 
 
 @pytest.fixture(scope="session")
-def resolved_live_password(
+def live_password_resolution(
     live_server_available: str,
-    live_api_key: str,
     live_username: str,
     pytestconfig: pytest.Config,
-) -> str:
-    """
-    Resolve live password with kube-derived credentials first (kz-login),
-    then explicit configured password as fallback.
-
-    Session-scoped and backed by ``_LIVE_PASSWORD_CACHE`` inside
-    ``_resolve_live_password_once`` so kz-login / password grants run at most
-    once per session. Password-authentication tests
-    (``test_password_authentication_allows_whoami``, PAT-lifecycle, CLI login)
-    consume this fixture directly, so it must always resolve a real password
-    when one is available — returning an empty short-circuit string here
-    regresses those tests.
-    """
-
-    env_api_key = live_api_key.strip()
-    password, error = _resolve_live_password_once(
+) -> tuple[str, str | None]:
+    """Share one credential resolution result across optional and required users."""
+    return _resolve_live_password_once(
         live_server_available=live_server_available,
         live_username=live_username,
         configured_password=str(pytestconfig.getoption("live_password")),
     )
-    if password or env_api_key:
-        return password
 
-    username = live_username.strip()
-    pytest.skip(
-        "Unable to authenticate live integration client via username/password "
-        f"(user='{username}', details: {error})"
-    )
+
+@pytest.fixture(scope="session")
+def resolved_live_password(
+    live_password_resolution: tuple[str, str | None],
+    live_api_key: str,
+) -> str:
+    """Provide validated password auth, allowing PAT-only client consumers.
+
+    Password-grant and CLI-login tests use ``live_password_required`` instead,
+    so a configured PAT cannot mask missing password coverage. With neither
+    credential available, client setup fails rather than skipping the suite.
+    """
+    password, error = live_password_resolution
+    if password or live_api_key.strip():
+        return password
+    return _require_resolved_live_password(password, error)
 
 
 @pytest.fixture(scope="session")
@@ -1973,6 +2127,28 @@ def live_password(resolved_live_password: str) -> str:
     return resolved_live_password
 
 
+def _require_resolved_live_password(resolved: str, error: str | None) -> str:
+    """Fail selected password tests before an empty credential reaches the wire."""
+    if resolved.strip():
+        return resolved
+    pytest.fail(
+        "Live password resolution failed. Selected password-auth tests require "
+        "a validated password; an API key/PAT cannot replace this coverage. "
+        "Set KAMIWAZA_ROOT to the deploy checkout or its parent and verify "
+        "scripts/kz-login --show-password can read the target cluster secret, "
+        "or configure KAMIWAZA_USERNAME and KAMIWAZA_PASSWORD "
+        "(--live-username/--live-password). "
+        f"Details: {error or 'no password resolved'}",
+        pytrace=False,
+    )
+
+
+@pytest.fixture(scope="session")
+def live_password_required(live_password_resolution: tuple[str, str | None]) -> str:
+    """Require password auth independently of the optional PAT client path."""
+    return _require_resolved_live_password(*live_password_resolution)
+
+
 def _target_files_for_quantization(model: Any, quantization: str) -> list[Any]:
     files = list(getattr(model, "m_files", None) or [])
     if not files:
@@ -1989,7 +2165,9 @@ def _target_files_for_quantization(model: Any, quantization: str) -> list[Any]:
     from kamiwaza_sdk.utils.quant_manager import QuantizationManager
 
     return QuantizationManager().filter_files_by_quantization(
-        gguf_files, quantization
+        gguf_files,
+        quantization,
+        apply_fallback=False,
     )
 
 
@@ -2079,8 +2257,57 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
     return _ensure
 
 
+def _secret_owner(client: KamiwazaClient) -> str:
+    profile = client.get("/auth/users/me")
+    owner = str(profile.get("urn") or "").strip()
+    if owner:
+        return owner
+    username = str(profile.get("username") or "sdk-integration").replace("@", "-")
+    return f"urn:li:corpuser:{username}"
+
+
+def _s3_secret_value(endpoint: str) -> str:
+    return json.dumps(
+        {
+            "aws_access_key_id": "minioadmin",
+            "aws_secret_access_key": "minioadmin",
+            "endpoint_override": endpoint,
+            "region": "us-east-1",
+        }
+    )
+
+
 @pytest.fixture(scope="session")
-def ingestion_environment() -> Iterator[dict[str, str]]:
+def live_catalog_secret_factory(
+    live_kamiwaza_session_client: KamiwazaClient,
+) -> Iterator[Callable[[str, str, str], str]]:
+    """Create Catalog-owned credentials for durable ingestion live tests."""
+    client = live_kamiwaza_session_client
+    owner = _secret_owner(client)
+    created: list[str] = []
+
+    def create(name_prefix: str, value: str, description: str) -> str:
+        name = f"{name_prefix}-{uuid.uuid4().hex[:10]}"
+        payload = SecretCreate(
+            name=name,
+            value=SecretStr(value),
+            owner=owner,
+            description=description,
+        )
+        secret_urn = client.catalog.secrets.create(payload, clobber=True)
+        created.append(secret_urn)
+        return secret_urn
+
+    yield create
+
+    for secret_urn in reversed(created):
+        client.catalog.secrets.delete(secret_urn)
+
+
+@pytest.fixture(scope="session")
+def ingestion_environment(
+    live_catalog_secret_factory: Callable[[str, str, str], str],
+) -> Iterator[dict[str, str]]:
     """Spin up fixture services used by ingestion/retrieval integration tests."""
 
     try:
@@ -2109,18 +2336,85 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
             error_msg += f"STDERR: {result.stderr}"
             pytest.skip(error_msg)
 
+        endpoint = _runtime_endpoint("http://localhost:19100")
         yield {
             "bucket": "kamiwaza-sdk-tests",
             "prefix": "sdk-integration",
-            "endpoint": _runtime_endpoint("http://localhost:19100"),
+            "endpoint": endpoint,
+            "secret_name": live_catalog_secret_factory(
+                "sdk-live-s3",
+                _s3_secret_value(endpoint),
+                "SDK live-test MinIO credentials",
+            ),
         }
     finally:
         if started_compose and os.environ.get("KEEP_INGESTION_FIXTURES") != "1":
             _run_compose("down", "-v", env=compose_env)
 
 
+def _authenticated_catalog_owner(client: KamiwazaClient) -> str:
+    profile = client.get("/auth/users/me")
+    owner_urn = str(profile.get("urn") or "").strip()
+    if owner_urn:
+        return owner_urn
+
+    username = str(profile.get("username") or "").strip()
+    if not username:
+        pytest.fail("Authenticated user profile did not include an owner identity")
+    return f"urn:li:corpuser:{username.replace('@', '-')}"
+
+
+def _create_s3_catalog_secret(
+    client: KamiwazaClient,
+    *,
+    endpoint: str,
+    region: str,
+) -> str:
+    value = json.dumps(
+        {
+            "aws_access_key_id": "minioadmin",
+            "aws_secret_access_key": "minioadmin",
+            "endpoint_override": endpoint,
+            "endpoint_url": endpoint,
+            "region": region,
+        }
+    )
+    payload = SecretCreate(
+        name=f"sdk-s3-live-{uuid.uuid4().hex[:10]}",
+        value=SecretStr(value),
+        owner=_authenticated_catalog_owner(client),
+        description="SDK live S3 fixture credentials",
+    )
+    return client.catalog.secrets.create(payload)
+
+
+def _delete_catalog_secret(client: KamiwazaClient, secret_urn: str) -> None:
+    try:
+        client.catalog.secrets.delete(secret_urn)
+    except APIError:
+        pass
+
+
+@pytest.fixture
+def ingestion_s3_secret_urn(
+    live_kamiwaza_client: KamiwazaClient,
+    ingestion_environment: dict[str, str],
+) -> Iterator[str]:
+    secret_urn = _create_s3_catalog_secret(
+        live_kamiwaza_client,
+        endpoint=ingestion_environment["endpoint"],
+        region="us-east-1",
+    )
+    try:
+        yield secret_urn
+    finally:
+        _delete_catalog_secret(live_kamiwaza_client, secret_urn)
+
+
 @pytest.fixture(scope="session")
-def catalog_stack_environment() -> Iterator[dict[str, object]]:
+def catalog_stack_environment(
+    live_catalog_secret_factory: Callable[[str, str, str], str],
+) -> Iterator[dict[str, object]]:
     """Provision the multi-source ingestion stack used by catalog tests."""
 
     try:
@@ -2207,8 +2501,14 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
             "prefix": CATALOG_MINIO_PREFIX,
             "endpoint": minio_endpoint_runtime,
             "region": "us-east-1",
+            "secret_name": live_catalog_secret_factory(
+                "sdk-live-s3",
+                _s3_secret_value(minio_endpoint_runtime),
+                "SDK live-test MinIO credentials",
+            ),
             "small_key": f"{CATALOG_MINIO_PREFIX}/inline-small.parquet",
             "large_key": f"{CATALOG_MINIO_PREFIX}/inline-large.parquet",
+            "large_sse_key": f"{CATALOG_MINIO_PREFIX}/inline-large-sse.parquet",
         },
         "file_root": str((state_dir / "test-data").resolve()),
         "postgres": {
@@ -2216,7 +2516,11 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
             "port": int(CATALOG_POSTGRES["port"]),
             "database": CATALOG_POSTGRES["database"],
             "user": CATALOG_POSTGRES["user"],
-            "password": CATALOG_POSTGRES["password"],
+            "password_secret_name": live_catalog_secret_factory(
+                "sdk-live-postgres",
+                CATALOG_POSTGRES["password"],
+                "SDK live-test PostgreSQL credentials",
+            ),
             "schema": CATALOG_POSTGRES["schema"],
         },
         "kafka": {
@@ -2230,3 +2534,21 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     finally:
         if not stack_running and os.environ.get("KEEP_CATALOG_STACK") != "1":
             _run_catalog_compose("down", "-v")
+
+
+@pytest.fixture
+def catalog_s3_secret_urn(
+    live_kamiwaza_client: KamiwazaClient,
+    catalog_stack_environment: dict[str, object],
+) -> Iterator[str]:
+    object_config = catalog_stack_environment["object"]
+    assert isinstance(object_config, dict)
+    secret_urn = _create_s3_catalog_secret(
+        live_kamiwaza_client,
+        endpoint=str(object_config["endpoint"]),
+        region=str(object_config["region"]),
+    )
+    try:
+        yield secret_urn
+    finally:
+        _delete_catalog_secret(live_kamiwaza_client, secret_urn)

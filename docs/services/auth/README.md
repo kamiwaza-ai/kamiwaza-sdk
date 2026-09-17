@@ -77,11 +77,11 @@ client.auth.revoke_pat(pat_list.pats[0].jti)
 Use PATs for long-lived automation.  When a PAT is set in `KAMIWAZA_API_KEY`, the
 client automatically authenticates without any extra code.
 
-## ForwardAuth Headers
+## Ingress authorization headers
 
-Some workloads (e.g. AppGarden apps) rely on Traefik’s ForwardAuth instead of the
-first‑party FastAPI stack.  The SDK can call `/auth/validate` to fetch the header
-bundle that needs to be proxied.
+Platform-managed ingress authorizes requests before they reach workloads such
+as App Garden apps. The SDK's legacy-named helper calls `/auth/validate` and
+parses the platform-attested identity header bundle returned by that endpoint.
 
 ```python
 headers = client.auth.forward_auth_headers()

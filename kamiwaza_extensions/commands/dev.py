@@ -14,6 +14,15 @@ from rich.console import Console
 console = Console(stderr=True)
 
 
+def _enforce_cli_contract(
+    metadata: Dict[str, Any], compose_data: Optional[Dict[str, Any]] = None
+) -> None:
+    """Stop before build/push when this kz-ext cannot honor the manifest."""
+    from kamiwaza_extensions.contract_enforcement import enforce_cli_contract
+
+    enforce_cli_contract(metadata, compose_data, console=console)
+
+
 # ---------------------------------------------------------------------------
 # Helpers extracted for unit testing — review re-review PR #84 H1 + H4
 # ---------------------------------------------------------------------------
@@ -36,12 +45,10 @@ def _build_patch_kwargs(
        map joined later (PR #92 iter-6) for the same reason — without
        it, an extension first CREATE'd by the old SDK keeps its empty
        annotations forever even after the user upgrades.
-    2. ``kamiwaza`` integration spec — ``tlsRejectUnauthorized``,
-       ``apiUrl``, ``origin``, ``useAuth``. Same problem class:
-       changing TLS verify on the host (or upgrading SDK so dev-TLD
-       auto-disable kicks in) doesn't take effect until the user
-       deletes the existing extension. CRs are long-lived; PATCH must
-       carry these or iterative dev silently runs against stale config.
+    2. ``kamiwaza`` integration spec — API URLs, origin, and auth mode.
+       CRs are long-lived; PATCH must refresh these on iterative deploys.
+       TLS policy travels separately in each patched service's environment;
+       the legacy local TLS integration attribute is never serialized.
     """
     kwargs: Dict[str, Any] = {"services": patch_services}
     extra = payload.model_extra or {}
@@ -232,10 +239,27 @@ def _build_patch_service_spec(service: Any) -> Any:
             tag=tag,
             registry=registry,
             repository=repository,
-            digest=digest if separator else None,
+            # An undigested ref clears the pin rather than omitting the field.
+            # ``patch_extension`` dumps with ``exclude_none=True``, so ``None``
+            # drops the key, and the platform reads an absent digest on an
+            # already-pinned service as "keep the pin" and rejects the request
+            # — honouring it would strand the CR on the previous deploy's image
+            # while the tag moved underneath it. Deploying a freshly built tag
+            # makes the old pin obsolete by definition, and an unset digest is
+            # also exactly what a CREATE of this same ref would persist, so
+            # clearing keeps the two deploy paths convergent. Re-pinning here
+            # instead is not an option: services the run never builds (a
+            # declared third-party image such as ``postgres``) have no pushed
+            # digest for the CLI to resolve.
+            digest=digest if separator else "",
         ),
+        primary=service.primary,
         env=service.env or None,
         replicas=service.replicas,
+        # Empty lists explicitly restore the image defaults when a Compose
+        # revision removes a prior entrypoint/command override.
+        command=service.command or [],
+        args=service.args or [],
         # Sent only when the extension declares it. Clearing a block the
         # extension removed would need the CR's current spec, and
         # ``get_extension`` returns a status projection
@@ -445,14 +469,6 @@ def _decode_email(access_token: str) -> Optional[str]:
     return decode_email(access_token)
 
 
-def _detect_kind_registry() -> Optional[str]:
-    """Compatibility wrapper for tests and callers that patch this helper."""
-
-    from kamiwaza_extensions.registry_resolution import detect_kind_registry
-
-    return detect_kind_registry()
-
-
 def _delete_and_recreate(client, dev_name, payload, console):
     """Legacy fallback: delete the old extension and re-create it.
 
@@ -535,6 +551,7 @@ def run_dev_remote(
     # 1. Detect extension
     detector = ExtensionDetector()
     info = detector.detect()
+    _enforce_cli_contract(info.metadata or {}, info.compose_data)
 
     if info.compose_data is None:
         console.print("[red]Error:[/red] No docker-compose.yml found.")
@@ -611,7 +628,6 @@ def run_dev_remote(
     try:
         registry_resolution = resolve_dev_registries(
             connection,
-            kind_registry_detector=_detect_kind_registry,
             push_engine=push_engine,
         )
     except ValueError as exc:
@@ -634,7 +650,6 @@ def run_dev_remote(
             try:
                 registry_resolution = resolve_dev_registries(
                     connection,
-                    kind_registry_detector=_detect_kind_registry,
                     push_engine=push_engine,
                 )
             except ValueError as exc:

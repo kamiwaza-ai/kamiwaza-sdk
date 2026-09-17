@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getAppPath, hasAppPathContract } from "../runtime/client";
 import { SessionCtx } from "./SessionContext";
 import type { Session, SessionProviderProps } from "./types";
 
@@ -67,9 +68,9 @@ export function isTrustedFrontChannelUrl(url: string): boolean {
  * Provides session state to the component tree.
  *
  * Fetches the session from the backend on mount and periodically
- * refreshes it.  The base path is read from
- * `NEXT_PUBLIC_APP_BASE_PATH` (or the `basePath` prop) so that
- * session endpoint calls work in all deployment modes.
+ * refreshes it. The base path comes from the runtime bootstrap or baked
+ * runtime contract; the explicit prop and legacy env remain temporary
+ * compatibility fallbacks.
  *
  * On repeated fetch failures the refresh interval backs off
  * exponentially (capped at 5 minutes) and resets on success.
@@ -91,10 +92,15 @@ export function SessionProvider({
     const base = useMemo(
         () =>
             normalizeBase(
+                // Precedence: explicit prop (deprecated escape hatch) →
+                // runtime bootstrap / baked compile constant → legacy
+                // NEXT_PUBLIC_APP_BASE_PATH (one-release compatibility).
                 basePath ??
-                    (typeof window !== "undefined"
-                        ? process.env.NEXT_PUBLIC_APP_BASE_PATH
-                        : undefined)
+                    (hasAppPathContract()
+                        ? getAppPath()
+                        : typeof window !== "undefined"
+                          ? process.env.NEXT_PUBLIC_APP_BASE_PATH
+                          : undefined)
             ),
         [basePath]
     );

@@ -5,15 +5,21 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 import socket
+from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from kamiwaza_extensions.compose_ports import (
     default_service_port_name,
     extract_container_port,
 )
-from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+from kamiwaza_extensions.compose_transformer import (
+    apply_service_ref_rewrites,
+    detect_service_url_rewrites,
+    resolve_compose_value,
+)
 from kamiwaza_extensions.compose_volumes import (
     ServiceVolumeSpec,
     build_service_volume_specs,
@@ -46,14 +52,12 @@ ANNOTATION_BUILD_HOST = "kamiwaza.io/build-host"
 ANNOTATION_REVISION = "kamiwaza.io/revision"
 ANNOTATION_DEPLOYED_AT = "kamiwaza.io/deployed-at"
 
-# The kamiwaza-extension-operator reads this annotation at deploy time
-# and rewrites cross-service URL env values from the compose short name
-# (``http://backend:8000``) to the deployment-prefixed K8s service name
-# (``http://my-app-dev-abc-backend:8000``). Without this annotation,
-# bare ``backend`` doesn't resolve in K8s DNS — the frontend's API
-# proxy fails with ENOTFOUND. Namespace is ``extensions.kamiwaza.io/*``
-# (different from the ``kamiwaza.io/*`` deploy-metadata namespace
-# above). The operator recognizes both.
+# Compatibility metadata retains original compose references and their baked
+# payload values. The operator's exact-match path skips already-baked values;
+# its subsequent hostname lookup recognizes deployment-prefixed aliases.
+# The direct runtime reads payload env without consuming this annotation.
+# The operator recognizes both this ``extensions.kamiwaza.io/*`` namespace
+# and the ``kamiwaza.io/*`` deploy-metadata namespace above.
 ANNOTATION_SERVICE_REF_REWRITES = "extensions.kamiwaza.io/service-ref-rewrites"
 
 
@@ -75,6 +79,49 @@ def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
         else:
             out[key] = val
     return out
+
+
+def _resolve_process_value(value: Any, service_name: str, field_name: str) -> str:
+    """Resolve one Compose process value and shield it from kubelet expansion."""
+    resolved = resolve_compose_value(str(value), resolve_unbraced=True)
+    if resolved is None:
+        raise ValueError(
+            f"service '{service_name}': {field_name} contains an unresolvable "
+            "Compose variable"
+        )
+    # Kubelet performs its own ``$(VAR)`` substitution in command/args and
+    # reduces ``$$`` to ``$``. Escape the fully Compose-resolved value once so
+    # that second pass delivers the intended literal string to the container.
+    return resolved.replace("$", "$$")
+
+
+def _compose_process_args(
+    value: Any, service_name: str, field_name: str
+) -> Optional[List[str]]:
+    """Normalize one Compose process field for a Kubernetes container spec.
+
+    Docker Compose ``entrypoint`` maps to Kubernetes ``command`` and Compose
+    ``command`` maps to Kubernetes ``args``.  Compose accepts either list or
+    string forms; Kubernetes accepts only a string array.  ``shlex`` preserves
+    quoted arguments without inventing an implicit shell (authors who need one
+    must continue to declare ``sh -c`` explicitly). Compose interpolation runs
+    before string-form splitting, matching Compose's configuration phase.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        resolved = _resolve_process_value(value, service_name, field_name)
+        try:
+            return shlex.split(resolved)
+        except ValueError as exc:
+            raise ValueError(
+                f"service '{service_name}': invalid {field_name} string: {exc}"
+            ) from exc
+    elif isinstance(value, (list, tuple)):
+        return [
+            _resolve_process_value(part, service_name, field_name) for part in value
+        ]
+    return [_resolve_process_value(value, service_name, field_name)]
 
 
 class PayloadBuilder:
@@ -99,11 +146,14 @@ class PayloadBuilder:
         )
         # ``effective_verify_ssl`` centralizes the SSL precedence:
         # KAMIWAZA_VERIFY_SSL env var > dev-TLD auto-disable > persisted
-        # connection.verify_ssl. Drives both the per-service env
-        # injection (``_build_services``) and the
-        # ``tlsRejectUnauthorized`` spec field so the deployed
-        # extension's in-cluster callbacks match the developer's intent.
+        # connection.verify_ssl. Drives the per-service env
+        # injection (``_build_services``) so in-cluster callbacks match
+        # the developer's intent. The legacy integration attribute is
+        # retained for external Python callers but never serialized into a request.
         verify_ssl = connection.effective_verify_ssl()
+        transformed_compose, rewrites = self._prepare_compose_for_payload(
+            transformed_compose, dev_name
+        )
         services = self._build_services(
             transformed_compose,
             app_path=app_path,
@@ -142,14 +192,6 @@ class PayloadBuilder:
 
         annotations = self.build_annotations(deployer=deployer, revision=revision)
 
-        # Cross-service URL rewrites: scan each service's env for
-        # references to sibling services by short name and emit the
-        # operator-consumed ``service-ref-rewrites`` annotation. Ships
-        # only when at least one rewrite is needed (no annotation when
-        # there are no cross-service URLs).
-        rewrites = detect_service_url_rewrites(
-            transformed_compose.get("services") or {}, dev_name
-        )
         if rewrites:
             annotations[ANNOTATION_SERVICE_REF_REWRITES] = json.dumps(
                 rewrites, sort_keys=True, separators=(",", ":")
@@ -161,6 +203,23 @@ class PayloadBuilder:
             kwargs["annotations"] = annotations
 
         return CreateExtension(**kwargs)
+
+    @staticmethod
+    def _prepare_compose_for_payload(
+        transformed_compose: Dict[str, Any], dev_name: str
+    ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Dict[str, str]]]]:
+        """Bake service references into a private copy for this deployment.
+
+        The direct runtime consumes env values without reading annotations,
+        so URLs and bare endpoints must already use deployment-prefixed names.
+        Preserve the caller's source references for repeat builds, including
+        builds for a different deployment, and the operator's from/to annotation.
+        """
+        prepared = deepcopy(transformed_compose)
+        services = prepared.get("services") or {}
+        rewrites = detect_service_url_rewrites(services, dev_name)
+        apply_service_ref_rewrites(services, rewrites)
+        return prepared, rewrites
 
     @staticmethod
     def build_annotations(
@@ -275,7 +334,7 @@ class PayloadBuilder:
             resources = self._parse_resources(svc)
 
             is_primary = svc_name == primary_name
-            self._append_platform_env(env, is_primary, app_path, verify_ssl)
+            self._append_platform_env(env, app_path, verify_ssl)
             health_check = (
                 _metadata_service_field(metadata, svc_name, "healthCheck")
                 or _service_extension_field(svc, "healthCheck")
@@ -297,6 +356,14 @@ class PayloadBuilder:
                 replicas=1,
                 resources=resources,
             )
+            entrypoint = _compose_process_args(
+                svc.get("entrypoint"), svc_name, "entrypoint"
+            )
+            command = _compose_process_args(svc.get("command"), svc_name, "command")
+            if entrypoint is not None:
+                spec_kwargs["command"] = entrypoint
+            if command is not None:
+                spec_kwargs["args"] = command
             if health_check:
                 spec_kwargs["healthCheck"] = health_check
             _add_service_overrides(
@@ -311,6 +378,17 @@ class PayloadBuilder:
         return specs
 
     def _find_primary_service(self, services: Dict[str, Any]) -> Optional[str]:
+        explicit = next(
+            (
+                service_name
+                for service_name, service in services.items()
+                if isinstance(service, dict)
+                and _service_extension_field(service, "primary") is True
+            ),
+            None,
+        )
+        if explicit is not None:
+            return explicit
         frontend = services.get("frontend")
         if isinstance(frontend, dict) and self._parse_ports(frontend.get("ports", [])):
             return "frontend"
@@ -326,21 +404,31 @@ class PayloadBuilder:
     @staticmethod
     def _append_platform_env(
         env: List[Dict[str, str]],
-        is_primary: bool,
         app_path: str,
         verify_ssl: bool,
     ) -> None:
-        if is_primary and app_path:
-            env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
-        if verify_ssl:
-            return
-        # Explicit env wins over ConfigMap envFrom. Emit both Python and Node
-        # conventions so every extension runtime receives one TLS policy.
+        platform_values = {
+            "KAMIWAZA_ROUTING_MODE": "path" if app_path else "port",
+            "KAMIWAZA_VERIFY_SSL": "true" if verify_ssl else "false",
+            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED": "1" if verify_ssl else "0",
+        }
+        if app_path:
+            platform_values["KAMIWAZA_APP_PATH"] = app_path
+        # Explicit env shadows ConfigMap envFrom in both modes. Without an
+        # explicit port value, a stale KAMIWAZA_APP_PATH can trigger legacy
+        # path-mode inference and make an otherwise valid deployment 404.
+        # Emit both TLS conventions in both modes. Otherwise re-enabling
+        # verification can inherit a stale insecure ConfigMap value.
+        platform_owned_names = set(platform_values)
+        # Port mode must also remove an author-supplied path. The explicit mode
+        # makes it inert at runtime, but emitting both values is contradictory
+        # and leaves duplicate platform configuration in the generated CR.
+        platform_owned_names.add("KAMIWAZA_APP_PATH")
+        env[:] = [
+            entry for entry in env if entry.get("name") not in platform_owned_names
+        ]
         env.extend(
-            [
-                {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"},
-                {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"},
-            ]
+            {"name": name, "value": value} for name, value in platform_values.items()
         )
 
     @staticmethod
@@ -488,7 +576,8 @@ class PayloadBuilder:
         Path-selection rules (ENG-3901 / F-013):
 
         - Frontend (Next.js) services use a node-based exec probe that
-          resolves the basePath env var dynamically.
+          resolves the runtime deployment path dynamically and calls the
+          scaffolded health route.
         - Backend services in app-type extensions probe ``/health`` —
           the scaffolded FastAPI backend ships an explicit /health route.
         - Primary services in **service** and **tool** extensions probe
@@ -512,15 +601,20 @@ class PayloadBuilder:
         port = ports[0].container_port
 
         if _should_use_node_frontend_probe(svc_name, svc):
-            # Frontend: use node to resolve basePath env vars reliably
+            # Frontend: use node to resolve runtime path env vars reliably
             # (shell-based wget probes fail with nested ${} on Alpine)
             probe_script = (
                 "const v=s=>(s&&!s.includes('${'))?s:'';"
-                "const base=(v(process.env.NEXT_PUBLIC_APP_BASE_PATH)"
-                "||v(process.env.KAMIWAZA_APP_PATH)||'').replace(/\\/$/,'')||'/';"
-                f"require('http').get({{host:'127.0.0.1',port:{port},path:base}},"
-                "(res)=>process.exit(res.statusCode===200?0:1))"
+                "const mode=v(process.env.KAMIWAZA_ROUTING_MODE);"
+                "const appPath=v(process.env.KAMIWAZA_APP_PATH).replace(/\\/+$/,'');"
+                "const base=mode==='port'?'':appPath;"
+                "const http=require('http');"
+                "const fallback=base||'/';"
+                f"const probe=(path,retry)=>http.get({{host:'127.0.0.1',port:{port},path}},"
+                "res=>{res.resume();if(res.statusCode===200)return process.exit(0);"
+                "if(res.statusCode===404&&retry)return probe(retry,'');process.exit(1)})"
                 ".on('error',()=>process.exit(1));"
+                "probe((base||'')+'/health',fallback);"
             )
             return {
                 "exec": {

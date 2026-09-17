@@ -25,8 +25,9 @@ Step status semantics:
 Evidence record (``scenario-evidence.v2`` — ENG-9748, sales-developer-release-kit
 design §3.6/§4.6): the run artifact is the versioned successor to the original
 harness record. It adds ``build`` (the build identity the run executed against —
-the harness *refuses to run* without one, closing gap G1), ``method``
-(``automated`` for harness runs), ``capability_ids`` (copied from the optional
+version-first, and the harness *refuses to run* without a usable one, closing
+gap G1; see ``build_identity.py``), ``method``
+(``automated`` for harness runs), ``capability_ids`` (copied from the required
 runbook field of the same name), ``evidence_provenance``, and a scenario-level
 three-valued ``status`` (``passed`` / ``passed_with_notes`` / ``failed``)
 matching the sign-off template's decision vocabulary. Emitted records are
@@ -50,6 +51,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .build_identity import resolve as resolve_identity
+
 SCENARIOS_DIR = Path(__file__).parent
 RUNBOOKS_DIR = SCENARIOS_DIR / "runbooks"
 RUNS_DIR = SCENARIOS_DIR / "runs"
@@ -64,6 +67,12 @@ EVIDENCE_SCHEMA_PATH = SCHEMAS_DIR / "scenario-evidence.v2.schema.json"
 EVIDENCE_SCHEMA_ID = "scenario-evidence.v2"
 SCENARIO_STATUSES = frozenset({"passed", "passed_with_notes", "failed"})
 EVIDENCE_METHODS = frozenset({"automated", "manual"})
+# Which producer arm emitted the record (ENG-11522). `method` says
+# automated-vs-manual and both the SDK and UI arms emit "automated", so it
+# cannot name the arm. The vocabulary deliberately matches capability
+# documents' `evidence_plan` so a consumer can compare the two directly
+# rather than inferring one from the other.
+EVIDENCE_ARMS = frozenset({"sdk", "ui", "manual"})
 EVIDENCE_PROVENANCES = frozenset({"pre-existing", "cycle-authored"})
 # Kebab-case segments, optionally dot-namespaced as area.capability
 # (e.g. "workroom-app-launch", "workrooms.create") — ENG-9749 spike.
@@ -74,6 +83,7 @@ REQUIRED_RUNBOOK_FIELDS = (
     "name",
     "sign_off_actor",
     "uacs",
+    "capability_ids",
     "steps",
     "expected_outcomes",
 )
@@ -81,6 +91,13 @@ REQUIRED_STEP_FIELDS = ("name", "description")
 
 # All allowed step statuses. Anything else in result.steps is a harness bug.
 STEP_STATUSES = frozenset({"passed", "failed", "skipped", "pending", "not_reached"})
+
+# The step statuses that constitute a claim about the capability. The other
+# three record that a step did *not* run: `pending` (no handler registered),
+# `skipped` (a handler ran and declined) and `not_reached` (an earlier step
+# failed hard). A record built only from those asserts something the run
+# never established -- see `is_evidence` (ENG-11717).
+EVIDENCED_STEP_STATUSES = frozenset({"passed", "failed"})
 
 
 @dataclass
@@ -107,6 +124,7 @@ class ScenarioResult:
     schema: str = EVIDENCE_SCHEMA_ID
     build: str = ""
     method: str = "automated"
+    arm: str = "sdk"  # this harness is the SDK arm
     capability_ids: list[str] = field(default_factory=list)
     evidence_provenance: str = "cycle-authored"
     status: str = ""
@@ -114,14 +132,14 @@ class ScenarioResult:
 
     @property
     def passed(self) -> bool:
-        """True iff no step ``failed`` and no step is ``not_reached``.
+        """True iff the scenario is not failed and its steps are non-failing.
 
         ``skipped`` is non-failing (handler decided the step doesn't apply
         this run) but ``pending`` is intentionally treated as not-yet-passing
         so the driver test can distinguish "harness ran cleanly" from
         "scenario is fully implemented and green."
         """
-        if not self.steps:
+        if self.status == "failed" or not self.steps:
             return False
         return all(s.status in {"passed", "skipped"} for s in self.steps)
 
@@ -171,29 +189,50 @@ def _validate_runbook(runbook: dict, *, source: Path) -> None:
             raise ValueError(
                 f"{source.name}: step[{i}] missing required fields {missing_step}"
             )
-    _validate_capability_ids(runbook, source=source)
+    _validate_required_step_flags(runbook["steps"], where=source.name)
+    _validate_capability_ids(runbook, where=source.name)
 
 
-def _validate_capability_ids(runbook: dict, *, source: Path) -> None:
-    """Validate the OPTIONAL ``capability_ids`` runbook field (ENG-9748).
+def _validate_required_step_flags(steps: list[dict], *, where: str) -> None:
+    """Refuse malformed required flags for loaded and direct runbooks alike."""
+    for i, step in enumerate(steps):
+        if "required" in step and not isinstance(step["required"], bool):
+            raise ValueError(f"{where}: step[{i}].required must be a boolean")
 
-    When present it must be a list of capability identifiers — kebab-case
-    segments, optionally dot-namespaced (``workrooms.create``). The harness
-    copies it verbatim into the scenario-evidence.v2 record; absent means
-    the mapping has not been authored yet and the record carries ``[]``.
+
+def _validate_capability_ids(runbook: dict, *, where: str) -> None:
+    """Validate the REQUIRED ``capability_ids`` runbook field (ENG-9748).
+
+    A list of capability identifiers — kebab-case segments, optionally
+    dot-namespaced (``workrooms.create``) — copied verbatim into the
+    scenario-evidence.v2 record.
+
+    Required and non-empty since ENG-11522. It was previously optional, so
+    four of the five runbooks omitted it, the dataclass defaulted to ``[]``,
+    and the emitted record was schema-valid but joined to no capability —
+    invisible to every generated report until it surfaced as an "input
+    defect" months later. Refusing here is the only point at which the
+    author is still present to make the mapping decision.
+
+    Note that requiring the *key* is not sufficient on its own:
+    ``capability_ids`` is already in scenario-evidence.v2's ``required``
+    list, and ``[]`` satisfies that, so emptiness is refused explicitly.
     """
     cap_ids = runbook.get("capability_ids")
-    if cap_ids is None:
-        return
     if not isinstance(cap_ids, list):
-        raise ValueError(f"{source.name}: capability_ids must be a list of strings")
+        raise ValueError(f"{where}: capability_ids must be a list of strings")
+    if not cap_ids:
+        raise ValueError(
+            f"{where}: capability_ids must name at least one capability; "
+            "a runbook that evidences nothing cannot emit a joinable record"
+        )
     non_strings = [c for c in cap_ids if not isinstance(c, str)]
     if non_strings:
-        raise ValueError(f"{source.name}: capability_ids must be a list of strings")
+        raise ValueError(f"{where}: capability_ids must be a list of strings")
     malformed = [c for c in cap_ids if not CAPABILITY_ID_RE.fullmatch(c)]
     if malformed:
         raise ValueError(
-            f"{source.name}: capability_ids entries must be kebab-case, "
+            f"{where}: capability_ids entries must be kebab-case, "
             f"optionally dot-namespaced (e.g. 'workrooms.create'); got {malformed}"
         )
 
@@ -201,21 +240,21 @@ def _validate_capability_ids(runbook: dict, *, source: Path) -> None:
 def resolve_build_identity(build: str | None = None) -> str:
     """Resolve the build identity for the evidence record, or refuse.
 
-    Precedence: explicit ``build`` argument (the scenario drivers wire the
-    ``--build`` pytest option through here), then the ``KAMIWAZA_BUILD``
-    env var. Evidence that does not name the build it ran against cannot
-    support a staleness query or a validation stamp (design gap G1), so
-    the harness refuses to run rather than emit anonymous evidence.
+    Delegates to :mod:`build_identity`, which owns the producer half of the
+    version-first contract (ENG-10715). Precedence is unchanged -- explicit
+    ``build`` argument, then ``KAMIWAZA_BUILD`` -- with ``KAMIWAZA_RELEASE``
+    supplying the release segment when the identity is not already
+    version-first.
+
+    Evidence that does not name the build it ran against cannot support a
+    staleness query or a validation stamp (design gap G1), so the harness
+    refuses to run rather than emit anonymous evidence. It refuses on an
+    *unusable* identity for the same reason: a stamp that leads with an
+    image digest is unreachable by the question consumers actually ask
+    ("does Kamiwaza do X for 1.3.0?"), and cycle 1 discovered that months
+    after capture, across all 26 records.
     """
-    resolved = (build or os.environ.get("KAMIWAZA_BUILD", "")).strip()
-    if not resolved:
-        raise ValueError(
-            "scenario evidence requires a build identity: pass "
-            "build=... to run_scenario (the drivers wire the --build pytest "
-            "option), or set KAMIWAZA_BUILD. Refusing to run — a record "
-            "without build identity cannot support staleness queries (G1)."
-        )
-    return resolved
+    return resolve_identity(build)
 
 
 def _resolve_provenance(evidence_provenance: str | None) -> str:
@@ -233,25 +272,62 @@ def _resolve_provenance(evidence_provenance: str | None) -> str:
     return resolved
 
 
-def derive_status(steps: list[StepResult]) -> str:
+def derive_status(
+    steps: list[StepResult], *, required_steps: Iterable[str] = ()
+) -> str:
     """Derive the three-valued scenario status from per-step statuses.
 
-    * any step ``failed`` → ``"failed"`` (``not_reached`` steps only occur
-      after a failure, so they are covered by this branch);
+    * any step ``failed`` or any required step not ``passed`` → ``"failed"``;
     * all steps ``passed`` → ``"passed"``;
     * otherwise (green but with ``skipped`` / ``pending`` / ``not_reached``
       steps — caveats a human should review) → ``"passed_with_notes"``.
 
     An empty step list is ``"failed"`` defensively: a run that executed
-    nothing is not evidence of anything.
+    nothing is not evidence of anything. A run whose steps are *all*
+    ``pending`` executed nothing either -- ``pending`` means no handler was
+    registered, so the driver is unimplemented -- and is ``"failed"`` for the
+    same reason (ENG-11717). Unmarked ``skipped`` steps are not covered by
+    that rule: a skip is a handler that ran and declined, which
+    :attr:`ScenarioResult.passed` already counts as non-failing while
+    excluding ``pending``.
     """
     if not steps:
         return "failed"
     if any(s.status == "failed" for s in steps):
         return "failed"
+    required_names = set(required_steps)
+    passed_names = {s.name for s in steps if s.status == "passed"}
+    if not required_names.issubset(passed_names):
+        return "failed"
+    if any(s.status != "passed" for s in steps if s.name in required_names):
+        return "failed"
     if all(s.status == "passed" for s in steps):
         return "passed"
+    if not any(s.status == "passed" for s in steps) and any(
+        s.status == "pending" for s in steps
+    ):
+        return "failed"
     return "passed_with_notes"
+
+
+def is_evidence(steps: list[StepResult]) -> bool:
+    """True when at least one step actually made a claim about the capability.
+
+    ``derive_status`` answers *what status* a recorded run carries.  This
+    answers the prior question: whether the run should be recorded at all.
+    A scenario whose driver registers no handlers produces an all-``pending``
+    run, and scoring that ``failed`` -- while honest about the status -- still
+    publishes an affirmative "we exercised this capability and it broke" over
+    a capability nobody touched.  The truthful artifact is no artifact.
+
+    The sibling producer for the pre-existing suite reaches the same
+    conclusion independently: ``_evidence_emitter.py::_is_evidence`` refuses
+    an empty-or-all-skipped step list because ``derive_status`` "would score
+    that green-with-notes -- an affirmative claim over a capability the run
+    never exercised".  Keeping the two producers in agreement is the point
+    (ENG-11717); they share ``derive_status`` already.
+    """
+    return any(s.status in EVIDENCED_STEP_STATUSES for s in steps)
 
 
 def run_scenario(
@@ -275,9 +351,24 @@ def run_scenario(
     Emits a ``scenario-evidence.v2`` result: the build identity is resolved
     *before any step runs* (see :func:`resolve_build_identity` — no build,
     no run), ``method`` is always ``"automated"`` for harness executions,
-    and ``capability_ids`` is copied from the optional runbook field.
+    and ``capability_ids`` is copied from the required runbook field.
     """
     resolved_build = resolve_build_identity(build)
+    # Resolved here, before any handler runs, for the same reason the build
+    # identity is: a run that cannot produce a joinable record must fail
+    # before it executes side-effecting deploy steps, not after them
+    # (ENG-11522). load_runbook already refuses an absent or empty value;
+    # this keeps a hand-built runbook from getting halfway through a
+    # scenario and then raising KeyError on the way out.
+    # Validate, don't coerce. `list("abc")` is `["a", "b", "c"]` -- three ids
+    # that each satisfy the kebab-case pattern -- so checking only that the key
+    # exists let a string mapping reach a persisted record. Same rules as
+    # load_runbook, called rather than restated (ENG-11522).
+    _validate_capability_ids(runbook, where=f"runbook {runbook.get('id', '?')!r}")
+    _validate_required_step_flags(
+        runbook["steps"], where=f"runbook {runbook.get('id', '?')!r}"
+    )
+    capability_ids = list(runbook["capability_ids"])
     provenance = _resolve_provenance(evidence_provenance)
     started = datetime.now(timezone.utc)
     t0 = time.monotonic()
@@ -293,9 +384,16 @@ def run_scenario(
         ci_job_url=ci_job_url or os.environ.get("CI_JOB_URL"),
         build=resolved_build,
         method="automated",
-        capability_ids=list(runbook.get("capability_ids") or []),
+        capability_ids=capability_ids,
         evidence_provenance=provenance,
-        status=derive_status(results),
+        status=derive_status(
+            results,
+            required_steps=[
+                step["name"]
+                for step in runbook["steps"]
+                if step.get("required") is True
+            ],
+        ),
         steps=results,
     )
 
@@ -402,8 +500,16 @@ def _not_reached(steps: list[dict]) -> list[StepResult]:
     ]
 
 
-def record_run(result: ScenarioResult) -> Path:
+def record_run(result: ScenarioResult) -> Path | None:
     """Persist a scenario result as JSON under ``runs/`` and return the path.
+
+    Returns ``None`` without writing anything when the run evidenced
+    nothing — no step ``passed`` or ``failed``.  A driver awaiting
+    implementation registers no handlers, every step comes back
+    ``pending``, and publishing a record for that run makes a claim about a
+    capability the run never touched.  See :func:`is_evidence` (ENG-11717).
+    Callers that interpolate the return value into a message must handle
+    ``None``; the scenario drivers do.
 
     The record is validated against the ``scenario-evidence.v2`` contract
     *before* writing — an invalid record (empty ``build``, unknown
@@ -418,6 +524,12 @@ def record_run(result: ScenarioResult) -> Path:
     """
     record = asdict(result)
     validate_evidence_record(record)
+    # AFTER validation, never before: an unknown step status is in neither
+    # EVIDENCED_STEP_STATUSES nor STEP_STATUSES, so suppressing first would
+    # read a malformed result as "evidenced nothing" and discard it silently
+    # instead of raising. Suppression is for valid runs that proved nothing.
+    if not is_evidence(result.steps):
+        return None
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = _timestamp_suffix(result.finished_at)
     out = RUNS_DIR / f"{result.scenario_id.lower()}-{stamp}.json"
@@ -528,6 +640,7 @@ def validate_evidence_record(record: dict) -> None:
     intentionally rejected: they are historical artifacts, not v2 records.
     """
     problems = _check_scalar_fields(record)
+    problems += _check_arm(record)
     problems += _check_capability_ids(record)
     problems += _check_steps(record)
     if problems:
@@ -544,10 +657,27 @@ def _check_scalar_fields(record: dict) -> list[str]:
     return problems
 
 
+def _check_arm(record: dict) -> list[str]:
+    """Validate the OPTIONAL ``arm`` field.
+
+    Optional on purpose: the records emitted before ENG-11522 carry no arm,
+    and invalidating them would force a corpus migration to add a field
+    nobody can retroactively know. A consumer therefore treats "absent" as
+    "unattributed", which is exactly what it was.
+    """
+    if "arm" not in record:
+        return []
+    if not _is_one_of(EVIDENCE_ARMS)(record["arm"]):
+        return [f"arm must be one of {sorted(EVIDENCE_ARMS)} (got {record['arm']!r})"]
+    return []
+
+
 def _check_capability_ids(record: dict) -> list[str]:
     cap_ids = record.get("capability_ids")
     if not isinstance(cap_ids, list):
-        return ["capability_ids must be a list (may be empty)"]
+        return ["capability_ids must be a list of capability ids"]
+    if not cap_ids:
+        return ["capability_ids must name at least one capability (ENG-11522)"]
     problems = []
     for c in cap_ids:
         if not isinstance(c, str) or not CAPABILITY_ID_RE.fullmatch(c):

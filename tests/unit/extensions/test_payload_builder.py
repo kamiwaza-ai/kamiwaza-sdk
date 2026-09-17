@@ -1,6 +1,8 @@
 """Tests for PayloadBuilder."""
 
 import hashlib
+import json
+from copy import deepcopy
 
 import pytest
 
@@ -84,11 +86,126 @@ class TestBuild:
         assert len(primaries) == 1
         assert primaries[0].name == "frontend"
 
+    def test_explicit_x_kamiwaza_primary_overrides_service_order(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "etcd": {"image": "etcd:3.6", "ports": ["2379"]},
+                "standalone": {
+                    "image": "milvusdb/milvus:v2.5.27",
+                    "ports": ["19530"],
+                    "x-kamiwaza": {"primary": True},
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "test")
+
+        assert [service.name for service in payload.services if service.primary] == [
+            "standalone"
+        ]
+
     def test_ports_parsed(self, builder, metadata, transformed_compose, connection):
         payload = builder.build(metadata, transformed_compose, connection, "test")
         fe = next(s for s in payload.services if s.name == "frontend")
         assert len(fe.ports) == 1
         assert fe.ports[0].container_port == 3000
+
+    def test_routing_env_injected_into_every_service(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        """The runtime-path contract needs KAMIWAZA_APP_PATH and
+        KAMIWAZA_ROUTING_MODE on ALL extension-owned services (the backend
+        derives root_path/cookie scope from them), not just the primary."""
+        payload = builder.build(
+            metadata, transformed_compose, connection, "my-app-dev-1"
+        )
+        for service in payload.services:
+            env = {e["name"]: e["value"] for e in (service.env or [])}
+            assert env.get("KAMIWAZA_APP_PATH") == "/runtime/apps/my-app-dev-1", (
+                service.name,
+                env,
+            )
+            assert env.get("KAMIWAZA_ROUTING_MODE") == "path", (service.name, env)
+
+    @pytest.mark.parametrize(
+        ("extension_type", "expected_path"),
+        [
+            ("tool", "/runtime/tools/non-app-dev-1"),
+            ("service", "/runtime/services/non-app-dev-1"),
+        ],
+    )
+    def test_non_app_deployments_are_explicitly_path_routed(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
+        extension_type,
+        expected_path,
+    ):
+        metadata = {**metadata, "template_type": extension_type}
+
+        payload = builder.build(
+            metadata, transformed_compose, connection, "non-app-dev-1"
+        )
+
+        assert payload.type == extension_type
+        for service in payload.services:
+            env = {entry["name"]: entry["value"] for entry in (service.env or [])}
+            assert env["KAMIWAZA_ROUTING_MODE"] == "path"
+            assert env["KAMIWAZA_APP_PATH"] == expected_path
+
+    def test_port_routing_explicitly_shadows_stale_configmap_path(self, builder):
+        env = []
+        builder._append_platform_env(env, app_path="", verify_ssl=True)
+
+        assert env == [
+            {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
+            {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"},
+            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"},
+        ]
+
+    def test_platform_env_replaces_author_duplicates(self, builder):
+        env = [
+            {"name": "KAMIWAZA_APP_PATH", "value": "/author/path"},
+            {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
+            {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"},
+            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"},
+            {"name": "AUTHOR_VALUE", "value": "kept"},
+        ]
+
+        builder._append_platform_env(
+            env,
+            app_path="/runtime/apps/deployed",
+            verify_ssl=False,
+        )
+
+        by_name = {entry["name"]: entry["value"] for entry in env}
+        assert len(env) == len(by_name)
+        assert by_name == {
+            "AUTHOR_VALUE": "kept",
+            "KAMIWAZA_APP_PATH": "/runtime/apps/deployed",
+            "KAMIWAZA_ROUTING_MODE": "path",
+            "KAMIWAZA_VERIFY_SSL": "false",
+            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED": "0",
+        }
+
+    def test_port_mode_removes_author_app_path(self, builder):
+        env = [
+            {"name": "KAMIWAZA_APP_PATH", "value": "/author/path"},
+            {"name": "AUTHOR_VALUE", "value": "kept"},
+        ]
+
+        builder._append_platform_env(env, app_path="", verify_ssl=True)
+
+        assert env == [
+            {"name": "AUTHOR_VALUE", "value": "kept"},
+            {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
+            {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"},
+            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"},
+        ]
 
     def test_kamiwaza_integration(
         self, builder, metadata, transformed_compose, connection
@@ -365,14 +482,45 @@ class TestAnnotations:
         assert ANNOTATION_DEPLOYED_AT in out
 
 
+def _assert_emitted_tls_policy(payload, verify_ssl):
+    for service in payload.model_dump()["services"]:
+        env = {entry["name"]: entry["value"] for entry in service["env"]}
+        assert env["KAMIWAZA_VERIFY_SSL"] == str(verify_ssl).lower()
+        assert env["KAMIWAZA_TLS_REJECT_UNAUTHORIZED"] == ("1" if verify_ssl else "0")
+
+
 class TestVerifySslPropagation:
-    """The deployed extension's ``tlsRejectUnauthorized`` must reflect
-    the developer's intent. Three independent inputs collapse here via
+    """Each service's emitted TLS policy must reflect the developer's intent.
+    Three independent inputs collapse here via
     ``ConnectionInfo.effective_verify_ssl``:
     1. ``KAMIWAZA_VERIFY_SSL`` env var (per-session override)
     2. URL hostname (dev TLDs auto-disable)
     3. Persisted ``connection.verify_ssl`` from ``kz-ext login``
     """
+
+    @pytest.mark.parametrize("verify_ssl", [True, False])
+    def test_serialized_request_uses_service_tls_environment_only(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
+        monkeypatch,
+        verify_ssl,
+    ):
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", str(verify_ssl).lower())
+        payload = builder.build(metadata, transformed_compose, connection, "ext")
+        serialized = payload.model_dump()
+        assert "tls_reject_unauthorized" not in serialized["kamiwaza"]
+        primary_env = next(s for s in serialized["services"] if s["primary"])["env"]
+        assert {
+            "name": "KAMIWAZA_VERIFY_SSL",
+            "value": str(verify_ssl).lower(),
+        } in primary_env
+        assert {
+            "name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED",
+            "value": "1" if verify_ssl else "0",
+        } in primary_env
 
     def test_env_false_overrides_connection_verify_true(
         self,
@@ -415,6 +563,7 @@ class TestVerifySslPropagation:
 
         payload = builder.build(metadata, transformed_compose, conn, "ext")
         assert payload.kamiwaza.tls_reject_unauthorized == "0"
+        _assert_emitted_tls_policy(payload, verify_ssl=False)
 
     def test_env_true_re_enables_against_dev_tld(
         self,
@@ -436,6 +585,7 @@ class TestVerifySslPropagation:
 
         payload = builder.build(metadata, transformed_compose, conn, "ext")
         assert payload.kamiwaza.tls_reject_unauthorized == "1"
+        _assert_emitted_tls_policy(payload, verify_ssl=True)
 
     def test_production_url_keeps_strict(
         self,
@@ -456,6 +606,7 @@ class TestVerifySslPropagation:
 
         payload = builder.build(metadata, transformed_compose, conn, "ext")
         assert payload.kamiwaza.tls_reject_unauthorized == "1"
+        _assert_emitted_tls_policy(payload, verify_ssl=True)
 
 
 class TestServiceRefRewritesAnnotation:
@@ -463,7 +614,430 @@ class TestServiceRefRewritesAnnotation:
     K8s DNS — bare ``backend`` only works in docker-compose. The
     operator reads ``extensions.kamiwaza.io/service-ref-rewrites`` to
     swap the env value to the deployment-prefixed K8s service name at
-    deploy time."""
+    deploy time. The native direct runtime applies ``service.env``
+    verbatim with no annotation consumer, so the payload env ALSO
+    carries the baked-in rewrite."""
+
+    @pytest.mark.parametrize(
+        "environment",
+        [
+            {"BACKEND_URL": "http://backend:8000"},
+            ["BACKEND_URL=http://backend:8000"],
+            [{"name": "BACKEND_URL", "value": "http://backend:8000"}],
+            [{"BACKEND_URL": "http://backend:8000"}],
+        ],
+        ids=["mapping", "string-list", "name-value-list", "mapping-fragment-list"],
+    )
+    def test_repeat_builds_preserve_compose_and_original_refs(
+        self, builder, metadata, transformed_compose, connection, environment
+    ):
+        transformed_compose["services"]["frontend"]["environment"] = environment
+        original = deepcopy(transformed_compose)
+
+        for dev_name in ["first-deployment", "first-deployment", "second-deployment"]:
+            payload = builder.build(metadata, transformed_compose, connection, dev_name)
+
+            assert transformed_compose == original
+            frontend = next(s for s in payload.services if s.name == "frontend")
+            env = {entry["name"]: entry.get("value") for entry in frontend.env}
+            expected = f"http://{dev_name}-backend:8000"
+            assert env["BACKEND_URL"] == expected
+            annotations = (payload.model_extra or {})["annotations"]
+            rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+            assert rewrites == {
+                "frontend": {
+                    "BACKEND_URL": {"from": "http://backend:8000", "to": expected}
+                }
+            }
+
+    def test_mapping_fragment_rewrites_each_endpoint_in_payload(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        transformed_compose["services"]["frontend"]["environment"] = [
+            {
+                "BACKEND_URL": "http://backend:8000",
+                "BACKEND_ENDPOINT": "backend:8000",
+                "UNRELATED": "kept",
+            }
+        ]
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        assert env["BACKEND_URL"] == "http://deploy-backend:8000"
+        assert env["BACKEND_ENDPOINT"] == "deploy-backend:8000"
+        assert env["UNRELATED"] == "kept"
+
+    @pytest.mark.parametrize(
+        "env_key",
+        [
+            "TOKEN_URL",
+            "USER_SERVICE_URL",
+            "IMAGE_SERVICE",
+            "USER_SERVICE",
+            "TOKEN_SERVICE",
+            "SECRET_STORE",
+            "KEY_SERVER",
+        ],
+    )
+    def test_credential_related_url_names_rewrite_in_payload(
+        self, builder, metadata, transformed_compose, connection, env_key
+    ):
+        source_url = "http://backend:8000/auth"
+        transformed_compose["services"]["frontend"]["environment"] = {
+            env_key: source_url
+        }
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected = "http://deploy-backend:8000/auth"
+        assert env[env_key] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {"frontend": {env_key: {"from": source_url, "to": expected}}}
+
+    @pytest.mark.parametrize(
+        ("env_key", "source"),
+        [
+            ("IMAGE_SERVICE", "backend:8000"),
+            ("USER_SERVICE", "backend:8000"),
+            ("TOKEN_SERVICE", "backend:8000"),
+            ("SECRET_STORE", "backend:8000"),
+            ("KEY_SERVER", "backend:8000"),
+            ("AGENT_SERVER_IMAGE", "http://backend:8000/image"),
+            ("SANDBOX_ALLOWED_IMAGE_PREFIXES", "http://backend:8000/images"),
+        ],
+    )
+    def test_payload_preserves_ambiguous_values_and_known_image_fields(
+        self, builder, metadata, transformed_compose, connection, env_key, source
+    ):
+        transformed_compose["services"]["frontend"]["environment"] = {env_key: source}
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        assert env[env_key] == source
+        annotations = (payload.model_extra or {})["annotations"]
+        assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
+
+    @pytest.mark.parametrize(
+        "url_template",
+        [
+            "http://{host}:8000/path,backend:8000",
+            "http://{host}:8000?next=ok,backend:8000",
+            "http://{host}:8000#section,backend:8000",
+            "http://user:abc,backend:8000@{host}:8000/path",
+        ],
+        ids=["path", "query", "fragment", "userinfo"],
+    )
+    @pytest.mark.parametrize("host", ["external.example.com", "backend"])
+    def test_payload_preserves_commas_in_url_components(
+        self, builder, metadata, transformed_compose, connection, url_template, host
+    ):
+        source_url = url_template.format(host=host)
+        transformed_compose["services"]["frontend"]["environment"] = {
+            "API_URL": source_url
+        }
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected_host = "deploy-backend" if host == "backend" else host
+        expected = url_template.format(host=expected_host)
+        assert env["API_URL"] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        if source_url == expected:
+            assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
+        else:
+            rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+            assert rewrites == {
+                "frontend": {"API_URL": {"from": source_url, "to": expected}}
+            }
+
+    @pytest.mark.parametrize("userinfo", ["", "user:secret@"])
+    @pytest.mark.parametrize(
+        "component",
+        ["/path,etcd:2379", "/?targets=a,etcd:2379", "/#section,etcd:2379"],
+        ids=["path", "query", "fragment"],
+    )
+    def test_payload_preserves_endpoint_text_in_ipv6_url_components(
+        self, builder, metadata, transformed_compose, connection, userinfo, component
+    ):
+        services = transformed_compose["services"]
+        services["etcd"] = {"image": "reg/etcd:1", "ports": ["2379"]}
+        source_url = f"http://{userinfo}[2001:db8::1]{component}"
+        services["frontend"]["environment"] = {"API_URL": source_url}
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        assert env["API_URL"] == source_url
+        annotations = (payload.model_extra or {})["annotations"]
+        assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
+
+    @pytest.mark.parametrize("userinfo", ["", "user:secret@"])
+    def test_payload_rewrites_sibling_url_after_ipv6_url(
+        self, builder, metadata, transformed_compose, connection, userinfo
+    ):
+        services = transformed_compose["services"]
+        services["etcd"] = {"image": "reg/etcd:1", "ports": ["2379"]}
+        external_url = f"http://{userinfo}[2001:db8::1]/?targets=a,etcd:2379"
+        source_urls = f"{external_url},http://etcd:2379/"
+        services["frontend"]["environment"] = {"API_URLS": source_urls}
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected = f"{external_url},http://deploy-etcd:2379/"
+        assert env["API_URLS"] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {
+            "frontend": {"API_URLS": {"from": source_urls, "to": expected}}
+        }
+
+    def test_payload_preserves_image_references_and_url_credentials(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        services = transformed_compose["services"]
+        for sibling in ["registry", "redis", "postgres"]:
+            services[sibling] = {"image": f"reg/{sibling}:1", "ports": ["5000"]}
+        source_env = {
+            "AGENT_SERVER_IMAGE": "registry:5000/repo/agent:1",
+            "SANDBOX_ALLOWED_IMAGE_PREFIXES": "registry:5000/repo",
+            "OTHER_IMAGE": "redis:7",
+            "PASSWORD": "backend:8000",
+            "EXTERNAL_DATABASE_URL": (
+                "postgresql://postgres:123secret@db.example.com:5432/app"
+            ),
+            "DATABASE_URL": "postgresql://postgres:123@backend:8000/app",
+        }
+        services["frontend"]["environment"] = source_env
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected = {
+            **source_env,
+            "DATABASE_URL": "postgresql://postgres:123@deploy-backend:8000/app",
+        }
+        assert {key: env[key] for key in source_env} == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {
+            "frontend": {
+                "DATABASE_URL": {
+                    "from": source_env["DATABASE_URL"],
+                    "to": expected["DATABASE_URL"],
+                }
+            }
+        }
+
+    @pytest.mark.parametrize("host", ["db.example.com", "etcd"])
+    def test_payload_preserves_apostrophes_in_database_credentials(
+        self, builder, metadata, transformed_compose, connection, host
+    ):
+        services = transformed_compose["services"]
+        for sibling in ["postgres", "etcd"]:
+            services[sibling] = {"image": f"reg/{sibling}:1", "ports": ["5432"]}
+        source_url = f"postgresql://postgres:123'secret@{host}:5432/app"
+        services["frontend"]["environment"] = {"DATABASE_URL": source_url}
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected_host = "deploy-etcd" if host == "etcd" else host
+        expected = f"postgresql://postgres:123'secret@{expected_host}:5432/app"
+        assert env["DATABASE_URL"] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        if host == "etcd":
+            rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+            assert rewrites == {
+                "frontend": {"DATABASE_URL": {"from": source_url, "to": expected}}
+            }
+        else:
+            assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
+
+    @pytest.mark.parametrize("first_host", ["external.example.com", "etcd"])
+    @pytest.mark.parametrize("separator", [",", ";", "|"])
+    @pytest.mark.parametrize("path", ["", "/"])
+    def test_payload_rewrites_each_url_in_endpoint_list(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
+        first_host,
+        separator,
+        path,
+    ):
+        services = transformed_compose["services"]
+        for sibling in ["etcd", "backup"]:
+            services[sibling] = {"image": f"reg/{sibling}:1", "ports": ["2379"]}
+        source_urls = (
+            f"http://{first_host}:2379{path}{separator}http://backup:2380{path}"
+        )
+        services["frontend"]["environment"] = {"ETCD_ENDPOINTS": source_urls}
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected_host = "deploy-etcd" if first_host == "etcd" else first_host
+        expected = f"http://{expected_host}:2379{path}{separator}http://deploy-backup:2380{path}"
+        assert env["ETCD_ENDPOINTS"] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {
+            "frontend": {"ETCD_ENDPOINTS": {"from": source_urls, "to": expected}}
+        }
+
+    @pytest.mark.parametrize(
+        ("opening", "closing"), [("(", ")"), ("[", "]"), ("<", ">")]
+    )
+    @pytest.mark.parametrize("path", ["", "/health"])
+    def test_payload_rewrites_wrapped_urls(
+        self, builder, metadata, transformed_compose, connection, opening, closing, path
+    ):
+        source_url = f"{opening}http://backend:8000{path}{closing}"
+        transformed_compose["services"]["frontend"]["environment"] = {
+            "API_URL": source_url
+        }
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        expected = f"{opening}http://deploy-backend:8000{path}{closing}"
+        assert env["API_URL"] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {
+            "frontend": {"API_URL": {"from": source_url, "to": expected}}
+        }
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            (
+                "['http://etcd:2379/','http://backup:2380/']",
+                "['http://deploy-etcd:2379/','http://deploy-backup:2380/']",
+            ),
+            (
+                "{'first': 'http://etcd:2379/', 'second': 'http://backup:2380/'}",
+                "{'first': 'http://deploy-etcd:2379/', 'second': 'http://deploy-backup:2380/'}",
+            ),
+            (
+                "['http://external/path/a,etcd:2379']",
+                "['http://external/path/a,etcd:2379']",
+            ),
+        ],
+        ids=["list", "mapping", "external-path"],
+    )
+    def test_payload_preserves_single_quoted_serialized_url_structure(
+        self, builder, metadata, transformed_compose, connection, source, expected
+    ):
+        services = transformed_compose["services"]
+        for sibling in ["etcd", "backup"]:
+            services[sibling] = {"image": f"reg/{sibling}:1", "ports": ["2379"]}
+        services["frontend"]["environment"] = {"UPSTREAM_CONFIG": source}
+
+        payload = builder.build(metadata, transformed_compose, connection, "deploy")
+
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        env = {entry["name"]: entry.get("value") for entry in frontend.env}
+        assert env["UPSTREAM_CONFIG"] == expected
+        annotations = (payload.model_extra or {})["annotations"]
+        if source == expected:
+            assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
+        else:
+            rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+            assert rewrites == {
+                "frontend": {"UPSTREAM_CONFIG": {"from": source, "to": expected}}
+            }
+
+    def test_bare_endpoints_baked_into_payload_env(
+        self,
+        builder,
+        metadata,
+        connection,
+    ):
+        """KZUAT live evidence: the milvus extension's bare
+        ``ETCD_ENDPOINTS=etcd:2379`` deployed verbatim and crashed its
+        standalone workload; the payload env must carry the translated
+        value AND the annotation must still ship for the operator path."""
+        import json
+
+        transformed = {
+            "services": {
+                "standalone": {
+                    "image": "reg/service-milvus:2.4.5",
+                    "ports": ["19530"],
+                    "environment": ["ETCD_ENDPOINTS=etcd:2379"],
+                },
+                "etcd": {
+                    "image": "reg/etcd:3.6",
+                    "ports": ["2379"],
+                },
+            },
+        }
+        payload = builder.build(
+            metadata, transformed, connection, "service-milvus-dev-3da53c"
+        )
+
+        # The payload service env is translated for the direct runtime.
+        standalone = next(s for s in payload.services if s.name == "standalone")
+        standalone_env = {
+            entry["name"]: entry.get("value") for entry in (standalone.env or [])
+        }
+        assert standalone_env["ETCD_ENDPOINTS"] == "service-milvus-dev-3da53c-etcd:2379"
+
+        # The annotation still ships the exact from/to for the operator path.
+        annotations = (payload.model_extra or {}).get("annotations") or {}
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {
+            "standalone": {
+                "ETCD_ENDPOINTS": {
+                    "from": "etcd:2379",
+                    "to": "service-milvus-dev-3da53c-etcd:2379",
+                }
+            }
+        }
+
+    def test_urls_still_baked_and_annotated(
+        self,
+        builder,
+        metadata,
+        connection,
+    ):
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "reg/my-app-frontend:dev",
+                    "ports": ["3000"],
+                    "environment": {"BACKEND_URL": "http://backend:8000"},
+                },
+                "backend": {
+                    "image": "reg/my-app-backend:dev",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        frontend_env = {
+            entry["name"]: entry.get("value") for entry in (frontend.env or [])
+        }
+        assert frontend_env["BACKEND_URL"] == "http://my-app-dev-abc-backend:8000"
 
     def test_emitted_when_compose_has_cross_service_url(
         self,
@@ -564,7 +1138,12 @@ class TestServiceRefRewritesAnnotation:
         )
         assert backend_url == {
             "name": "BACKEND_URL",
-            "value": "http://backend:8000/cost$value",
+            # Intentional contract change (direct-runtime rewrite baking):
+            # the payload env now carries the deployment-prefixed value —
+            # the native direct runtime applies service.env verbatim and
+            # has no annotation consumer. The annotation below still
+            # records the exact from/to for the operator path.
+            "value": "http://my-app-dev-abc-backend:8000/cost$value",
         }
         annotations = (payload.model_extra or {}).get("annotations") or {}
         rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
@@ -838,6 +1417,144 @@ class TestEnvParsing:
 
 
 class TestServiceOverrides:
+    def test_compose_process_fields_map_to_kubernetes_command_and_args(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "milvus": {
+                    "image": "milvusdb/milvus:v2.5.27",
+                    "entrypoint": [
+                        "sh",
+                        "-c",
+                        "exec milvus --config=$${MILVUS_CONFIG}",
+                    ],
+                    "command": ["--config", "/etc/milvus.yaml"],
+                },
+                "etcd": {
+                    "image": "cgr.dev/chainguard/etcd:latest",
+                    "entrypoint": "sh -c 'exec wrapper --flag value'",
+                    "command": "etcd --data-dir /etcd",
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        services = {svc.name: svc for svc in payload.services}
+
+        assert services["milvus"].command == [
+            "sh",
+            "-c",
+            "exec milvus --config=$${MILVUS_CONFIG}",
+        ]
+        assert services["milvus"].args == ["--config", "/etc/milvus.yaml"]
+        assert services["etcd"].command == [
+            "sh",
+            "-c",
+            "exec wrapper --flag value",
+        ]
+        assert services["etcd"].args == ["etcd", "--data-dir", "/etcd"]
+
+    def test_compose_process_fields_resolve_host_variables(
+        self, builder, metadata, connection, monkeypatch
+    ):
+        monkeypatch.setenv(
+            "KZ_TEST_APP_ARGS", "--port 9999 --probe=$(CONTAINER_PROBE_PORT)"
+        )
+        monkeypatch.setenv("KZ_TEST_BIND_ADDRESS", "0.0.0.0")
+        monkeypatch.delenv("KZ_TEST_MISSING_BIND_ADDRESS", raising=False)
+        transformed = {
+            "services": {
+                "app": {
+                    "image": "registry.test/app:dev",
+                    "entrypoint": "python app.py $KZ_TEST_APP_ARGS",
+                    "command": [
+                        "serve",
+                        "--host=$KZ_TEST_BIND_ADDRESS",
+                        "--fallback=${KZ_TEST_MISSING_BIND_ADDRESS:-$KZ_TEST_BIND_ADDRESS}",
+                        "--literal=$$(CONTAINER_VALUE)",
+                    ],
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        assert payload.services[0].command == [
+            "python",
+            "app.py",
+            "--port",
+            "9999",
+            "--probe=$$(CONTAINER_PROBE_PORT)",
+        ]
+        assert payload.services[0].args == [
+            "serve",
+            "--host=0.0.0.0",
+            "--fallback=0.0.0.0",
+            "--literal=$$(CONTAINER_VALUE)",
+        ]
+
+    def test_compose_dollar_escapes_survive_kubelet_expansion(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "command": ["sh", "-c", "printf '%s' $$$$LITERAL"],
+                },
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        assert payload.services[0].args == [
+            "sh",
+            "-c",
+            "printf '%s' $$$$LITERAL",
+        ]
+
+    @pytest.mark.parametrize(
+        "command_value",
+        ["${KZ_TEST_MISSING_COMMAND:?required}", "$KZ_TEST_MISSING_COMMAND"],
+    )
+    def test_unresolvable_process_variable_names_service_and_field(
+        self, builder, metadata, connection, monkeypatch, command_value
+    ):
+        monkeypatch.delenv("KZ_TEST_MISSING_COMMAND", raising=False)
+        transformed = {
+            "services": {
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "command": ["run", command_value],
+                },
+            }
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="service 'worker': command contains an unresolvable Compose variable",
+        ):
+            builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+    def test_invalid_process_string_names_service_and_field(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "entrypoint": "sh -c 'unterminated",
+                },
+            }
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="service 'worker': invalid entrypoint string: No closing quotation",
+        ):
+            builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
     def test_x_kamiwaza_overrides_are_carried_into_service_spec(
         self, builder, metadata, connection
     ):
@@ -1136,7 +1853,15 @@ class TestHealthChecks:
         frontend = next(s for s in payload.services if s.name == "frontend")
 
         health_check = frontend.model_dump()["healthCheck"]
-        assert health_check["exec"]["command"][0] == "node"
+        command = health_check["exec"]["command"]
+        assert command[0] == "node"
+        assert "KAMIWAZA_ROUTING_MODE" in command[2]
+        assert "KAMIWAZA_APP_PATH" in command[2]
+        assert "NEXT_PUBLIC_APP_BASE_PATH" not in command[2]
+        assert "'/health'" in command[2]
+        assert "res.statusCode===404" in command[2]
+        assert "const fallback=base||'/'" in command[2]
+        assert "return probe(retry,'')" in command[2]
 
     def test_generic_frontend_without_node_hints_uses_root_http_probe(
         self, builder, metadata, connection
@@ -1242,9 +1967,7 @@ class TestHealthChecks:
         assert health_check["httpGet"] == {
             "path": "/",
             "port": 8000,
-        }, (
-            f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
-        )
+        }, f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
 
     def test_tool_type_primary_probes_sse(self, builder, connection):
         """ENG-3901 / F-013 (final): tool primary probes ``/sse`` — the

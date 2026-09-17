@@ -11,27 +11,31 @@ Tests cover:
 - TS11.008: DELETE /model_files/{model_file_id}/download - Cancel specific download
 - TS11.009: GET /model_files/{model_file_id}/memory_usage - Get file memory usage
 """
+
 from __future__ import annotations
 
 import pytest
-from uuid import UUID
 
 from kamiwaza_sdk.exceptions import APIError
-from kamiwaza_sdk.schemas.models.model_file import ModelFile, CreateModelFile, StorageType
+from kamiwaza_sdk.schemas.models.model_file import (
+    CreateModelFile,
+    ModelFile,
+    StorageType,
+)
 from kamiwaza_sdk.schemas.models.model_search import HubModelFileSearch
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
-
-CANONICAL_REPO = "mlx-community/Qwen3-4B-4bit"
 
 
 class TestModelFileReadOperations:
     """Tests for read-only model file operations."""
 
-    def test_list_model_files(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_list_model_files(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS11.001: GET /model_files/ - List all model files."""
         # Ensure at least one model exists with files
-        ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         files = live_kamiwaza_client.models.list_model_files()
         assert isinstance(files, list)
@@ -41,9 +45,11 @@ class TestModelFileReadOperations:
             assert isinstance(f, ModelFile)
             assert f.name is not None
 
-    def test_get_model_file_by_id(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_model_file_by_id(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS11.007: GET /model_files/{model_file_id} - Get file by ID."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         # Get files for this model
         files = live_kamiwaza_client.models.get_model_files_by_model_id(model.id)
@@ -56,9 +62,11 @@ class TestModelFileReadOperations:
         assert isinstance(retrieved, ModelFile)
         assert retrieved.id == file_id
 
-    def test_get_model_files_by_model_id(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_model_files_by_model_id(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """Test getting files by model ID."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         files = live_kamiwaza_client.models.get_model_files_by_model_id(model.id)
         assert isinstance(files, list)
@@ -71,12 +79,13 @@ class TestModelFileReadOperations:
 class TestModelFileSearch:
     """Tests for model file search operations."""
 
-    def test_search_hub_model_files_with_dict(self, live_kamiwaza_client) -> None:
-        """TS11.005: POST /model_files/search/ - Search with dict.
-        """
+    def test_search_hub_model_files_with_dict(
+        self, live_kamiwaza_client, deployable_model_target
+    ) -> None:
+        """TS11.005: POST /model_files/search/ - Search with dict."""
         search_request = {
             "hub": "hf",
-            "model": CANONICAL_REPO
+            "model": deployable_model_target.repo_id,
         }
 
         try:
@@ -88,11 +97,13 @@ class TestModelFileSearch:
                 pytest.skip(f"Model files search endpoint not available: {exc}")
             raise
 
-    def test_search_hub_model_files_with_schema(self, live_kamiwaza_client) -> None:
+    def test_search_hub_model_files_with_schema(
+        self, live_kamiwaza_client, deployable_model_target
+    ) -> None:
         """TS11.005: POST /model_files/search/ - Search with schema object."""
         search_request = HubModelFileSearch(
             hub="hf",
-            model=CANONICAL_REPO
+            model=deployable_model_target.repo_id,
         )
 
         try:
@@ -107,13 +118,20 @@ class TestModelFileSearch:
 class TestModelFileDownloadStatus:
     """Tests for download status operations."""
 
-    def test_get_download_status(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_download_status(
+        self,
+        live_kamiwaza_client,
+        ensure_model_lifecycle_target_ready,
+        deployable_model_target,
+    ) -> None:
         """TS11.003: GET /model_files/download_status/ - Get download status."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         try:
             # get_model_files_download_status requires a repo_model_id
-            status = live_kamiwaza_client.models.get_model_files_download_status(CANONICAL_REPO)
+            status = live_kamiwaza_client.models.get_model_files_download_status(
+                deployable_model_target.repo_id
+            )
             # Should return a list of download status objects
             assert isinstance(status, list)
         except APIError as exc:
@@ -122,12 +140,17 @@ class TestModelFileDownloadStatus:
             raise
 
     def test_get_model_download_status_comprehensive(
-        self, live_kamiwaza_client, ensure_repo_ready
+        self,
+        live_kamiwaza_client,
+        ensure_model_lifecycle_target_ready,
+        deployable_model_target,
     ) -> None:
         """Test the comprehensive download status method."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
-        status = live_kamiwaza_client.models.get_model_download_status(CANONICAL_REPO)
+        status = live_kamiwaza_client.models.get_model_download_status(
+            deployable_model_target.repo_id
+        )
         assert isinstance(status, dict)
         assert status.get("found") is True
         assert "model" in status
@@ -137,9 +160,11 @@ class TestModelFileDownloadStatus:
 class TestModelFileMemoryUsage:
     """Tests for memory usage operations."""
 
-    def test_get_model_file_memory_usage(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_model_file_memory_usage(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS11.009: GET /model_files/{model_file_id}/memory_usage."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         files = live_kamiwaza_client.models.get_model_files_by_model_id(model.id)
         if not files:
@@ -156,7 +181,9 @@ class TestModelFileMemoryUsage:
             pytest.skip("No suitable file for memory usage test")
 
         try:
-            usage = live_kamiwaza_client.models.get_model_file_memory_usage(file_for_test.id)
+            usage = live_kamiwaza_client.models.get_model_file_memory_usage(
+                file_for_test.id
+            )
             # Memory usage should be a number (int)
             assert isinstance(usage, (int, float))
         except APIError as exc:
@@ -164,9 +191,11 @@ class TestModelFileMemoryUsage:
                 pytest.skip("Memory usage endpoint not available")
             raise
 
-    def test_get_model_memory_usage(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_model_memory_usage(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """Test model-level memory usage - GET /models/{model_id}/memory_usage."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         try:
             usage = live_kamiwaza_client.models.get_model_memory_usage(model.id)
@@ -197,8 +226,8 @@ class TestModelFileCreateAndDelete:
     """Tests for model file create and delete operations."""
 
     def test_create_model_file(self, live_kamiwaza_client) -> None:
-        """TS11.002: POST /model_files/ - Create model file.
-        """
+        """TS11.002: POST /model_files/ - Create model file."""
+        created_file = None
         try:
             # Create a test model file
             create_payload = CreateModelFile(
@@ -206,7 +235,7 @@ class TestModelFileCreateAndDelete:
                 size=1024,
                 storage_type=StorageType.SCRATCH,
                 storage_host="localhost",
-                storage_location="/tmp/sdk-test-file.bin"
+                storage_location="/tmp/sdk-test-file.bin",
             )
 
             created_file = live_kamiwaza_client.models.create_model_file(create_payload)
@@ -214,17 +243,18 @@ class TestModelFileCreateAndDelete:
             assert isinstance(created_file, ModelFile)
             assert created_file.name == "sdk-test-file.bin"
             assert created_file.id is not None
-
-            # Cleanup
-            try:
-                live_kamiwaza_client.models.delete_model_file(created_file.id)
-            except Exception:
-                pass
-
         except APIError as exc:
             if exc.status_code in (403, 401):
                 pytest.skip("Insufficient permissions for model file creation")
             raise
+        finally:
+            if created_file is not None:
+                live_kamiwaza_client.models.delete_model_file(created_file.id)
+                remaining_ids = {
+                    model_file.id
+                    for model_file in live_kamiwaza_client.models.list_model_files()
+                }
+                assert created_file.id not in remaining_ids
 
     def test_delete_nonexistent_model_file(self, live_kamiwaza_client) -> None:
         """TS11.006: DELETE /model_files/{id} - Test deleting non-existent file."""
@@ -238,17 +268,19 @@ class TestModelFileCreateAndDelete:
         except APIError as exc:
             # Should get 404 or 500 for non-existent file
             assert exc.status_code in (404, 500, 422)
-        except Exception as exc:
+        except Exception:
             # Some other error is acceptable (e.g., database error)
             pass
 
-    def test_delete_existing_model_file(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_delete_existing_model_file(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS11.006: DELETE /model_files/{id} - Test delete endpoint exists.
 
         Note: We don't actually delete files from the canonical test model.
         This test verifies the delete endpoint is accessible.
         """
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
         files = live_kamiwaza_client.models.get_model_files_by_model_id(model.id)
 
         if not files:
@@ -292,13 +324,15 @@ class TestModelFileDownloadOperations:
             raise
 
     @pytest.mark.skip(reason="Cancelling downloads may affect other tests")
-    def test_cancel_specific_download(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_cancel_specific_download(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS11.008: DELETE /model_files/{model_file_id}/download.
 
         This endpoint cancels a specific file's download.
         Skipped by default - requires an active download to meaningfully test.
         """
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
         files = live_kamiwaza_client.models.get_model_files_by_model_id(model.id)
 
         if not files:

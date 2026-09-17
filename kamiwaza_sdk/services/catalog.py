@@ -8,6 +8,8 @@ from urllib.parse import quote
 from pydantic import BaseModel
 
 from .base_service import BaseService
+from .federation_credentials import federation_credential_headers
+from .jobs_routing import _validate_target_cluster
 from ..exceptions import APIError
 from ..schemas.catalog import (
     Container,
@@ -171,16 +173,33 @@ class DatasetClient(_ByUrnClient):
                     return str(value)
         return str(response)
 
-    def list(self, query: Optional[str] = None) -> List[Dataset]:
-        """List catalogued datasets, optionally narrowed by a search query.
+    def list(
+        self,
+        query: Optional[str] = None,
+        *,
+        target_cluster: Optional[str] = None,
+    ) -> List[Dataset]:
+        """List local datasets, or receiver-authorized datasets through mesh.
 
         Args:
             query: Free-text filter. Omit it to list every dataset.
+            target_cluster: Federation selector to read through instead of the
+                local catalog. Omit it for local datasets.
 
         Returns:
             List[Dataset]: Matching datasets.
         """
-        return self._list_by_query(Dataset, query)
+        params = {"query": query} if query else None
+        path = f"{self._BASE_PATH}/"
+        request_kwargs: Dict[str, Any] = {"params": params}
+        if target_cluster is not None:
+            selector = _validate_target_cluster(target_cluster)
+            path = f"/mesh/{quote(selector, safe='')}/api{path}"
+            headers = federation_credential_headers(selector)
+            if headers:
+                request_kwargs["headers"] = headers
+        response = self.client.get(path, **request_kwargs)
+        return [Dataset.model_validate(item) for item in response]
 
     def get(self, dataset_urn: str) -> Dataset:
         """Fetch one catalogued dataset by its URN.

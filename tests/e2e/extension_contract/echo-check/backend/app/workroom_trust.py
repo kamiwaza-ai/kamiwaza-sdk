@@ -2,8 +2,8 @@
 
 Three concentric layers, weakest to strongest:
 
-1. **Network isolation** — the platform's routing layer (Traefik / istio
-   ingress + pod NetworkPolicies) is the *primary* trust boundary. The
+1. **Network isolation** — provider-owned ingress plus pod NetworkPolicies is
+   the platform's *primary* trust boundary. The
    container port is not externally exposed in any deployed configuration;
    a caller capable of reaching the port directly is already inside the
    pod network and the platform's documented threat model treats them as
@@ -77,7 +77,7 @@ def runtime_prefix() -> str:
     return normalized.rstrip("/") or "/"
 
 
-# Header name the trusted proxy (Traefik / istio ingress / similar) injects so
+# Header name the configured platform ingress injects so
 # the app can distinguish a real routed request from direct container traffic.
 # Fixed name; the SECRET that must match is in KAMIWAZA_TRUSTED_PROXY_SECRET.
 TRUSTED_PROXY_HEADER_NAME = "x-kamiwaza-trusted-proxy"

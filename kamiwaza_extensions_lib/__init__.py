@@ -8,7 +8,7 @@ lightweight async library — not the full SDK with its sync HTTP client
 and 20+ service modules.
 """
 
-__version__ = "0.4.4"
+__version__ = "0.5.0"
 
 from .auth import (
     forward_auth_headers,
@@ -37,6 +37,7 @@ from .identity import (
 )
 from .models import AvailableModel, get_model_client, list_available_models
 from .platform import platform_request
+from .runtime import RuntimeRouting, normalize_app_path, with_app_path
 from .session import create_session_router
 from .url import backend_runtime_base, public_base_url
 
@@ -67,4 +68,7 @@ __all__ = [
     "backend_runtime_base",
     "public_base_url",
     "platform_request",
+    "RuntimeRouting",
+    "normalize_app_path",
+    "with_app_path",
 ]

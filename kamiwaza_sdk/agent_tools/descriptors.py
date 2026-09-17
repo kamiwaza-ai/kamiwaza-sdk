@@ -89,6 +89,15 @@ _READ_VERBS = frozenset(
         "admin",
         "auto",
         "declare",
+        # The connector-surface reads that arrived with the surface browsing
+        # API. Each one reads and returns: `browse_surface` lists a surface's
+        # items, `fetch_surface_content` reads one node by its opaque id, and
+        # `verify_connection` probes the provider under the caller's own stored
+        # credential and reports per-capability results. The probe counts as a
+        # read because nothing it touches survives the call.
+        "browse",
+        "fetch",
+        "verify",
     }
 )
 
@@ -444,10 +453,18 @@ class DescriptionSource(str, Enum):
     ABSENT = "absent"
 
 
-#: File name of the committed interface document, shipped as package data so a
-#: consumer that installed the wheel can read it. One copy: this is the same
-#: file the drift gate checks, not a vendored duplicate (Principle V).
-_INTERFACE_DOCUMENT = "kamiwaza-openapi-spec.json"
+#: File name of the generated description table, shipped as package data so a
+#: consumer that installed the wheel can read it.
+#:
+#: Generated from the vendored platform document by
+#: ``scripts/regenerate_interface_descriptions.py``, and deliberately *not*
+#: that document itself. The document is a development artifact — the drift
+#: gate's input — and only its ``summary`` and ``description`` fields are read
+#: at runtime: 41 KiB of 278 KiB when this split was made. Shipping the whole
+#: thing put the rest of it in every install and made a vendored snapshot of
+#: the platform's document look like part of this package's API surface, which
+#: a consumer could read and mistake for the platform's current truth.
+_INTERFACE_DOCUMENT = "INTERFACE_DESCRIPTIONS.json"
 
 _REQUEST_CALL = re.compile(
     r'_request\(\s*["\'](GET|POST|PUT|PATCH|DELETE)["\']\s*,\s*f?["\']([^"\']*)["\']'
@@ -477,12 +494,12 @@ def _normalise_path(path: str) -> str:
 
 
 def _read_interface_document() -> str | None:
-    """Read the packaged interface document, or ``None`` when it is not there.
+    """Read the generated description table, or ``None`` when it is not there.
 
     Returns:
-        The document's text, or ``None`` when the package data is missing —
-        which degrades description resolution to docstrings rather than
-        failing the whole surface.
+        The table's text, or ``None`` when the package data is missing — which
+        degrades description resolution to docstrings rather than failing the
+        whole surface.
     """
     try:
         return (
@@ -496,31 +513,34 @@ def _read_interface_document() -> str | None:
 
 @lru_cache(maxsize=1)
 def interface_descriptions() -> dict[tuple[str, str], tuple[str | None, str | None]]:
-    """Return the interface document's descriptions, keyed by method and path.
+    """Return the platform's own wording, keyed by method and path.
 
-    Cached: the document is 280KB of JSON and its content cannot change inside
-    a process.
+    Reads the generated table rather than the vendored document, so the paths
+    arrive already normalised and no process pays to walk 278 KiB of JSON for
+    the 233 pairs of strings it wants. Cached because the package data cannot
+    change inside a process.
 
     Returns:
         Mapping from ``(http_method, normalised_path)`` to the operation's
-        ``(description, summary)``. Empty when the document is not installed,
+        ``(description, summary)``, either of which is ``None`` when the
+        platform states only the other. Empty when the table is not installed,
         which degrades description resolution to docstrings rather than failing
         the surface.
     """
     raw = _read_interface_document()
     if raw is None:
         return {}
-    document: dict[str, Any] = json.loads(raw)
-    return {
-        (http_method.upper(), _normalise_path(path)): (
-            operation.get("description"),
-            operation.get("summary"),
+    table: dict[str, dict[str, str]] = json.loads(raw)
+    resolved: dict[tuple[str, str], tuple[str | None, str | None]] = {}
+    for signature, stated in table.items():
+        http_method, _, path = signature.partition(" ")
+        if not path:
+            continue
+        resolved[(http_method.upper(), path)] = (
+            stated.get("description"),
+            stated.get("summary"),
         )
-        for path, operations in document.get("paths", {}).items()
-        if isinstance(operations, dict)
-        for http_method, operation in operations.items()
-        if isinstance(operation, dict)
-    }
+    return resolved
 
 
 def _request_signature(service: Any, method_name: str) -> tuple[str, str] | None:

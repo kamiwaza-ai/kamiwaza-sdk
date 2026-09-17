@@ -99,3 +99,39 @@ def test_uac_16_referenced_by_every_scenario():
         assert (
             "UAC-16" in runbook["uacs"]
         ), f"{scenario_id}: must reference UAC-16 (full-loop umbrella)"
+
+
+REVIEWED_CAPABILITY_MAPPING = {
+    "S1": ["platform.app-generation-path", "workrooms.app-runtime-binding"],
+    "S2": ["workrooms.app-launch"],
+    "S3": ["platform.app-generation-path", "connectors.managed-data-sources"],
+    "S4": ["platform.app-generation-path", "tools.mcp-tool-shed"],
+    "S5": ["platform.app-generation-path", "workrooms.session-scoping"],
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scenario_id", sorted(EXPECTED_SCENARIO_IDS))
+def test_every_runbook_declares_a_non_empty_capability_mapping(scenario_id):
+    """ENG-11522: no runbook may emit evidence that joins to nothing.
+
+    capability_map.yaml holds the reverse direction to the same bar --
+    "EXPLICIT, REVIEWED, and NEVER INFERRED" -- and treats an empty mapping
+    as a reviewed decision that must be written down. Runbooks had no
+    equivalent, so an absent key was indistinguishable from a considered one.
+    """
+    ids = load_runbook(scenario_id).get("capability_ids")
+    assert ids, f"{scenario_id} declares no capability_ids"
+    assert all(isinstance(i, str) and i for i in ids)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scenario_id", sorted(EXPECTED_SCENARIO_IDS))
+def test_runbook_capability_ids_match_the_reviewed_mapping(scenario_id):
+    """Pin the exact mapping so a near-miss id cannot drift in silently.
+
+    The evidence schema warns that a near-miss (e.g. "workroom-app-launch"
+    for "workrooms.app-launch") is a different id that silently joins to
+    nothing, and the harness's format check cannot catch it.
+    """
+    assert load_runbook(scenario_id)["capability_ids"] == REVIEWED_CAPABILITY_MAPPING[scenario_id]

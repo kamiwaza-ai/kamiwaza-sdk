@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -59,15 +60,26 @@ def _conn(url: str = "https://kamiwaza.test/api"):
     return SimpleNamespace(url=url)
 
 
+def test_ts_8_legacy_kind_registry_detector_surface_is_absent():
+    from kamiwaza_extensions import registry_resolution
+    from kamiwaza_extensions.commands import dev
+
+    assert not hasattr(registry_resolution, "detect_kind_registry")
+    assert not hasattr(dev, "_detect_kind_registry")
+    assert "kind_registry_detector" not in inspect.signature(
+        registry_resolution.resolve_dev_registries
+    ).parameters
+    assert "kind_registry_detector" not in inspect.signature(
+        registry_resolution.resolve_image_registry
+    ).parameters
+
+
 class TestImageRegistryResolution:
     @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
     def test_env_registry_wins(self, mock_core, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_REGISTRY", "env-registry:5000")
 
-        resolution = resolve_dev_registries(
-            _conn(),
-            kind_registry_detector=lambda: "kind-registry:5001",
-        )
+        resolution = resolve_dev_registries(_conn())
 
         assert resolution.image_registry == "env-registry:5000"
         assert resolution.image_registry_source == "KAMIWAZA_REGISTRY"
@@ -81,11 +93,8 @@ class TestImageRegistryResolution:
         "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
         return_value=False,
     )
-    def test_core_config_precedes_kind(self, _mock_vm, _mock_core):
-        resolution = resolve_dev_registries(
-            _conn(),
-            kind_registry_detector=lambda: "localhost:5001",
-        )
+    def test_core_config_precedes_connection_convention(self, _mock_vm, _mock_core):
+        resolution = resolve_dev_registries(_conn())
 
         assert resolution.image_registry == "127.0.0.1:30010"
         assert resolution.image_registry_source == "kamiwaza/core-config"
@@ -98,17 +107,11 @@ class TestImageRegistryResolution:
         "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
         return_value=False,
     )
-    def test_falls_back_to_kind_then_convention(self, _mock_vm, _mock_core):
-        resolution = resolve_dev_registries(
-            _conn(),
-            kind_registry_detector=lambda: "localhost:5001",
-        )
-        assert resolution.image_registry == "localhost:5001"
+    def test_falls_back_to_connection_convention(self, _mock_vm, _mock_core):
+        resolution = resolve_dev_registries(_conn())
+        assert resolution.image_registry == "registry.kamiwaza.test"
 
-        resolution = resolve_dev_registries(
-            _conn("https://cluster.example/api"),
-            kind_registry_detector=lambda: None,
-        )
+        resolution = resolve_dev_registries(_conn("https://cluster.example/api"))
         assert resolution.image_registry == "registry.cluster.example"
 
     @patch(
@@ -120,20 +123,12 @@ class TestImageRegistryResolution:
         return_value=False,
     )
     def test_core_config_skipped_for_remote_connection(self, _mock_vm, mock_core):
-        # ENG-5719: for a non-local connection neither kubectl-derived local
-        # lookup may be trusted -- core-config AND the Kind detector both read
-        # the developer's current kube context, which may point at an unrelated
-        # local cluster. Both must be skipped and the connection-derived
-        # registry used instead. The Kind detector returns a value here to prove
-        # it is gated (not merely returning None).
-        kind_detector = MagicMock(return_value="localhost:5001")
-        resolution = resolve_dev_registries(
-            _conn("https://api.example.com/api"),
-            kind_registry_detector=kind_detector,
-        )
+        # ENG-5719: for a non-local connection, kubectl-derived core-config
+        # discovery may point at an unrelated local cluster. Skip it and use
+        # the connection-derived registry.
+        resolution = resolve_dev_registries(_conn("https://api.example.com/api"))
         assert resolution.image_registry == "registry.api.example.com"
         mock_core.assert_not_called()
-        kind_detector.assert_not_called()
 
     @patch(
         "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
@@ -147,14 +142,9 @@ class TestImageRegistryResolution:
         # Raw IPs still disable TLS verification, but registry discovery must
         # not trust the current kube context for non-loopback LAN IPs. That
         # context may point at an unrelated local cluster.
-        kind_detector = MagicMock(return_value="localhost:5001")
-        resolution = resolve_dev_registries(
-            _conn("https://192.168.1.50/api"),
-            kind_registry_detector=kind_detector,
-        )
+        resolution = resolve_dev_registries(_conn("https://192.168.1.50/api"))
         assert resolution.image_registry == "registry.192.168.1.50"
         mock_core.assert_not_called()
-        kind_detector.assert_not_called()
 
     @patch(
         "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
@@ -167,10 +157,7 @@ class TestImageRegistryResolution:
     def test_core_config_used_for_local_connection(self, _mock_vm, mock_core):
         # Local/dev connection (default kamiwaza.test): the core-config lookup
         # is trusted, since kubectl plausibly targets the same local cluster.
-        resolution = resolve_dev_registries(
-            _conn("https://kamiwaza.test/api"),
-            kind_registry_detector=lambda: None,
-        )
+        resolution = resolve_dev_registries(_conn("https://kamiwaza.test/api"))
         assert resolution.image_registry == "127.0.0.1:30010"
         mock_core.assert_called_once()
 
@@ -201,7 +188,7 @@ class TestPushRegistryResolution:
         # selection now keys on the actual engine that will push, not
         # just on which binaries are available.)
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None, push_engine="docker"
+            _conn(), push_engine="docker"
         )
 
         assert resolution.image_registry == "127.0.0.1:30010"
@@ -227,7 +214,7 @@ class TestPushRegistryResolution:
         # AND a podman machine is running, the podman alias is what the
         # host's resolver can reach (the machine sets up /etc/hosts).
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None, push_engine="podman"
+            _conn(), push_engine="podman"
         )
 
         assert resolution.push_registry == "host.containers.internal:30010"
@@ -254,7 +241,7 @@ class TestPushRegistryResolution:
         # via whatever port-forwarder bound it (Docker Desktop, Lima).
         # So leave the registry alone.
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None, push_engine="podman"
+            _conn(), push_engine="podman"
         )
 
         assert resolution.push_registry == "127.0.0.1:30010"
@@ -280,52 +267,11 @@ class TestPushRegistryResolution:
         """
 
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None, push_engine="docker"
+            _conn(), push_engine="docker"
         )
 
         assert resolution.push_registry == "host.docker.internal:30010"
         assert resolution.push_registry_source == "build VM loopback alias"
-
-    @patch(
-        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
-        return_value=None,
-    )
-    @patch(
-        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
-        return_value=True,
-    )
-    @patch(
-        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
-        return_value=None,
-    )
-    def test_kind_plus_docker_desktop_plus_podman_uses_host_localhost(
-        self, _mock_podman, _mock_vm, _mock_core
-    ):
-        """R6 regression case (user-reported, kamiwaza v0.13.1):
-        kind exposes ``localhost:5001`` on the Mac host via Docker
-        Desktop's port-forwarder. User has Docker Desktop running and
-        podman also installed (via brew). insecure=True selects podman
-        as the push engine. Previously the resolver chose
-        ``host.docker.internal:5001`` (because docker daemon was
-        working), but podman from host CLI cannot resolve that alias,
-        so the push died at the auth-ping step with
-        ``dial tcp: lookup host.docker.internal: no such host``.
-
-        With R6, the resolver checks which engine will *actually* push
-        and only remaps when the chosen engine can resolve the alias.
-        Podman with no machine → no remap, leaving ``localhost:5001``
-        intact (reachable from host CLI via Docker Desktop's port-
-        forwarder)."""
-
-        resolution = resolve_dev_registries(
-            _conn(),
-            kind_registry_detector=lambda: "localhost:5001",
-            push_engine="podman",
-        )
-
-        assert resolution.image_registry == "localhost:5001"
-        assert resolution.push_registry == "localhost:5001"
-        assert resolution.push_split is False
 
     @patch(
         "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
@@ -339,7 +285,7 @@ class TestPushRegistryResolution:
         monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "push.example:5000")
 
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None
+            _conn()
         )
 
         assert resolution.push_registry == "push.example:5000"
@@ -368,10 +314,10 @@ class TestExtensionRegistryResolution:
         # The extension registry (the node-routable VM alias) is embedded AND is
         # the push target: the docker daemon-in-VM reaches the host registry via
         # the alias. Pushing to 127.0.0.1 would hit the VM's own loopback, not
-        # the host kind-registry -- so there is no split. The model registry
+        # the host registry -- so there is no split. The model registry
         # (127.0.0.1:30010) is ignored for extension images.
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None, push_engine="docker"
+            _conn(), push_engine="docker"
         )
 
         assert resolution.image_registry == "host.docker.internal:5001"
@@ -399,7 +345,7 @@ class TestExtensionRegistryResolution:
             return_value="127.0.0.1:30010",
         ) as mock_core:
             resolution = resolve_dev_registries(
-                _conn(), kind_registry_detector=lambda: None, push_engine="docker"
+                _conn(), push_engine="docker"
             )
 
         assert resolution.image_registry == "host.docker.internal:5001"
@@ -427,7 +373,7 @@ class TestExtensionRegistryResolution:
         # the advertised docker alias (the node pulls via certs.d); only the
         # push target is remapped, so the engine-match validation passes.
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None, push_engine="podman"
+            _conn(), push_engine="podman"
         )
 
         assert resolution.image_registry == "host.docker.internal:5001"
@@ -450,7 +396,7 @@ class TestExtensionRegistryResolution:
         # Native (non-VM) build host reaches the alias directly; no loopback
         # remap, so push targets the same registry as the image ref.
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None, push_engine="docker"
+            _conn(), push_engine="docker"
         )
 
         assert resolution.image_registry == "host.docker.internal:5001"
@@ -465,19 +411,19 @@ class TestEnvRegistryNormalization:
     def test_strips_scheme_and_trailing_slash(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_REGISTRY", "https://reg.example:5000/")
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None
+            _conn()
         )
         assert resolution.image_registry == "reg.example:5000"
 
     def test_rejects_registry_with_path(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_REGISTRY", "reg.example:5000/extra/path")
         with pytest.raises(ValueError, match="KAMIWAZA_REGISTRY"):
-            resolve_dev_registries(_conn(), kind_registry_detector=lambda: None)
+            resolve_dev_registries(_conn())
 
     def test_rejects_empty_value_after_normalization(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "https:///")
         with pytest.raises(ValueError, match="KAMIWAZA_PUSH_REGISTRY"):
-            resolve_dev_registries(_conn(), kind_registry_detector=lambda: None)
+            resolve_dev_registries(_conn())
 
     @pytest.mark.parametrize(
         "bad_value,reason",
@@ -498,7 +444,7 @@ class TestEnvRegistryNormalization:
     def test_rejects_malformed_values(self, monkeypatch, bad_value, reason):
         monkeypatch.setenv("KAMIWAZA_REGISTRY", bad_value)
         with pytest.raises(ValueError, match=reason):
-            resolve_dev_registries(_conn(), kind_registry_detector=lambda: None)
+            resolve_dev_registries(_conn())
 
 
 class TestLoopbackDetection:
@@ -808,7 +754,6 @@ class TestExplicitVmAliasValidation:
 
         resolution = resolve_dev_registries(
             _conn(),
-            kind_registry_detector=lambda: None,
             push_engine="podman",
         )
 

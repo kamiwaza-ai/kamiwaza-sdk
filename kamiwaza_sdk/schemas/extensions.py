@@ -79,7 +79,15 @@ class KamiwazaIntegrationSpec(BaseModel):
     public_api_url: Optional[str] = None
     origin: Optional[str] = None
     use_auth: str = Field(default="true")
-    tls_reject_unauthorized: Optional[str] = None
+    tls_reject_unauthorized: Optional[str] = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Legacy local compatibility attribute, omitted from API requests. "
+            "Configure TLS through each service's KAMIWAZA_VERIFY_SSL and "
+            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED environment values."
+        ),
+    )
 
 
 class NetworkingSpec(BaseModel):
@@ -179,8 +187,11 @@ class PatchServiceSpec(BaseModel):
 
     name: str
     image: Optional[ImagePatch] = None
+    primary: Optional[bool] = None
     env: Optional[List[Dict[str, Any]]] = None
     replicas: Optional[int] = Field(None, ge=0)
+    command: Optional[List[str]] = None
+    args: Optional[List[str]] = None
     persistence: Optional[Dict[str, Any]] = None
     volumes: Optional[List[Dict[str, Any]]] = None
     volume_mounts: Optional[List[Dict[str, Any]]] = Field(

@@ -114,6 +114,30 @@ def test_wait_tolerates_410_result_returns_status_only(mock_client) -> None:
     assert result.result is None
 
 
+@pytest.mark.parametrize("status", ["FAILED", "STOPPED", "CANCELED"])
+def test_wait_tolerates_409_result_for_unsuccessful_terminal_status(
+    mock_client, status: str
+) -> None:
+    """Core exposes result markers only for SUCCEEDED jobs."""
+    from kamiwaza_sdk.exceptions import APIError
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = f"job-{status.lower()}"
+    mock_client.expect("GET", f"/cluster/jobs/{jid}/status", {"status": status})
+    mock_client.raise_on(
+        "GET",
+        f"/cluster/jobs/{jid}/result",
+        APIError("result requires success", status_code=409),
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.status == status
+    assert result.job_id == jid
+    assert result.result is None
+
+
 def test_wait_promotes_audit_actor_and_nests_bare_marker(mock_client) -> None:
     """A bare marker (no job_id+status wrapper) is the job's domain output: it
     nests under .result, with audit_actor — the OBO-identity bridge — the sole

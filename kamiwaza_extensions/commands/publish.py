@@ -16,6 +16,7 @@ from kamiwaza_extensions.compose_transformer import (
     _repo_part,
     compute_canonical_refs,
 )
+from kamiwaza_extensions.contract_enforcement import enforce_cli_contracts
 from kamiwaza_extensions.extension_detector import ExtensionInfo, infer_extension_type
 
 console = Console(stderr=True)
@@ -810,6 +811,8 @@ def run_publish(
             "or run from inside a specific extension directory."
         )
         raise typer.Exit(code=1) from exc
+
+    enforce_cli_contracts(infos, console=console)
 
     for info in infos:
         # Connectors have no compose and aren't built by kz-ext — they publish

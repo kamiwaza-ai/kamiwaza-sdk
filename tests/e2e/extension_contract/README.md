@@ -14,7 +14,7 @@ behavior. Its main job is to fail fast when the platform contract regresses.
 2. Required images can be pulled (or local fallback honored).
 3. Apps can be deployed through App Garden.
 4. Deployments reach a ready state with a public `access_path`.
-5. Routed HTTP traffic responds successfully through Traefik.
+5. Routed HTTP traffic responds successfully through the configured platform ingress.
 6. The forwarded-identity headers reach the extension without spoofing.
 7. The session router and `require_auth` dependency behave per contract.
 8. Deployments can be cleaned up.

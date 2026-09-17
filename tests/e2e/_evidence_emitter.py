@@ -1,21 +1,27 @@
 """Opt-in scenario-evidence.v2 emitter for the existing e2e/live suite.
 
 ENG-10026 (T3.7): with ``--emit-evidence`` AND a build identity
-(``--build`` / ``KAMIWAZA_BUILD``), this pytest plugin groups the run's
+(``--build`` / ``KAMIWAZA_BUILD``, plus ``KAMIWAZA_RELEASE`` for the release
+segment), this pytest plugin groups the run's
 test outcomes by the reviewed entries in ``tests/e2e/capability_map.yaml``
 and, after the session, writes one ``scenario-evidence.v2`` record per
 entry that saw at least one matched test run to a non-skipped outcome,
 into ``tests/e2e/evidence-out/`` (gitignored). Records carry
-``evidence_provenance: "pre-existing"`` — they harvest what the existing
-suite already demonstrates; they do not author new coverage.
+``evidence_provenance: "pre-existing"`` by default — the map exists to
+harvest what the existing suite already demonstrates. An entry may override
+it with ``evidence_provenance: cycle-authored`` where the test it names was
+written within the cycle *to* evidence the capability; stamping such a test
+"pre-existing" would misreport where the evidence came from.
 
 Guarantees:
 
 * Without ``--emit-evidence`` the plugin is never registered — zero
   behavior change for a normal run.
-* ``--emit-evidence`` without a build identity is a refusal
+* ``--emit-evidence`` without a *usable* build identity is a refusal
   (``pytest.UsageError``), mirroring the scenario harness's G1 stance:
-  evidence that does not name its build is not evidence.
+  evidence that does not name its build is not evidence, and a stamp no
+  version query can reach names nothing anyone asks for (ENG-10715).
+  Build identities are version-first — see ``scenarios/build_identity.py``.
 * Mapping is explicit, never inferred: a test matched by no map entry
   emits nothing, and a map entry none of whose tests ran — or whose
   tests all skipped — emits nothing.
@@ -66,12 +72,27 @@ DEFAULT_OUT_DIR = E2E_DIR / "evidence-out"
 
 PLUGIN_NAME = "kamiwaza-evidence-emitter"
 MARKER_PREFIX = "marker:"
-# The accountable actor for pre-existing automated evidence is the suite
-# itself; human sign-off happens downstream on the kit side.
-SIGN_OFF_ACTOR = "automated e2e suite (pre-existing evidence)"
+
+
+# The accountable actor for automated evidence is the suite itself; human
+# sign-off happens downstream on the kit side. The parenthetical restates the
+# record's own `evidence_provenance`, so it is derived from that value rather
+# than written twice - a `cycle-authored` record carrying a "(pre-existing
+# evidence)" actor contradicts itself, and nothing downstream would catch it:
+# both forms validate.
+def sign_off_actor(evidence_provenance: str) -> str:
+    """The actor string for a record of this provenance.
+
+    ``pre-existing`` yields exactly the literal every earlier record carries,
+    so an already-collected corpus stays byte-comparable.
+    """
+    return f"automated e2e suite ({evidence_provenance} evidence)"
+
 
 _REQUIRED_ENTRY_KEYS = frozenset({"pattern", "capability_ids", "scenario_name"})
-_OPTIONAL_ENTRY_KEYS = frozenset({"exclude"})
+_OPTIONAL_ENTRY_KEYS = frozenset(
+    {"exclude", "evidence_provenance", "unverified_operations"}
+)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 # Exit codes that mean the run did not finish the work it was asked to do.
@@ -107,6 +128,8 @@ class MapEntry:
     scenario_name: str
     capability_ids: tuple[str, ...]
     exclude: tuple[str, ...] = ()
+    evidence_provenance: str = "pre-existing"
+    unverified_operations: tuple[str, ...] = ()
 
     @property
     def scenario_id(self) -> str:
@@ -173,6 +196,10 @@ def _parse_entry(item: object, i: int, *, source: str) -> MapEntry:
         scenario_name=item["scenario_name"],
         capability_ids=cap_ids,
         exclude=_parse_exclude(item.get("exclude", []), i, source=source),
+        evidence_provenance=_parse_provenance(item, i, source=source),
+        unverified_operations=_parse_unverified_operations(
+            item.get("unverified_operations", []), i, source=source
+        ),
     )
     if not entry.scenario_id:
         # Caught here rather than at session finish, where the whole run would
@@ -206,11 +233,63 @@ def _require_entry_keys(item: dict, i: int, *, source: str) -> None:
         )
 
 
+def _parse_provenance(item: dict, i: int, *, source: str) -> str:
+    """Validate an entry's declared provenance, defaulting to ``pre-existing``.
+
+    The map was built to harvest evidence that pre-dates the cycle, and that
+    stays the default. But an entry may name a test authored *within* the
+    cycle specifically to evidence a capability, and stamping that
+    ``pre-existing`` misreports where the evidence came from — a distinction
+    the ``capability-kit`` repo consumes (its ``scripts/sdk_reference.py``
+    surfaces it per method and its ``scripts/render_sign_off.py`` reads it;
+    neither lives here).
+
+    The accepted set is :data:`harness.EVIDENCE_PROVENANCES` rather than a
+    local copy, so this cannot drift from the schema the record is validated
+    against.
+    """
+
+    value = item.get("evidence_provenance")
+    if value is None:
+        # Only an ABSENT key defaults. A present-but-empty declaration
+        # (`evidence_provenance:` or an explicit `null`) is someone reaching
+        # for the field and getting nothing - silently reading that as
+        # "pre-existing" mislabels exactly the evidence this field exists to
+        # label correctly.
+        if "evidence_provenance" in item:
+            raise ValueError(
+                f"{source}: entry[{i}].evidence_provenance is present but empty; "
+                f"omit the key to accept the default, or name one of "
+                f"{sorted(harness.EVIDENCE_PROVENANCES)}"
+            )
+        return "pre-existing"
+    if not isinstance(value, str) or value not in harness.EVIDENCE_PROVENANCES:
+        raise ValueError(
+            f"{source}: entry[{i}].evidence_provenance must be one of "
+            f"{sorted(harness.EVIDENCE_PROVENANCES)}; got {value!r}"
+        )
+    return value
+
+
 def _parse_exclude(value: object, i: int, *, source: str) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ValueError(f"{source}: entry[{i}].exclude must be a list of nodeid globs")
     for j, glob in enumerate(value):
         _require_non_empty_str(glob, f"entry[{i}].exclude[{j}]", source=source)
+    return tuple(value)
+
+
+def _parse_unverified_operations(
+    value: object, i: int, *, source: str
+) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"{source}: entry[{i}].unverified_operations must be a list")
+    for j, operation in enumerate(value):
+        _require_non_empty_str(
+            operation, f"entry[{i}].unverified_operations[{j}]", source=source
+        )
+    if len(set(value)) != len(value):
+        raise ValueError(f"{source}: entry[{i}].unverified_operations has duplicates")
     return tuple(value)
 
 
@@ -260,7 +339,8 @@ def add_evidence_options(parser: pytest.Parser) -> None:
         help=(
             "After the run, emit one scenario-evidence.v2 record per "
             "capability_map.yaml entry whose tests ran, as pre-existing "
-            "evidence. Requires a build identity (--build / KAMIWAZA_BUILD)."
+            "evidence. Requires a version-first build identity "
+            "(--build / KAMIWAZA_BUILD, with KAMIWAZA_RELEASE for the release)."
         ),
     )
     group.addoption(
@@ -390,6 +470,15 @@ class EvidenceEmitterPlugin:
                     detail=f"pytest outcome: {outcome.status}",
                 )
             )
+        for operation in entry.unverified_operations:
+            steps.append(
+                harness.StepResult(
+                    name=f"required_operation:{operation}",
+                    status="skipped",
+                    duration_s=0.0,
+                    detail=f"required operation not exercised: {operation}; no mapped test",
+                )
+            )
         return steps
 
     def _write_record(
@@ -416,13 +505,19 @@ class EvidenceEmitterPlugin:
             "started_at": self._started_at,
             "finished_at": finished_at,
             "duration_s": round(sum(s.duration_s for s in steps), 6),
-            "sign_off_actor": SIGN_OFF_ACTOR,
+            "sign_off_actor": sign_off_actor(entry.evidence_provenance),
             "ci_job_url": os.environ.get("CI_JOB_URL"),
             "build": self._build,
             "method": "automated",
+            "arm": "sdk",
             "capability_ids": list(entry.capability_ids),
-            "evidence_provenance": "pre-existing",
-            "status": harness.derive_status(steps),
+            "evidence_provenance": entry.evidence_provenance,
+            "status": harness.derive_status(
+                steps,
+                required_steps=(
+                    f"required_operation:{op}" for op in entry.unverified_operations
+                ),
+            ),
             "steps": [asdict(s) for s in steps],
             # Traceability extra (schema allows additionalProperties).
             "map_pattern": entry.pattern,
@@ -437,8 +532,15 @@ def _is_evidence(steps: list[harness.StepResult]) -> bool:
     gates) are the normal outcome on an under-provisioned host, and
     ``derive_status`` would score that green-with-notes — an affirmative
     claim over a capability the run never exercised.
+
+    Delegates rather than restating the rule (ENG-11522): the two producers
+    must agree about what counts as evidence, and this predicate previously
+    said "not skipped" where the harness says "passed or failed". Those are
+    equivalent only while ``_TestOutcome.status`` cannot yield ``pending``
+    or ``not_reached`` — a coincidence of today's vocabulary, not a shared
+    rule.
     """
-    return any(s.status != "skipped" for s in steps)
+    return harness.is_evidence(steps)
 
 
 def _run_was_aborted(session: pytest.Session, exitstatus: int) -> bool:

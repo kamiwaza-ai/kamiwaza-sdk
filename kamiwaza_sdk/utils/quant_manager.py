@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Any, Optional
+from typing import Any, List, Optional
 
 
 class QuantizationManager:
@@ -46,7 +46,10 @@ class QuantizationManager:
         
         # Compile the regex pattern for detecting quantization formats once
         # Updated pattern to better match all quantization formats, case-insensitive
-        self._quant_pattern = re.compile(r'-(q[2-8]_[0-9k]|q[2-8]_k_[lms]|iq[1-4]_[a-z]+|fp\d+)', re.IGNORECASE)
+        self._quant_pattern = re.compile(
+            r'-(q[2-8]_k(?:_[a-z0-9]+)?|q[2-8]_[0-9]+|iq[1-4]_[a-z0-9]+|fp\d+)(?=[._-]|$)',
+            re.IGNORECASE,
+        )
 
     def detect_quantization(self, filename: str) -> Optional[str]:
         """
@@ -153,28 +156,26 @@ class QuantizationManager:
         Returns:
             List[Any]: Filtered list of files matching the target quantization
         """
-        # Try exact match first
-        compatible_files = [
-            file for file in files 
+        compatible_files = self._matching_files(files, target_quant)
+        if compatible_files:
+            return compatible_files
+        if not apply_fallback:
+            return []
+        if target_quant.count('_') > 1:
+            return []
+
+        for fallback_quant in self.get_fallback_quantizations(target_quant):
+            compatible_files = self._matching_files(files, fallback_quant)
+            if compatible_files:
+                return compatible_files
+        return []
+
+    def _matching_files(self, files: List[Any], target_quant: str) -> List[Any]:
+        return [
+            file
+            for file in files
             if self.match_quantization(file.name, target_quant)
         ]
-        
-        # If no match and fallback is enabled
-        if not compatible_files and apply_fallback:
-            # If variant wasn't specified, try all variants of the base quantization
-            if '_' not in target_quant or target_quant.count('_') == 1:
-                fallbacks = self.get_fallback_quantizations(target_quant)
-                
-                for fallback_quant in fallbacks:
-                    compatible_files = [
-                        file for file in files 
-                        if self.match_quantization(file.name, fallback_quant)
-                    ]
-                    
-                    if compatible_files:
-                        break
-                        
-        return compatible_files
         
     def has_multiple_quantizations(self, files: List[Any]) -> bool:
         """

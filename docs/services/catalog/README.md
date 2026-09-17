@@ -31,6 +31,9 @@ payload = DatasetCreate(
 dataset_urn = client.catalog.datasets.create(payload)
 dataset = client.catalog.datasets.get(dataset_urn)
 
+# List only datasets the receiver authorizes for this federated identity.
+remote_datasets = client.catalog.datasets.list(target_cluster="receiver-name")
+
 # Update tags/properties via URN
 client.catalog.datasets.update(
     dataset_urn,

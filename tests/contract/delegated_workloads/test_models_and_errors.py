@@ -35,6 +35,7 @@ pytestmark = pytest.mark.contract
 
 ERROR_RULES = (
     ("invalid_request", 422, "never"),
+    ("internal_error", 500, "never"),
     ("readiness_unavailable", 503, "bounded_backoff"),
     ("incompatible_contract", 409, "never"),
     ("registration_rejected", 403, "never"),
@@ -181,3 +182,49 @@ def _error_response(code: str, status: int, retry: str) -> StubResponse:
         else {}
     )
     return StubResponse(status, error_payload(code, retry), headers)
+
+
+def test_the_published_fixture_carries_every_code_the_sdk_ships() -> None:
+    """The drift guard the neutral fixture test cannot provide.
+
+    `test_http_protocol_vectors.py` deliberately imports no SDK, so a third
+    party can run it against their own client — which means it cannot notice
+    the fixture and the shipped vocabulary diverging. That is how a new code
+    can reach a release with no conformance vector, leaving implementers
+    unaware it exists. This module already imports the SDK, so the comparison
+    belongs here.
+    """
+
+    import json
+    from pathlib import Path
+
+    fixture = json.loads(
+        (
+            Path(__file__).parents[3] / "docs/delegated-workloads/conformance-v1.json"
+        ).read_text()
+    )
+    published = {entry["code"] for entry in fixture["error_mapping"]}
+
+    assert published == {item.value for item in DelegatedErrorCode}
+
+
+def test_the_published_fixture_agrees_on_status_and_retry() -> None:
+    """A code present but mapped differently is drift the set check misses."""
+
+    import json
+    from pathlib import Path
+
+    fixture = json.loads(
+        (
+            Path(__file__).parents[3] / "docs/delegated-workloads/conformance-v1.json"
+        ).read_text()
+    )
+
+    # The module-level ERROR_RULES here is the test's own table of triples;
+    # this needs the SDK's mapping, so it is imported under its own name.
+    from kamiwaza_sdk.delegated_workloads.errors import ERROR_RULES as SDK_RULES
+
+    for entry in fixture["error_mapping"]:
+        rule = SDK_RULES[DelegatedErrorCode(entry["code"])]
+        assert rule.status_code == entry["status"], entry["code"]
+        assert rule.retry_classification.value == entry["retry"], entry["code"]

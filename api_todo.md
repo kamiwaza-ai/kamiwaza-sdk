@@ -119,9 +119,9 @@ Missing integration coverage: 163
 | TS3.017 | [x] | DELETE | /catalog/containers/{container_urn:path}/datasets/{dataset_urn:path} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
 | TS3.018 | [x] | DELETE | /catalog/containers/{container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
 | TS3.019 | [x] | GET | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.list) |
-| TS3.020 | [x] | POST | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.create); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.create_dataset) |
+| TS3.020 | [x] | POST | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.create); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset) |
 | TS3.021 | [x] | DELETE | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (direct); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (direct); test_catalog_multi_source.py::_cleanup_datasets (direct) |
-| TS3.022 | [x] | GET | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (direct); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.create_dataset); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.get_dataset); test_catalog_multi_source.py::_fetch_dataset (direct) |
+| TS3.022 | [x] | GET | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (direct); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.get_dataset); test_catalog_multi_source.py::_fetch_dataset (direct) |
 | TS3.023 | [x] | PATCH | /catalog/datasets/by-urn | test_catalog_multi_source.py::_ensure_retrieval_metadata (direct); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (direct) |
 | TS3.024 | [x] | GET | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
 | TS3.025 | [x] | PUT | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
@@ -134,7 +134,7 @@ Missing integration coverage: 163
 | TS3.032 | [x] | GET | /catalog/datasets/{dataset_urn:path} | test_catalog_endpoints.py::test_catalog_dataset_variant_endpoints (direct) |
 | TS3.033 | [x] | PATCH | /catalog/datasets/{dataset_urn:path} | test_catalog_endpoints.py::test_catalog_dataset_variant_endpoints (direct) |
 | TS3.034 | [x] | GET | /catalog/health | test_catalog_endpoints.py::test_catalog_metadata_and_health (direct) |
-| TS3.035 | [x] | GET | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_list (catalog.secrets.list); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.list_secrets) |
+| TS3.035 | [x] | GET | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_list (catalog.secrets.list); test_catalog_live.py::test_catalog_secret_lifecycle (catalog.list_secrets) |
 | TS3.036 | [x] | POST | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_endpoints (catalog.secrets.create) |
 | TS3.037 | [x] | DELETE | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
 | TS3.038 | [x] | GET | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
@@ -244,9 +244,9 @@ Missing integration coverage: 163
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS10.001 | [x] | GET | /model_configs/ | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.get_model_configs); test_model_configs_live.py::TestModelConfigListOperations::test_get_model_configs (models.get_model_configs) |
-| TS10.002 | [x] | POST | /model_configs/ | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.create_model_config); test_model_configs_live.py::TestModelConfigLifecycle::test_create_and_delete_model_config (models.create_model_config) |
-| TS10.003 | [x] | DELETE | /model_configs/{model_config_id} | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.delete_model_config); test_model_configs_live.py::TestModelConfigLifecycle::test_create_and_delete_model_config (models.delete_model_config) |
+| TS10.001 | [x] | GET | /model_configs/ | test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (models.get_model_configs); test_model_configs_live.py::TestModelConfigListOperations::test_get_model_configs (models.get_model_configs) |
+| TS10.002 | [x] | POST | /model_configs/ | test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (models.create_model_config); test_model_configs_live.py::TestModelConfigLifecycle::test_create_and_delete_model_config (models.create_model_config) |
+| TS10.003 | [x] | DELETE | /model_configs/{model_config_id} | test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (models.delete_model_config); test_model_configs_live.py::TestModelConfigLifecycle::test_create_and_delete_model_config (models.delete_model_config) |
 | TS10.004 | [x] | GET | /model_configs/{model_config_id} | test_model_configs_live.py::TestModelConfigReadOperations::test_get_model_config_by_id (models.get_model_config) |
 | TS10.005 | [x] | PUT | /model_configs/{model_config_id} | test_model_configs_live.py::TestModelConfigLifecycle::test_update_model_config (models.update_model_config) |
 
@@ -334,9 +334,9 @@ Missing integration coverage: 163
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS19.001 | [x] | POST | /serving/deploy_model | test_cli_live.py::test_cli_login_and_pat_flow (CLI serve deploy); test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (serving.deploy_model) |
-| TS19.002 | [x] | DELETE | /serving/deployment/{deployment_id} | test_cli_live.py::test_cli_login_and_pat_flow (serving.stop_deployment); test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (serving.stop_deployment) |
-| TS19.003 | [x] | GET | /serving/deployment/{deployment_id} | test_cli_live.py::test_cli_login_and_pat_flow (CLI --wait); test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (serving.wait_for_deployment) |
+| TS19.001 | [x] | POST | /serving/deploy_model | test_cli_live.py::test_cli_login_and_pat_flow (CLI serve deploy); test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (serving.deploy_model) |
+| TS19.002 | [x] | DELETE | /serving/deployment/{deployment_id} | test_cli_live.py::test_cli_login_and_pat_flow (serving.stop_deployment); test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (serving.stop_deployment) |
+| TS19.003 | [x] | GET | /serving/deployment/{deployment_id} | test_cli_live.py::test_cli_login_and_pat_flow (CLI --wait); test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (serving.wait_for_deployment) |
 | TS19.004 | [x] | GET | /serving/deployment/{deployment_id}/logs | test_serving_workflow.py::_sample_logs (serving.stream_deployment_logs) |
 | TS19.005 | [x] | GET | /serving/deployment/{deployment_id}/logs/patterns | test_serving_endpoints_live.py::test_serving_deployment_status_and_log_patterns (direct) |
 | TS19.006 | [x] | GET | /serving/deployment/{deployment_id}/status | test_serving_endpoints_live.py::test_serving_deployment_status_and_log_patterns (direct) |
@@ -395,5 +395,4 @@ These service calls are used in integration tests but did not resolve to explici
 
 | Service Call | Test |
 | --- | --- |
-| openai.get_client | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking:106 |
-| openai.get_client | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking:107 |
+| openai.get_client | test_serving_workflow.py::_wait_and_infer:44 |

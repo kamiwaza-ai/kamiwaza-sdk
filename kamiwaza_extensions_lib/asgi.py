@@ -1,0 +1,71 @@
+"""Shared ASGI launcher for App Garden extension backends.
+
+Resolves the deployment's routing mode exactly like the frontend boot
+entrypoint, then starts Uvicorn with ``root_path`` set to the runtime app
+path. The scaffolded frontend proxy strips that public prefix before
+forwarding; direct ASGI ingress may forward either a stripped path or an
+already-prefixed path that Starlette can reconcile with ``root_path``. Apps
+still declare unprefixed routes (``/api``, ``/health``) while URL generation
+and OpenAPI servers see the external mount.
+
+Usage (scaffold backend Dockerfile)::
+
+    python -m kamiwaza_extensions_lib.asgi app.main:app --host 0.0.0.0 --port 8000
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from typing import Sequence
+
+from .runtime import RuntimeRouting
+
+__all__ = ["main"]
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m kamiwaza_extensions_lib.asgi",
+        description="Start an extension backend with runtime-path routing.",
+    )
+    parser.add_argument("app", help="ASGI application import string (module:attr)")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--reload", action="store_true")
+
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code) if exc.code is not None else 2
+
+    try:
+        routing = RuntimeRouting.from_env()
+    except ValueError as exc:
+        print(f"[kz-asgi] FATAL: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        import uvicorn  # Lazy: generated backends declare uvicorn[standard].
+    except ModuleNotFoundError as exc:
+        if exc.name != "uvicorn":
+            raise
+        print(
+            "[kz-asgi] FATAL: uvicorn is not installed; install "
+            "kamiwaza-extensions-lib[asgi] or add uvicorn to the app requirements",
+            file=sys.stderr,
+        )
+        return 1
+
+    uvicorn.run(
+        args.app,
+        host=args.host,
+        port=args.port,
+        root_path=routing.root_path,
+        reload=args.reload,
+    )
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

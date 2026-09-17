@@ -69,6 +69,12 @@ _CATEGORIES: dict[str, str] = {
     "extensions": "extensions",
     "connectors": "extensions",
     "tools": "extensions",
+    # An extension's own operator surface, grouped by who owns it rather than
+    # by what it configures: `kaizen_ops` binds model roles on a Kaizen
+    # instance, so it reads like a models entry, but a host filtering for
+    # `models` wants the platform's own model operations and not one
+    # extension's settings.
+    "kaizen_ops": "extensions",
 }
 
 #: Category used when a service has no mapping, so a service added to the client

@@ -84,7 +84,7 @@ def validate_compatible_tag_grammar(tag: str) -> bool:
 
 # Hostnames where it's safe to assume the local kubectl context targets the
 # same cluster as the Kamiwaza HTTP connection — i.e., the user is running
-# kind-style local dev. For remote SaaS connections, the local kube-context
+# a local development cluster. For remote SaaS connections, the kube-context
 # is by definition unrelated to the Kamiwaza cluster, so kubectl-based
 # probes (cluster_extension_readiness, dev timeout diagnostics) would
 # inspect the wrong cluster and emit confidently-wrong guidance.
@@ -96,14 +96,14 @@ def is_local_connection(url: Optional[str]) -> bool:
     """Return ``True`` if ``url`` looks like a local-dev Kamiwaza endpoint.
 
     Used to gate kubectl-based probes: only when the connection points at
-    a localhost / kind-cluster URL can we assume the local kubectl context
+    a localhost or local-development URL can we assume the local kubectl context
     targets the same cluster (review PR #84 H1/H2). Remote connections
     (`https://kamiwaza.cloud/api`, customer SaaS endpoints) intentionally
     skip the probes — there is no way to verify the kube-context matches
     the HTTP connection without a richer ``ConnectionInfo`` schema, which
     is out of scope for this fix.
 
-    Detection is deliberately permissive (TLD-based) so the kind-cluster
+    Detection is deliberately permissive (TLD-based) so the local-development
     convention `https://kamiwaza.test/api` keeps working. Operators with
     other local-dev domains can extend ``_LOCAL_TLD_SUFFIXES``.
     """

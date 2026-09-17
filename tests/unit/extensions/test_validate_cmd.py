@@ -91,6 +91,35 @@ class TestRunValidate:
         assert output["errors"] == []
         assert output["warnings"]
 
+    def test_compose_capability_requires_declared_0_2_floor(self, tmp_path, capsys):
+        import typer
+
+        from kamiwaza_extensions.commands.validate import run_validate
+
+        metadata = _valid_metadata()
+        metadata["kz_ext_version"] = ">=0.1.0,<1.0.0"
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginxinc/nginx-unprivileged:stable-alpine",
+                    "ports": ["8080:8080"],
+                    "command": ["nginx", "-g", "daemon off;"],
+                }
+            }
+        }
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(metadata))
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        with pytest.raises(typer.Exit):
+            run_validate(path=str(tmp_path), json_output=True)
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["passed"] is False
+        assert any(
+            "compose.services.*.command requires kz_ext_version '>=0.2.0'" in error
+            for error in output["errors"]
+        )
+
     def test_validate_fails_on_bind_mount(self, tmp_path, capsys):
         import typer
 

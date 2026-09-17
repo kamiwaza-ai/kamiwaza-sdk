@@ -8,6 +8,12 @@ publishes those services to AI agents.
 from importlib.metadata import version, PackageNotFoundError
 
 from .client import KamiwazaClient
+from .job_runtime import JobRuntimeClient as JobRuntimeClient
+from .schemas.delegated_jobs import (
+    DatasetDelegatedAccess as DatasetDelegatedAccess,
+    DelegatedAccess as DelegatedAccess,
+    ModelDelegatedAccess as ModelDelegatedAccess,
+)
 from .shared_idp_authentication import (
     SharedIdpAuthConfig as SharedIdpAuthConfig,
     SharedIdpAuthenticator as SharedIdpAuthenticator,

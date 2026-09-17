@@ -34,6 +34,24 @@ _SEMVER_RE = re.compile(
 # Valid image extensions for preview_image
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 
+# Single source of truth for manifest capability floors enforced by this CLI.
+# ``compatibility.json`` publishes the same registry for humans and external
+# tooling; a packaging test below keeps that bundled copy in lockstep.
+MANIFEST_CAPABILITY_FLOORS: Dict[str, Version] = {
+    "services.*.healthCheck": Version("0.2.0"),
+}
+
+# Compose fields whose platform payload semantics first become enforceable in
+# kz-ext 0.2.0. Older CLIs either ignore these values or fall back to a
+# heuristic, so accepting them under a 0.1 manifest range would make deploys
+# appear successful while changing the container contract.
+COMPOSE_CAPABILITY_FLOORS: Dict[str, Version] = {
+    "compose.services.*.x-kamiwaza.healthCheck": Version("0.2.0"),
+    "compose.services.*.x-kamiwaza.primary": Version("0.2.0"),
+    "compose.services.*.entrypoint": Version("0.2.0"),
+    "compose.services.*.command": Version("0.2.0"),
+}
+
 # Dockerfile ARGs that pin third-party runtime / base-image versions and
 # intentionally don't track the extension's own semver. Excluded from drift
 # checks so a clean Dockerfile doesn't emit noisy warnings.
@@ -129,7 +147,12 @@ class KamiwazaMetadata(BaseModel):
 class MetadataValidator:
     """Validates kamiwaza.json files."""
 
-    def validate(self, path: Path) -> ValidationResult:
+    def validate(
+        self,
+        path: Path,
+        *,
+        compose_data: Optional[Dict[str, Any]] = None,
+    ) -> ValidationResult:
         errors: List[str] = []
         warnings: List[str] = []
 
@@ -164,19 +187,16 @@ class MetadataValidator:
         if ext_type == "service" and not name.startswith("service-"):
             warnings.append(f"Service extension name '{name}' should start with 'service-'")
 
-        # Version range fields
-        for range_field in ("kamiwaza_version", "kz_ext_version"):
-            value = getattr(metadata, range_field, None)
-            if value is not None:
-                if not _is_valid_specifier_set(value):
-                    errors.append(f"Invalid {range_field} range '{value}' — use semver ranges like '>=1.0.0,<2.0.0'")
-
-        # kz_ext_version compatibility check
-        if metadata.kz_ext_version:
-            if not _check_version_compat(metadata.kz_ext_version, __version__):
-                warnings.append(
-                    f"CLI version {__version__} is not compatible with kz_ext_version '{metadata.kz_ext_version}'"
+        # Version range fields. kz_ext_version is checked by the shared CLI
+        # contract gate below so validate/dev/publish cannot disagree.
+        if metadata.kamiwaza_version is not None:
+            if not _is_valid_specifier_set(metadata.kamiwaza_version):
+                errors.append(
+                    "Invalid kamiwaza_version range "
+                    f"'{metadata.kamiwaza_version}' — use semver ranges like "
+                    "'>=1.0.0,<2.0.0'"
                 )
+        errors.extend(check_cli_contract(data, compose_data))
 
         # preview_image checks
         if metadata.preview_image:
@@ -513,3 +533,116 @@ def _check_version_compat(specifier_str: str, version_str: str) -> bool:
         return ver in spec
     except (InvalidSpecifier, InvalidVersion):
         return False
+
+
+def check_cli_contract(
+    data: Dict[str, Any],
+    compose_data: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Return fatal kz-ext compatibility errors for one extension contract."""
+    if not isinstance(data, dict):
+        return ["kamiwaza.json must be a JSON object"]
+    declared = data.get("kz_ext_version")
+    used_capabilities = _used_cli_capabilities(data, compose_data)
+    if declared is None:
+        return [
+            _capability_floor_error(capability, floor, "is missing")
+            for capability, floor in used_capabilities
+        ]
+    if not isinstance(declared, str) or not _is_valid_specifier_set(declared):
+        return [
+            f"Invalid kz_ext_version range '{declared}' — use semver ranges "
+            "like '>=0.2.0,<1.0.0'"
+        ]
+
+    errors: List[str] = []
+    if not _check_version_compat(declared, __version__):
+        errors.append(
+            f"CLI version {__version__} is not compatible with "
+            f"kz_ext_version '{declared}'"
+        )
+    errors.extend(
+        _capability_floor_error(capability, floor, f"is '{declared}'")
+        for capability, floor in used_capabilities
+        if not _declares_capability_floor(declared, floor)
+    )
+    return errors
+
+
+def _used_cli_capabilities(
+    data: Dict[str, Any], compose_data: Optional[Dict[str, Any]]
+) -> List[tuple[str, Version]]:
+    used: List[tuple[str, Version]] = []
+    if _uses_manifest_healthcheck(data.get("services")):
+        capability = "services.*.healthCheck"
+        used.append((capability, MANIFEST_CAPABILITY_FLOORS[capability]))
+
+    compose_services = (
+        compose_data.get("services") if isinstance(compose_data, dict) else None
+    )
+    if not isinstance(compose_services, dict):
+        return used
+
+    services = [
+        service for service in compose_services.values() if isinstance(service, dict)
+    ]
+    if any(
+        _uses_compose_extension_field(service, "healthCheck")
+        for service in services
+    ):
+        capability = "compose.services.*.x-kamiwaza.healthCheck"
+        used.append((capability, COMPOSE_CAPABILITY_FLOORS[capability]))
+    if any(
+        _uses_compose_extension_field(service, "primary", exact=True)
+        for service in services
+    ):
+        capability = "compose.services.*.x-kamiwaza.primary"
+        used.append((capability, COMPOSE_CAPABILITY_FLOORS[capability]))
+    for field in ("entrypoint", "command"):
+        if any(service.get(field) is not None for service in services):
+            capability = f"compose.services.*.{field}"
+            used.append((capability, COMPOSE_CAPABILITY_FLOORS[capability]))
+    return used
+
+
+def _uses_compose_extension_field(
+    service: Dict[str, Any], field: str, *, exact: bool = False
+) -> bool:
+    extension = service.get("x-kamiwaza")
+    if not isinstance(extension, dict):
+        return False
+    value = extension.get(field)
+    return value is True if exact else value is not None
+
+
+def _uses_manifest_healthcheck(services: Any) -> bool:
+    if not isinstance(services, dict):
+        return False
+    return any(
+        isinstance(block, dict) and block.get("healthCheck") is not None
+        for block in services.values()
+    )
+
+
+def _declares_capability_floor(specifier_str: str, minimum: Version) -> bool:
+    """Whether a range has an explicit lower/equality bound at *minimum*."""
+    for specifier in SpecifierSet(specifier_str):
+        if specifier.operator not in {">=", ">", "==", "===", "~="}:
+            continue
+        try:
+            bound = Version(specifier.version.removesuffix(".*"))
+        except InvalidVersion:
+            continue
+        if bound >= minimum:
+            return True
+    return False
+
+
+def _capability_floor_error(
+    capability: str, minimum: Version, declared: str
+) -> str:
+    return (
+        f"{capability} requires kz_ext_version '>={minimum}'; "
+        f"the declared range {declared}. Raise its lower bound to at least "
+        f"'>={minimum}' or remove the capability"
+    )

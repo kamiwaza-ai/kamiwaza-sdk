@@ -67,6 +67,12 @@ class DeploymentPoller:
                 last_phase = phase
 
             if phase == "Failed":
+                if use_status_endpoint and self._is_rolling_update(
+                    client, extension_name
+                ):
+                    console.print("  [dim]Status: rolling update in progress[/dim]")
+                    time.sleep(poll_interval)
+                    continue
                 msg = self._extract_failure_message(ext)
                 raise DeploymentFailedError(
                     f"Extension deployment failed: {msg}"
@@ -103,6 +109,15 @@ class DeploymentPoller:
             f"Extension did not reach Running state within {timeout}s "
             f"(last phase: {last_phase})"
         )
+
+    @staticmethod
+    def _is_rolling_update(client: KamiwazaClient, extension_name: str) -> bool:
+        """Return whether a newer PATCH generation is still rolling out."""
+        try:
+            status = client.extensions.get_extension_status(extension_name)
+        except Exception:
+            return False
+        return status.rolling_update is True
 
     @staticmethod
     def _check_via_status_endpoint(

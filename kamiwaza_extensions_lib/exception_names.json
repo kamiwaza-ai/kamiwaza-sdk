@@ -3,7 +3,7 @@
     {
       "name": "misbound_auth",
       "exit_code": 10,
-      "doctor_hint": "Required envelope header missing or malformed. Verify the request reached the extension via Traefik (not a direct in-cluster call) and that the platform is healthy."
+      "doctor_hint": "Required envelope header missing or malformed. Verify the request crossed the configured platform ingress authorization path (not a direct in-cluster call) and that the platform is healthy."
     },
     {
       "name": "unexpected_context",

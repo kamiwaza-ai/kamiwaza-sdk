@@ -83,7 +83,7 @@ class TestIsLocalConnection:
             "http://localhost:7777/api",
             "https://127.0.0.1:8443/api",
             "http://[::1]:7777/api",
-            "https://kamiwaza.test/api",     # kind-cluster convention
+            "https://kamiwaza.test/api",     # local-development convention
             "http://kamiwaza.local/api",     # mDNS / hosts file
             "https://Kamiwaza.Test/api",     # case-insensitive
             "https://my-machine.localhost/api",

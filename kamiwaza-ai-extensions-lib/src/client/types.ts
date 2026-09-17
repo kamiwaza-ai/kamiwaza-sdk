@@ -23,7 +23,7 @@ export interface SessionContext {
 /** Props for SessionProvider. */
 export interface SessionProviderProps {
     children: React.ReactNode;
-    /** Override for NEXT_PUBLIC_APP_BASE_PATH. */
+    /** Deprecated explicit override for the runtime-provided app path. */
     basePath?: string;
     /** Session endpoint path (default: "/session"). */
     sessionEndpoint?: string;

@@ -236,6 +236,7 @@
   ],
   "error_mapping": [
     {"code": "invalid_request", "status": 422, "retry": "never"},
+    {"code": "internal_error", "status": 500, "retry": "never"},
     {"code": "readiness_unavailable", "status": 503, "retry": "bounded_backoff"},
     {"code": "incompatible_contract", "status": 409, "retry": "never"},
     {"code": "registration_rejected", "status": 403, "retry": "never"},

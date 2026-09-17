@@ -31,7 +31,7 @@ Kamiwaza provides a unified abstraction layer that:
 └─────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────┐
-│                    Traefik Load Balancer                 │
+│                    Platform Ingress Gateway              │
 │              (Dynamic routing, SSL termination)          │
 └─────────────────────────────────────────────────────────┘
                               │
@@ -202,7 +202,7 @@ vram_required = (
 ### High Availability
 - **Stateless Services**: Horizontal scaling capability
 - **Database HA**: CockroachDB with automatic failover
-- **Load Balancing**: Traefik with health-based routing
+- **Load Balancing**: Provider-owned ingress with health-based routing
 - **Fault Tolerance**: Automatic container restart on failure
 
 ## RAG & Vector Search Capabilities

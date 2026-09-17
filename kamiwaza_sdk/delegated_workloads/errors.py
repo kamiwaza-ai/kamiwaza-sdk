@@ -39,6 +39,7 @@ class ProofKeyUnavailable(DelegatedIdentityError):
 
 class DelegatedErrorCode(str, Enum):
     INVALID_REQUEST = "invalid_request"
+    INTERNAL_ERROR = "internal_error"
     READINESS_UNAVAILABLE = "readiness_unavailable"
     INCOMPATIBLE_CONTRACT = "incompatible_contract"
     REGISTRATION_REJECTED = "registration_rejected"
@@ -116,6 +117,18 @@ class DelegatedProtocolError(KamiwazaError):
 
 class InvalidRequest(DelegatedWorkloadError):
     code = DelegatedErrorCode.INVALID_REQUEST
+
+
+class InternalError(DelegatedWorkloadError):
+    """Core failed in a way it did not recognise.
+
+    Distinct from ReadinessUnavailable on purpose: this one will not clear on
+    its own, so a caller that retries it is spending requests on an outcome
+    that cannot change. Core previously answered readiness_unavailable here,
+    which asked for exactly that retry.
+    """
+
+    code = DelegatedErrorCode.INTERNAL_ERROR
 
 
 class ReadinessUnavailable(DelegatedWorkloadError):
@@ -240,6 +253,9 @@ _READ_ONLY = RetryClassification.IDEMPOTENT_READ_ONLY
 ERROR_RULES = {
     DelegatedErrorCode.INVALID_REQUEST: ErrorRule(
         422, _NEVER, InvalidRequest, "request is invalid"
+    ),
+    DelegatedErrorCode.INTERNAL_ERROR: ErrorRule(
+        500, _NEVER, InternalError, "delegated request failed internally"
     ),
     DelegatedErrorCode.READINESS_UNAVAILABLE: ErrorRule(
         503, _BACKOFF, ReadinessUnavailable, "delegated authority is unavailable"

@@ -11,10 +11,13 @@ name: agent-tools/drift
 #      agent host, because the published identifier derives from the selector,
 #      and nothing else in the build would say so.
 #
-#   2. Interface document drift — the committed kamiwaza-openapi-spec.json
-#      against a live platform's own document. FR-005a makes that file the
-#      schema source and the drift subject. Needs a reachable cluster, so it
-#      runs on a schedule and skips cleanly without secrets.
+#   2. Interface document drift — the committed kamiwaza-openapi-spec.json, at
+#      the repository root, against a live platform's own document. FR-005a
+#      makes that file the schema source and the drift subject. It is a
+#      development artifact: the wheel ships only the description table
+#      generated from it, so this job also regenerates that table and fails
+#      when a document change did not reach it. Needs a reachable cluster, so
+#      it runs on a schedule and skips cleanly without secrets.
 #
 # Neither job opens a PR. A drift gate that fixes itself teaches nobody: the
 # point is that a human reads the diff and decides whether a rename was
@@ -30,7 +33,9 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - 'kamiwaza_sdk/**'
+      - 'kamiwaza-openapi-spec.json'
       - 'scripts/regenerate_agent_tools_surface.py'
+      - 'scripts/regenerate_interface_descriptions.py'
       - '.github/workflows/agent-tools-drift.yml'
   workflow_dispatch:
   schedule:
@@ -61,6 +66,12 @@ jobs:
       - name: Regenerate the recorded surface
         run: uv run python scripts/regenerate_agent_tools_surface.py
 
+      - name: Regenerate the shipped interface descriptions
+        # The wheel ships this table rather than the whole document, so it is
+        # generated code: stale here means every published tool carries wording
+        # the vendored document no longer states.
+        run: uv run python scripts/regenerate_interface_descriptions.py
+
       - name: Fail on any difference
         run: |
           git add -A
@@ -71,7 +82,14 @@ jobs:
             echo "::error::result once the change is intended."
             exit 1
           fi
-          echo "Recorded surface matches the client."
+          if ! git diff --cached --exit-code -- kamiwaza_sdk/agent_tools/INTERFACE_DESCRIPTIONS.json; then
+            echo "::error::The shipped interface descriptions are stale. Run"
+            echo "::error::scripts/regenerate_interface_descriptions.py and commit"
+            echo "::error::the result; the diff is a change to what every published"
+            echo "::error::tool says about itself."
+            exit 1
+          fi
+          echo "Recorded surface and shipped descriptions match their sources."
 
   interface-document:
     name: Interface document drift (live cluster)
@@ -107,13 +125,19 @@ jobs:
           KAMIWAZA_BASE_URL: ${{ secrets.KAMIWAZA_BASE_URL }}
         run: |
           curl --max-time 60 -sSf "${KAMIWAZA_BASE_URL}/openapi.json" \
-            -o kamiwaza_sdk/agent_tools/kamiwaza-openapi-spec.json
+            -o kamiwaza-openapi-spec.json
+
+      - name: Regenerate the shipped descriptions from the fetched document
+        if: steps.probe.outputs.available == 'true'
+        run: |
+          uv run python scripts/regenerate_interface_descriptions.py \
+            || python scripts/regenerate_interface_descriptions.py
 
       - name: Fail on any difference
         if: steps.probe.outputs.available == 'true'
         run: |
           git add -A
-          if ! git diff --cached --exit-code -- kamiwaza_sdk/agent_tools/kamiwaza-openapi-spec.json; then
+          if ! git diff --cached --exit-code -- kamiwaza-openapi-spec.json kamiwaza_sdk/agent_tools/INTERFACE_DESCRIPTIONS.json; then
             echo "::error::The committed interface document no longer matches the"
             echo "::error::platform. It is the schema source for every published"
             echo "::error::tool, so a stale copy means agents are being handed"

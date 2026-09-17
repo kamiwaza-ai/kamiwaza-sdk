@@ -16,7 +16,7 @@ from __future__ import annotations
 import inspect
 import json
 import warnings
-from importlib import resources
+from pathlib import Path
 
 import pytest
 
@@ -47,11 +47,14 @@ def index(client):
 
 @pytest.fixture(scope="module")
 def interface_operation_ids() -> set[str]:
+    # The vendored document, from the repository root. Read from there rather
+    # than from package data because it is a development artifact: the wheel
+    # ships only the generated description table (see
+    # scripts/regenerate_interface_descriptions.py), and a contract test is
+    # development.
     raw = (
-        resources.files("kamiwaza_sdk.agent_tools")
-        .joinpath("kamiwaza-openapi-spec.json")
-        .read_text(encoding="utf-8")
-    )
+        Path(__file__).resolve().parents[2] / "kamiwaza-openapi-spec.json"
+    ).read_text(encoding="utf-8")
     document = json.loads(raw)
     return {
         operation["operationId"]
@@ -170,3 +173,39 @@ def test_filtering_the_catalog_never_invents_an_entry(client, index) -> None:
     }
     assert read_only | mutations == full
     assert read_only & mutations == set()
+
+
+def test_the_shipped_descriptions_match_the_vendored_document() -> None:
+    """The generated table is current, asserted without waiting for CI.
+
+    The wheel ships a table generated from the vendored interface document
+    rather than the document itself: the document is a development artifact
+    the drift gate reads, and only these fields are needed at runtime — 41 KiB
+    of 278 KiB when the split was made.
+
+    Generated code needs a freshness check or it becomes a second, quietly
+    wrong source. The drift workflow runs the generator and diffs the result;
+    this asserts the same thing locally, so a spec update that skipped the
+    generator fails before it reaches a reviewer.
+    """
+    import importlib.util
+
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "regenerate_interface_descriptions.py"
+    )
+    spec = importlib.util.spec_from_file_location("regenerate_descriptions", script)
+    assert spec is not None and spec.loader is not None
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+
+    expected = json.dumps(generator.build_descriptions(), indent=2, sort_keys=True) + "\n"
+    committed = generator.DESCRIPTIONS_PATH.read_text(encoding="utf-8")
+
+    assert committed == expected, (
+        "The shipped interface descriptions are stale. Run "
+        "`python scripts/regenerate_interface_descriptions.py` and commit the "
+        "result; the diff is a change to what every published tool says about "
+        "itself."
+    )

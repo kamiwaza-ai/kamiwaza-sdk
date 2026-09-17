@@ -14,6 +14,7 @@ from kamiwaza_extensions.sdk_override import (
     resolve_sdk_override,
     validate_sdk_override,
 )
+from kamiwaza_extensions.sdk_override.build import _TS_OVERLAY
 
 
 def _write_runtime_dockerfiles(tmp_path: Path, compose: dict) -> Path:
@@ -536,6 +537,26 @@ class TestGenerateBuildOverrides:
         assert "COPY --from=sdk" in overrides[0].overlay_steps
         assert "USER root" in overrides[0].overlay_steps
 
+    def test_ts_overlay_tarball_install_skips_audit_and_fund(self):
+        """The tarball install must not run npm audit/fund reporting.
+
+        npm's audit/fund reporting wedges indefinitely in some network
+        conditions (bulk audit request hangs after all package GETs return
+        200; process parks in ep_poll with no sockets). The template's
+        deps-stage install already carries --no-audit --no-fund; the SDK
+        override's tarball install must match so a kz-ext image build can
+        never stall on a network round-trip the build does not need
+        (observed live wedging a --no-cache engine probe for 5+ minutes
+        until manually interrupted).
+        """
+        install_lines = [
+            line
+            for line in _TS_OVERLAY.splitlines()
+            if "npm install" in line
+        ]
+        assert install_lines, "TS overlay lost its npm install step"
+        assert '--no-audit --no-fund "/tmp/$TARBALL"' in install_lines[0]
+
     def test_python_overlay_resolves_site_packages_without_importing_runtime_lib(
         self, tmp_path
     ):
@@ -684,6 +705,58 @@ class TestGenerateBuildOverrides:
 
 @pytest.mark.unit
 class TestApplyBuildOverlay:
+    def test_dual_artifact_scaffold_installs_sdk_in_shared_deps_stage(self):
+        """Both path and port builds must inherit the local runtime package."""
+        repo_root = Path(__file__).resolve().parents[3]
+        dockerfile = (
+            repo_root
+            / "kamiwaza_extensions"
+            / "templates"
+            / "app"
+            / "frontend"
+            / "Dockerfile"
+        ).read_text()
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# SDK override\nRUN echo install-local-sdk\n",
+            additional_build_contexts={"sdk": str(repo_root)},
+            insert_before_build=True,
+            language="typescript",
+        )
+
+        result = apply_build_overlay(dockerfile, overlay)
+
+        install_index = result.index("RUN npm install --no-audit --no-fund")
+        overlay_index = result.index("RUN echo install-local-sdk")
+        fork_index = result.index("FROM deps AS dev")
+        assert install_index < overlay_index < fork_index
+        assert result.count("RUN echo install-local-sdk") == 1
+        assert "FROM deps AS build-port" in result
+        assert "FROM deps AS build-path" in result
+
+    def test_classic_scaffold_installs_sdk_after_copying_build_context(self):
+        """A pre-0.5 single-stage app must not let COPY overwrite the SDK."""
+        dockerfile = (
+            "FROM node:20-alpine AS base\n"
+            "WORKDIR /app\n"
+            "COPY package.json package-lock.json* ./\n"
+            "RUN npm install\n"
+            "COPY . .\n"
+            'ENTRYPOINT ["node", "/app/start.mjs"]\n'
+        )
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# SDK override\nRUN echo install-local-sdk\n",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            insert_before_build=True,
+            language="typescript",
+        )
+
+        result = apply_build_overlay(dockerfile, overlay)
+
+        assert result.index("COPY . .") < result.index("RUN echo install-local-sdk")
+        assert result.count("RUN echo install-local-sdk") == 1
+
     def test_appends_when_no_build_line(self):
         dockerfile = 'FROM node:20\nCOPY . .\nENTRYPOINT ["node", "start.mjs"]\n'
         overlay = BuildOverride(
@@ -1326,9 +1399,8 @@ class TestPreInstallStripOverlay:
             "multi-stage Node→nginx frontend was not patched — final-stage "
             "classifier misclassified it as 'static'"
         )
-        assert (
-            "# --- SDK override: strip @kamiwaza-ai/extensions-lib"
-            in (patches["frontend"])
+        assert "# --- SDK override: strip @kamiwaza-ai/extensions-lib" in (
+            patches["frontend"]
         )
         # ``RUN npm ci`` was rewritten to ``RUN npm install`` so the
         # package.json/lockfile divergence the strip creates doesn't abort
@@ -1364,9 +1436,9 @@ class TestPreInstallStripOverlay:
         )
         kept = [line for line in requirements.splitlines() if not pattern.match(line)]
         assert "fastapi>=0.100.0" in kept
-        assert "kamiwaza-extensions-lib-extras>=0.1" in kept, (
-            "prefix-alias must NOT be stripped"
-        )
+        assert (
+            "kamiwaza-extensions-lib-extras>=0.1" in kept
+        ), "prefix-alias must NOT be stripped"
         assert "# kamiwaza-extensions-lib>=0.4 (commented)" in kept
         # Every form of the actual runtime-lib pin is gone.
         assert not any("kamiwaza-extensions-lib>=0.4,<0.5" in k for k in kept)
@@ -1531,9 +1603,9 @@ class TestPreInstallStripExecution:
             "overrides",
             "resolutions",
         ):
-            assert "@kamiwaza-ai/extensions-lib" not in out[k], (
-                f"{k!r} still contains the lib"
-            )
+            assert (
+                "@kamiwaza-ai/extensions-lib" not in out[k]
+            ), f"{k!r} still contains the lib"
         assert "@kamiwaza-ai/extensions-lib" not in out["bundleDependencies"]
         assert "@kamiwaza-ai/extensions-lib" not in out["bundledDependencies"]
         # Unrelated entries survive.

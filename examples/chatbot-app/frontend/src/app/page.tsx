@@ -4,6 +4,7 @@ import {
     AuthGuard,
     useSession,
 } from "@kamiwaza-ai/extensions-lib/client";
+import { appFetch } from "@kamiwaza-ai/extensions-lib/runtime";
 import {
     useEffect,
     useRef,
@@ -78,46 +79,11 @@ function extractModels(payload: unknown) {
     return [];
 }
 
-function getCookieValue(name: string) {
-    if (typeof document === "undefined") {
-        return "";
-    }
-
-    const cookie = document.cookie
-        .split("; ")
-        .find((entry) => entry.startsWith(`${name}=`));
-
-    if (!cookie) {
-        return "";
-    }
-
-    return decodeURIComponent(cookie.slice(name.length + 1));
-}
-
-function resolveBasePath() {
-    const envBasePath = pickString(process.env.NEXT_PUBLIC_APP_BASE_PATH);
-
-    if (envBasePath) {
-        return envBasePath.replace(/\/$/, "");
-    }
-
-    const cookieBasePath = pickString(getCookieValue("app-base-path"));
-
-    if (cookieBasePath) {
-        return cookieBasePath.replace(/\/$/, "");
-    }
-
-    if (typeof window === "undefined") {
-        return "";
-    }
-
-    const appPathMatch = window.location.pathname.match(/^(.+\/runtime\/apps\/[^/]+)/);
-    return appPathMatch?.[1] ?? "";
-}
-
+// Same-app calls go through appFetch, which applies the deployment's runtime
+// path (installed by KamiwazaRuntimeBootstrap in the root layout). Never
+// reconstruct the base path from env vars, cookies, or window.location.
 async function fetchWithBase(path: string, init?: RequestInit) {
-    const basePath = resolveBasePath();
-    return fetch(`${basePath}${path}`, {
+    return appFetch(path, {
         credentials: "include",
         ...init,
     });

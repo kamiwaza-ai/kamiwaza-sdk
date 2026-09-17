@@ -17,7 +17,8 @@ Skeleton scope (WS-M1):
 Operability scope (WS-M2):
     - kz.jobs.cancel(job_id) — T5.35 / ENG-4712
     - kz.jobs.run(..., recoverable=True) — T5.22 / ENG-4699
-    - kz.jobs.run(..., pip=[...], py_modules=[...]) — T5.38 / ENG-4715
+    - kz.jobs.run(..., pip=[...], py_modules=[...]) — ordinary Ray runtime env
+    - kz.jobs.run(..., python_packages=[...]) — approved delegated-job packages
 
 Server-side correlate: ``kamiwaza.cluster.jobs`` (FederatedJobsService
 + /api/cluster/jobs/{run,submit,{id}/status,{id}/result} endpoints).
@@ -26,10 +27,12 @@ Server-side correlate: ``kamiwaza.cluster.jobs`` (FederatedJobsService
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from typing import Any, Optional
 
 from ..exceptions import APIError, MeshJobTimeoutError
 from ..schemas.federation import JobResult
+from ..schemas.delegated_jobs import DelegatedAccess, normalize_python_packages
 from .base_service import BaseService
 from .jobs_routing import JobRouter
 
@@ -42,6 +45,7 @@ _POLL_BACKOFF_FACTOR = 2.0
 _POLL_BACKOFF_CAP_SECONDS = 5.0
 
 _TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELED"})
+_UNSUCCESSFUL_TERMINAL_STATES = _TERMINAL_STATES - {"SUCCEEDED"}
 
 # A JobResult-shaped /result wrapper is identified by these two required-field
 # keys both present; a body without them is a bare marker (the job's own
@@ -73,6 +77,8 @@ class JobsAPI(BaseService):
         pip: Optional[list[str]] = None,
         py_modules: Optional[list[str]] = None,
         working_dir: Optional[str] = None,
+        delegated_access: DelegatedAccess | Mapping[str, Any] | None = None,
+        python_packages: Optional[list[str]] = None,
     ) -> JobResult:
         """Run a job and return the completed JobResult.
 
@@ -92,12 +98,20 @@ class JobsAPI(BaseService):
                 ``job_id`` is in hand immediately.
             pip: T5.38 / ENG-4715 / FR-94 convenience — Ray pip list,
                 packed into ``runtime_env["pip"]`` on the wire.
+                For isolated delegated jobs, use ``python_packages`` instead;
+                Core strips execution-environment runtime keys at that boundary.
             py_modules: T5.38 / ENG-4715 / FR-94 convenience — local
                 module paths to ship with the job; packs into
                 ``runtime_env["py_modules"]``.
             working_dir: T5.38 / ENG-4715 / FR-94 convenience — local
                 directory to bundle as the working dir; packs into
                 ``runtime_env["working_dir"]``.
+            delegated_access: Exact receiver datasets/models and their typed
+                operations. Omission preserves the ordinary job path.
+            python_packages: Exact ``name==version`` coordinates from the
+                receiver operator's approved private package catalog. This is
+                available only with ``delegated_access``; repository location
+                and credentials are never part of the request.
 
         Returns:
             Completed ``JobResult``. ``status`` will be SUCCEEDED for
@@ -121,12 +135,16 @@ class JobsAPI(BaseService):
                 target_cluster=target_cluster,
                 runtime_env=merged_runtime_env,
                 timeout_seconds=timeout_seconds,
+                delegated_access=delegated_access,
+                python_packages=python_packages,
             )
         return self._run_sync(
             entrypoint=entrypoint,
             target_cluster=target_cluster,
             runtime_env=merged_runtime_env,
             timeout_seconds=timeout_seconds,
+            delegated_access=delegated_access,
+            python_packages=python_packages,
         )
 
     @staticmethod
@@ -167,12 +185,16 @@ class JobsAPI(BaseService):
         target_cluster: Optional[str],
         runtime_env: Optional[dict[str, Any]],
         timeout_seconds: Optional[int],
+        delegated_access: DelegatedAccess | Mapping[str, Any] | None,
+        python_packages: Optional[list[str]],
     ) -> JobResult:
         """Existing sync /run path; X-Job-Id only visible on completion."""
         body = _build_run_body(
             entrypoint=entrypoint,
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
+            delegated_access=delegated_access,
+            python_packages=python_packages,
         )
         response = self._router.request(
             "POST", "run", target_cluster=target_cluster, json=body
@@ -186,6 +208,8 @@ class JobsAPI(BaseService):
         target_cluster: Optional[str],
         runtime_env: Optional[dict[str, Any]],
         timeout_seconds: Optional[int],
+        delegated_access: DelegatedAccess | Mapping[str, Any] | None,
+        python_packages: Optional[list[str]],
     ) -> JobResult:
         """Async submit + poll. job_id available immediately for resume.
 
@@ -199,6 +223,8 @@ class JobsAPI(BaseService):
             target_cluster=target_cluster,
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
+            delegated_access=delegated_access,
+            python_packages=python_packages,
         )
         return self.wait(
             job_id,
@@ -213,6 +239,8 @@ class JobsAPI(BaseService):
         target_cluster: Optional[str] = None,
         runtime_env: Optional[dict[str, Any]] = None,
         timeout_seconds: Optional[int] = None,
+        delegated_access: DelegatedAccess | Mapping[str, Any] | None = None,
+        python_packages: Optional[list[str]] = None,
     ) -> str:
         """Submit a job and return its job_id immediately.
 
@@ -224,6 +252,8 @@ class JobsAPI(BaseService):
             entrypoint=entrypoint,
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
+            delegated_access=delegated_access,
+            python_packages=python_packages,
         )
         response = self._router.request(
             "POST", "submit", target_cluster=target_cluster, json=body
@@ -300,7 +330,7 @@ class JobsAPI(BaseService):
     def _terminal_result(
         self, job_id: str, status: str, target_cluster: Optional[str]
     ) -> JobResult:
-        """Fetch a terminal marker; tolerate the server's no-marker 410."""
+        """Fetch a terminal marker when Core makes one available."""
         payload: dict[str, Any] = {}
         try:
             result_body = self._router.request(
@@ -308,7 +338,7 @@ class JobsAPI(BaseService):
             )
             payload = self._marker_to_payload(result_body)
         except APIError as exc:
-            if getattr(exc, "status_code", None) != 410:
+            if not _result_error_is_ignorable(status, exc.status_code):
                 raise
         return JobResult.model_validate(
             {**payload, "job_id": str(job_id), "status": status}
@@ -350,15 +380,33 @@ class JobsAPI(BaseService):
         return payload
 
 
+def _result_error_is_ignorable(status: str, status_code: int | None) -> bool:
+    if status_code == 410:
+        return True
+    if status not in _UNSUCCESSFUL_TERMINAL_STATES:
+        return False
+    return status_code == 409
+
+
 def _build_run_body(
     *,
     entrypoint: str,
     runtime_env: Optional[dict[str, Any]],
     timeout_seconds: Optional[int],
+    delegated_access: DelegatedAccess | Mapping[str, Any] | None,
+    python_packages: Optional[list[str]],
 ) -> dict[str, Any]:
     body: dict[str, Any] = {"entrypoint": entrypoint}
     if runtime_env is not None:
         body["runtime_env"] = runtime_env
     if timeout_seconds is not None:
         body["timeout_seconds"] = timeout_seconds
+    if delegated_access is not None:
+        access = DelegatedAccess.model_validate(delegated_access)
+        body["delegated_access"] = access.model_dump(mode="json")
+    packages = normalize_python_packages(python_packages)
+    if packages and delegated_access is None:
+        raise ValueError("python_packages require delegated_access")
+    if packages:
+        body["python_packages"] = list(packages)
     return body

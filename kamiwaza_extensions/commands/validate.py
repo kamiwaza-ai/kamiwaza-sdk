@@ -20,7 +20,10 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
         MultipleExtensionsError,
     )
     from kamiwaza_extensions.validators.compose import ComposeValidator
-    from kamiwaza_extensions.validators.metadata import MetadataValidator
+    from kamiwaza_extensions.validators.metadata import (
+        MetadataValidator,
+        check_cli_contract,
+    )
     from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
 
     start_dir = Path(path) if path else Path.cwd()
@@ -61,7 +64,8 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
             f"  [yellow]→[/yellow] Detected extension at: [bold]{rel}/[/bold]"
         )
 
-    # Run metadata validation
+    # Run metadata validation first so malformed JSON retains the validator's
+    # specific structured error instead of being hidden by detector parsing.
     meta_validator = MetadataValidator()
     meta_result = meta_validator.validate(metadata_file)
 
@@ -75,6 +79,12 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
         compose_result = compose_validator.validate(compose_file, ext_dir)
         if compose_result.passed:
             runtime_result = runtime_validator.validate(compose_file, ext_dir)
+            if meta_result.passed:
+                info = ExtensionDetector().detect(ext_dir)
+                meta_result.errors.extend(
+                    check_cli_contract(info.metadata, info.compose_data)
+                )
+                meta_result.passed = not meta_result.errors
     else:
         meta_result.warnings.append("No docker-compose file found — kz-ext dev local will not work")
 

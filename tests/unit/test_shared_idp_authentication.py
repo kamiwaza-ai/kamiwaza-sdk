@@ -582,6 +582,81 @@ def test_invalidation_retains_refresh_and_get_access_token_renews() -> None:
     assert http.post.call_args_list[-1].kwargs["data"]["grant_type"] == "refresh_token"
 
 
+def test_get_access_token_returns_before_concurrent_invalidation() -> None:
+    store = InMemoryTokenStore()
+    store.save(
+        StoredToken(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at=time.time() + 300,
+        )
+    )
+    authenticator, _http = _authenticator([], token_store=store)
+    authentication_finished = threading.Event()
+    release_return = threading.Event()
+    invalidation_started = threading.Event()
+    invalidation_finished = threading.Event()
+    original_authenticate = authenticator.authenticate
+
+    def paused_authenticate(session: requests.Session) -> None:
+        original_authenticate(session)
+        authentication_finished.set()
+        assert release_return.wait(timeout=2)
+
+    authenticator.authenticate = paused_authenticate  # type: ignore[method-assign]
+    token_session = requests.Session()
+    rejected_session = requests.Session()
+
+    def invalidate() -> None:
+        invalidation_started.set()
+        authenticator.invalidate_session(rejected_session)
+        invalidation_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        read_token = executor.submit(authenticator.get_access_token, token_session)
+        assert authentication_finished.wait(timeout=1)
+        invalidation = executor.submit(invalidate)
+        assert invalidation_started.wait(timeout=1)
+        try:
+            assert not invalidation_finished.wait(timeout=0.1)
+        finally:
+            release_return.set()
+        assert read_token.result(timeout=1) == "access-1"
+        invalidation.result(timeout=1)
+
+
+def test_repeated_invalidation_preserves_token_identity_for_peer_adoption(
+    tmp_path: Path,
+) -> None:
+    token_path = tmp_path / "shared-token.json"
+    FileTokenStore(token_path).save(
+        StoredToken(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at=time.time() + 300,
+        )
+    )
+    authenticator, http = _authenticator(
+        [AssertionError("stale refresh token was replayed")],
+        token_store=FileTokenStore(token_path),
+    )
+    platform_session = requests.Session()
+
+    authenticator.invalidate_session(platform_session)
+    FileTokenStore(token_path).save(
+        StoredToken(
+            access_token="access-2",
+            refresh_token="refresh-2",
+            expires_at=time.time() + 300,
+        )
+    )
+    authenticator.invalidate_session(platform_session)
+
+    assert authenticator.get_access_token(platform_session) == "access-2"
+    assert platform_session.headers["Authorization"] == "Bearer access-2"
+    http.post.assert_not_called()
+
+
 def test_access_token_inside_refresh_leeway_is_refreshed(monkeypatch) -> None:
     now = 1_000.0
     monkeypatch.setattr(shared_auth.time, "time", lambda: now)

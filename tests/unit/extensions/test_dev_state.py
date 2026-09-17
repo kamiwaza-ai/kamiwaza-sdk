@@ -690,13 +690,11 @@ class TestBuildPatchKwargsCarriesAnnotations:
         patch = PatchExtension(**kwargs)
         assert (patch.model_extra or {}).get("annotations") == {"k": "v"}
 
-    def test_carries_kamiwaza_spec_so_patch_refreshes_tls_settings(self):
-        """PR #92 iter-7: the existing CR persists from the original
-        CREATE. If the developer flips TLS verify on the host (or
-        upgrades SDK so dev-TLD auto-disable kicks in), PATCH must
-        carry the new ``kamiwaza`` spec or the deployed
-        ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED`` stays stuck at the stale
-        value forever."""
+    def test_carries_kamiwaza_spec_so_patch_refreshes_integration_settings(self):
+        """Refresh API URLs, origin, and auth settings on the existing CR.
+
+        TLS policy is carried separately by each patched service's env.
+        """
         from kamiwaza_extensions.commands.dev import _build_patch_kwargs
 
         # Sentinel object — _build_patch_kwargs doesn't introspect it.
@@ -793,6 +791,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
                 ExtensionServiceSpec(
                     name="postgres",
                     image="postgres:15",
+                    command=["/usr/local/bin/entrypoint"],
+                    args=["postgres", "-c", "shared_buffers=256MB"],
                     healthCheck={"tcpSocket": {"port": 5432}},
                     containerSecurityContext={
                         "runAsNonRoot": False,
@@ -811,6 +811,13 @@ class TestBuildPatchKwargsCarriesAnnotations:
         by_name = {s.name: s for s in specs}
 
         pg_extra = by_name["postgres"].model_extra or {}
+        assert by_name["postgres"].command == ["/usr/local/bin/entrypoint"]
+        assert by_name["postgres"].args == [
+            "postgres",
+            "-c",
+            "shared_buffers=256MB",
+        ]
+        assert by_name["postgres"].primary is False
         assert pg_extra["healthCheck"] == {"tcpSocket": {"port": 5432}}
         assert pg_extra["containerSecurityContext"] == {
             "runAsNonRoot": False,
@@ -827,6 +834,25 @@ class TestBuildPatchKwargsCarriesAnnotations:
         assert "healthCheck" not in fe_extra
         assert "automountServiceAccountToken" not in fe_extra
         assert "containerSecurityContext" not in fe_extra
+
+    def test_patch_service_specs_clears_removed_process_overrides(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
+
+        class _FakePayload:
+            services = [
+                ExtensionServiceSpec(
+                    name="worker",
+                    image="reg/worker:dev",
+                    primary=True,
+                ),
+            ]
+
+        spec = _build_patch_service_specs(_FakePayload())[0]
+
+        assert spec.primary is True
+        assert spec.command == []
+        assert spec.args == []
 
     def test_patch_service_specs_preserves_automount_false(self):
         """``automountServiceAccountToken=False`` is a meaningful

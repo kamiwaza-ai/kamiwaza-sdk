@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Minimal Kamiwaza contract app for live extension checks"
 requires-python = ">=3.12"
 dependencies = [
-    "kamiwaza-extensions-lib>=0.4.4,<0.5",
+    "kamiwaza-extensions-lib>=0.5,<0.6",
     "fastapi>=0.115.0",
     "pydantic>=2.7.0",
     "uvicorn[standard]>=0.30.0",

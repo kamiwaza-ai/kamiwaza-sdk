@@ -1,6 +1,12 @@
 id: "S5"
 name: "Data enrichment constrained to a file's context graph"
 sign_off_actor: "SDK team"
+# Reviewed mapping (ENG-11522). Scaffolds an enrichment app and asserts
+# the declared workroom + file-context-graph boundary is enforced on
+# both the in-boundary and out-of-boundary paths.
+capability_ids:
+  - "platform.app-generation-path"
+  - "workrooms.session-scoping"
 uacs:
   - UAC-9c
   - UAC-9d

@@ -144,6 +144,16 @@ class ValidationError(KamiwazaError):
     """Raised when input validation fails (HTTP 400 / 422)."""
 
 
+class OffHostBaseURLError(ValueError):
+    """A base_url override does not share the platform's origin.
+
+    Deliberately NOT a KamiwazaError: the readiness probe in
+    ``services.kaizen._is_serving`` treats every KamiwazaError as "the backend
+    answered", so classing it there would report an off-host URL as serving.
+    Subclasses ValueError because that is the contract callers already catch.
+    """
+
+
 class TimeoutError(KamiwazaError):
     """Raised when a request times out."""
 
@@ -286,6 +296,26 @@ class MeshJobFailedError(KamiwazaError):
     """A federated job ran but produced a non-success terminal state
     (``status == "FAILED"`` or similar). Body carries the receiver-side
     error context for diagnostics."""
+
+
+class DelegatedResourceNotFoundError(NotFoundError):
+    """A job requested a resource outside its exact delegated grant."""
+
+
+class DelegationRevokedError(AuthorizationError):
+    """The job, grant, user, or federation is no longer active."""
+
+
+class DelegatedOperationDeniedError(AuthorizationError):
+    """The grant does not authorize the requested delegated operation."""
+
+
+class JobIdentityUnavailableError(KamiwazaError):
+    """The local agent could not attest the calling job process."""
+
+
+class DelegationUnavailableError(KamiwazaError):
+    """Delegated authority or its replay protection is unavailable."""
 
 
 # ----------------------------------------------------------------------------

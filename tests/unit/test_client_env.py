@@ -75,6 +75,16 @@ def test_client_disables_ssl_verification_for_falsey_env_values(monkeypatch):
     assert client.session.verify is False
 
 
+def test_client_disables_ssl_verification_for_off_env_value(monkeypatch):
+    _clear_base_env(monkeypatch)
+    monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", " off ")
+
+    client = KamiwazaClient()
+
+    assert client.session.verify is False
+
+
 def test_client_request_forces_verify_false_when_ssl_disabled(monkeypatch):
     _clear_base_env(monkeypatch)
     monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
