@@ -48,7 +48,7 @@ dependencies = [
     # Security floor for the ENG-11024 advisory set. Keep this in published
     # metadata so SDK consumers cannot resolve an older transitive wheel.
     "cryptography>=50.0.1,<51.0.0",
-    "kamiwaza-extensions-lib>=0.6,<0.7",
+    "kamiwaza-extensions-lib>=0.5,<0.6",
     "PyJWT[crypto]>=2.8",
 ]
 

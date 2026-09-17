@@ -246,7 +246,7 @@ def test_attribute_schema_full_shape() -> None:
     from kamiwaza_sdk.schemas.federation import AttributeSchema
 
     schema = AttributeSchema(
-        name="team",
+        name="clearance",
         type="string",
         state="declared",
         authority="local_admin",
@@ -254,7 +254,7 @@ def test_attribute_schema_full_shape() -> None:
         schema_version="1.0",
         declared_at=datetime(2026, 5, 12, 0, 0, tzinfo=timezone.utc),
     )
-    assert schema.name == "team"
+    assert schema.name == "clearance"
     assert schema.type == "string"
     assert schema.state == "declared"
     assert schema.authority == "local_admin"

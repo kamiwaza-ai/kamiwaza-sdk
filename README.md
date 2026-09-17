@@ -57,7 +57,7 @@ must still authorize the caller for the requested workroom on every request.
 > namespace above. See the design's §4.2.11 for the full surface.
 
 The new `kamiwaza` namespace ships the federation-aware client. The
-seven-step demo author's `setup.py` flow uses **only SDK calls** — no
+eight-step demo author's `setup.py` flow uses **only SDK calls** — no
 `kubectl exec`, no manual SQL, no Keycloak admin REST:
 
 1. **Pair LYRA with ORION** — `kz.federations.pair(...)`
@@ -66,11 +66,12 @@ seven-step demo author's `setup.py` flow uses **only SDK calls** — no
 3. **Bind the cluster execution gate** — `kz.cluster.set_execution_gate(...)`
    (replaces the `kubectl exec` recipe — see authoring-guide §9.1)
 4. **Register the dataset** — `kz.datasets.create(...)`
-5. **Allowlist the brokered user + grant viewer** —
+5. **Bind the dataset's attribute gate** — `kz.datasets.set_gate(...)`
+6. **Allowlist the brokered user + grant viewer** —
    `kz.federations["ORION"].users.add(...)` plus
    `kz.subjects.grants("user").create(...)`
-6. **Submit the federated job** — `kz.jobs.run(...)`
-7. **Observe the audit trail** — `kz.cluster.operations()` / receiver-side
+7. **Submit the federated job** — `kz.jobs.run(...)`
+8. **Observe the audit trail** — `kz.cluster.operations()` / receiver-side
    `gate_binding{,_set,clear}` + `subject_upsert` audit events
 
 ### Configure the client
@@ -132,7 +133,7 @@ fail loudly at upsert time instead of returning success with empty
 attributes.
 
 ```python
-kz.cluster.declare_attribute("team",      type="string")
+kz.cluster.declare_attribute("clearance", type="string")
 kz.cluster.declare_attribute("country",   type="string")
 kz.cluster.declare_attribute("programs",  type="string[]")  # multivalued
 ```
@@ -165,13 +166,13 @@ rolls back attribute deltas on partial failure (T3.4).
 cdr_baker = kz.subjects.upsert(
     "cdr-baker",
     attributes={
-        "team": "BLUE",
+        "clearance": "TS",
         "country": "USA",
         "programs": ["IRIS", "ARGOS"],   # list → multivalued KC attribute
     },
     password="cdr-baker",
 )
-print(cdr_baker.id, cdr_baker.attributes["team"])  # kc-uuid BLUE
+print(cdr_baker.id, cdr_baker.attributes["clearance"])  # kc-uuid TS
 ```
 
 Audit emits `subject_upsert{outcome=success}` on the receiver. A
@@ -216,14 +217,27 @@ conjunctions = kz.datasets.create(
 print(conjunctions.urn)  # urn:li:dataset:(postgres,conjunctions,PROD)
 ```
 
-A dataset can also bind its own attribute gate with
-`kz.datasets.set_gate(urn, type=..., config=...)`. The server verifies the
-classpath is an `AttributeGate` (wrong-kind → 400) and that `config` matches
-the gate's `config_schema()` (mismatch → 400 `schema_validation_failed`).
-Owner-on-dataset ReBAC enforces that only the dataset's owner can rebind the
-gate (T2.5 follow-up).
+### Step 5 — Bind the dataset's attribute gate (M3)
 
-### Step 5 — Allowlist the brokered user + grant viewer (M3)
+```python
+ds_binding = kz.datasets.set_gate(
+    conjunctions.urn,
+    type="kamiwaza_extensions.classified_conjunction_gate.ClassifiedConjunctionGate",
+    config={
+        "classification_field": "classification",
+        "releasable_to_field": "releasable_to",
+        "program_compartment_field": "program_compartment",
+    },
+)
+print(ds_binding.dataset_urn, ds_binding.gate_name)
+```
+
+The server verifies the classpath is an `AttributeGate` (wrong-kind →
+400) and that `config` matches the gate's `config_schema()` (mismatch
+→ 400 `schema_validation_failed`). Owner-on-dataset ReBAC enforces
+that only the dataset's owner can rebind the gate (T2.5 follow-up).
+
+### Step 6 — Allowlist the brokered user + grant viewer (M3)
 
 ```python
 # Receiver-side allowlist (same as WS-M1):
@@ -251,7 +265,7 @@ ext-authz returns 403 with `detail.reason ==
 "brokered_user_not_allowlisted"`. The SDK surfaces that as
 `kamiwaza.exceptions.BrokeredUserNotAllowlistedError`.
 
-### Step 6 — Submit the federated job
+### Step 7 — Submit the federated job
 
 `target_cluster` is the federation name (the same name used at
 pair time). Omit it to run locally on the cluster the SDK is
@@ -324,7 +338,7 @@ budget expires before a terminal state. A *failed* job returns a
 JobResult with `status="FAILED"` and an `error` message — that's
 not exceptional, that's data.
 
-### Step 7 — Observe audit
+### Step 8 — Observe audit
 
 The receiver-side audit log shows the job completing as the
 originating user (`cdr-baker@lyra-cluster-uuid`), not as a
@@ -348,7 +362,7 @@ kubectl -n kamiwaza logs deployment/core-scheduler \
 ```
 
 The `audit_actor` field is the same value `kz.jobs.run(...).audit_actor`
-returns in step 6 — that round-trip is the demo gate's load-bearing
+returns in step 7 — that round-trip is the demo gate's load-bearing
 signal.
 
 ### Recoverable long-jobs
@@ -477,7 +491,7 @@ and closure owners.
 - **Base URL rule:** set `base_url=https://<host>` (no `/auth` suffix). Quick preflight: `GET {base_url}/auth/ping` → 200. If you include `/auth`, calls will double-prefix and fail.
 - **Admin-only:** creating/resetting users requires an admin bearer.
 - **Auth-on semantics:** `create_local_user` provisions Keycloak so the user can authenticate; `reset_user_password` updates Keycloak only (Keycloak is authoritative). Auth-off updates the local hash only.
-- **Roles constraint:** requested realm roles must exist; otherwise create will 500 + rollback. Omit roles or use known-good roles.
+- **Roles caveat:** requested realm roles must exist; otherwise create will 500 + rollback. Omit roles or use known-good roles.
 - **Self-signed TLS:** set `--verify-ssl false` (or `verify_ssl=False`) when needed.
 - A runnable smoke script lives at `scripts/fed_user_smoke.py` (see script usage inside).
 

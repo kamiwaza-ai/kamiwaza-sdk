@@ -156,10 +156,8 @@ def test_dataset_gated_binds_gate_via_set_gate():
     mc = MagicMock()
     mc.datasets.create.return_value = "urn:li:dataset:(x)"
     rc, out = _run(
-        [
-            "dataset", "gated", "--name", "d", "--path", "/data/x.csv",
-            "--gate", "acme_gates.region.RegionGate",
-        ],
+        ["dataset", "gated", "--name", "d", "--path", "/data/x.csv",
+         "--gate", "acme_gates.mini.MiniClearanceGate"],
         client=mc,
     )
     assert rc == 0
@@ -168,7 +166,7 @@ def test_dataset_gated_binds_gate_via_set_gate():
     # the gate is NOT smuggled into properties — it is bound via set_gate
     assert kwargs["properties"] == {"path": "/data/x.csv"}
     mc.datasets.set_gate.assert_called_once_with(
-        "urn:li:dataset:(x)", type="acme_gates.region.RegionGate", config={}
+        "urn:li:dataset:(x)", type="acme_gates.mini.MiniClearanceGate", config={}
     )
     assert out["dataset_urn"] == "urn:li:dataset:(x)"
 
@@ -188,9 +186,9 @@ def test_gate_install_wraps_packages():
 
 def test_attr_declare():
     mc = MagicMock()
-    rc, out = _run(["attr", "declare", "--name", "region"], client=mc)
+    rc, out = _run(["attr", "declare", "--name", "clearance"], client=mc)
     assert rc == 0
-    mc.cluster.declare_attribute.assert_called_once_with("region", type="string")
+    mc.cluster.declare_attribute.assert_called_once_with("clearance", type="string")
 
 
 # --- idp (Keycloak-admin, monkeypatched) ----------------------------------
@@ -204,51 +202,27 @@ def test_idp_bootstrap_ensures_realm_client_mapper(monkeypatch):
     monkeypatch.setattr(cli, "build_kc_admin", lambda args: kc)
     rc, out = _run(
         ["idp", "bootstrap", "--realm", "federated", "--ropc-client", "fed-mesh-cli",
-         "--attr", "team",
          "--kc-url", "https://kc", "--kc-admin-pw-env", "KCPW"],
     )
     assert rc == 0
     kc.set_unmanaged_attributes.assert_called_once_with("federated")
-    kc.ensure_attribute_mapper.assert_called_once_with("federated", "uuid", attribute="team")
-    assert out["attribute_mappers"] == ["team"]
+    kc.ensure_attribute_mapper.assert_called_once_with("federated", "uuid", attribute="clearance")
     assert out["shared_issuer_url"] == "https://kc/realms/federated"
-
-
-def test_idp_bootstrap_requires_an_attribute(monkeypatch):
-    """No default attribute: the realm's own attribute name must be stated.
-
-    A default here would map whichever attribute the default happened to name,
-    which is a silent wrong answer rather than a visible missing argument.
-    """
-    monkeypatch.setattr(cli, "build_kc_admin", lambda args: MagicMock())
-    with pytest.raises(SystemExit) as exit_info:
-        _run(
-            ["idp", "bootstrap", "--realm", "federated", "--ropc-client",
-             "fed-mesh-cli", "--kc-url", "https://kc", "--kc-admin-pw-env", "KCPW"],
-        )
-    assert exit_info.value.code != 0
 
 
 def test_idp_persona_parses_attrs(monkeypatch):
     kc = MagicMock()
-    kc.ensure_user.return_value = {
-        "username": "fed-region-west",
-        "id": "u1",
-        "created": True,
-    }
+    kc.ensure_user.return_value = {"username": "fed-clr-u", "id": "u1", "created": True}
     monkeypatch.setattr(cli, "build_kc_admin", lambda args: kc)
     monkeypatch.setenv("PPW", "secret")
     rc, out = _run(
-        [
-            "idp", "persona", "--realm", "federated",
-            "--user", "fed-region-west", "--attr", "region=west",
-            "--pw-env", "PPW", "--kc-url", "https://kc",
-            "--kc-admin-pw-env", "KCPW",
-        ],
+        ["idp", "persona", "--realm", "federated", "--user", "fed-clr-u",
+         "--attr", "clearance=U", "--pw-env", "PPW",
+         "--kc-url", "https://kc", "--kc-admin-pw-env", "KCPW"],
     )
     assert rc == 0
-    assert kc.ensure_user.call_args.kwargs["attributes"] == {"region": "west"}
-    assert out["attributes"] == {"region": "west"}
+    assert kc.ensure_user.call_args.kwargs["attributes"] == {"clearance": "U"}
+    assert out["attributes"] == {"clearance": "U"}
 
 
 def test_idp_token_raw(monkeypatch, capsys):

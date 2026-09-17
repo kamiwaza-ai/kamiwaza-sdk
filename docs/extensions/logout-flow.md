@@ -1,8 +1,8 @@
 # Logout Flow
 
 This document describes the canonical logout flow for App Garden extensions
-using `@kamiwaza-ai/extensions-lib@0.6.x` and
-`kamiwaza-extensions-lib==0.6.*`.
+using `@kamiwaza-ai/extensions-lib@0.5.x` and
+`kamiwaza-extensions-lib==0.5.*`.
 
 ## Flow
 
@@ -136,7 +136,7 @@ ForwardAuth or make the route public at ingress.
 ## Legacy package
 
 `@kamiwaza/auth@0.2.0` and `kamiwaza_auth` are frozen legacy
-implementations. Their cookie-era path discovery is not the 0.6 contract.
+implementations. Their cookie-era path discovery is not the 0.5 contract.
 Migrate imports explicitly rather than assuming a re-export shim.
 
 See [Auth Runtime Migration](./auth-runtime-migration.md) and

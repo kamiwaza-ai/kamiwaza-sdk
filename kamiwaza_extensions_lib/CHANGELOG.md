@@ -6,29 +6,6 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
-## [0.6.0] — 2026-09-17
-
-### Removed
-
-* `Identity.system_high` and the `X-User-System-High` header it read. This is a
-  deliberate removal of the classification vocabulary from the runtime's public
-  model, not a consequence of the header disappearing: the platform still sets
-  it, and `X-User-System-High` is still listed in the core ForwardAuth
-  middleware's `authResponseHeaders`, so it still reaches an extension's
-  request. What changes is that this runtime stops modelling it. An extension
-  that genuinely needs the value must read the raw header itself and own that
-  decision; the runtime no longer offers a typed field that invites trust
-  decisions on a classification string. The TypeScript runtime removed
-  `Identity.systemHigh` in its own 0.6.0, so both language runtimes lose the
-  field together.
-
-### Notes
-
-* Compat floor in `kamiwaza_extensions/compatibility.json` raised to
-  `>=0.6,<0.7`, and the scaffold, example, and SDK pins move with it, so no
-  consumer resolves a 0.5.x wheel whose `Identity` still carries the removed
-  field.
-
 ## [0.5.0] — 2026-07-28
 
 ### Added

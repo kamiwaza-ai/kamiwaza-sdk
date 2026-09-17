@@ -65,8 +65,6 @@ from typing import Any, Iterator
 import pytest
 
 from kamiwaza_sdk import KamiwazaClient
-from kamiwaza_sdk.authentication import UserPasswordAuthenticator
-from kamiwaza_sdk.token_store import StoredToken, TokenStore
 
 logger = logging.getLogger(__name__)
 
@@ -77,30 +75,6 @@ pytestmark = [
     pytest.mark.requires_two_clusters,
     pytest.mark.requires_receiver_realm,
 ]
-class _NoCacheTokenStore(TokenStore):
-    def load(self) -> StoredToken | None:
-        return None
-
-    def save(self, token: StoredToken) -> None:
-        return None
-
-    def clear(self) -> None:
-        return None
-
-
-def _authed_client(
-    base_url: str, username: str, password: str, *, verify: bool
-) -> KamiwazaClient:
-    client = KamiwazaClient(base_url=base_url, verify=verify)
-    client.authenticator = UserPasswordAuthenticator(
-        username,
-        password,
-        client._auth_service,
-        token_store=_NoCacheTokenStore(),
-    )
-    return client
-
-
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any]:
@@ -332,18 +306,19 @@ def onboarded_pair(
             # A REAL local user, not a synthetic label: each persona
             # authenticates and requests for themselves (see the loop below).
             "username": f"alice-{suffix}",
-            "justification": "Quarterly dataset review.",
-            "attributes": {"region": "west", "department": "operations"},
-            "grant_object_id": f"live-onboarding-{suffix}-quarterly-review",
+            "justification": "Conjunction review for the Q3 collision window.",
+            "attributes": {"clearance": "high", "country": "US"},
+            "grant_object_id": f"live-onboarding-{suffix}-conjunctions",
         },
         {
             "username": f"bob-{suffix}",
-            "justification": "Analytics follow-up.",
-            "attributes": {"region": "east", "department": "analytics"},
-            "grant_object_id": f"live-onboarding-{suffix}-analytics",
+            "justification": "Sensor tasking follow-up.",
+            "attributes": {"clearance": "low", "country": "UK"},
+            "grant_object_id": f"live-onboarding-{suffix}-tasking",
         },
     ]
 
+    from ._mini_clearance import authed_client
 
     for person in people:
         # Each requester drives their OWN session. ENG-9731 returns the claim
@@ -356,7 +331,7 @@ def onboarded_pair(
         # requester reaches their OWN cluster, and the receiver never sees a
         # local account for them at all — only the guest it mints.
         initiator_client.subjects.upsert(username, attributes={}, password=username)
-        person["client"] = _authed_client(
+        person["client"] = authed_client(
             live_base_url, username, username, verify=False
         )
 
@@ -574,12 +549,13 @@ class TestPerUserOnboarding:
         `None` from a delegated response made the claim 404 on a token that had
         never existed — which looks like the denial working, and is not.
         """
+        from ._mini_clearance import authed_client
 
         receiver_fed_id = onboarding_federation["receiver_id"]
         initiator_fed_id = onboarding_federation["initiator_id"]
         username = f"carol-{uuid.uuid4().hex[:8]}"
         initiator_client.subjects.upsert(username, attributes={}, password=username)
-        carol = _authed_client(live_base_url, username, username, verify=False)
+        carol = authed_client(live_base_url, username, username, verify=False)
 
         status = _self_request_onboarding(
             carol, initiator_fed_id, "Ad-hoc access for a one-off review."
@@ -588,7 +564,7 @@ class TestPerUserOnboarding:
         assert claim_token, f"carol must hold her own claim token: {status!r}"
         external_id = status.get("external_id") or username
 
-        reason = "requested attribute was not approved"
+        reason = "clearance not verified"
         receiver_request_id = _receiver_request_id(
             receiver_client, receiver_fed_id, external_id
         )
@@ -718,7 +694,7 @@ class TestOnboardingOverTheMesh:
             _onboarding_path(
                 mesh_request["receiver_id"], f"/{arrived['id']}/approve"
             ),
-            json={"attributes": {"region": "west"}, "relations": []},
+            json={"attributes": {"clearance": "high"}, "relations": []},
         )
         assert approved.get("status") == "APPROVED", f"approve failed: {approved!r}"
 

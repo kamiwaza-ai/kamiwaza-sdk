@@ -217,6 +217,7 @@ class TestIdentityPydantic:
                 "x-user-workroom-role": "editor",
                 "x-auth-token": "jwt-abc",
                 "x-request-id": "req-789",
+                "x-user-system-high": "true",
             }
         )
         dumped = identity.model_dump()
@@ -227,11 +228,21 @@ class TestIdentityPydantic:
         assert dumped["workroom_id"] == "wrk-456"
         assert dumped["workroom_role"] == "editor"
         assert dumped["request_id"] == "req-789"
+        assert dumped["system_high"] == "true"
         assert dumped["is_authenticated"] is True
         # auth_token is intentionally NOT a field on Identity — the bearer
         # credential lives in headers and would leak via every model_dump()
         # call (logs, metrics, exception payloads).
         assert "auth_token" not in dumped
+
+    def test_system_high_preserves_classification_string(self):
+        """X-User-System-High carries a classification ("U", "TS", ...) not a bool.
+        The string must round-trip unchanged so trust decisions can compare it."""
+        for marker in ("U", "TS", "S", "C"):
+            identity = identity_from_headers(
+                {"x-user-id": "u", "x-user-system-high": marker}
+            )
+            assert identity.system_high == marker
 
     def test_unknown_kwargs_dropped_dont_leak_via_model_dump(self):
         """extra='ignore' guard: future Pydantic-default changes can't silently

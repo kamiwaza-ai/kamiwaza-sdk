@@ -8,7 +8,7 @@
         "start": "next start"
     },
     "dependencies": {
-        "@kamiwaza-ai/extensions-lib": ">=0.6 <0.7",
+        "@kamiwaza-ai/extensions-lib": ">=0.5 <0.6",
         "autoprefixer": "^10.4.27",
         "next": "15.5.24",
         "postcss": "^8.5.8",

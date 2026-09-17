@@ -68,6 +68,7 @@ def test_validation_headers_preserve_complete_identity_envelope():
             "X-User-Roles": "admin, viewer",
             "X-User-Groups": "engineering, platform",
             "X-User-Attributes-Hash": "sha256:attributes",
+            "X-User-System-High": "TS",
             "X-Workroom-Id": "workroom-1",
             "X-User-Workroom-Id": "workroom-alias",
             "X-User-Workroom-Role": "editor",
@@ -80,6 +81,7 @@ def test_validation_headers_preserve_complete_identity_envelope():
     assert headers.user_roles == ["admin", "viewer"]
     assert headers.user_groups == ["engineering", "platform"]
     assert headers.user_attributes_hash == "sha256:attributes"
+    assert headers.user_system_high == "TS"
     assert headers.workroom_id == "workroom-1"
     assert headers.user_workroom_id == "workroom-alias"
     assert headers.user_workroom_role == "editor"

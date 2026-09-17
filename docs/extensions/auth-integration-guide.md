@@ -3,8 +3,8 @@
 Use the canonical extension runtime libraries for all new and migrated
 extensions:
 
-- TypeScript: `@kamiwaza-ai/extensions-lib@0.6.x`
-- Python: `kamiwaza-extensions-lib==0.6.*`
+- TypeScript: `@kamiwaza-ai/extensions-lib@0.5.x`
+- Python: `kamiwaza-extensions-lib==0.5.*`
 
 The deprecated `kamiwaza-extensions-template` repository shipped
 `@kamiwaza/auth@0.2.0` and `kamiwaza_auth`. Those packages retain their
@@ -13,9 +13,9 @@ aliases for the canonical runtime and must not be used in new code. See
 [Auth Runtime Migration](./auth-runtime-migration.md) for the import map and
 staged migration policy.
 
-> **Release status:** version 0.6 must be published before package-manager
+> **Release status:** version 0.5 must be published before package-manager
 > installs and clean lockfile regeneration can succeed. Before publication,
-> use an approved 0.6 wheel/tarball from the SDK release candidate.
+> use an approved 0.5 wheel/tarball from the SDK release candidate.
 
 ## How authentication works
 
@@ -37,14 +37,14 @@ boundary.
 
 ## Install
 
-After 0.6 is published:
+After 0.5 is published:
 
 ```bash
 # Frontend
-npm install '@kamiwaza-ai/extensions-lib@^0.6.0'
+npm install '@kamiwaza-ai/extensions-lib@^0.5.0'
 
 # Backend
-pip install 'kamiwaza-extensions-lib==0.6.*'
+pip install 'kamiwaza-extensions-lib==0.5.*'
 ```
 
 For an unpublished release candidate, substitute the approved local `.tgz`
@@ -302,7 +302,7 @@ that request to platform login. See [Logout Flow](./logout-flow.md).
 
 ### Backend
 
-- [ ] Depend on `kamiwaza-extensions-lib==0.6.*`.
+- [ ] Depend on `kamiwaza-extensions-lib==0.5.*`.
 - [ ] Replace `kamiwaza_auth` imports using the migration table.
 - [ ] Include `create_session_router()`.
 - [ ] Protect private routes with `Depends(require_auth)`.
@@ -311,7 +311,7 @@ that request to platform login. See [Logout Flow](./logout-flow.md).
 
 ### Frontend
 
-- [ ] Depend on `@kamiwaza-ai/extensions-lib@0.6.x`.
+- [ ] Depend on `@kamiwaza-ai/extensions-lib@0.5.x`.
 - [ ] Wrap `next.config.js` with
       `withKamiwazaAppGarden({ output: "standalone" })`.
 - [ ] Install `<KamiwazaRuntimeBootstrap />` before hydration.
@@ -324,7 +324,7 @@ that request to platform login. See [Logout Flow](./logout-flow.md).
 - [ ] Import local middleware from `/local-dev-auth`.
 - [ ] Replace `apiFetch` and raw public-root paths with `/runtime` helpers.
 - [ ] Remove vendored `@kamiwaza/auth` tarballs after migration.
-- [ ] Regenerate and commit the lockfile after 0.6 is published.
+- [ ] Regenerate and commit the lockfile after 0.5 is published.
 
 ## Troubleshooting
 

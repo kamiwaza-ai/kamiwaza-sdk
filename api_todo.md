@@ -120,8 +120,8 @@ Missing integration coverage: 163
 | TS3.018 | [x] | DELETE | /catalog/containers/{container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
 | TS3.019 | [x] | GET | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.list) |
 | TS3.020 | [x] | POST | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.create); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset) |
-| TS3.021 | [x] | DELETE | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (direct); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (direct); test_catalog_multi_source.py::_cleanup_datasets (direct) |
-| TS3.022 | [x] | GET | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (direct); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.get_dataset); test_catalog_multi_source.py::_fetch_dataset (direct) |
+| TS3.021 | [x] | DELETE | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.datasets.delete); test_catalog_multi_source.py::_cleanup_datasets (direct) |
+| TS3.022 | [x] | GET | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.datasets.get); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.get_dataset); test_catalog_multi_source.py::_fetch_dataset (direct) |
 | TS3.023 | [x] | PATCH | /catalog/datasets/by-urn | test_catalog_multi_source.py::_ensure_retrieval_metadata (direct); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (direct) |
 | TS3.024 | [x] | GET | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
 | TS3.025 | [x] | PUT | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
@@ -137,9 +137,9 @@ Missing integration coverage: 163
 | TS3.035 | [x] | GET | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_list (catalog.secrets.list); test_catalog_live.py::test_catalog_secret_lifecycle (catalog.list_secrets) |
 | TS3.036 | [x] | POST | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_endpoints (catalog.secrets.create) |
 | TS3.037 | [x] | DELETE | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
-| TS3.038 | [x] | GET | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
-| TS3.039 | [x] | DELETE | /catalog/secrets/v2/{secret_urn:secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
-| TS3.040 | [x] | GET | /catalog/secrets/v2/{secret_urn:secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
+| TS3.038 | [x] | GET | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct); test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.secrets.get) |
+| TS3.039 | [x] | DELETE | /catalog/secrets/v2/{secret_urn:secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct); test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.secrets.delete) |
+| TS3.040 | [x] | GET | /catalog/secrets/v2/{secret_urn:secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct); test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.secrets.get) |
 | TS3.041 | [x] | DELETE | /catalog/secrets/{secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
 | TS3.042 | [x] | GET | /catalog/secrets/{secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
 
@@ -221,7 +221,7 @@ Missing integration coverage: 163
 | TS8.010 | [ ] | GET | /ingestion/health |  |
 | TS8.011 | [ ] | POST | /ingestion/ingest/emit |  |
 | TS8.012 | [ ] | POST | /ingestion/ingest/jobs |  |
-| TS8.013 | [x] | POST | /ingestion/ingest/run | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (ingestion.run_active); test_catalog_multi_source.py::_ingest_object_dataset (ingestion.run_active); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_object_ingestion_inline_retrieval (ingestion.run_active); test_catalog_multi_source.py::test_catalog_parquet_ingestion_inline_retrieval (ingestion.run_active); test_catalog_multi_source.py::test_catalog_postgres_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata (ingestion.run_slack_ingest) |
+| TS8.013 | [x] | POST | /ingestion/ingest/run | test_catalog_ingest_retrieval.py::_ingest_exact_object (ingestion.run_active); test_catalog_multi_source.py::_ingest_object_dataset (ingestion.run_active); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_object_ingestion_inline_retrieval (ingestion.run_active); test_catalog_multi_source.py::test_catalog_parquet_ingestion_inline_retrieval (ingestion.run_active); test_catalog_multi_source.py::test_catalog_postgres_ingestion_metadata (ingestion.run_active); test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata (ingestion.run_slack_ingest) |
 | TS8.014 | [ ] | GET | /ingestion/ingest/status/{job_id} |  |
 
 ## (TS9) LOGGER
@@ -319,8 +319,8 @@ Missing integration coverage: 163
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS17.001 | [x] | POST | /retrieval/jobs | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (direct); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (direct); test_catalog_multi_source.py::_run_inline_retrieval (direct); test_catalog_multi_source.py::_run_sse_retrieval (direct); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (direct); test_catalog_multi_source.py::test_catalog_postgres_ingestion_metadata (direct); test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata (retrieval.slack_messages) |
-| TS17.002 | [x] | GET | /retrieval/jobs/{job_id} | test_retrieval_live.py::TestRetrievalJobStatus::test_get_job_via_direct_api (direct); test_retrieval_live.py::TestRetrievalJobStatus::test_get_nonexistent_job_status (retrieval.get_job) |
+| TS17.001 | [x] | POST | /retrieval/jobs | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (retrieval.create_job); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (retrieval.create_job); test_catalog_multi_source.py::_run_inline_retrieval (direct); test_catalog_multi_source.py::_run_sse_retrieval (direct); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (direct); test_catalog_multi_source.py::test_catalog_postgres_ingestion_metadata (direct); test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata (retrieval.slack_messages) |
+| TS17.002 | [x] | GET | /retrieval/jobs/{job_id} | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (retrieval.get_job); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (retrieval.get_job); test_retrieval_live.py::TestRetrievalJobStatus::test_get_job_via_direct_api (direct); test_retrieval_live.py::TestRetrievalJobStatus::test_get_nonexistent_job_status (retrieval.get_job) |
 | TS17.003 | [x] | GET | /retrieval/jobs/{job_id}/stream | test_catalog_multi_source.py::_run_sse_retrieval (direct) |
 
 ## (TS18) SECURITY
@@ -328,6 +328,7 @@ Missing integration coverage: 163
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
 | TS18.001 | [x] | POST | /security/consent/accept | test_security_live.py::TestSecurityConsentAccept::test_accept_consent (direct) |
+| TS18.002 | [x] | GET | /security/embed.js | test_security_live.py::TestSecurityEmbedScript::test_get_embed_script (direct) |
 | TS18.003 | [x] | GET | /security/public/config | test_security_live.py::TestSecurityPublicConfig::test_get_public_config (direct) |
 
 ## (TS19) SERVING

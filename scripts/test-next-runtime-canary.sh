@@ -216,14 +216,8 @@ INSTALLED_NEXT="$(node -p "require('next/package.json').version")"
     || fail "installed next@$INSTALLED_NEXT does not match fixture pin next@$EXPECTED_NEXT"
 INSTALLED_EXTLIB="$(node -p \
     "require('./node_modules/@kamiwaza-ai/extensions-lib/package.json').version")"
-# The guard is that the installed copy is the line this repository ships, not
-# a stale one resolved from the registry. Read that line from the package
-# rather than repeating it here: a hard-coded minor turns every release of the
-# runtime into a canary failure that says nothing about the runtime.
-EXPECTED_EXTLIB_LINE="$(node -p \
-    "const v = require('$REPO_ROOT/kamiwaza-ai-extensions-lib/package.json').version.split('.'); v[0] + '.' + v[1]")"
-[[ "$INSTALLED_EXTLIB" == "$EXPECTED_EXTLIB_LINE".* ]] \
-    || fail "installed extensions-lib@$INSTALLED_EXTLIB is not on the ${EXPECTED_EXTLIB_LINE}.x line this repository ships"
+[[ "$INSTALLED_EXTLIB" =~ ^0\.5\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
+    || fail "installed extensions-lib@$INSTALLED_EXTLIB does not satisfy the 0.5.x canary contract"
 log "installed next@$INSTALLED_NEXT with extensions-lib@$INSTALLED_EXTLIB"
 TOOLS="$WORK/app/node_modules/@kamiwaza-ai/extensions-lib/scripts"
 [[ -f "$TOOLS/index-next-runtime.mjs" && -f "$TOOLS/start-next-runtime.mjs" ]] \

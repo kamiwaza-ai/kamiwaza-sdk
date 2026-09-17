@@ -20,6 +20,7 @@ interface HappyVector {
         email: string | null;
         name: string | null;
         roles: string[];
+        system_high: string | null;
         workroom_id: string;
         workroom_role: string | null;
         request_id: string | null;
@@ -47,6 +48,7 @@ function toExpectedTsShape(expected: HappyVector["expected_identity"]) {
         email: expected.email,
         name: expected.name,
         roles: expected.roles,
+        systemHigh: expected.system_high,
         workroomId: expected.workroom_id,
         workroomRole: expected.workroom_role,
         requestId: expected.request_id,
@@ -75,6 +77,7 @@ describe("canonical test-vectors parity (TS ↔ Py ↔ Go)", () => {
                     email: identity.email,
                     name: identity.name,
                     roles: identity.roles,
+                    systemHigh: identity.systemHigh,
                     workroomId: identity.workroomId,
                     workroomRole: identity.workroomRole,
                     requestId: identity.requestId,

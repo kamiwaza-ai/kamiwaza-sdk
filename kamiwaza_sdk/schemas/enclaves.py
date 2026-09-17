@@ -23,6 +23,14 @@ class ConnectorBase(EnclaveBaseModel):
     tags: List[str] = Field(default_factory=list)
     allowed_roles: List[str] = Field(default_factory=list)
     require_encryption: bool = True
+    system_high: str = Field(
+        default="UNCLASSIFIED",
+        description="System-high classification for this connector",
+    )
+    default_security_marking: Optional[str] = Field(
+        default=None,
+        description="Default marking applied when documents lack explicit markings",
+    )
 
 
 class ConnectorCreate(ConnectorBase):
@@ -37,6 +45,8 @@ class ConnectorUpdate(EnclaveBaseModel):
     require_encryption: Optional[bool] = None
     enabled: Optional[bool] = None
     connection_config: Optional[Dict[str, Any]] = None
+    system_high: Optional[str] = None
+    default_security_marking: Optional[str] = None
 
 
 class ConnectorResponse(EnclaveBaseModel):
@@ -49,6 +59,8 @@ class ConnectorResponse(EnclaveBaseModel):
     allowed_roles: List[str]
     require_encryption: bool
     enabled: bool
+    system_high: str
+    default_security_marking: Optional[str] = None
     last_ingestion_at: Optional[datetime] = None
     last_success_at: Optional[datetime] = None
     error_count: int
@@ -76,6 +88,7 @@ class IndexDocumentRequest(EnclaveBaseModel):
     job_id: Optional[UUID] = None
     job_name: Optional[str] = None
     job_config: Optional[Dict[str, Any]] = None
+    security_marking: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -97,6 +110,13 @@ class DocumentRecord(EnclaveBaseModel):
     tags: List[str] = Field(default_factory=list)
     categories: List[str] = Field(default_factory=list)
     language: Optional[str] = None
+    classification: str
+    security_marking: Optional[str] = None
+    handling_caveats: List[str] = Field(default_factory=list)
+    control_markings: List[str] = Field(default_factory=list)
+    sci_controls: List[str] = Field(default_factory=list)
+    dissemination_controls: List[str] = Field(default_factory=list)
+    releasable_to: List[str] = Field(default_factory=list)
     entities: Optional[Dict[str, Any]] = None
     indexed_at: datetime
     content_date: Optional[datetime] = None

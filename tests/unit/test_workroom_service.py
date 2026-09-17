@@ -97,7 +97,9 @@ def _workroom_response(**overrides):
         "type": "persistent",
         "description": "A test workroom",
         "labels": ["test"],
+        "classification": None,
         "attributes": None,
+        "scg_references": None,
         "status": "active",
         "created_at": "2025-01-01T00:00:00Z",
         "updated_at": None,
@@ -178,13 +180,17 @@ def test_create_with_all_optional_fields(dummy_client):
         "ephemeral",
         description="desc",
         labels=["a", "b"],
-        attributes={"project_id": "p1"},
+        classification="internal",
+        attributes={"mission_id": "m1"},
+        scg_references=["scg-1"],
     )
 
     payload = client.calls[0][2]["json"]
     assert payload["description"] == "desc"
     assert payload["labels"] == ["a", "b"]
-    assert payload["attributes"] == {"project_id": "p1"}
+    assert payload["classification"] == "internal"
+    assert payload["attributes"] == {"mission_id": "m1"}
+    assert payload["scg_references"] == ["scg-1"]
 
 
 def test_create_excludes_none_fields(dummy_client):
@@ -203,15 +209,15 @@ def test_create_serializes_uuid_attributes(dummy_client):
     responses = {("post", "/workrooms/"): _workroom_response()}
     client = dummy_client(responses)
     service = WorkroomService(client)
-    project_id = uuid.uuid4()
+    mission_id = uuid.uuid4()
 
     service.create(
         "My WR",
         "persistent",
-        attributes={"project_id": project_id},
+        attributes={"mission_id": mission_id},
     )
 
-    assert client.calls[0][2]["json"]["attributes"]["project_id"] == str(project_id)
+    assert client.calls[0][2]["json"]["attributes"]["mission_id"] == str(mission_id)
 
 
 # =============================================================================
@@ -366,7 +372,7 @@ def test_update_sends_only_provided_fields(dummy_client):
     assert "name" in payload
     assert "labels" in payload
     assert "description" not in payload
-    assert "attributes" not in payload
+    assert "classification" not in payload
 
 
 def test_update_not_found_raises(dummy_client):

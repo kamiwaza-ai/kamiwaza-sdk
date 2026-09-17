@@ -11,10 +11,10 @@
   },
   "runtime_lib_compat": {
     "python": {
-      "kamiwaza-extensions-lib": ">=0.6,<0.7"
+      "kamiwaza-extensions-lib": ">=0.5,<0.6"
     },
     "typescript": {
-      "@kamiwaza-ai/extensions-lib": ">=0.6 <0.7"
+      "@kamiwaza-ai/extensions-lib": ">=0.5 <0.6"
     }
   }
 }

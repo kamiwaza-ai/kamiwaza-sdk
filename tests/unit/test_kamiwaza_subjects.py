@@ -34,7 +34,7 @@ def test_upsert_puts_to_server_with_attributes(mock_client) -> None:
         {
             "id": "kc-alice-uuid",
             "username": "alice",
-            "attributes": {"team": "red", "country": "GBR"},
+            "attributes": {"clearance": "S", "country": "GBR"},
             "grants": [],
             "created_at": "2026-05-12T00:00:00+00:00",
             "updated_at": "2026-05-12T00:00:00+00:00",
@@ -42,13 +42,13 @@ def test_upsert_puts_to_server_with_attributes(mock_client) -> None:
     )
 
     result = SubjectsAPI(client=mock_client).upsert(
-        "alice", attributes={"team": "red", "country": "GBR"}
+        "alice", attributes={"clearance": "S", "country": "GBR"}
     )
 
     assert isinstance(result, Subject)
     assert result.id == "kc-alice-uuid"
     assert result.username == "alice"
-    assert result.attributes["team"] == "red"
+    assert result.attributes["clearance"] == "S"
 
 
 def test_upsert_forwards_password_in_body(mock_client) -> None:
@@ -61,17 +61,17 @@ def test_upsert_forwards_password_in_body(mock_client) -> None:
         {
             "id": "kc-bob-uuid",
             "username": "bob",
-            "attributes": {"team": "blue"},
+            "attributes": {"clearance": "U"},
             "grants": [],
         },
     )
 
     SubjectsAPI(client=mock_client).upsert(
-        "bob", attributes={"team": "blue"}, password="initial-pw"
+        "bob", attributes={"clearance": "U"}, password="initial-pw"
     )
 
     body = mock_client.calls[0][2].get("json", {})
-    assert body == {"attributes": {"team": "blue"}, "password": "initial-pw"}
+    assert body == {"attributes": {"clearance": "U"}, "password": "initial-pw"}
 
 
 def test_upsert_omits_password_field_when_none(mock_client) -> None:
@@ -84,15 +84,15 @@ def test_upsert_omits_password_field_when_none(mock_client) -> None:
         {
             "id": "kc-carol-uuid",
             "username": "carol",
-            "attributes": {"team": "blue"},
+            "attributes": {"clearance": "C"},
             "grants": [],
         },
     )
 
-    SubjectsAPI(client=mock_client).upsert("carol", attributes={"team": "blue"})
+    SubjectsAPI(client=mock_client).upsert("carol", attributes={"clearance": "C"})
 
     body = mock_client.calls[0][2].get("json", {})
-    assert body == {"attributes": {"team": "blue"}}
+    assert body == {"attributes": {"clearance": "C"}}
 
 
 def test_upsert_url_encodes_special_char_username(mock_client) -> None:
@@ -138,7 +138,7 @@ def test_get_returns_subject(mock_client) -> None:
         {
             "id": "kc-dan-uuid",
             "username": "dan",
-            "attributes": {"team": "red"},
+            "attributes": {"clearance": "TS"},
             "grants": [],
         },
     )

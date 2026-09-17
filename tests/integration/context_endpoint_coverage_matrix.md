@@ -155,7 +155,7 @@ grouped into coherent follow-up areas for later waves:
 | Method | Endpoint | Note |
 |---|---|---|
 | `POST` | `/context/storage/raw` | Store a raw file into workroom-scoped object storage. |
-| `GET` | `/context/storage/raw` | List raw files with source and pagination filters. |
+| `GET` | `/context/storage/raw` | List raw files (filters, optional markings). |
 | `GET` | `/context/storage/raw/{file_id}` | Get one raw-file record (optional presigned download URL). |
 | `PUT` | `/context/storage/raw/{file_id}` | Edit plain-text raw-file content (If-Match concurrency). |
 

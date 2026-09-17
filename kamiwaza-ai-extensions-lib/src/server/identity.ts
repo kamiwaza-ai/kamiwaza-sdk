@@ -25,6 +25,7 @@ function projectFields(headers: HeadersLike, userId: string, workroomId: string 
         email: readStripped(headers, "x-user-email"),
         name: readStripped(headers, "x-user-name"),
         roles: parseRoles(headers),
+        systemHigh: readStripped(headers, "x-user-system-high"),
         workroomId,
         workroomRole: readStripped(headers, "x-user-workroom-role"),
         requestId: readStripped(headers, "x-request-id"),
@@ -38,8 +39,8 @@ function projectFields(headers: HeadersLike, userId: string, workroomId: string 
  * unauthenticated cases itself).
  *
  * Backwards-compatible with v0.2 callers; v0.3 adds the missing
- * ``workroomRole`` / ``requestId`` fields to the returned shape, which
- * previously held only the v0.2 subset.
+ * ``systemHigh`` / ``workroomRole`` / ``requestId`` fields to the returned
+ * shape, which previously held only the v0.2 subset.
  */
 export function extractIdentity(headers: HeadersLike): Identity | null {
     const userId = readStripped(headers, "x-user-id");

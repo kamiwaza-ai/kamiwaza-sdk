@@ -38,8 +38,8 @@ class TestScaffolder:
         return d
 
     def test_runtime_pin_fallback_preserves_relocation_contract(self):
-        """A corrupt compatibility bundle must not regress a new scaffold to a
-        runtime series below the current supported window."""
+        """A corrupt compatibility bundle must not regress a new scaffold
+        to the pre-relocation 0.4 runtime series."""
 
         class MissingBundle:
             def __truediv__(self, _name):
@@ -53,7 +53,7 @@ class TestScaffolder:
             return_value=MissingBundle(),
         ):
             _runtime_lib_pins.cache_clear()
-            assert _runtime_lib_pins() == (">=0.6,<0.7", ">=0.6 <0.7")
+            assert _runtime_lib_pins() == (">=0.5,<0.6", ">=0.5 <0.6")
 
     def test_next_pin_matches_runtime_and_canary(self):
         """The scaffold pin cannot move without moving the validated gate."""

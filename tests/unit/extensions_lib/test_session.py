@@ -68,8 +68,8 @@ class TestSessionEndpoint:
 
     def test_authenticated_session_does_not_leak_sensitive_fields(self, monkeypatch):
         """Guard against regressions: /session MUST NOT expose the Bearer
-        credential (``auth_token``) or the correlation tracer
-        (``request_id``) to the browser."""
+        credential (``auth_token``), classification flag (``system_high``),
+        or correlation tracer (``request_id``) to the browser."""
         client = _make_app(monkeypatch)
         resp = client.get(
             "/session",
@@ -81,6 +81,7 @@ class TestSessionEndpoint:
                 "x-workroom-id": "wrk-456",
                 "x-user-workroom-role": "editor",
                 "x-auth-token": "secret-bearer-jwt",
+                "x-user-system-high": "true",
                 "x-request-id": "req-abc",
             },
         )
@@ -92,6 +93,7 @@ class TestSessionEndpoint:
         assert data["workroom_role"] == "editor"
         # Negative: private fields absent
         assert "auth_token" not in data
+        assert "system_high" not in data
         assert "request_id" not in data
 
     def test_malformed_envelope_reported_as_logged_out(self, monkeypatch):

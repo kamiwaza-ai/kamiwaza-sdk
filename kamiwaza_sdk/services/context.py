@@ -906,8 +906,14 @@ class ContextService(BaseService):
         connector_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        include_markings: bool = False,
     ) -> dict[str, Any]:
-        """List raw files stored for a workroom."""
+        """List raw files stored for a workroom.
+
+        Returns the server's ``{"items": [...], "count": N}`` response. Set
+        ``include_markings=True`` to attach aggregated security markings to
+        each row.
+        """
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if source_urn is not None:
             params["source_urn"] = source_urn
@@ -915,6 +921,8 @@ class ContextService(BaseService):
             params["job_id"] = job_id
         if connector_id is not None:
             params["connector_id"] = connector_id
+        if include_markings:
+            params["include_markings"] = include_markings
         return self.client.get(
             f"{self._BASE_PATH}/storage/raw",
             params=params,
