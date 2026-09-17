@@ -38,6 +38,7 @@ class AuthConfig:
 
     api_url: str = ""
     public_api_url: str = ""
+    platform_gateway_url: str = ""
     openai_base: str = ""
     app_url: str = ""
     app_path: str = ""
@@ -59,6 +60,7 @@ class AuthConfig:
         return cls(
             api_url=os.environ.get("KAMIWAZA_API_URL", ""),
             public_api_url=os.environ.get("KAMIWAZA_PUBLIC_API_URL", ""),
+            platform_gateway_url=os.environ.get("KAMIWAZA_PLATFORM_GATEWAY_URL", ""),
             openai_base=os.environ.get("KAMIWAZA_ENDPOINT", "")
             or os.environ.get("KAMIWAZA_MODEL_URL", ""),
             app_url=routing.app_url,

@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
+from http.cookiejar import Cookie
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, cast
 
 import requests  # type: ignore[import-untyped]
 
@@ -104,6 +105,8 @@ class UserPasswordAuthenticator(Authenticator):
         ):
             self.refresh_token(session)
 
+        if self.token is None:
+            raise AuthenticationError("Authentication did not return an access token")
         session.headers.update({"Authorization": f"Bearer {self.token}"})
         session.cookies.set("access_token", self.token)
         LOGGER.debug("Set bearer token via UserPasswordAuthenticator")
@@ -158,7 +161,8 @@ class UserPasswordAuthenticator(Authenticator):
         self.refresh_token_value = None
         self._session_invalidated = True
         session.headers.pop("Authorization", None)
-        for cookie in list(session.cookies):
+        for cookie_value in list(session.cookies):
+            cookie = cast(Cookie, cookie_value)
             if cookie.name == "access_token":
                 session.cookies.clear(
                     domain=cookie.domain,

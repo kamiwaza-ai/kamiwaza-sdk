@@ -14,6 +14,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import yaml
 from rich.console import Console
@@ -765,9 +766,13 @@ def build_env_overlay(
     if auth:
         container_url = rewrite_bare_loopback_url(container_url)
     browser_url = connection.url
+    container_origin = urlsplit(container_url)
 
     env = {
         "KAMIWAZA_API_URL": container_url,
+        "KAMIWAZA_PLATFORM_GATEWAY_URL": (
+            f"{container_origin.scheme}://{container_origin.netloc}"
+        ),
         # KAMIWAZA_PUBLIC_API_URL is the RAW browser-facing API URL —
         # keep ``/api`` intact. ``session.create_session_router`` reads
         # ``config.public_api_url`` directly to build

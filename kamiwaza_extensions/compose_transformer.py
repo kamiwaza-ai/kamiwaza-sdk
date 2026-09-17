@@ -879,6 +879,7 @@ def detect_service_url_rewrites(
         env = svc.get("environment")
         if not env:
             continue
+
         for key, value in _iter_env_entries(env):
             if key.strip().upper() in _IMAGE_ENV_KEYS:
                 continue

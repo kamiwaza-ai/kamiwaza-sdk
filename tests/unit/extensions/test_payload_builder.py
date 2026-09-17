@@ -159,13 +159,24 @@ class TestBuild:
 
     def test_port_routing_explicitly_shadows_stale_configmap_path(self, builder):
         env = []
-        builder._append_platform_env(env, app_path="", verify_ssl=True)
+        builder._append_platform_env(env, app_path="")
 
         assert env == [
             {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
-            {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"},
-            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"},
         ]
+
+    def test_connection_tls_choice_is_not_projected_into_workload_env(
+        self, builder, metadata, transformed_compose, connection, monkeypatch
+    ):
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+
+        payload = builder.build(metadata, transformed_compose, connection, "ext")
+        assert "tls_reject_unauthorized" not in payload.model_dump()["kamiwaza"]
+
+        for service in payload.services:
+            names = {entry["name"] for entry in (service.env or [])}
+            assert "KAMIWAZA_VERIFY_SSL" not in names
+            assert "KAMIWAZA_TLS_REJECT_UNAUTHORIZED" not in names
 
     def test_platform_env_replaces_author_duplicates(self, builder):
         env = [
@@ -176,11 +187,7 @@ class TestBuild:
             {"name": "AUTHOR_VALUE", "value": "kept"},
         ]
 
-        builder._append_platform_env(
-            env,
-            app_path="/runtime/apps/deployed",
-            verify_ssl=False,
-        )
+        builder._append_platform_env(env, app_path="/runtime/apps/deployed")
 
         by_name = {entry["name"]: entry["value"] for entry in env}
         assert len(env) == len(by_name)
@@ -188,8 +195,6 @@ class TestBuild:
             "AUTHOR_VALUE": "kept",
             "KAMIWAZA_APP_PATH": "/runtime/apps/deployed",
             "KAMIWAZA_ROUTING_MODE": "path",
-            "KAMIWAZA_VERIFY_SSL": "false",
-            "KAMIWAZA_TLS_REJECT_UNAUTHORIZED": "0",
         }
 
     def test_port_mode_removes_author_app_path(self, builder):
@@ -198,13 +203,11 @@ class TestBuild:
             {"name": "AUTHOR_VALUE", "value": "kept"},
         ]
 
-        builder._append_platform_env(env, app_path="", verify_ssl=True)
+        builder._append_platform_env(env, app_path="")
 
         assert env == [
             {"name": "AUTHOR_VALUE", "value": "kept"},
             {"name": "KAMIWAZA_ROUTING_MODE", "value": "port"},
-            {"name": "KAMIWAZA_VERIFY_SSL", "value": "true"},
-            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "1"},
         ]
 
     def test_kamiwaza_integration(
@@ -481,132 +484,6 @@ class TestAnnotations:
         assert ANNOTATION_REVISION not in out
         assert ANNOTATION_DEPLOYED_AT in out
 
-
-def _assert_emitted_tls_policy(payload, verify_ssl):
-    for service in payload.model_dump()["services"]:
-        env = {entry["name"]: entry["value"] for entry in service["env"]}
-        assert env["KAMIWAZA_VERIFY_SSL"] == str(verify_ssl).lower()
-        assert env["KAMIWAZA_TLS_REJECT_UNAUTHORIZED"] == ("1" if verify_ssl else "0")
-
-
-class TestVerifySslPropagation:
-    """Each service's emitted TLS policy must reflect the developer's intent.
-    Three independent inputs collapse here via
-    ``ConnectionInfo.effective_verify_ssl``:
-    1. ``KAMIWAZA_VERIFY_SSL`` env var (per-session override)
-    2. URL hostname (dev TLDs auto-disable)
-    3. Persisted ``connection.verify_ssl`` from ``kz-ext login``
-    """
-
-    @pytest.mark.parametrize("verify_ssl", [True, False])
-    def test_serialized_request_uses_service_tls_environment_only(
-        self,
-        builder,
-        metadata,
-        transformed_compose,
-        connection,
-        monkeypatch,
-        verify_ssl,
-    ):
-        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", str(verify_ssl).lower())
-        payload = builder.build(metadata, transformed_compose, connection, "ext")
-        serialized = payload.model_dump()
-        assert "tls_reject_unauthorized" not in serialized["kamiwaza"]
-        primary_env = next(s for s in serialized["services"] if s["primary"])["env"]
-        assert {
-            "name": "KAMIWAZA_VERIFY_SSL",
-            "value": str(verify_ssl).lower(),
-        } in primary_env
-        assert {
-            "name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED",
-            "value": "1" if verify_ssl else "0",
-        } in primary_env
-
-    def test_env_false_overrides_connection_verify_true(
-        self,
-        builder,
-        metadata,
-        transformed_compose,
-        connection,
-        monkeypatch,
-    ):
-        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
-        assert connection.verify_ssl is True
-
-        payload = builder.build(metadata, transformed_compose, connection, "ext")
-
-        assert payload.kamiwaza.tls_reject_unauthorized == "0"
-        primary_env = next(s for s in payload.services if s.primary).env or []
-        # Both conventional vars injected so explicit pod env beats
-        # whatever the operator writes into the configmap.
-        assert {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"} in primary_env
-        assert {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"} in primary_env
-
-    def test_dev_tld_auto_disables_verify(
-        self,
-        builder,
-        metadata,
-        transformed_compose,
-        monkeypatch,
-    ):
-        """User logged in normally (verify_ssl=True) against
-        ``kamiwaza.test`` — should still ship ``tls_reject="0"`` because
-        ``.test`` URLs always use self-signed certs."""
-        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
-        conn = ConnectionInfo(
-            name="dev",
-            url="https://kamiwaza.test/api",
-            active=True,
-            created_at=0.0,
-            verify_ssl=True,  # persisted strict — auto-disable should win
-        )
-
-        payload = builder.build(metadata, transformed_compose, conn, "ext")
-        assert payload.kamiwaza.tls_reject_unauthorized == "0"
-        _assert_emitted_tls_policy(payload, verify_ssl=False)
-
-    def test_env_true_re_enables_against_dev_tld(
-        self,
-        builder,
-        metadata,
-        transformed_compose,
-        monkeypatch,
-    ):
-        """``KAMIWAZA_VERIFY_SSL=true`` explicitly opts back in even
-        for dev TLDs (e.g., user has a trusted local root CA)."""
-        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
-        conn = ConnectionInfo(
-            name="dev",
-            url="https://kamiwaza.test/api",
-            active=True,
-            created_at=0.0,
-            verify_ssl=True,
-        )
-
-        payload = builder.build(metadata, transformed_compose, conn, "ext")
-        assert payload.kamiwaza.tls_reject_unauthorized == "1"
-        _assert_emitted_tls_policy(payload, verify_ssl=True)
-
-    def test_production_url_keeps_strict(
-        self,
-        builder,
-        metadata,
-        transformed_compose,
-        monkeypatch,
-    ):
-        """Real public hostnames keep persisted strict setting."""
-        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
-        conn = ConnectionInfo(
-            name="prod",
-            url="https://api.kamiwaza.ai/api",
-            active=True,
-            created_at=0.0,
-            verify_ssl=True,
-        )
-
-        payload = builder.build(metadata, transformed_compose, conn, "ext")
-        assert payload.kamiwaza.tls_reject_unauthorized == "1"
-        _assert_emitted_tls_policy(payload, verify_ssl=True)
 
 
 class TestServiceRefRewritesAnnotation:
@@ -1967,7 +1844,9 @@ class TestHealthChecks:
         assert health_check["httpGet"] == {
             "path": "/",
             "port": 8000,
-        }, f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
+        }, (
+            f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
+        )
 
     def test_tool_type_primary_probes_sse(self, builder, connection):
         """ENG-3901 / F-013 (final): tool primary probes ``/sse`` — the

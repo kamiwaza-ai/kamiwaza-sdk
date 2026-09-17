@@ -11,6 +11,8 @@ import httpx
 from ._headers import header_bytes
 from .auth import platform_auth_httpx_headers
 from .config import AuthConfig
+from .errors import UnexpectedContextError
+from .url import CallbackTarget, callback_target, registered_api_url
 
 _ACTIVE_DEPLOYMENT_STATUSES = {"deployed", "running", "ready", "active"}
 
@@ -40,25 +42,13 @@ class KamiwazaExtClient:
         self._default_headers = headers or {}
         self._verify_ssl = verify_ssl
         self._timeout = httpx.Timeout(timeout)
+        self._api_target = CallbackTarget(self.api_base, "", "")
+        self._model_target = CallbackTarget(self.openai_base, "", "")
 
     @classmethod
     def from_env(cls) -> KamiwazaExtClient:
-        """Create a client from ``KAMIWAZA_*`` environment variables.
-
-        Uses ``KAMIWAZA_API_URL`` for the platform API and
-        ``KAMIWAZA_ENDPOINT`` (or ``KAMIWAZA_MODEL_URL``) for the
-        model endpoint.
-
-        Raises:
-            UnexpectedContextError: If ``KAMIWAZA_CA_BUNDLE`` is not a
-                readable PEM trust bundle.
-        """
-        config = AuthConfig.from_env()
-        return cls(
-            api_base=config.api_url,
-            openai_base=config.openai_base,
-            verify_ssl=config.httpx_verify(),
-        )
+        """Create a client from standard ``KAMIWAZA_*`` runtime variables."""
+        return cls._from_config(AuthConfig.from_env())
 
     @classmethod
     def service_account(cls) -> KamiwazaExtClient:
@@ -78,17 +68,55 @@ class KamiwazaExtClient:
                 "KAMIWAZA_API_KEY is not set. "
                 "Service account auth requires an API key injected by the platform."
             )
-        return cls(
-            api_base=config.api_url,
-            openai_base=config.openai_base,
+        return cls._from_config(
+            config,
             headers={"Authorization": f"Bearer {config.api_key}"},
+        )
+
+    @classmethod
+    def _from_config(
+        cls,
+        config: AuthConfig,
+        headers: Optional[dict[str, str]] = None,
+    ) -> KamiwazaExtClient:
+        standard_transport = config.platform_gateway_url.strip()
+        api_base = (
+            registered_api_url(config)
+            if standard_transport
+            else config.api_url.strip() or registered_api_url(config)
+        )
+        try:
+            api_target = (
+                callback_target(api_base, standard_transport)
+                if api_base
+                else CallbackTarget("", "", "")
+            )
+            model_target = (
+                callback_target(config.openai_base, standard_transport)
+                if config.openai_base
+                else CallbackTarget("", "", "")
+            )
+        except ValueError as exc:
+            raise UnexpectedContextError(
+                "KAMIWAZA_API_URL, KAMIWAZA_PUBLIC_API_URL, "
+                "KAMIWAZA_ENDPOINT, or KAMIWAZA_PLATFORM_GATEWAY_URL "
+                "is not valid callback configuration"
+            ) from exc
+        client = cls(
+            api_base=api_target.url,
+            openai_base=model_target.url,
+            headers=headers,
             verify_ssl=config.httpx_verify(),
         )
+        client._api_target = api_target
+        client._model_target = model_target
+        return client
 
     def _client(
         self,
         extra_headers: httpx.Headers | dict[str, str] | None = None,
         *,
+        target: CallbackTarget | None = None,
         follow_redirects: bool = False,
     ) -> httpx.AsyncClient:
         """Return a short-lived ``httpx.AsyncClient``.
@@ -115,6 +143,8 @@ class KamiwazaExtClient:
             # Rebuild from raw pairs so httpx infers the merged wire encoding;
             # a string round-trip would restore its ASCII-only normalization.
             headers = httpx.Headers(headers.raw)
+        if target is not None and target.host:
+            headers["Host"] = target.host
         return httpx.AsyncClient(
             headers=headers,
             verify=self._verify_ssl,
@@ -146,50 +176,55 @@ class KamiwazaExtClient:
                 "Are you running inside a Kamiwaza deployment?"
             )
         url = f"{self.openai_base}/chat/completions"
-        async with self._client(headers) as client:
-            resp = await client.post(url, json=payload)
+        async with self._client(headers, target=self._model_target) as client:
+            resp = await client.post(
+                url,
+                json=payload,
+                extensions=self._model_target.extensions,
+            )
             resp.raise_for_status()
             return resp
 
     async def get_models(self, headers: Mapping[str, str] | None = None) -> list[dict]:
-        """List active model deployments from the platform API.
-
-        Prefers the newer ``/serving/deployments`` endpoint and falls back
-        to the older ``/serving/deployments/active`` shape when needed.
-        """
+        """List active model deployments from the platform API."""
         if not self.api_base:
             raise RuntimeError(
-                "KAMIWAZA_API_URL not configured. "
+                "KAMIWAZA_API_URL or KAMIWAZA_PUBLIC_API_URL not configured. "
                 "Are you running inside a Kamiwaza deployment?"
             )
         auth_headers = self._platform_auth_headers(headers)
-        async with self._client(auth_headers) as client:
-            urls = (
-                f"{self.api_base}/serving/deployments",
-                f"{self.api_base}/serving/deployments/active",
-            )
-            last_error: Exception | None = None
-            for index, url in enumerate(urls):
-                try:
-                    resp = await client.get(url)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    if isinstance(data, list):
-                        return [
-                            item
-                            for item in data
-                            if not isinstance(item, dict) or _is_active_deployment(item)
-                        ]
-                    return data
-                except httpx.HTTPStatusError as exc:
-                    is_last = index == len(urls) - 1
-                    if exc.response.status_code != 404 or is_last:
-                        raise
-                    last_error = exc
+        async with self._client(auth_headers, target=self._api_target) as client:
+            try:
+                data = await _get_json(
+                    client,
+                    f"{self.api_base}/serving/deployments",
+                    self._api_target,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                data = await _get_json(
+                    client,
+                    f"{self.api_base}/serving/deployments/active",
+                    self._api_target,
+                )
+        if not isinstance(data, list):
+            return data
+        return [
+            item
+            for item in data
+            if not isinstance(item, dict) or _is_active_deployment(item)
+        ]
 
-            if last_error is not None:
-                raise last_error
-            return []
+
+async def _get_json(
+    client: httpx.AsyncClient,
+    url: str,
+    target: CallbackTarget,
+):
+    response = await client.get(url, extensions=target.extensions)
+    response.raise_for_status()
+    return response.json()
 
 
 def _is_active_deployment(item: dict) -> bool:

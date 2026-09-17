@@ -311,7 +311,11 @@ def _read_projected_assertion() -> str:
         _raise_workload_assertion_unavailable()
     try:
         metadata = os.fstat(descriptor)
-        if not _secure_assertion_file(metadata):
+        read_only_projection = bool(os.fstatvfs(descriptor).f_flag & os.ST_RDONLY)
+        if not _secure_assertion_file(
+            metadata,
+            read_only_projection=read_only_projection,
+        ):
             _raise_workload_assertion_unavailable()
         raw = os.read(descriptor, MAX_ASSERTION_BYTES + 1)
     except OSError:
@@ -321,7 +325,11 @@ def _read_projected_assertion() -> str:
     return _decode_assertion(raw)
 
 
-def _secure_assertion_file(metadata: os.stat_result) -> bool:
+def _secure_assertion_file(
+    metadata: os.stat_result,
+    *,
+    read_only_projection: bool = False,
+) -> bool:
     if not stat.S_ISREG(metadata.st_mode):
         return False
     if metadata.st_uid not in {0, os.geteuid()}:
@@ -329,7 +337,7 @@ def _secure_assertion_file(metadata: os.stat_result) -> bool:
     permissions = stat.S_IMODE(metadata.st_mode)
     forbidden = stat.S_IWOTH | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
     forbidden |= stat.S_IROTH
-    if metadata.st_uid == os.geteuid():
+    if metadata.st_uid == os.geteuid() and not read_only_projection:
         forbidden |= stat.S_IWUSR
     if metadata.st_gid in _effective_groups():
         forbidden |= stat.S_IWGRP

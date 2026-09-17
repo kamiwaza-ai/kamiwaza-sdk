@@ -1,11 +1,12 @@
 """Tests for kamiwaza_extensions_lib.models."""
 
 import ssl
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from openai._models import FinalRequestOptions
 from starlette.datastructures import Headers
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from kamiwaza_extensions_lib.models import (
     AvailableModel,
@@ -65,6 +66,44 @@ class TestAvailableModel:
 
         assert model._extra["gpu_count"] == 2
         assert model._extra["endpoint_url"] == "http://model:8080"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "expected_base"),
+    [
+        (
+            "https://models.example.test/runtime/models/dep-chat/v1",
+            "http://platform-gateway.kamiwaza.svc.cluster.local"
+            "/runtime/models/dep-chat/v1",
+        ),
+        (
+            "https://models.example.test/v1",
+            "http://platform-gateway.kamiwaza.svc.cluster.local/v1",
+        ),
+    ],
+)
+async def test_model_client_preserves_route_authority_over_standard_transport(
+    monkeypatch, endpoint, expected_base
+):
+    monkeypatch.setenv("KAMIWAZA_ENDPOINT", endpoint)
+    monkeypatch.setenv(
+        "KAMIWAZA_PLATFORM_GATEWAY_URL",
+        "http://platform-gateway.kamiwaza.svc.cluster.local",
+    )
+    request = MagicMock()
+    request.headers = {"x-auth-token": "jwt-abc"}
+
+    client = await get_model_client(request)
+
+    assert str(client.base_url).rstrip("/") == expected_base
+    assert client._client.headers["host"] == "models.example.test"
+    outbound = httpx.Request("POST", f"{expected_base}/chat/completions")
+    for hook in client._client.event_hooks["request"]:
+        await hook(outbound)
+    assert outbound.extensions["sni_hostname"] == "models.example.test"
+    await client.close()
 
 
 @pytest.mark.unit
@@ -195,6 +234,7 @@ class TestGetModelClient:
         import httpx
 
         monkeypatch.setenv("KAMIWAZA_API_URL", "https://kamiwaza.test/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://kamiwaza.test/api")
         monkeypatch.setenv("KAMIWAZA_ENDPOINT", "https://model.test/v1")
         request = MagicMock()
         request.headers = {"x-user-id": "usr-123"}
@@ -284,6 +324,7 @@ class TestListAvailableModels:
     @pytest.mark.asyncio
     async def test_normalizes_endpoint_field_from_platform_payload(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://kamiwaza.test/api")
 
         request = MagicMock()
         request.headers = {"x-user-id": "usr-123"}
@@ -316,9 +357,10 @@ class TestListAvailableModels:
         )
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_no_api_url(self, monkeypatch):
+    async def test_returns_empty_when_no_registered_gateway(self, monkeypatch):
         monkeypatch.delenv("KAMIWAZA_API_URL", raising=False)
-
+        monkeypatch.delenv("KAMIWAZA_PUBLIC_API_URL", raising=False)
+        monkeypatch.delenv("KAMIWAZA_ORIGIN", raising=False)
         request = MagicMock()
         request.headers = {}
 
@@ -330,6 +372,7 @@ class TestListAvailableModels:
         import httpx
 
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://api:7777/api")
 
         request = MagicMock()
         request.headers = {}
@@ -356,6 +399,7 @@ class TestListAvailableModels:
     async def test_propagates_programming_errors(self, monkeypatch):
         """Non-network errors (e.g., TypeError) should NOT be silently swallowed."""
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://api:7777/api")
 
         request = MagicMock()
         request.headers = {}
