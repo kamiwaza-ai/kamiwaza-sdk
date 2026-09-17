@@ -243,6 +243,13 @@ print(conjunctions.urn)  # urn:li:dataset:(postgres,conjunctions,PROD)
 
 ### Step 5 — Bind the dataset's attribute gate (M3)
 
+This example uses the unpublished SDK `acme-gates==1.2.0` test fixture. It is
+not included in the installed SDK or supplied as a production gate. Before
+binding, provision and install the exact SDK fixture wheel on the receiver,
+configure its required `access_tier` caller attribute, and provide dataset rows
+with `tier` values `PUBLIC`, `PRIVATE`, or `CONFIDENTIAL`. See the
+[fixture prerequisites and provisioning guide](tests/integration/fixtures/acme-gates/README.md).
+
 ```python
 ds_binding = kz.datasets.set_gate(
     conjunctions.urn,

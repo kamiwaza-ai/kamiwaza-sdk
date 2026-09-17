@@ -31,7 +31,7 @@ class MarkingLevel(MarkingsModel):
     rank: int
     background_color: str
     foreground_color: str
-    assignable: bool = True
+    assignable: bool
 
 
 class MarkingsConfig(MarkingsModel):

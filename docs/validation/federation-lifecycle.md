@@ -89,8 +89,10 @@ provider artifacts:
 }
 ```
 
-Set the public Keycloak origin and, when a gate package is not already
-installed on the receiver, its immutable package index and digest:
+Set the public Keycloak origin and the expected SDK gate wheel digest, including
+when reusing an installed package. A package index is required for fresh
+installation. Reuse requires matching package spec, version, digest, active
+status, and classpath; a matching name or classpath alone is insufficient:
 
 ```bash
 export KAMIWAZA_SHARED_IDP_PUBLIC_URL=https://idp.example

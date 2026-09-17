@@ -4,10 +4,14 @@
 default; an installed provider does not activate them. The SDK contains no
 vocabulary or parser and never infers authorization from a label.
 
+This example assumes the active server profile recognizes `Company Private`.
+
 ```python
 config = client.markings.config()
 if config.enabled:
     parsed = client.markings.parse("Company Private", default_for="document")
+    if parsed.marking is None:
+        raise ValueError("The server returned no marking for this input")
     workroom = client.workrooms.create(
         "Project", "persistent", marking=parsed.marking,
     )

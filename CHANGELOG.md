@@ -25,8 +25,10 @@ coordinates, not evidence that an arbitrary build has the required contract.
   TypeScript, transported by `X-User-Marking-Level`. The signed payload changes;
   upgrade verified producers and consumers together. Do not copy untrusted
   browser headers into the authenticated envelope.
-- The shared-IdP validation provider revision becomes
-  `sdk.federation.shared-idp@v2` because its case IDs and fixture personas changed.
+- The federation validation provider revisions become
+  `sdk.federation.shared-idp@v2`, `sdk.federation.model-mesh@v2`, and
+  `sdk.federation.delegated-workload@v2` for the updated fixture personas. The
+  shared-IdP provider also changes its case IDs.
   Scenario and protocol schemas remain v1. Clean old owned fixtures with the
   matching previous provider, then regenerate plans/state for the new provider.
   New code refuses old state rather than adopting its ownership.

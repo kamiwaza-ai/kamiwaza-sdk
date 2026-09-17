@@ -32,6 +32,50 @@ def test_disabled_config_does_not_invent_vocabulary():
     client.get.assert_called_once_with("/security/markings/config")
 
 
+@pytest.fixture
+def config_response():
+    return {
+        "enabled": True,
+        "profile_id": "commercial",
+        "profile_revision": "1",
+        "levels": [
+            {
+                "id": "private",
+                "name": "Company Private",
+                "rank": 1,
+                "background_color": "#112233",
+                "foreground_color": "#ffffff",
+                "future_level_field": "preserved",
+            }
+        ],
+        "future_config_field": {"supported": True},
+    }
+
+
+def test_config_rejects_level_without_assignable(config_response):
+    client = Mock()
+    client.get.return_value = config_response
+    with pytest.raises(ValidationError) as exc:
+        MarkingsService(client).config()
+    assert [(error["loc"], error["type"]) for error in exc.value.errors()] == [
+        (("levels", 0, "assignable"), "missing")
+    ]
+
+
+@pytest.mark.parametrize("assignable", [True, False])
+def test_config_preserves_explicit_assignable_and_response_extras(
+    config_response, assignable
+):
+    config_response["levels"][0]["assignable"] = assignable
+    client = Mock()
+    client.get.return_value = config_response
+    config = MarkingsService(client).config()
+    assert config.levels[0].assignable is assignable
+    assert config.levels[0].model_dump() == config_response["levels"][0]
+    assert config.model_dump()["future_config_field"] == {"supported": True}
+    client.get.assert_called_once_with("/security/markings/config")
+
+
 def test_parse_sends_raw_input_and_preserves_provider_attributes():
     client = Mock()
     marking = sample_marking()
