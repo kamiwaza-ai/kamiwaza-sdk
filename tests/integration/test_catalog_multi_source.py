@@ -677,9 +677,9 @@ def _ingest_slack(
     """Ingest with SLACK_TEST_TOKEN; any failure is re-raised without the token.
 
     pytest prints each traceback frame's arguments, and its locals under
-    --showlocals, so the token is read inline and never becomes either here, this
-    frame is hidden, and the SDK, requests and urllib3 frames below that do hold it
-    are dropped with ``from None``.
+    --showlocals, so the token is read inline and never becomes either here; this
+    frame is hidden unless --full-trace is set, and the SDK, requests and urllib3
+    frames below that do hold the token are dropped with ``from None``.
     """
     __tracebackhide__ = True
     try:
