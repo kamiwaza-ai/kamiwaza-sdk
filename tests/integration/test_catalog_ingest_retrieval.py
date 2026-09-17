@@ -47,6 +47,8 @@ _REGION = "us-east-1"
 _ABSENCE_POLLS = 15
 _ABSENCE_POLL_INTERVAL_S = 2.0
 _COMPLETED = "COMPLETED"
+# The stream carries three rows; the SDK default deadline is an hour.
+_FLIGHT_TIMEOUT_S = 120.0
 _S3_NOT_FOUND_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
 # The server detail of the 503 that ENG-12300 diagnoses; other upstream
 # failures also answer 503 and must keep their own diagnostics.
@@ -156,7 +158,10 @@ def _seeded_dataset(
     """
     bucket = ingestion_environment["bucket"]
     run_id = uuid.uuid4().hex[:12]
-    key = f"sdk-t01/{run_id}/t01-{run_id}.parquet"
+    # A bucket-root key: S3 ingestion creates a catalog folder container for
+    # every slash-delimited path level, and deleting the dataset does not
+    # remove it, so a per-run directory would leak one container per run.
+    key = f"t01-{run_id}.parquet"
     rows = _seed_rows(run_id)
     s3 = _local_minio_client()
 
@@ -257,7 +262,9 @@ def test_s3_ingest_and_retrieve_grpc(
         ca_bundle = os.environ.get("REQUESTS_CA_BUNDLE") or None
         flight_rows = [
             row
-            for batch in client.retrieval.flight_batches(job, ca_cert_path=ca_bundle)
+            for batch in client.retrieval.flight_batches(
+                job, ca_cert_path=ca_bundle, timeout_seconds=_FLIGHT_TIMEOUT_S
+            )
             for row in batch.to_pylist()
         ]
         assert _sorted_rows(flight_rows) == list(seeded.rows)

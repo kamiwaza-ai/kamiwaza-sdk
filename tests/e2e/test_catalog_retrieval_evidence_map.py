@@ -27,6 +27,8 @@ EXPECTED_CLAIMS = {
 }
 # A skipped or xfailed step never evidences anything (the emitter records an
 # xfail as skipped), so a known product failure must stay a plain failure.
+# Only decorator markers are checked here; a runtime pytest.skip or
+# pytest.xfail inside a test body is not detected.
 OUTCOME_CHANGING_MARKERS = frozenset({"skip", "skipif", "xfail"})
 
 
