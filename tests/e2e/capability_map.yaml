@@ -242,7 +242,7 @@
     - "*::test_catalog_secret_list"
     - "*::test_catalog_secret_endpoints"
 
-# ENG-12327 (T06). Where test_catalog_endpoints.py drives the dataset and
+# ENG-12327 (T06). Where test_catalog_endpoints.py drives most dataset and
 # container routes over raw HTTP, these two drive them through the SDK clients,
 # one test per file (shared helpers in catalog_sdk_lifecycle_support.py). Each
 # asserted write is read back through a separate call: a dataset's description,
