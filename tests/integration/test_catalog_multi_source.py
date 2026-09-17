@@ -435,6 +435,22 @@ class _StreamDeadlineAdapter(HTTPAdapter):
         super().close()
 
 
+@contextlib.contextmanager
+def _mounted(
+    session: requests.Session, adapter: HTTPAdapter
+) -> Iterator[requests.Session]:
+    """Mount ``adapter`` for both schemes, then restore the originals and close it."""
+    saved = {prefix: session.adapters[prefix] for prefix in ("https://", "http://")}
+    try:
+        for prefix in saved:
+            session.mount(prefix, adapter)
+        yield session
+    finally:
+        for prefix, original in saved.items():
+            session.mount(prefix, original)
+        adapter.close()
+
+
 def _fail_stream(job_id: str, failure: str, events: list[RetrievalStreamEvent]) -> None:
     """Report a stream failure from the caller's frame, outside any ``except``.
 
@@ -458,39 +474,37 @@ def _collect_stream(
     """Read the SSE stream to its end, then close it.
 
     Fails if the stream is silent for ``read_timeout_s``, or has not ended
-    ``timeout_s`` after this starts, whatever it sends meanwhile. The stream is
-    closed and the session's adapters restored before this returns or fails. The
-    events reported on failure are those the SDK had parsed; an event still in its
-    read buffer is not listed.
+    ``timeout_s`` after this starts, whatever it sends meanwhile: the deadline both
+    shuts the response's socket down and stops this loop, so neither a blocked read
+    nor a stream that keeps yielding outlasts it. The stream is closed and the
+    session's adapters restored before this returns or fails. The events reported on
+    failure are those the SDK had parsed; an event still in its read buffer is not
+    listed.
     """
-    session = client.session
-    adapters = {prefix: session.adapters[prefix] for prefix in ("https://", "http://")}
     timed = _StreamDeadlineAdapter(read_timeout_s, timeout_s)
     events: list[RetrievalStreamEvent] = []
     failure = ""
     ended_at = 0.0
     try:
-        for prefix in adapters:
-            session.mount(prefix, timed)
-        # stream_events sends the request; closing its generator closes the response.
-        stream = cast(
-            Generator[RetrievalStreamEvent, None, None],
-            client.retrieval.stream_events(job_id),
-        )
-        try:
-            events.extend(stream)  # keeps the events parsed before an error
-        finally:
-            # Stop first: the timer must not cut off a stream that ended or is closing.
-            ended_at = time.monotonic()
-            timed.stop()
-            stream.close()
+        with _mounted(client.session, timed):
+            # stream_events sends the request; closing its generator closes the response.
+            stream = cast(
+                Generator[RetrievalStreamEvent, None, None],
+                client.retrieval.stream_events(job_id),
+            )
+            try:
+                for event in stream:
+                    events.append(event)
+                    if timed.expired_at:
+                        break  # the deadline stops a stream the SDK keeps yielding
+            finally:
+                # Stop first: the timer must not cut off a stream that is closing.
+                ended_at = time.monotonic()
+                timed.stop()
+                stream.close()
     except STREAM_ERRORS as exc:
         failure = f"failed: {type(exc).__name__}: {exc}"
-    finally:
-        ended_at = ended_at or time.monotonic()
-        for prefix, adapter in adapters.items():
-            session.mount(prefix, adapter)
-        timed.close()
+    ended_at = ended_at or time.monotonic()
     if timed.expired_at and timed.expired_at <= ended_at:
         # The deadline ended this read; a timer that fired after it ended is noise.
         failure = f"still open after {timeout_s:.0f}s"
