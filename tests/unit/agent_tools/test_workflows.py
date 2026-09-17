@@ -28,6 +28,8 @@ from kamiwaza_sdk.agent_tools.workflows import (
 )
 from kamiwaza_sdk.agent_tools.workflows._contract import search_workflows
 
+from kamiwaza_sdk.agent_tools.workflows.models import endpoint_of
+
 pytestmark = pytest.mark.unit
 
 
@@ -49,9 +51,25 @@ class Recorder:
 
 
 class FakeInstance:
-    def __init__(self, host: str | None = "node-1", port: int | None = 8080) -> None:
+    """A model instance shaped like the platform's own.
+
+    ``listen_port`` is what :class:`ModelInstance` declares and what a live
+    cluster returns; this stub used to declare ``port`` instead, which is why
+    the suite passed while every deployment workflow reported no endpoint
+    against a real platform. A stub that disagrees with the schema tests the
+    stub.
+    """
+
+    def __init__(
+        self,
+        host: str | None = "node-1",
+        listen_port: int | None = 8080,
+        port: int | None = None,
+    ) -> None:
         self.host_name = host
-        self.port = port
+        self.listen_port = listen_port
+        if port is not None:
+            self.port = port
         self.status = "RUNNING"
 
 
@@ -257,7 +275,10 @@ def test_retire_confirms_rather_than_trusting_the_stop() -> None:
     [
         ([FakeInstance()], "serving and reachable"),
         ([], "no instances"),
-        ([FakeInstance(host=None, port=None)], "none reported a reachable endpoint"),
+        (
+            [FakeInstance(host=None, listen_port=None)],
+            "none reported a reachable endpoint",
+        ),
     ],
 )
 def test_diagnose_returns_a_conclusion_not_a_log_dump(instances, expected) -> None:
@@ -267,7 +288,7 @@ def test_diagnose_returns_a_conclusion_not_a_log_dump(instances, expected) -> No
         serving=Recorder(
             calls,
             "serving",
-            get_deployment_status=FakeDeployment,
+            get_deployment=FakeDeployment,
             list_model_instances=lambda: instances,
         ),
     )
@@ -275,6 +296,27 @@ def test_diagnose_returns_a_conclusion_not_a_log_dump(instances, expected) -> No
     assert expected in result["conclusion"]
     assert result["next_action"]
     assert "logs" not in result
+    assert "serving.get_deployment_status" not in calls, (
+        "the platform answers that route with a bare status string, which the "
+        "client package's ModelDeployment rejects: reading it made this "
+        "diagnosis raise a pydantic error for every deployment that exists"
+    )
+
+
+def test_an_endpoint_is_read_from_the_field_the_platform_publishes() -> None:
+    """``listen_port`` first, ``port`` second, and one of them is enough.
+
+    A live instance returns ``host_name`` and ``listen_port`` and no ``port``
+    at all. Reading ``port`` only meant every deployment workflow answered
+    "no endpoint" while the instance in front of it was serving — which is
+    the one thing an operator asked for.
+    """
+    assert endpoint_of([FakeInstance()]) == "http://node-1:8080"
+    assert (
+        endpoint_of([FakeInstance(listen_port=None, port=9001)])
+        == "http://node-1:9001"
+    )
+    assert endpoint_of([FakeInstance(host=None, listen_port=None)]) is None
 
 
 def test_promotion_refuses_while_staging_is_unfinished() -> None:
