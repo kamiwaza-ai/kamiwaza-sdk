@@ -1,49 +1,44 @@
-"""Model configuration, local deployment and inference through the SDK (ENG-12327, T09).
+"""Model configuration and local deployment lifecycle through the SDK (ENG-12327, T09).
 
-Both tests exercise the llama.cpp lane ENG-12327 chose for 1.2.1. The target is
-the explicit fleet target when ``KAMIWAZA_TEST_LLM_REPO`` /
-``KAMIWAZA_TEST_LLM_ENGINE`` name a llama.cpp model, and otherwise the suite's
-``GGUF_LLM_TARGET``; an explicit fleet target on another engine is skipped as
-not applicable. Before creating anything each test confirms the target's GGUF
-weights and at least one model config are already on the cluster: a missing
-prerequisite skips an optional target and fails a fleet-required one. Neither
-test calls an SDK download method.
+Target selection and the prerequisite rule are shared with
+``test_openai_compatible_inference_live.py`` and described in
+``model_deployment_live_support``.
 
-Each test carries one capability, so an inference failure cannot mark local
-deployment as failing. The inference test has to deploy before it can infer, so
-a deployment failure fails both records.
+A disposable model config is created, read, listed and updated; a fresh
+deployment using it reaches DEPLOYED with the requested engine and weights file
+and is checked through the deployment, active-deployment, instance, captured-log
+and log-stream methods; it is stopped (without force) to STOPPED, and the config
+is deleted and proven NotFound.
 
-* ``test_model_config_and_local_deployment_lifecycle`` -- a disposable model
-  config is created, read, listed and updated; a fresh deployment using it
-  reaches DEPLOYED with the requested engine and weights file and is checked
-  through the deployment, active-deployment, instance, captured-log and
-  log-stream methods; it is stopped (without force) to STOPPED, and the config
-  is deleted and proven NotFound. The log-pattern route is deliberately not
-  called: on 1.2.1 it reads only a local log file or Kubernetes pod logs, so it
-  answers 404 where the engine runs outside a pod, which would fail this
-  capability for a reason unrelated to deployment.
-* ``test_openai_compatible_inference_through_sdk_client`` -- one chat completion,
-  through the OpenAI-compatible client the SDK returns for a fresh deployment,
-  asking for the sum of two numbers chosen for this run; the reply must contain
-  the sum, which the prompt does not.
+The log-pattern route is deliberately not called. On 1.2.1 it reads only a
+local log file or Kubernetes pod logs and, unlike the captured-log route, has no
+host-spawner source, so it answers 404 for a deployment whose logs only the host
+spawner holds. That would fail this capability for a reason unrelated to
+deployment.
 """
 
 from __future__ import annotations
 
 import itertools
-import re
-import secrets
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
-from typing import Any, NoReturn, TypeVar
+from typing import TypeVar
 from uuid import UUID, uuid4
 
 import pytest
-from kamiwaza_sdk.exceptions import KamiwazaError, NotFoundError
+from kamiwaza_sdk.exceptions import NotFoundError
 from kamiwaza_sdk.schemas.models.model import CreateModelConfig
-from model_targets import InferenceTarget, select_inference_target
-from pydantic import ValidationError as SchemaValidationError
+from tests.integration.model_deployment_live_support import (
+    READY_TIMEOUT_SECONDS,
+    DeploymentRegistry,
+    assert_deployed_as_requested,
+    deploy_fresh,
+    lane_target,
+    missing_prerequisite,
+    ready_target,
+    registry_with_cleanup,
+    stop_and_wait,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -52,9 +47,6 @@ pytestmark = [
     pytest.mark.slow,
 ]
 
-_LANE_ENGINE = "llamacpp"
-_READY_TIMEOUT_SECONDS = 900
-_STOP_TIMEOUT_SECONDS = 300
 _POLL_ATTEMPTS = 15
 _POLL_DELAY_SECONDS = 2.0
 
@@ -75,191 +67,10 @@ def _wait_until(read: Callable[[], _T], done: Callable[[_T], bool], label: str) 
     )
 
 
-@dataclass
-class _Created:
-    """Resources a test created and has not yet proven cleaned up.
-
-    Deployments are registered only after their id is shown to be new, and
-    configs with the unique name they were created under. Each leaves the
-    registry only once its stop or deletion is confirmed.
-    """
-
-    deployment_ids: list[UUID] = field(default_factory=list)
-    configs: dict[UUID, str] = field(default_factory=dict)
-
-
-def _stop_and_wait(client, deployment_id: UUID, *, force: bool) -> None:
-    """Stop a deployment and wait for STOPPED.
-
-    The test body stops without force: on 1.2.1 a forced stop routes a failed
-    stop to a cleanup that marks the row STOPPED and returns True, so only an
-    unforced stop can show that stopping works. Teardown forces.
-    """
-    assert (
-        client.serving.stop_deployment(deployment_id=deployment_id, force=force) is True
-    )
-    client.serving.wait_for_deployment(
-        deployment_id,
-        desired_status=("STOPPED",),
-        failure_status=("FAILED", "ERROR"),
-        poll_interval=5.0,
-        timeout=_STOP_TIMEOUT_SECONDS,
-    )
-
-
-def _cleanup_failures(client, registry: _Created) -> list[str]:
-    """Stop and delete every registered resource, collecting failures instead of
-    stopping at the first one. A config is deleted only if it still carries the
-    name the test created it with, and its deletion is proven by NotFound."""
-    failures: list[str] = []
-    for deployment_id in reversed(registry.deployment_ids):
-        try:
-            _stop_and_wait(client, deployment_id, force=True)
-        except (
-            AssertionError,
-            KamiwazaError,
-            SchemaValidationError,
-            TimeoutError,
-        ) as exc:
-            failures.append(f"could not stop deployment {deployment_id}: {exc!r}")
-    for config_id, name in reversed(list(registry.configs.items())):
-        try:
-            current = client.models.get_model_config(config_id)
-        except NotFoundError:
-            continue
-        except (KamiwazaError, SchemaValidationError) as exc:
-            failures.append(
-                f"could not read config {config_id} before cleanup: {exc!r}"
-            )
-            continue
-        if current.name != name:
-            failures.append(
-                f"refused to delete config {config_id}: it is named "
-                f"{current.name!r}, not {name!r}"
-            )
-            continue
-        try:
-            client.models.delete_model_config(config_id)
-        except (KamiwazaError, SchemaValidationError) as exc:
-            # On 1.2.1 a mutation refused by the permission check also answers
-            # 404, so NotFound here is not proof of absence: it falls through to
-            # the read-back below like a successful delete.
-            if not isinstance(exc, NotFoundError):
-                failures.append(f"could not delete config {config_id}: {exc!r}")
-                continue
-        try:
-            client.models.get_model_config(config_id)
-        except NotFoundError:
-            continue
-        except (KamiwazaError, SchemaValidationError) as exc:
-            failures.append(f"could not confirm config {config_id} deleted: {exc!r}")
-            continue
-        failures.append(f"config {config_id} still readable after delete")
-    return failures
-
-
 @pytest.fixture
-def created(live_kamiwaza_client) -> Iterator[_Created]:
-    """Clean up what the test body did not prove cleaned up.
-
-    All failures are raised together, which pytest reports as a teardown error
-    beside the test outcome rather than in place of it.
-    """
-    registry = _Created()
-    yield registry
-    failures = _cleanup_failures(live_kamiwaza_client, registry)
-    if failures:
-        raise AssertionError("model cleanup incomplete: " + "; ".join(failures))
-
-
-def _lane_target() -> InferenceTarget:
-    """The explicit fleet target if one is set, else the suite's GGUF target.
-
-    Without a hardware snapshot, ``select_inference_target`` returns the explicit
-    target when the fleet variables are set and ``GGUF_LLM_TARGET`` otherwise.
-    """
-    target = select_inference_target(None)
-    if target.engine_name != _LANE_ENGINE:
-        pytest.skip(
-            f"not applicable: the explicit fleet target {target.repo_id} uses engine "
-            f"{target.engine_name!r}; this test covers the {_LANE_ENGINE} lane"
-        )
-    return target
-
-
-def _ready_target(
-    client, target: InferenceTarget, target_model_file_id
-) -> tuple[Any, UUID]:
-    """Return the target model and its ready GGUF weights file.
-
-    Runs before anything is created. A missing optional target skips; a missing
-    fleet-required target fails. It cannot tell an absent prerequisite from a
-    listing that wrongly returns nothing.
-    """
-    model = next(
-        (
-            candidate
-            for candidate in client.models.list_models(load_files=True)
-            if candidate.repo_modelId == target.repo_id
-        ),
-        None,
-    )
-    file_id = target_model_file_id(model, target.quantization) if model else None
-    if model is None or file_id is None:
-        _missing_prerequisite(
-            target,
-            f"prerequisite: GGUF weights for {target.repo_id} ({target.quantization}) "
-            "are not already on this cluster; this test never downloads",
-        )
-    return model, UUID(file_id)
-
-
-def _missing_prerequisite(target: InferenceTarget, reason: str) -> NoReturn:
-    """Fail for a fleet-required target, skip otherwise."""
-    if target.required:
-        pytest.fail(reason)
-    pytest.skip(reason)
-
-
-def _deploy_fresh(
-    client, target: InferenceTarget, model, config_id: UUID, file_id: UUID
-) -> UUID:
-    """Deploy and return an id that did not exist anywhere before this call."""
-    existing = {d.id for d in client.serving.list_deployments()}
-    deployment_id = client.serving.deploy_model(
-        model_id=model.id,
-        m_config_id=config_id,
-        m_file_id=file_id,
-        engine_name=target.engine_name,
-        lb_port=0,
-        autoscaling=False,
-        min_copies=1,
-        starting_copies=1,
-        wait=False,
-    )
-    assert isinstance(deployment_id, UUID), (
-        f"deploy_model did not return a deployment UUID: {deployment_id!r}"
-    )
-    assert deployment_id not in existing, (
-        f"deploy_model returned pre-existing deployment {deployment_id}"
-    )
-    return deployment_id
-
-
-def _assert_deployed_as_requested(
-    deployment,
-    deployment_id: UUID,
-    target: InferenceTarget,
-    config_id: UUID,
-    file_id: UUID,
-) -> None:
-    assert (
-        deployment.id,
-        deployment.status,
-        deployment.m_config_id,
-        deployment.m_file_id,
-        deployment.engine_name,
-    ) == (deployment_id, "DEPLOYED", config_id, file_id, target.engine_name)
+def created(live_kamiwaza_client) -> Iterator[DeploymentRegistry]:
+    """Clean up what the test body did not prove cleaned up."""
+    yield from registry_with_cleanup(live_kamiwaza_client)
 
 
 def _deployment_logs_once_captured(client, deployment_id: UUID):
@@ -273,33 +84,18 @@ def _deployment_logs_once_captured(client, deployment_id: UUID):
         return None
 
 
-def _sum_question() -> tuple[str, str]:
-    """A prompt asking for the sum of two numbers chosen for this run, and the sum.
-
-    The sum never appears in the prompt, so a reply that echoes the prompt or a
-    fixed reply cannot contain it except by chance.
-    """
-    while True:
-        left = 11 + secrets.randbelow(80)
-        right = 11 + secrets.randbelow(80)
-        answer = str(left + right)
-        prompt = f"What is {left} plus {right}? Reply with only the number."
-        if answer not in prompt:
-            return prompt, answer
-
-
 def test_model_config_and_local_deployment_lifecycle(
     live_kamiwaza_client,
     target_model_file_id,
     created,
 ) -> None:
     client = live_kamiwaza_client
-    target = _lane_target()
-    model, file_id = _ready_target(client, target, target_model_file_id)
+    target = lane_target()
+    model, file_id = ready_target(client, target, target_model_file_id)
 
     existing = client.models.get_model_configs(model.id)
     if not existing:
-        _missing_prerequisite(
+        missing_prerequisite(
             target,
             f"prerequisite: {model.repo_modelId} has no model config to copy settings from",
         )
@@ -344,15 +140,15 @@ def test_model_config_and_local_deployment_lifecycle(
     assert updated.id == config.id
     assert client.models.get_model_config(config.id).description == updated_description
 
-    deployment_id = _deploy_fresh(client, target, model, config.id, file_id)
+    deployment_id = deploy_fresh(client, target, model, config.id, file_id)
     created.deployment_ids.append(deployment_id)
     ready = client.serving.wait_deployment_ready(
-        deployment_id, timeout_seconds=_READY_TIMEOUT_SECONDS
+        deployment_id, timeout_seconds=READY_TIMEOUT_SECONDS
     )
     assert ready.status == "DEPLOYED"
 
     deployment = client.serving.get_deployment(deployment_id)
-    _assert_deployed_as_requested(deployment, deployment_id, target, config.id, file_id)
+    assert_deployed_as_requested(deployment, deployment_id, target, config.id, file_id)
     assert deployment.instances, "a DEPLOYED deployment reports no instances"
     assert deployment_id in {
         d.id for d in client.serving.list_deployments(model_id=model.id)
@@ -382,7 +178,7 @@ def test_model_config_and_local_deployment_lifecycle(
         f"stream_deployment_logs did not yield a captured line: {streamed!r}"
     )
 
-    _stop_and_wait(client, deployment_id, force=False)
+    stop_and_wait(client, deployment_id, force=False)
     created.deployment_ids.remove(deployment_id)
     assert deployment_id not in {d.id for d in client.serving.list_active_deployments()}
 
@@ -391,56 +187,3 @@ def test_model_config_and_local_deployment_lifecycle(
         client.models.get_model_config(config.id)
     del created.configs[config.id]
     assert config.id not in {c.id for c in client.models.get_model_configs(model.id)}
-
-
-def test_openai_compatible_inference_through_sdk_client(
-    live_kamiwaza_client,
-    target_model_file_id,
-    created,
-) -> None:
-    client = live_kamiwaza_client
-    target = _lane_target()
-    model, file_id = _ready_target(client, target, target_model_file_id)
-
-    configs = client.models.get_model_configs(model.id)
-    if not configs:
-        _missing_prerequisite(
-            target,
-            f"prerequisite: {model.repo_modelId} has no model config to deploy with",
-        )
-    config = next((c for c in configs if c.default), configs[0])
-
-    deployment_id = _deploy_fresh(client, target, model, config.id, file_id)
-    created.deployment_ids.append(deployment_id)
-    client.serving.wait_deployment_ready(
-        deployment_id, timeout_seconds=_READY_TIMEOUT_SECONDS
-    )
-    _assert_deployed_as_requested(
-        client.serving.get_deployment(deployment_id),
-        deployment_id,
-        target,
-        config.id,
-        file_id,
-    )
-
-    prompt, answer = _sum_question()
-    openai_client = client.openai.get_client(deployment_id=deployment_id)
-    try:
-        served = openai_client.models.list().data
-        assert served, "the deployment's OpenAI-compatible endpoint lists no models"
-        reply = openai_client.chat.completions.create(
-            model=served[0].id,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=16,
-        )
-    finally:
-        openai_client.close()
-
-    assert reply.choices, "chat completion returned no choices"
-    content = reply.choices[0].message.content or ""
-    assert re.search(rf"(?<!\d){answer}(?!\d)", content), (
-        f"reply to {prompt!r} does not contain the sum {answer}: {reply!r}"
-    )
-    assert reply.usage is not None and reply.usage.prompt_tokens > 0, reply
-    assert reply.usage.completion_tokens > 0, reply

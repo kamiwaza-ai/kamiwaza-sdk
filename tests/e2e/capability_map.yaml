@@ -189,19 +189,21 @@
   capability_ids: [models.local-deployment, models.openai-compatible-inference]
   scenario_name: "Engine matrix deploy and infer with fractional co-location"
 
-# ENG-12327 (T09). Both tests deploy a llama.cpp GGUF target from weights
-# already on the cluster (checked before anything is created; no SDK download
-# method is called). The target is the explicit fleet target when one is set,
-# else GGUF_LLM_TARGET; an explicit target on another engine skips both tests as
-# not applicable. Every run deploys, so neither can pass on a warm cluster
-# without deploying - the gap that retired the 1.2.1 model records. Each
-# deployment is checked to carry the requested config, weights file and engine.
-# One capability per test, so an inference failure cannot mark local deployment
-# as failing; the inference test must deploy first, so a deployment failure
-# fails both. The lifecycle test creates, reads, lists and updates a disposable
-# model config, deploys with it to DEPLOYED, checks the deployment, active
-# listing, instances, captured logs and log stream, stops it without force to
-# STOPPED, and deletes the config.
+# ENG-12327 (T09). Two files with one test each (shared helpers in
+# model_deployment_live_support.py). Both deploy a llama.cpp GGUF target: the
+# explicit fleet target when one is set, else GGUF_LLM_TARGET; an explicit target
+# on another engine skips both tests as not applicable. Before anything is
+# created each test checks that the target's weights and at least one model
+# config are already on the cluster; a missing prerequisite skips an optional
+# target and fails a fleet-required one, and no SDK download method is called.
+# Every run deploys, so neither can pass on a warm cluster without deploying -
+# the gap that retired the 1.2.1 model records. Each deployment is checked to
+# carry the requested config, weights file and engine. One capability per test,
+# so an inference failure cannot mark local deployment as failing; the inference
+# test must deploy first, so a deployment failure fails both. The lifecycle test
+# creates, reads, lists and updates a disposable model config, deploys with it to
+# DEPLOYED, checks the deployment, active listing, instances, captured logs and
+# log stream, stops it without force to STOPPED, and deletes the config.
 - pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_model_config_and_local_deployment_lifecycle"
   capability_ids: [models.local-deployment]
   scenario_name: "Model config and local deployment lifecycle through the SDK"
@@ -211,7 +213,7 @@
 # for a fresh deployment, asking for the sum of two numbers chosen for the run;
 # the reply must contain the sum (which the prompt does not), and the response
 # must report prompt and completion tokens.
-- pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_openai_compatible_inference_through_sdk_client"
+- pattern: "tests/integration/test_openai_compatible_inference_live.py::test_openai_compatible_inference_through_sdk_client"
   capability_ids: [models.openai-compatible-inference]
   scenario_name: "OpenAI-compatible chat completion through the SDK client"
   evidence_provenance: cycle-authored
