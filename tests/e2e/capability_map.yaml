@@ -205,8 +205,8 @@
 # force to STOPPED, and deletes the config. The chat call shows the deployment
 # serves; it does not claim models.openai-compatible-inference, whose document
 # allows a pass only with a representative call per declared operation (chat,
-# embeddings, transcription, image generation), which this map enforces since
-# ENG-12269.
+# embeddings, transcription, image generation), which develop's capability map
+# enforces since ENG-12269.
 - pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_model_config_and_local_deployment_lifecycle"
   capability_ids: [models.local-deployment]
   scenario_name: "Model config and local deployment lifecycle through the SDK"

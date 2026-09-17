@@ -21,16 +21,18 @@ proven NotFound.
 The chat completion shows the deployment serves requests. It does not claim
 ``models.openai-compatible-inference``: that capability's document allows a pass
 only with a representative call per declared operation (chat, embeddings,
-transcription and image generation), which the capability map enforces since
-ENG-12269.
+transcription and image generation), which develop's capability map enforces
+since ENG-12269.
 
 Deliberately not called: the log-pattern route, which on 1.2.1 reads only a
 local log file or Kubernetes pod logs and, unlike the captured-log route, has no
 host-spawner source, so it answers 404 for a deployment whose logs only the host
 spawner holds. And ``serving.get_health``: on 1.2.1 it returns entries for
 deployments still INITIALIZING or whose check finds a problem, but none for a
-DEPLOYED local-engine deployment whose Ray Serve route is present, so no
-assertion about this test's deployment could fail for a broken health check.
+DEPLOYED local-engine deployment unless it checks that deployment's Ray Serve
+route and finds it missing (it skips the check for Kubernetes-backed
+deployments and for deployments without a Ray Serve binding), so no assertion
+about this test's deployment could fail for a broken health check.
 """
 
 from __future__ import annotations
@@ -60,6 +62,7 @@ pytestmark = [
 _LANE_ENGINE = "llamacpp"
 _READY_TIMEOUT_SECONDS = 900
 _STOP_TIMEOUT_SECONDS = 300
+_CHAT_TIMEOUT_SECONDS = 120.0
 _POLL_ATTEMPTS = 15
 _POLL_DELAY_SECONDS = 2.0
 
@@ -386,13 +389,14 @@ def test_model_config_and_local_deployment_lifecycle(
     prompt, answer = _sum_question()
     openai_client = client.openai.get_client(deployment_id=deployment_id)
     try:
-        served = openai_client.models.list().data
+        served = openai_client.models.list(timeout=_CHAT_TIMEOUT_SECONDS).data
         assert served, "the deployment's OpenAI-compatible endpoint lists no models"
         reply = openai_client.chat.completions.create(
             model=served[0].id,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=16,
+            timeout=_CHAT_TIMEOUT_SECONDS,
         )
     finally:
         openai_client.close()
