@@ -120,11 +120,13 @@ def _delete_if_owned(
         return
     try:
         delete(urn)
-    except NotFoundError:
-        return
     except (KamiwazaError, SchemaValidationError) as exc:
-        failures.append(f"could not delete {urn}: {exc!r}")
-        return
+        # On 1.2.1 a refused catalog delete also answers 404 ("not found or could
+        # not be deleted"), so NotFound here is not proof of absence: it falls
+        # through to the read-back below like a successful delete.
+        if not isinstance(exc, NotFoundError):
+            failures.append(f"could not delete {urn}: {exc!r}")
+            return
     try:
         _wait_until_absent(lambda: read(urn), f"cleanup of {urn}")
     except (AssertionError, KamiwazaError, SchemaValidationError) as exc:
