@@ -13,7 +13,7 @@ from _kamiwaza_pytest_options import add_live_options, mark_skipped_diffusion_it
 from tests.e2e import _evidence_emitter
 
 # pytester powers the in-process pytest runs in
-# tests/e2e/test_evidence_emitter.py (ENG-10026). The required-edge policy
+# tests/e2e/test_evidence_emitter.py. The required-edge policy
 # modules carry the fail-closed hooks for `--require-federation-edge` and
 # `--require-delegated-workload-edge`. All three have to live here, not beside
 # the tests they serve: pytest only honors `pytest_plugins` in the rootdir
