@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import suppress
 from uuid import uuid4
 
@@ -25,6 +26,28 @@ def _assert_denied(client, request: CheckRequest) -> None:
     with pytest.raises(APIError) as error:
         client.authz.check_access(request)
     assert error.value.status_code == 403
+
+
+def _wait_for_access(client, request: CheckRequest, *, allowed: bool) -> None:
+    """Allow the server's short-lived ReBAC decision cache to expire."""
+    deadline = time.monotonic() + 3
+    last_observation = "no decision"
+    while True:
+        try:
+            decision = client.authz.check_access(request)
+        except APIError as error:
+            if error.status_code != 403:
+                raise
+            last_observation = "HTTP 403"
+            if not allowed:
+                return
+        else:
+            last_observation = f"allow={decision.allow}, decision_id={decision.decision_id!r}"
+            if allowed and decision.allow and decision.decision_id:
+                return
+        if time.monotonic() >= deadline:
+            pytest.fail(f"Expected allowed={allowed}; last observed {last_observation}")
+        time.sleep(0.1)
 
 
 def test_rebac_grant_check_revoke_live(live_kamiwaza_client) -> None:
@@ -54,9 +77,7 @@ def test_rebac_grant_check_revoke_live(live_kamiwaza_client) -> None:
 
     try:
         client.authz.upsert_tuple(grant)
-        decision = client.authz.check_access(allowed_check)
-        assert decision.allow is True
-        assert decision.decision_id
+        _wait_for_access(client, allowed_check, allowed=True)
         _assert_denied(client, other_check)
 
         client.authz.delete_tuple(
@@ -64,7 +85,7 @@ def test_rebac_grant_check_revoke_live(live_kamiwaza_client) -> None:
                 subject=allowed_subject, relation="viewer", object=object_ref
             )
         )
-        _assert_denied(client, allowed_check)
+        _wait_for_access(client, allowed_check, allowed=False)
     finally:
         # Best-effort: a teardown error must not replace the test failure.
         with suppress(APIError):
