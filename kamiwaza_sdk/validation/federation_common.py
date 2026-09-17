@@ -29,11 +29,11 @@ from kamiwaza_sdk.validation.provider import ProviderContractError
 
 def all_personas() -> tuple[tuple[str, dict[str, str]], ...]:
     values = [
-        (username, {"clearance": clearance, "tenant_id": DEFAULT_TENANT_ID})
-        for clearance, username in PERSONAS.items()
+        (username, {"access_tier": access_tier, "tenant_id": DEFAULT_TENANT_ID})
+        for access_tier, username in PERSONAS.items()
     ]
     values.append(
-        (UNONBOARDED_PERSONA, {"clearance": "U", "tenant_id": DEFAULT_TENANT_ID})
+        (UNONBOARDED_PERSONA, {"access_tier": "basic", "tenant_id": DEFAULT_TENANT_ID})
     )
     values.extend(TENANT_NEGATIVE_PERSONAS.values())
     return tuple(values)
@@ -117,14 +117,18 @@ def edge_cluster_ids(edge: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def required_text(value: Any, key: str) -> str:
-    candidate = value.get(key) if isinstance(value, Mapping) else getattr(value, key, None)
+    candidate = (
+        value.get(key) if isinstance(value, Mapping) else getattr(value, key, None)
+    )
     if not isinstance(candidate, str) or not candidate:
         raise ProviderContractError(f"shared-IdP value {key!r} is missing")
     return candidate
 
 
 def optional_text(value: Any, key: str) -> str | None:
-    candidate = value.get(key) if isinstance(value, Mapping) else getattr(value, key, None)
+    candidate = (
+        value.get(key) if isinstance(value, Mapping) else getattr(value, key, None)
+    )
     if isinstance(candidate, str) and candidate:
         return candidate
     if candidate is None or isinstance(candidate, (Mapping, list, tuple, set)):
@@ -192,7 +196,9 @@ def read_execution_gate(client: Any) -> Any | None:
         if getattr(exc, "status_code", None) == 404:
             return None
         raise
-    return binding.model_dump(mode="json") if hasattr(binding, "model_dump") else binding
+    return (
+        binding.model_dump(mode="json") if hasattr(binding, "model_dump") else binding
+    )
 
 
 def json_value(value: Any) -> Any:

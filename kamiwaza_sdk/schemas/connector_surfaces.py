@@ -128,7 +128,9 @@ class ConnectorSurfaceCapability(BaseModel):
         and treating "unknown" as usable is exactly the fail-open mistake this
         property exists to prevent.
         """
-        return bool(self.surface) and self.workroom_state.lower() == READY_WORKROOM_STATE
+        return (
+            bool(self.surface) and self.workroom_state.lower() == READY_WORKROOM_STATE
+        )
 
 
 class ConnectorCapabilities(BaseModel):
@@ -197,7 +199,9 @@ class ConnectorCatalogItem(BaseModel):
     @property
     def label(self) -> str:
         """The human-facing provider label, degrading to the connector type."""
-        return self.provider_label or self.provider or self.connector_type or "Connector"
+        return (
+            self.provider_label or self.provider or self.connector_type or "Connector"
+        )
 
     def ready_surfaces(self) -> List[ConnectorSurfaceCapability]:
         """The surfaces that are ready to browse for this workroom."""
@@ -205,7 +209,9 @@ class ConnectorCatalogItem(BaseModel):
 
     def searchable_surfaces(self) -> List[ConnectorSurfaceCapability]:
         """The ready surfaces that also support full-text search."""
-        return [surface for surface in self.ready_surfaces() if surface.search_supported]
+        return [
+            surface for surface in self.ready_surfaces() if surface.search_supported
+        ]
 
 
 class ConnectorSourceRef(BaseModel):
@@ -303,8 +309,7 @@ class ConnectorVerification(BaseModel):
 
     This is a readiness probe, not a content sync: it reports whether the
     caller's stored credential still reaches the provider right now. Producing
-    it is a *write* — the platform persists the classified health it observes —
-    so see
+    it is a *write* — the platform persists the observed health — so see
     :meth:`~kamiwaza_sdk.services.connector_surfaces.ConnectorSurfaceMixin.verify_connection`
     before calling it on a schedule.
     """

@@ -50,7 +50,7 @@ def _config(**overrides: Any) -> SharedIdpAuthConfig:
     values: dict[str, Any] = {
         "issuer": "https://shared.example/realms/federation",
         "client_id": "kamiwaza-federation",
-        "username": "fed-clr-s",
+        "username": "access-standard",
         "password": "test-password",
         "verify": "/tmp/test-ca.pem",
         "timeout_seconds": 12.0,
@@ -105,7 +105,7 @@ def test_password_grant_is_direct_and_fully_programmatic() -> None:
         data={
             "grant_type": "password",
             "client_id": "kamiwaza-federation",
-            "username": "fed-clr-s",
+            "username": "access-standard",
             "password": "test-password",
             "scope": "openid",
         },
@@ -713,7 +713,7 @@ def test_token_cache_path_is_scoped_by_issuer_client_and_username(
         base,
         _config(issuer="https://other.example/realms/federation"),
         _config(client_id="other-client"),
-        _config(username="fed-clr-u"),
+        _config(username="access-basic"),
     ]
 
     paths = {shared_idp_token_path(identity, root=tmp_path) for identity in identities}

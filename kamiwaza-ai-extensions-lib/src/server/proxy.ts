@@ -11,10 +11,8 @@ import type { ProxyConfig } from "./types";
  * to one without the other could silently re-open the spoof gap that
  * round-6 closed.
  *
- * Round-3 ultrareview C1 fix: the allowlist was missing
- * ``x-user-system-high``, ``x-user-workroom-role``, and the
- * ``x-user-workroom-id`` alias kept by the platform during the
- * workroom-id migration window.
+ * Round-3 ultrareview C1 fix added the workroom role and workroom-id alias
+ * kept by the platform during the workroom-id migration window.
  *
  * The HMAC pair (``x-user-signature`` / ``x-user-signature-ts``) is part
  * of the platform-internal envelope but extensions deliberately don't

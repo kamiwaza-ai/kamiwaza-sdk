@@ -5,10 +5,10 @@ for the shared-IdP federation scenario. Kajiya invokes the same provider
 phases, but a pair of existing clusters can be qualified directly with these
 JSON contracts.
 
-The provider executes the exact nine registered cases for each selected
-mesh-edge: three clearance retrievals, three tenant-negative retrievals,
-authorized dataset listing, a receiver job marker, and an unonboarded-user
-denial. Required cases fail; they are never silently skipped.
+The provider executes nine registered cases for each selected mesh edge: three
+access-tier retrievals, three tenant-negative retrievals, authorized dataset
+listing, a receiver job marker, and an unonboarded-user denial. Required cases
+fail; they are never silently skipped.
 
 Positive retrieval cases first perform a receiver dataset read. This triggers
 first-ingress grant seeding and waits up to 30 seconds for an explicit

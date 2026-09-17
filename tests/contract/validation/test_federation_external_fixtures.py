@@ -68,13 +68,13 @@ def test_external_resolution_uses_customer_issuer_and_advertises_external_mode(
         "realm": "shared",
         "client_id_ref": SHARED_REALM_EXTERNAL_CLIENT_ID_REF,
         "persona_usernames": [
-            "fed-clr-u",
-            "fed-clr-s",
-            "fed-clr-ts",
-            "fed-clr-unonboarded",
-            "fed-tenant-missing",
-            "fed-tenant-legacy-only",
-            "fed-tenant-nondefault",
+            "access-basic",
+            "access-standard",
+            "access-advanced",
+            "access-unonboarded",
+            "tenant-missing",
+            "tenant-legacy-only",
+            "tenant-nondefault",
         ],
         "fixture_mode": "external",
     }
@@ -216,7 +216,7 @@ def test_external_token_client_uses_issuer_without_admin_credentials(
 
     token = KeycloakTokenClient(
         "https://customer-idp.test/realms/shared", verify=False
-    ).ropc_token("ignored", "customer-cli", "fed-clr-u", "persona-secret")
+    ).ropc_token("ignored", "customer-cli", "access-basic", "persona-secret")
 
     assert token == "jwt-token"
     assert captured["url"] == (

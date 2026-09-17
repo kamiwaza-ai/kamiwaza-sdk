@@ -166,8 +166,12 @@ _TEXT_BODY_MARKERS = (
     "application/graphql",
     "text/",
 )
-_CONTEXT_TEST_LLM_REPO_OVERRIDE = os.environ.get("KAMIWAZA_CONTEXT_LLM_REPO", "").strip()
-_CONTEXT_TEST_LLM_ENGINE_OVERRIDE = os.environ.get("KAMIWAZA_CONTEXT_LLM_ENGINE", "").strip()
+_CONTEXT_TEST_LLM_REPO_OVERRIDE = os.environ.get(
+    "KAMIWAZA_CONTEXT_LLM_REPO", ""
+).strip()
+_CONTEXT_TEST_LLM_ENGINE_OVERRIDE = os.environ.get(
+    "KAMIWAZA_CONTEXT_LLM_ENGINE", ""
+).strip()
 _CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE = os.environ.get(
     "KAMIWAZA_CONTEXT_LLM_QUANTIZATION", ""
 ).strip()
@@ -204,9 +208,7 @@ _EMBEDDING_NAME_PATTERNS = re.compile(
     r"instructor|jina[-_]?embed|text[-_]?embedding|embed)"
 )
 _HARNESS_PROVISIONED_KEY = "_harness_provisioned"
-_HARNESS_EMBEDDING_STOPPED_NOTE = (
-    "harness-provisioned embedding deployment was stopped"
-)
+_HARNESS_EMBEDDING_STOPPED_NOTE = "harness-provisioned embedding deployment was stopped"
 _HARNESS_EMBEDDING_STOP_ATTEMPTED_NOTE = (
     "harness-provisioned embedding deployment stop was attempted"
 )
@@ -596,9 +598,7 @@ def _platform_deployment_ready(deployment: object) -> bool:
     )
 
 
-def _stop_deployment_quietly(
-    client: KamiwazaClient, deployment_id: str | None
-) -> bool:
+def _stop_deployment_quietly(client: KamiwazaClient, deployment_id: str | None) -> bool:
     """Best-effort stop of a deployment (used for capability probes / cleanup)."""
     if not deployment_id:
         return False
@@ -723,10 +723,7 @@ def _active_context_deployment_matches_target(
     """Require exact prepared weights when reusing a required context target."""
     if deployment.get("repo_model_id") != target.repo_id:
         return False
-    if (
-        target.engine_name
-        and deployment.get("engine_name") != target.engine_name
-    ):
+    if target.engine_name and deployment.get("engine_name") != target.engine_name:
         return False
     if not target.required:
         return True
@@ -1411,7 +1408,7 @@ def context_llm_prerequisite(
         if not configs:
             _fail_or_skip_context_target(
                 context_target,
-                f"No model configs available for context LLM repo '{context_repo_id}'"
+                f"No model configs available for context LLM repo '{context_repo_id}'",
             )
         default_config = next(
             (config for config in configs if config.default), configs[0]
@@ -1442,7 +1439,7 @@ def context_llm_prerequisite(
                 context_target,
                 "deploy_model did not return a deployment id for context LLM repo "
                 f"'{context_repo_id}' (engine={context_engine_name or 'default'}, "
-                "deploy refused on this host)."
+                "deploy refused on this host).",
             )
         provisioned_deployment_id = str(raw_deployment_id)
         deployment = client.serving.wait_for_deployment(
@@ -1576,8 +1573,7 @@ def _default_model_config(
     configs = client.models.get_model_configs(model_id)
     if not configs:
         message = (
-            "No model configs available for deployable test model "
-            f"'{target.repo_id}'"
+            f"No model configs available for deployable test model '{target.repo_id}'"
         )
         if target.required:
             pytest.fail(message)
@@ -1737,18 +1733,16 @@ def _require_two_clusters_for_marked_tests(request: pytest.FixtureRequest) -> No
     # credential satisfies the gate the same way the peer fixture consumes it.
     peer_password = str(request.getfixturevalue("live_password")).strip()
     if not peer_url:
-        _fail_or_skip_required_edge(
-            request,
+        pytest.skip(
             "requires_two_clusters: set --live-peer-base-url or "
-            "KAMIWAZA_PEER_BASE_URL to run.",
+            "KAMIWAZA_PEER_BASE_URL to run."
         )
     if not peer_key and not peer_password:
-        _fail_or_skip_required_edge(
-            request,
+        pytest.skip(
             "requires_two_clusters: --live-peer-base-url is set but no peer "
             "admin credential — provide --live-username/--live-password "
             "(preferred) or an admin access-token via --live-peer-api-key "
-            "(a PAT is non-admin).",
+            "(a PAT is non-admin)."
         )
 
 
@@ -2157,9 +2151,7 @@ def _target_files_for_quantization(model: Any, quantization: str) -> list[Any]:
         return []
 
     gguf_files = [
-        f
-        for f in files
-        if str(getattr(f, "name", "") or "").lower().endswith(".gguf")
+        f for f in files if str(getattr(f, "name", "") or "").lower().endswith(".gguf")
     ]
     if not gguf_files:
         return files

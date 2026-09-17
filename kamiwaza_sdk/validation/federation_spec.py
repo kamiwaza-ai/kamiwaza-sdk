@@ -25,9 +25,9 @@ FEDERATION_SCENARIO_ID = "sdk.federation.shared-idp/v1"
 # exercised by the legacy required_federation_edge suite.  The provider owns
 # these IDs; pytest node names remain an internal SDK implementation detail.
 FEDERATION_CASE_IDS = (
-    "retrieval-clearance-u",
-    "retrieval-clearance-s",
-    "retrieval-clearance-ts",
+    "retrieval-access-tier-basic",
+    "retrieval-access-tier-standard",
+    "retrieval-access-tier-advanced",
     "retrieval-invalid-tenant-missing-canonical",
     "retrieval-invalid-tenant-legacy-only",
     "retrieval-invalid-tenant-canonical-nondefault",
@@ -113,13 +113,13 @@ def _resolve_candidate(
         "issuer": shared_issuer,
         "realm": realm,
         "persona_usernames": [
-            "fed-clr-u",
-            "fed-clr-s",
-            "fed-clr-ts",
-            "fed-clr-unonboarded",
-            "fed-tenant-missing",
-            "fed-tenant-legacy-only",
-            "fed-tenant-nondefault",
+            "access-basic",
+            "access-standard",
+            "access-advanced",
+            "access-unonboarded",
+            "tenant-missing",
+            "tenant-legacy-only",
+            "tenant-nondefault",
         ],
         "fixture_mode": fixture_mode,
     }

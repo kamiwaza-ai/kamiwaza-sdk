@@ -81,7 +81,7 @@ def test_provider_records_match_the_canonical_integration_fixture() -> None:
         Path(__file__).resolve().parents[2]
         / "integration"
         / "fixtures"
-        / "mini_clearance_records.json"
+        / "access_tier_records.json"
     )
 
     assert list(records()) == json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -282,7 +282,7 @@ class _Gates:
 
     def discover(self, classpath: str) -> Any:
         assert classpath == GATE_CLASSPATH
-        return SimpleNamespace(name="mini_clearance_gate")
+        return SimpleNamespace(name="access_tier_gate")
 
 
 class _Datasets:
@@ -291,7 +291,7 @@ class _Datasets:
 
     def create(self, **kwargs: Any) -> str:
         del kwargs
-        urn = "urn:li:dataset:(urn:li:dataPlatform:file,/tmp/clearance,PROD)"
+        urn = "urn:li:dataset:(urn:li:dataPlatform:file,/tmp/access-tier,PROD)"
         self.created.append(urn)
         return urn
 
@@ -581,10 +581,10 @@ def test_run_emits_all_nine_cases_with_redacted_failure_details(
         request: Any,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         username = provider_module._jwt_subject(request.token)
-        clearance = next(key for key, value in PERSONAS.items() if value == username)
-        count, allowed = KNOWN[clearance]
-        return [row for row in records() if row["classification"] in allowed][:count], [
-            {"gate": "mini_clearance_gate"}
+        access_tier = next(key for key, value in PERSONAS.items() if value == username)
+        count, allowed = KNOWN[access_tier]
+        return [row for row in records() if row["required_tier"] in allowed][:count], [
+            {"gate": "access_tier_gate"}
         ]
 
     monkeypatch.setattr(provider_module, "_token_client", fake_client)
@@ -674,5 +674,9 @@ def test_explicit_scenario_without_mesh_edge_fails_closed(
 
 
 def test_all_persona_fixture_names_are_stable() -> None:
-    assert tuple(PERSONAS.values()) == ("fed-clr-u", "fed-clr-s", "fed-clr-ts")
-    assert UNONBOARDED_PERSONA == "fed-clr-unonboarded"
+    assert tuple(PERSONAS.values()) == (
+        "access-basic",
+        "access-standard",
+        "access-advanced",
+    )
+    assert UNONBOARDED_PERSONA == "access-unonboarded"

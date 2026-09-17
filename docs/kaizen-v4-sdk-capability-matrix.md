@@ -43,7 +43,7 @@ rollout observation.
 | Core `develop` live image source | `c8b6c9af03a1b16cdfb0ac019f7b41cf4110d861` | Scheduler is blocked by ENG-10492. |
 | Deploy `develop` | `b52edebd20170ad72f4de5099810d276ca0aca73` | Local k0s/Lima deployment path used for the rollout attempt. |
 
-Classification vocabulary:
+Support status vocabulary:
 
 - **Supported** — required SDK contract is registered in Kaizen v4.
 - **Missing SDK contract** — required Core route family has no typed SDK surface.
@@ -67,7 +67,7 @@ fields:
 | --- | --- | --- |
 | Capability, supported SDK entry point | `id`, `title`, `surface`, `requires`, `preconditions` in `capability.v1` | A kit capability may span several SDK methods; the audit retains method-level entries so a missing or unregistered method cannot be hidden by an aggregate product label. |
 | Kaizen v4 runtime registration | None | This is Tomo-specific implementation evidence. It remains an audit-only field because the kit deliberately does not infer extension wiring from a platform SDK contract. |
-| Classification and owner / closure | None | These are engineering triage decisions, not customer-capability claims. |
+| Support status and owner / closure | None | These are engineering triage decisions, not customer-capability claims. |
 | Representative verification | `evidence_plan`, `evidence`, and a `scenario-evidence.v2` record | Existing test counts prove contract coverage but are not fresh-deployment evidence. A closing record must name the executed build, method, capability IDs, status, and ordered observations. |
 
 ### Context mapping and closure preconditions
@@ -101,7 +101,7 @@ SDK-backed ingestion/retrieval or ontology round trips required here.
 
 ## Capability matrix
 
-| Capability | Supported SDK entry point | Kaizen v4 runtime registration | Classification | Representative verification | Owner / closure |
+| Capability | Supported SDK entry point | Kaizen v4 runtime registration | Support status | Representative verification | Owner / closure |
 | --- | --- | --- | --- | --- | --- |
 | Model discovery and inspection | `client.models.list_models`, `search_models`, `get_model_configs`, and model-file reads | `kamiwaza_extensions_lib.list_available_models`; direct `inspect_kamiwaza` operations `list_models`, `get_model`, `list_model_configs` | Supported | SDK model and extensions-lib model tests; Tomo closed-tool tests | SDK + Tomo |
 | Model download | `client.models.initiate_model_download` | `manage_kamiwaza_demo.ensure_model_download` with preview/apply and bounded projections | Supported; apply is approval-gated | SDK model tests; Tomo direct-SDK and staging tests | SDK + Tomo |

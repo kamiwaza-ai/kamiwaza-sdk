@@ -310,9 +310,7 @@ def test_create_ontology_includes_optional_payload_fields(dummy_client):
 
 
 def test_add_knowledge_posts_expected_payload(dummy_client):
-    responses = {
-        ("post", "/context/ontologies/o-1/knowledge"): {"group_id": "g1"}
-    }
+    responses = {("post", "/context/ontologies/o-1/knowledge"): {"group_id": "g1"}}
     client = dummy_client(responses)
     service = ContextService(client)
 
@@ -397,14 +395,16 @@ def test_get_memory_posts_expected_payload(dummy_client):
 
     method, path, kwargs = client.calls[0]
     assert (method, path) == ("post", "/context/ontologies/o-1/memory")
-    assert kwargs["json"] == {"group_id": "g1", "query": "what happened", "max_facts": 4}
+    assert kwargs["json"] == {
+        "group_id": "g1",
+        "query": "what happened",
+        "max_facts": 4,
+    }
     assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 
 def test_get_episodes_uses_last_n_query_param(dummy_client):
-    responses = {
-        ("get", "/context/ontologies/o-1/episodes/g1"): {"episodes": []}
-    }
+    responses = {("get", "/context/ontologies/o-1/episodes/g1"): {"episodes": []}}
     client = dummy_client(responses)
     service = ContextService(client)
 
@@ -422,9 +422,7 @@ def test_get_episodes_uses_last_n_query_param(dummy_client):
 
 
 def test_delete_group_calls_expected_path(dummy_client):
-    responses = {
-        ("delete", "/context/ontologies/o-1/groups/g1"): {"deleted": True}
-    }
+    responses = {("delete", "/context/ontologies/o-1/groups/g1"): {"deleted": True}}
     client = dummy_client(responses)
     service = ContextService(client)
 
@@ -841,7 +839,10 @@ def test_upload_file_sends_files_and_optional_params(dummy_client):
 
     method, path, kwargs = client.calls[0]
     assert (method, path) == ("post", "/context/upload/")
-    assert kwargs["params"] == {"collection_name": "docs", "source_urn": "urn:test:sample"}
+    assert kwargs["params"] == {
+        "collection_name": "docs",
+        "source_urn": "urn:test:sample",
+    }
     assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
     file_info = kwargs["files"]["file"]
     assert file_info[0] == "sample.txt"
@@ -1023,7 +1024,7 @@ def test_list_raw_files_default_params(dummy_client):
     assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
 
 
-def test_list_raw_files_applies_filters_and_markings(dummy_client):
+def test_list_raw_files_applies_filters(dummy_client):
     responses = {("get", "/context/storage/raw"): {"items": [], "count": 0}}
     client = dummy_client(responses)
     service = ContextService(client)
@@ -1035,7 +1036,6 @@ def test_list_raw_files_applies_filters_and_markings(dummy_client):
         connector_id="conn-1",
         limit=10,
         offset=5,
-        include_markings=True,
     )
 
     _, _, kwargs = client.calls[0]
@@ -1045,7 +1045,6 @@ def test_list_raw_files_applies_filters_and_markings(dummy_client):
         "source_urn": "inline://report",
         "job_id": "job-1",
         "connector_id": "conn-1",
-        "include_markings": True,
     }
 
 

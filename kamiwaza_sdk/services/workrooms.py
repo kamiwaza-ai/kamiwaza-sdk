@@ -68,9 +68,7 @@ class WorkroomService(BaseService):
         *,
         description: Optional[str] = None,
         labels: Optional[List[str]] = None,
-        classification: Optional[str] = None,
         attributes: Optional[dict] = None,
-        scg_references: Optional[List[str]] = None,
     ) -> Workroom:
         """Create a new workroom.
 
@@ -79,9 +77,7 @@ class WorkroomService(BaseService):
             workroom_type: "ephemeral" or "persistent".
             description: Optional description (max 1024 chars).
             labels: Optional list of string labels.
-            classification: Optional classification label.
             attributes: Optional extensible key-value pairs.
-            scg_references: Optional SCG identifiers.
 
         Returns:
             The created Workroom object.
@@ -95,9 +91,7 @@ class WorkroomService(BaseService):
                 "type": workroom_type,
                 "description": description,
                 "labels": labels,
-                "classification": classification,
                 "attributes": attributes,
-                "scg_references": scg_references,
             }
         )
         response = self.client.post(
@@ -149,9 +143,7 @@ class WorkroomService(BaseService):
         name: Optional[str] | object = _UNSET,
         description: Optional[str] | object = _UNSET,
         labels: Optional[List[str]] | object = _UNSET,
-        classification: Optional[str] | object = _UNSET,
         attributes: Optional[dict] | object = _UNSET,
-        scg_references: Optional[List[str]] | object = _UNSET,
     ) -> Workroom:
         """Partial update of workroom metadata.
 
@@ -160,9 +152,7 @@ class WorkroomService(BaseService):
             name: New name (optional).
             description: New description (optional).
             labels: New labels (optional).
-            classification: New classification (optional).
             attributes: New attributes (optional).
-            scg_references: New SCG references (optional).
 
         Returns:
             Updated Workroom object.
@@ -177,9 +167,7 @@ class WorkroomService(BaseService):
                 name=name,
                 description=description,
                 labels=labels,
-                classification=classification,
                 attributes=attributes,
-                scg_references=scg_references,
             )
         )
         try:
@@ -284,9 +272,7 @@ class WorkroomService(BaseService):
     # Export & ingestion
     # -------------------------------------------------------------------------
 
-    def get_export_manifest(
-        self, workroom_id: Union[str, UUID]
-    ) -> ExportManifest:
+    def get_export_manifest(self, workroom_id: Union[str, UUID]) -> ExportManifest:
         """Get categorized list of workroom contents with export eligibility.
 
         Args:
@@ -352,9 +338,7 @@ class WorkroomService(BaseService):
                 raise NotFoundError(f"Workroom {wid} not found")
             raise
 
-    def get_ingestion_summary(
-        self, workroom_id: Union[str, UUID]
-    ) -> IngestionSummary:
+    def get_ingestion_summary(self, workroom_id: Union[str, UUID]) -> IngestionSummary:
         """Get aggregated ingestion statistics for the workroom.
 
         Args:
@@ -368,9 +352,7 @@ class WorkroomService(BaseService):
         """
         wid = self._ensure_uuid(workroom_id)
         try:
-            response = self.client.get(
-                f"/workrooms/{wid}/ingestion/summary"
-            )
+            response = self.client.get(f"/workrooms/{wid}/ingestion/summary")
             return IngestionSummary.model_validate(response)
         except APIError as e:
             if e.status_code == 404:
@@ -406,9 +388,7 @@ class WorkroomService(BaseService):
         response = self.client.get("/admin/workrooms/", params=params)
         return self._parse_workroom_items(response, endpoint="/admin/workrooms/")
 
-    def admin_delete(
-        self, workroom_id: Union[str, UUID]
-    ) -> DeleteWorkroomResponse:
+    def admin_delete(self, workroom_id: Union[str, UUID]) -> DeleteWorkroomResponse:
         """Admin delete - purges any workroom regardless of owner.
 
         Args:
@@ -452,11 +432,7 @@ class WorkroomService(BaseService):
 
     @staticmethod
     def _provided_fields(**fields: object) -> dict[str, object]:
-        return {
-            key: value
-            for key, value in fields.items()
-            if value is not _UNSET
-        }
+        return {key: value for key, value in fields.items() if value is not _UNSET}
 
     @staticmethod
     def _parse_workroom_items(

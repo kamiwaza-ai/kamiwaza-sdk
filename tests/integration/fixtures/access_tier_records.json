@@ -1,0 +1,7 @@
+[
+  {"id": "r1", "required_tier": "basic", "payload": "alpha"},
+  {"id": "r2", "required_tier": "basic", "payload": "bravo"},
+  {"id": "r3", "required_tier": "basic", "payload": "charlie"},
+  {"id": "r4", "required_tier": "standard", "payload": "delta"},
+  {"id": "r5", "required_tier": "advanced", "payload": "echo"}
+]

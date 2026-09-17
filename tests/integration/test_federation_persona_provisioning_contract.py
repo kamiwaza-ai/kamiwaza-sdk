@@ -58,22 +58,22 @@ def _assert_persona_inventory(
     sessions: dict[str, dict[str, Any]],
 ) -> None:
     assert set(personas) == {
-        "U",
-        "S",
-        "TS",
+        "basic",
+        "standard",
+        "advanced",
         "unonboarded",
         "missing-canonical",
         "legacy-only",
         "canonical-nondefault",
     }
     assert set(sessions) == {
-        "fed-clr-u",
-        "fed-clr-s",
-        "fed-clr-ts",
-        "fed-clr-unonboarded",
-        "fed-tenant-missing",
-        "fed-tenant-legacy-only",
-        "fed-tenant-nondefault",
+        "access-basic",
+        "access-standard",
+        "access-advanced",
+        "access-unonboarded",
+        "tenant-missing",
+        "tenant-legacy-only",
+        "tenant-nondefault",
     }
 
 
@@ -87,12 +87,12 @@ def _assert_onboarding_contract(receiver: Any) -> None:
         external_id: len(tuples)
         for external_id, tuples in tuples_by_external_id.items()
     } == {
-        "sub-fed-clr-u@source-cluster": 2,
-        "sub-fed-clr-s@source-cluster": 1,
-        "sub-fed-clr-ts@source-cluster": 1,
-        "sub-fed-tenant-missing@source-cluster": 0,
-        "sub-fed-tenant-legacy-only@source-cluster": 0,
-        "sub-fed-tenant-nondefault@source-cluster": 0,
+        "sub-access-basic@source-cluster": 2,
+        "sub-access-standard@source-cluster": 1,
+        "sub-access-advanced@source-cluster": 1,
+        "sub-tenant-missing@source-cluster": 0,
+        "sub-tenant-legacy-only@source-cluster": 0,
+        "sub-tenant-nondefault@source-cluster": 0,
     }
 
 
@@ -109,14 +109,14 @@ def _assert_claim_contract(
 ) -> None:
     assert assert_default_claim.call_count == 4
     assert assert_tenant_claim_shape.call_args_list == [
-        call("token-fed-tenant-missing", {}, context="missing-canonical"),
+        call("token-tenant-missing", {}, context="missing-canonical"),
         call(
-            "token-fed-tenant-legacy-only",
+            "token-tenant-legacy-only",
             {"tenant": "__default__"},
             context="legacy-only",
         ),
         call(
-            "token-fed-tenant-nondefault",
+            "token-tenant-nondefault",
             {"tenant_id": "tenant-a"},
             context="canonical-nondefault",
         ),

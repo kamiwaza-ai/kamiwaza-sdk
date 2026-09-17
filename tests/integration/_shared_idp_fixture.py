@@ -1,43 +1,13 @@
-"""Stand up the shared_idp realm the gated-retrieval live tests need (ENG-8325).
+"""Provision the shared realm required by gated-retrieval live tests.
 
-``test_federation_shared_idp_gated_retrieval_live.py`` has a three-deep
-precondition chain, and each guard only reports the FIRST unmet one — so the
-suite reads "4 skipped" identically at every stage while meaning something
-different each time:
+The suite consumes the acme-gates package, ``ACCESS_TIER_DATASET_PATH``, and a
+shared realm trusted by both clusters. The realm projects ``access_tier`` and
+tenant attributes into brokered JWTs. Receiver validation accepts a caller only
+when the token key is in the shared realm's JWKS, and explicit onboarding still
+controls access.
 
-1. the acme-gates wheel + pip index      -> ``_gate_fixture.py``
-2. ``MINI_CLEARANCE_DATASET_PATH``       -> ``_gate_fixture.py`` publishes the CSV
-3. a **shared realm** both clusters trust -> this module
-
-The realm has to project ``clearance`` plus the tenant attributes needed by the
-release contract into brokered JWTs. The three default-tenant clearance
-personas, one deliberately unonboarded persona, and three tenant-negative
-personas must mint tokens from it by ROPC, because the receiver's shared_idp
-validation accepts a caller only when the token's ``kid`` is in the SHARED
-realm's JWKS. A valid shared-realm token is still receiver-denied until its
-subject is explicitly onboarded; that allowlist boundary is part of the suite's
-required proof.
-
-This drives the primitives that already ship in
-``kamiwaza_sdk.seeding.federation`` (the ``kamiwaza-federation idp`` group) rather than
-re-implementing Keycloak admin calls. It is DEV/TEST only: it needs master-realm
-admin, which the ingress deliberately does not expose, so it reaches Keycloak
-through a port-forward. Production provisioning belongs in the auth chart's
-init-Job pipeline (ENG-8573).
-
-Usage::
-
-    export SHARED_REALM_NAME=kajiya-edge-<unique-run-id>
-    export SHARED_REALM_OWNER_NONCE=<random-per-run-nonce>
-    export FED_PERSONA_PASSWORD=<random-per-run-password>
-    python -m tests.integration._shared_idp_fixture provision --kubectl kubectl
-    python -m tests.integration._shared_idp_fixture teardown --kubectl kubectl
-    python -m tests.integration._shared_idp_fixture env
-
-``provision`` refuses an existing realm before changing its profile, clients,
-mappers, or users. ``teardown`` deletes the full realm only when its ownership
-marker exactly matches ``SHARED_REALM_OWNER_NONCE``; an absent realm is an
-idempotent success so callers can retry an ambiguous remote outcome safely.
+This DEV/TEST helper uses the SDK federation seeding primitives. Production
+realm provisioning remains external.
 """
 
 from __future__ import annotations
@@ -69,10 +39,8 @@ ROPC_CLIENT = SHARED_REALM_CLIENT_ID
 KEYCLOAK_SVC_PORT = os.getenv("KEYCLOAK_SVC_PORT", "80")
 
 
-# These names are a CONTRACT with the consumer, not a local choice: the live
-# test passes every value straight to ROPC as the username, so a missing user
-# is a module-fixture ERROR, not a skip. Keep both constants aligned there.
-# Clearance values match _mini_clearance.KNOWN: U sees 3 rows, S sees 4, TS sees all 5.
+# These names form a contract with the consumer because live tests pass each
+# value to ROPC as the username.
 @dataclass(frozen=True)
 class OwnedRealm:
     name: str
@@ -164,7 +132,7 @@ def provision(
     persona_pw: str,
     owned_realm: OwnedRealm,
 ) -> dict:
-    """Realm + ROPC client + claim mappers + clearance and negative personas."""
+    """Create realm, ROPC client, claim mappers, and validation personas."""
     from kamiwaza_sdk.seeding.federation.cli import _verify_ssl
     from kamiwaza_sdk.seeding.federation.keycloak import KeycloakAdmin
 
@@ -179,20 +147,20 @@ def provision(
     kc.create_owned_realm(realm, owned_realm.owner_nonce)
     try:
         # Keycloak >=24 drops unrecognised user attributes unless the realm opts
-        # in, which silently strips the fixture's clearance and tenant attributes.
+        # in, which would silently strip access-tier and tenant attributes.
         kc.set_unmanaged_attributes(realm)
         client = kc.ensure_ropc_client(realm, ROPC_CLIENT)
-        kc.ensure_attribute_mapper(realm, client["id"], attribute="clearance")
+        kc.ensure_attribute_mapper(realm, client["id"], attribute="access_tier")
         kc.ensure_attribute_mapper(realm, client["id"], attribute="tenant_id")
         kc.ensure_attribute_mapper(realm, client["id"], attribute="tenant")
 
-        for clearance, username in PERSONAS.items():
+        for access_tier, username in PERSONAS.items():
             kc.ensure_user(
                 realm,
                 username,
                 password=persona_pw,
                 attributes={
-                    "clearance": clearance,
+                    "access_tier": access_tier,
                     "tenant_id": DEFAULT_TENANT_ID,
                 },
             )
@@ -200,7 +168,7 @@ def provision(
             realm,
             UNONBOARDED_PERSONA,
             password=persona_pw,
-            attributes={"clearance": "U", "tenant_id": DEFAULT_TENANT_ID},
+            attributes={"access_tier": "basic", "tenant_id": DEFAULT_TENANT_ID},
         )
         for username, attributes in TENANT_NEGATIVE_PERSONAS.values():
             kc.ensure_user(
@@ -223,7 +191,7 @@ def provision(
         "SHARED_ISSUER_URL": issuer,
         "SHARED_JWKS_URL": f"{issuer}/protocol/openid-connect/certs",
         "SHARED_REALM_CLIENT_ID": ROPC_CLIENT,
-        "FED_PERSONA_PASSWORD": persona_pw,
+        "SHARED_REALM_PERSONA_PASSWORD": persona_pw,
     }
 
 
@@ -311,7 +279,7 @@ def main() -> int:
     ap.add_argument("--kubectl", default="kubectl")
     ap.add_argument(
         "--persona-password-env",
-        default="FED_PERSONA_PASSWORD",
+        default="SHARED_REALM_PERSONA_PASSWORD",
         help="env var holding the persona password; generated when unset",
     )
     args = ap.parse_args()

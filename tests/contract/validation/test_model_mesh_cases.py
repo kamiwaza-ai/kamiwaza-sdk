@@ -51,7 +51,7 @@ class _Persona:
                     }
                 ]
             }
-        if self.username == "fed-clr-s":
+        if self.username == "access-standard":
             raise _Denied("model invoke denied")
         return {"choices": [{"message": {"content": "mesh response"}}]}
 

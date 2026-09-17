@@ -191,7 +191,7 @@ def test_m3_full_walkthrough_against_live_fleet(
             # back at this exact call. Idempotent on identical shape; safe
             # to re-run.
             for attr_name, attr_type in (
-                ("clearance", "string"),
+                ("access_tier", "string"),
                 ("country", "string"),
                 ("programs", "string[]"),
             ):
@@ -206,15 +206,15 @@ def test_m3_full_walkthrough_against_live_fleet(
             subject = lyra.subjects.upsert(
                 demo_username,
                 attributes={
-                    "clearance": "TS",
-                    "country": "USA",
-                    "programs": ["IRIS", "ARGOS"],
+                    "access_tier": "advanced",
+                    "country": "US",
+                    "programs": ["analytics", "operations"],
                 },
                 password="demo-pw",
             )
             assert subject.username == demo_username
-            assert subject.attributes["clearance"] == "TS"
-            assert subject.attributes["programs"] == ["IRIS", "ARGOS"]
+            assert subject.attributes["access_tier"] == "advanced"
+            assert subject.attributes["programs"] == ["analytics", "operations"]
 
             # Step 3 — Bind cluster execution gate (replaces kubectl-exec).
             exec_binding = lyra.cluster.set_execution_gate(
@@ -244,23 +244,17 @@ def test_m3_full_walkthrough_against_live_fleet(
             try:
                 ds_binding = lyra.datasets.set_gate(
                     dataset_urn,
-                    type=(
-                        "kamiwaza_extensions.classified_conjunction_gate."
-                        "ClassifiedConjunctionGate"
-                    ),
-                    config={
-                        "classification_field": "classification",
-                        "releasable_to_field": "releasable_to",
-                    },
+                    type="acme_gates.access_tier_gate.AccessTierGate",
+                    config={"required_tier_field": "required_tier"},
                 )
                 assert ds_binding.kind == "attribute"
             except KamiwazaError as exc:
                 if exc.status_code != 404:
                     raise
                 pytest.skip(
-                    "ClassifiedConjunctionGate extension not installed on the "
-                    "fleet; partial M3 walkthrough run. Install the gate "
-                    "extension to exercise the full ship gate."
+                    "AccessTierGate extension not installed on the fleet; "
+                    "partial M3 walkthrough run. Install the gate extension "
+                    "to exercise the full ship gate."
                 )
 
             # Step 6 — Allowlist brokered user + ReBAC viewer grant on dataset.

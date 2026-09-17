@@ -22,7 +22,7 @@ from kamiwaza_sdk.validation.federation_common import (
 from kamiwaza_sdk.validation.federation_readiness import authorized_datasets
 from kamiwaza_sdk.validation.models import CaseResult
 
-_CLASSIFICATION = "U"
+_ACCESS_TIER = "basic"
 _RESULT_MARKER_WAIT_SECONDS = 15.0
 _RESULT_MARKER_POLL_SECONDS = 1.0
 
@@ -70,7 +70,7 @@ def _run_approved_package_case(context: RunContext) -> None:
     packages = _required_list(context.params, "python_packages")
     imports = _required_list(context.params, "package_imports")
     expected_versions = _required_mapping(context.params, "expected_package_versions")
-    token = _issue_token(context, "fed-clr-u")
+    token = _issue_token(context, "access-basic")
     persona = token_client(context.initiator_base, token)
     dataset = required_text(context.params, "dataset_urn")
     target = required_text(context.params, "federation_name")
@@ -149,7 +149,7 @@ def _baseline_script(expected_versions: Mapping[str, str], marker: str) -> str:
         "        versions[name] = importlib.metadata.version(name)\n"
         "    except importlib.metadata.PackageNotFoundError:\n"
         "        versions[name] = None\n"
-        f"payload = [{{'classification': {_CLASSIFICATION!r}, "
+        f"payload = [{{'access_tier': {_ACCESS_TIER!r}, "
         f"'probe': {marker!r}, "
         "'package_versions': versions}]\n"
         "print('KZ_MESH_RUN_ON_JSON::' + json.dumps(payload))\n"
@@ -170,7 +170,7 @@ def _delegated_script(
         "with JobRuntimeClient.from_environment(timeout_seconds=30) as runtime:\n"
         "    granted = [item.dataset_id for item in runtime.datasets.list_granted()]\n"
         f"assert granted == [{dataset!r}], 'private agent returned an unexpected grant'\n"
-        f"payload = [{{'classification': {_CLASSIFICATION!r}, "
+        f"payload = [{{'access_tier': {_ACCESS_TIER!r}, "
         f"'probe': {marker!r}, "
         "'package_imports': modules, 'package_versions': versions, 'granted_datasets': granted}]\n"
         "print('KZ_MESH_RUN_ON_JSON::' + json.dumps(payload))\n"
@@ -220,8 +220,8 @@ def _result_record(result: Any) -> Mapping[str, Any]:
     record = records[0]
     if not isinstance(record, Mapping):
         raise AssertionError("delegated job returned an invalid record")
-    if record.get("classification") != _CLASSIFICATION:
-        raise AssertionError("delegated job returned an invalid classification")
+    if record.get("access_tier") != _ACCESS_TIER:
+        raise AssertionError("delegated job returned an invalid access tier")
     return record
 
 

@@ -6,7 +6,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from tests.integration import test_federation_onboarding_clearance_gate_live
+from tests.integration import test_federation_onboarding_access_tier_gate_live
 from tests.integration import test_federation_receiver_realm_live
 from tests.integration import test_federation_request_approve_live
 from tests.integration import test_federation_shared_idp_gated_retrieval_live
@@ -17,7 +17,7 @@ from tests.integration import test_federation_user_onboarding_live
 pytestmark = pytest.mark.unit
 
 _RECEIVER_REALM_MODULES = (
-    test_federation_onboarding_clearance_gate_live,
+    test_federation_onboarding_access_tier_gate_live,
     test_federation_receiver_realm_live,
     test_federation_request_approve_live,
     test_federation_trust_lifecycle_live,
@@ -47,9 +47,7 @@ def test_receiver_realm_live_modules_are_capability_gated() -> None:
 
 
 def test_shared_idp_edge_remains_active_without_receiver_realm() -> None:
-    marker_names = _marker_names(
-        test_federation_shared_idp_gated_retrieval_live
-    )
+    marker_names = _marker_names(test_federation_shared_idp_gated_retrieval_live)
 
     assert "requires_shared_idp" in marker_names
     assert "requires_receiver_realm" not in marker_names

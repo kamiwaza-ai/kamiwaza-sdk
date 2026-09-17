@@ -7,9 +7,9 @@ import pytest
 REQUIRED_EDGE_FILE = "test_federation_shared_idp_gated_retrieval_live.py"
 REQUIRED_EDGE_CASES = frozenset(
     {
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[U]",
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[basic]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[standard]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[advanced]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[missing-canonical]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[legacy-only]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[canonical-nondefault]",

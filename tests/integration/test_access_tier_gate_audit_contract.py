@@ -1,4 +1,4 @@
-"""Offline tripwires for the MiniClearance gate-audit live-test helpers.
+"""Offline tripwires for the access-tier gate-audit live-test helpers.
 
 This module deliberately has no live or integration marker.  The helpers drive
 live suites, but their footer handling is deterministic and must run on every PR.
@@ -13,7 +13,7 @@ from typing import Any, Iterator
 import pytest
 
 from kamiwaza_sdk.services.retrieval import RetrievalService
-from tests.integration import _mini_clearance as mc
+from tests.integration import _access_tier as mc
 
 
 def _footer(*, filtered: bool, included: int | None = None) -> dict[str, Any]:
@@ -30,7 +30,7 @@ def _chunk_lines(footers: list[Any]) -> list[str]:
     lines: list[str] = []
     for index, footer in enumerate(footers):
         payload = {
-            "data": [{"row": index, "classification": "ALLOWED"}],
+            "data": [{"row": index, "required_tier": "ALLOWED"}],
             "metadata": {"gate_audit": footer},
         }
         lines.extend(("event: chunk", f"data: {json.dumps(payload)}", ""))

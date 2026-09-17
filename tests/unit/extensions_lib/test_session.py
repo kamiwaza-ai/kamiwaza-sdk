@@ -11,22 +11,32 @@ from kamiwaza_extensions_lib.session import create_session_router
 
 
 def _make_jwt(exp: int) -> str:
-    header = base64.urlsafe_b64encode(
-        json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8")
-    ).decode("utf-8").rstrip("=")
-    payload = base64.urlsafe_b64encode(
-        json.dumps({"exp": exp}).encode("utf-8")
-    ).decode("utf-8").rstrip("=")
+    header = (
+        base64.urlsafe_b64encode(
+            json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8")
+        )
+        .decode("utf-8")
+        .rstrip("=")
+    )
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode("utf-8"))
+        .decode("utf-8")
+        .rstrip("=")
+    )
     return f"{header}.{payload}.sig"
 
 
 def _make_app(monkeypatch, use_auth: str = "true", **env_overrides) -> TestClient:
     """Create a test FastAPI app with the session router."""
     monkeypatch.setenv("KAMIWAZA_USE_AUTH", use_auth)
-    monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", env_overrides.get(
-        "public_api_url", "https://cluster.test/api"))
-    monkeypatch.setenv("KAMIWAZA_APP_URL", env_overrides.get(
-        "app_url", "https://cluster.test/runtime/apps/my-app"))
+    monkeypatch.setenv(
+        "KAMIWAZA_PUBLIC_API_URL",
+        env_overrides.get("public_api_url", "https://cluster.test/api"),
+    )
+    monkeypatch.setenv(
+        "KAMIWAZA_APP_URL",
+        env_overrides.get("app_url", "https://cluster.test/runtime/apps/my-app"),
+    )
     if "app_path_url" in env_overrides:
         monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
         monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/apps/my-app")
@@ -67,9 +77,7 @@ class TestSessionEndpoint:
         assert data["expires_at"] == 1711900800
 
     def test_authenticated_session_does_not_leak_sensitive_fields(self, monkeypatch):
-        """Guard against regressions: /session MUST NOT expose the Bearer
-        credential (``auth_token``), classification flag (``system_high``),
-        or correlation tracer (``request_id``) to the browser."""
+        """The browser session must not expose bearer or correlation data."""
         client = _make_app(monkeypatch)
         resp = client.get(
             "/session",
@@ -81,7 +89,6 @@ class TestSessionEndpoint:
                 "x-workroom-id": "wrk-456",
                 "x-user-workroom-role": "editor",
                 "x-auth-token": "secret-bearer-jwt",
-                "x-user-system-high": "true",
                 "x-request-id": "req-abc",
             },
         )
@@ -93,7 +100,6 @@ class TestSessionEndpoint:
         assert data["workroom_role"] == "editor"
         # Negative: private fields absent
         assert "auth_token" not in data
-        assert "system_high" not in data
         assert "request_id" not in data
 
     def test_malformed_envelope_reported_as_logged_out(self, monkeypatch):

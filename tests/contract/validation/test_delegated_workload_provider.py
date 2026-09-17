@@ -332,7 +332,7 @@ def test_case_runs_baseline_and_requires_exact_package_and_agent_inventory(
     baseline = {
         "data": [
             {
-                "classification": "U",
+                "access_tier": "basic",
                 "probe": "kz-delegated-base-baseline",
                 "package_versions": {"humanize": None, "kamiwaza-sdk": "0.9.0"},
             }
@@ -342,7 +342,7 @@ def test_case_runs_baseline_and_requires_exact_package_and_agent_inventory(
     delegated = {
         "data": [
             {
-                "classification": "U",
+                "access_tier": "basic",
                 "probe": "kz-delegated-delegated",
                 **agent_evidence,
                 "package_imports": ["humanize", "kamiwaza_sdk"],
@@ -397,7 +397,7 @@ def test_package_import_success_cannot_substitute_for_agent_evidence() -> None:
     result = SimpleNamespace(
         status="SUCCEEDED",
         result={
-            "data": [{"classification": "U", "granted_datasets": ["another-dataset"]}],
+            "data": [{"access_tier": "basic", "granted_datasets": ["another-dataset"]}],
             "metadata": {"gate_audit": [{}]},
         },
     )

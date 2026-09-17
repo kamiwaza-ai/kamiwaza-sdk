@@ -2,6 +2,6 @@
 
 from .exec_gate import AcmeExecutionGate
 from .gate import AcmeAttributeGate
-from .mini_clearance_gate import MiniClearanceGate
+from .access_tier_gate import AccessTierGate
 
-__all__ = ["AcmeAttributeGate", "AcmeExecutionGate", "MiniClearanceGate"]
+__all__ = ["AccessTierGate", "AcmeAttributeGate", "AcmeExecutionGate"]

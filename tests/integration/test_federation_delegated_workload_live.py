@@ -36,7 +36,7 @@ pytestmark = [
 ]
 
 _IMPORT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
-_TEST_CLASSIFICATION = "U"
+_TEST_ACCESS_TIER = "basic"
 _RESULT_MARKER_WAIT_SECONDS = 15.0
 _RESULT_MARKER_POLL_SECONDS = 1.0
 
@@ -112,7 +112,7 @@ def _require_gated_result_record(result: Any) -> dict[str, Any]:
     assert isinstance(metadata, dict), result
     assert isinstance(metadata.get("gate_audit"), list), result
     assert len(metadata["gate_audit"]) == 1, result
-    assert records[0].get("classification") == _TEST_CLASSIFICATION, result
+    assert records[0].get("access_tier") == _TEST_ACCESS_TIER, result
     return records[0]
 
 
@@ -138,7 +138,7 @@ def test_shared_idp_delegated_job_installs_approved_package(
 ) -> None:
     """Route one delegated native Ray job and import an operator-approved dependency."""
     wiring: dict[str, Any] = request.getfixturevalue("shared_idp_gated_pair")
-    persona, _token = _active_persona_session(wiring["personas"]["U"])
+    persona, _token = _active_persona_session(wiring["personas"]["basic"])
     coordinates, import_names, expected_versions = _delegated_package_config()
     delegated_access = {
         "datasets": [
@@ -159,7 +159,7 @@ def test_shared_idp_delegated_job_installs_approved_package(
         "        versions[name] = importlib.metadata.version(name)\n"
         "    except importlib.metadata.PackageNotFoundError:\n"
         "        versions[name] = None\n"
-        f"payload = [{{'classification': {_TEST_CLASSIFICATION!r}, "
+        f"payload = [{{'access_tier': {_TEST_ACCESS_TIER!r}, "
         f"'probe': {baseline_marker!r}, 'package_versions': versions}}]\n"
         "print('KZ_MESH_RUN_ON_JSON::' + json.dumps(payload))\n"
     )
@@ -188,7 +188,7 @@ def test_shared_idp_delegated_job_installs_approved_package(
         f"packages = {tuple(expected_versions)!r}\n"
         "modules = [importlib.import_module(name).__name__ for name in names]\n"
         "versions = {name: importlib.metadata.version(name) for name in packages}\n"
-        f"payload = [{{'classification': {_TEST_CLASSIFICATION!r}, "
+        f"payload = [{{'access_tier': {_TEST_ACCESS_TIER!r}, "
         f"'probe': {marker!r}, 'package_imports': modules, "
         "'package_versions': versions}]\n"
         "print('KZ_MESH_RUN_ON_JSON::' + json.dumps(payload))\n"

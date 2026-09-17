@@ -55,7 +55,7 @@ _DATASET_PATH_ENV = "KAMIWAZA_FEDERATION_DATASET_PATH"
 # the retrieval adapter's safe roots.  The optional ``/app/models`` fixture PVC
 # is not present on every federation initiator (notably the 1.1.0 demo host),
 # so the SDK-owned validation default must not depend on it.
-_DATASET_DEFAULT_PATH = "/app/tmp/eng10050-mini-clearance.csv"
+_DATASET_DEFAULT_PATH = "/app/tmp/eng10050-access-tier.csv"
 
 
 @dataclass
@@ -134,7 +134,7 @@ def prepare_realm(context: RealmContext) -> FixtureState:
         MutationSpec(context.target_id, "keycloak-client", client_uuid),
         {"client_uuid": client_uuid},
     )
-    for attribute in ("clearance", "tenant_id", "tenant"):
+    for attribute in ("access_tier", "tenant_id", "tenant"):
         context.admin.ensure_attribute_mapper(realm, client_uuid, attribute=attribute)
     password = _persona_password(context.runtime)
     for username, attributes in all_personas():
@@ -257,7 +257,7 @@ def _configure_edge(
 ) -> None:
     if include_dataset_fixture:
         for client in (context.initiator, context.receiver):
-            client.cluster.declare_attribute("clearance", type="string")
+            client.cluster.declare_attribute("access_tier", type="string")
         if _ensure_gate(context.receiver):
             context.state = _record(
                 context.store,
@@ -316,7 +316,7 @@ def _seed_brokered_users(context: EdgeContext, *, model_id: str | None = None) -
     if not password_ref:
         raise ProviderContractError("shared-IdP persona password reference is missing")
     password = read_file_reference(password_ref, label="shared-IdP persona password")
-    for clearance, username in PERSONAS.items():
+    for access_tier, username in PERSONAS.items():
         context.state = _seed_brokered_user(
             context,
             BrokeredUserSpec(
@@ -324,8 +324,8 @@ def _seed_brokered_users(context: EdgeContext, *, model_id: str | None = None) -
                 password,
                 initial_tuples(
                     context.urn,
-                    job_executor=bool(context.urn) and clearance == "U",
-                    model_id=model_id if clearance == "U" else None,
+                    job_executor=bool(context.urn) and access_tier == "basic",
+                    model_id=model_id if access_tier == "basic" else None,
                 ),
             ),
         )

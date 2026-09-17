@@ -97,9 +97,6 @@ def _workroom_response(**overrides):
         "type": "persistent",
         "description": "A test workroom",
         "labels": ["test"],
-        "classification": None,
-        "attributes": None,
-        "scg_references": None,
         "status": "active",
         "created_at": "2025-01-01T00:00:00Z",
         "updated_at": None,
@@ -121,9 +118,24 @@ def _manifest_response():
     return {
         "workroom_id": WORKROOM_ID,
         "items": [
-            {"type": "metadata", "name": "Workroom metadata", "exportable": True, "reason": None},
-            {"type": "data_source", "name": "My CSV", "exportable": True, "reason": None},
-            {"type": "app_deployment", "name": "Chat App", "exportable": False, "reason": "Runtime resource"},
+            {
+                "type": "metadata",
+                "name": "Workroom metadata",
+                "exportable": True,
+                "reason": None,
+            },
+            {
+                "type": "data_source",
+                "name": "My CSV",
+                "exportable": True,
+                "reason": None,
+            },
+            {
+                "type": "app_deployment",
+                "name": "Chat App",
+                "exportable": False,
+                "reason": "Runtime resource",
+            },
         ],
     }
 
@@ -180,17 +192,13 @@ def test_create_with_all_optional_fields(dummy_client):
         "ephemeral",
         description="desc",
         labels=["a", "b"],
-        classification="internal",
-        attributes={"mission_id": "m1"},
-        scg_references=["scg-1"],
+        attributes={"project_id": "p1"},
     )
 
     payload = client.calls[0][2]["json"]
     assert payload["description"] == "desc"
     assert payload["labels"] == ["a", "b"]
-    assert payload["classification"] == "internal"
-    assert payload["attributes"] == {"mission_id": "m1"}
-    assert payload["scg_references"] == ["scg-1"]
+    assert payload["attributes"] == {"project_id": "p1"}
 
 
 def test_create_excludes_none_fields(dummy_client):
@@ -209,15 +217,15 @@ def test_create_serializes_uuid_attributes(dummy_client):
     responses = {("post", "/workrooms/"): _workroom_response()}
     client = dummy_client(responses)
     service = WorkroomService(client)
-    mission_id = uuid.uuid4()
+    project_id = uuid.uuid4()
 
     service.create(
         "My WR",
         "persistent",
-        attributes={"mission_id": mission_id},
+        attributes={"project_id": project_id},
     )
 
-    assert client.calls[0][2]["json"]["attributes"]["mission_id"] == str(mission_id)
+    assert client.calls[0][2]["json"]["attributes"]["project_id"] == str(project_id)
 
 
 # =============================================================================
@@ -322,9 +330,11 @@ def test_get_accepts_uuid_object(dummy_client):
 def test_get_not_found_raises(dummy_client):
     responses = {}
     client = dummy_client(responses)
+
     # Override get to raise APIError with 404
     def _raise_404(path, **kwargs):
         raise APIError("Not found", status_code=404, response_text="")
+
     client.get = _raise_404
     service = WorkroomService(client)
 
@@ -335,8 +345,10 @@ def test_get_not_found_raises(dummy_client):
 def test_get_other_error_propagates(dummy_client):
     responses = {}
     client = dummy_client(responses)
+
     def _raise_500(path, **kwargs):
         raise APIError("Server error", status_code=500, response_text="")
+
     client.get = _raise_500
     service = WorkroomService(client)
 
@@ -350,7 +362,9 @@ def test_get_other_error_propagates(dummy_client):
 
 
 def test_update_sends_patch(dummy_client):
-    responses = {("patch", f"/workrooms/{WORKROOM_UUID}"): _workroom_response(name="Updated")}
+    responses = {
+        ("patch", f"/workrooms/{WORKROOM_UUID}"): _workroom_response(name="Updated")
+    }
     client = dummy_client(responses)
     service = WorkroomService(client)
 
@@ -372,14 +386,15 @@ def test_update_sends_only_provided_fields(dummy_client):
     assert "name" in payload
     assert "labels" in payload
     assert "description" not in payload
-    assert "classification" not in payload
 
 
 def test_update_not_found_raises(dummy_client):
     responses = {}
     client = dummy_client(responses)
+
     def _raise_404(path, **kwargs):
         raise APIError("Not found", status_code=404, response_text="")
+
     client.patch = _raise_404
     service = WorkroomService(client)
 
@@ -462,8 +477,10 @@ def test_delete_returns_typed_response(dummy_client):
 def test_delete_not_found_raises(dummy_client):
     responses = {}
     client = dummy_client(responses)
+
     def _raise_404(path, **kwargs):
         raise APIError("Not found", status_code=404, response_text="")
+
     client.delete = _raise_404
     service = WorkroomService(client)
 
@@ -475,8 +492,10 @@ def test_delete_global_workroom_raises_api_error(dummy_client):
     global_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
     responses = {}
     client = dummy_client(responses)
+
     def _raise_403(path, **kwargs):
         raise APIError("Forbidden", status_code=403, response_text="Global Workroom")
+
     client.delete = _raise_403
     service = WorkroomService(client)
 
@@ -487,7 +506,9 @@ def test_delete_global_workroom_raises_api_error(dummy_client):
 
 def test_delete_handles_no_content_response(dummy_client):
     client = dummy_client({})
-    client.delete = lambda path, **kwargs: client.calls.append(("delete", path, kwargs)) or None  # noqa: E731
+    client.delete = (
+        lambda path, **kwargs: client.calls.append(("delete", path, kwargs)) or None
+    )  # noqa: E731
     service = WorkroomService(client)
 
     result = service.delete(WORKROOM_ID)
@@ -503,7 +524,11 @@ def test_delete_handles_no_content_response(dummy_client):
 
 
 def test_archive_calls_post_to_archive(dummy_client):
-    responses = {("post", f"/workrooms/{WORKROOM_UUID}/archive"): _workroom_response(status="archived")}
+    responses = {
+        ("post", f"/workrooms/{WORKROOM_UUID}/archive"): _workroom_response(
+            status="archived"
+        )
+    }
     client = dummy_client(responses)
     service = WorkroomService(client)
 
@@ -517,8 +542,10 @@ def test_archive_calls_post_to_archive(dummy_client):
 def test_archive_not_found_raises(dummy_client):
     responses = {}
     client = dummy_client(responses)
+
     def _raise_404(path, **kwargs):
         raise APIError("Not found", status_code=404, response_text="")
+
     client.post = _raise_404
     service = WorkroomService(client)
 
@@ -720,7 +747,9 @@ def test_enter_leave_expose_tokens_without_mutating_client_auth(dummy_client):
 
 
 def test_get_export_manifest_endpoint(dummy_client):
-    responses = {("get", f"/workrooms/{WORKROOM_UUID}/export/manifest"): _manifest_response()}
+    responses = {
+        ("get", f"/workrooms/{WORKROOM_UUID}/export/manifest"): _manifest_response()
+    }
     client = dummy_client(responses)
     service = WorkroomService(client)
 
@@ -730,7 +759,9 @@ def test_get_export_manifest_endpoint(dummy_client):
 
 
 def test_get_export_manifest_returns_typed_items(dummy_client):
-    responses = {("get", f"/workrooms/{WORKROOM_UUID}/export/manifest"): _manifest_response()}
+    responses = {
+        ("get", f"/workrooms/{WORKROOM_UUID}/export/manifest"): _manifest_response()
+    }
     client = dummy_client(responses)
     service = WorkroomService(client)
 
@@ -752,9 +783,11 @@ def test_export_bundle_calls_post_with_no_json(dummy_client):
     client = dummy_client(responses)
     # Override post to simulate binary response
     mock_response = type("Response", (), {"content": b"PK\x03\x04zipdata"})()
+
     def _post(path, **kwargs):
         client.calls.append(("post", path, kwargs))
         return mock_response
+
     client.post = _post
     service = WorkroomService(client)
 
@@ -813,7 +846,9 @@ def test_export_bundle_rejects_multiple_stream_targets(dummy_client):
     service = WorkroomService(dummy_client({}))
 
     with pytest.raises(ValueError, match="either output_path or file_obj"):
-        service.export_bundle(WORKROOM_ID, output_path="bundle.zip", file_obj=io.BytesIO())
+        service.export_bundle(
+            WORKROOM_ID, output_path="bundle.zip", file_obj=io.BytesIO()
+        )
 
 
 # =============================================================================
@@ -822,7 +857,9 @@ def test_export_bundle_rejects_multiple_stream_targets(dummy_client):
 
 
 def test_get_ingestion_summary_endpoint(dummy_client):
-    responses = {("get", f"/workrooms/{WORKROOM_UUID}/ingestion/summary"): _ingestion_response()}
+    responses = {
+        ("get", f"/workrooms/{WORKROOM_UUID}/ingestion/summary"): _ingestion_response()
+    }
     client = dummy_client(responses)
     service = WorkroomService(client)
 
@@ -832,7 +869,9 @@ def test_get_ingestion_summary_endpoint(dummy_client):
 
 
 def test_get_ingestion_summary_returns_typed(dummy_client):
-    responses = {("get", f"/workrooms/{WORKROOM_UUID}/ingestion/summary"): _ingestion_response()}
+    responses = {
+        ("get", f"/workrooms/{WORKROOM_UUID}/ingestion/summary"): _ingestion_response()
+    }
     client = dummy_client(responses)
     service = WorkroomService(client)
 
@@ -918,8 +957,10 @@ def test_admin_delete_endpoint(dummy_client):
 def test_admin_delete_not_found_raises(dummy_client):
     responses = {}
     client = dummy_client(responses)
+
     def _raise_404(path, **kwargs):
         raise APIError("Not found", status_code=404, response_text="")
+
     client.delete = _raise_404
     service = WorkroomService(client)
 
@@ -929,7 +970,9 @@ def test_admin_delete_not_found_raises(dummy_client):
 
 def test_admin_delete_handles_no_content_response(dummy_client):
     client = dummy_client({})
-    client.delete = lambda path, **kwargs: client.calls.append(("delete", path, kwargs)) or None  # noqa: E731
+    client.delete = (
+        lambda path, **kwargs: client.calls.append(("delete", path, kwargs)) or None
+    )  # noqa: E731
     service = WorkroomService(client)
 
     result = service.admin_delete(WORKROOM_ID)

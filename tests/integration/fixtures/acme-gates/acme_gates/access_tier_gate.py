@@ -1,4 +1,4 @@
-"""Fail-closed clearance gate for the SDK federation known-answer fixture."""
+"""Fail-closed access-tier gate for SDK federation validation."""
 
 from __future__ import annotations
 
@@ -11,23 +11,23 @@ from .protocol_compat import (
     GateResult,
 )
 
-_RANK = {"U": 0, "S": 1, "TS": 2}
+_RANK = {"basic": 0, "standard": 1, "advanced": 2}
 
 
-class MiniClearanceGate(AttributeGate):
-    """Include records whose classification is within caller clearance."""
+class AccessTierGate(AttributeGate):
+    """Include records available to caller's access tier."""
 
     @property
     def name(self) -> str:
-        return "mini_clearance_gate"
+        return "access_tier_gate"
 
     def required_attributes(self) -> list[AttributeSpec]:
         return [
             AttributeSpec(
-                key="clearance",
-                header="x-user-clearance",
+                key="access_tier",
+                header="x-user-access-tier",
                 required=True,
-                description="Caller clearance level (U|S|TS); unknown floors to U.",
+                description="Caller access tier.",
             )
         ]
 
@@ -36,9 +36,9 @@ class MiniClearanceGate(AttributeGate):
         return {
             "type": "object",
             "properties": {
-                "classification_field": {
+                "required_tier_field": {
                     "type": "string",
-                    "default": "classification",
+                    "default": "required_tier",
                 }
             },
             "additionalProperties": False,
@@ -50,15 +50,15 @@ class MiniClearanceGate(AttributeGate):
         user_attrs: dict[str, Any],
         gate_config: dict[str, Any],
     ) -> GateResult:
-        clearance = str(user_attrs.get("clearance", "")).strip().upper()
-        caller_rank = _RANK.get(clearance, 0)
-        field = str(gate_config.get("classification_field", "classification"))
+        access_tier = str(user_attrs.get("access_tier", "")).strip().lower()
+        caller_rank = _RANK.get(access_tier, 0)
+        field = str(gate_config.get("required_tier_field", "required_tier"))
         kept: list[dict[str, Any]] = []
         audit: list[GateAuditEntry] = []
 
         for index, record in enumerate(records):
-            classification = str(record.get(field, "")).strip().upper()
-            row_rank = _RANK.get(classification)
+            required_tier = str(record.get(field, "")).strip().lower()
+            row_rank = _RANK.get(required_tier)
             included = row_rank is not None and row_rank <= caller_rank
             if included:
                 kept.append(record)
@@ -67,18 +67,18 @@ class MiniClearanceGate(AttributeGate):
                     record_index=index,
                     decision="INCLUDED" if included else "REDACTED",
                     reason=(
-                        "clearance_sufficient"
+                        "access_tier_sufficient"
                         if included
                         else (
-                            "classification_unrecognized"
+                            "required_tier_unknown"
                             if row_rank is None
-                            else "clearance_insufficient"
+                            else "access_tier_insufficient"
                         )
                     ),
                     gate=self.name,
                     attributes_checked={
-                        "clearance": clearance,
-                        "record_classification": classification,
+                        "access_tier": access_tier,
+                        "record_required_tier": required_tier,
                     },
                 )
             )

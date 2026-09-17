@@ -100,7 +100,7 @@ class NetworkingSpec(BaseModel):
 
 
 class SecuritySpec(BaseModel):
-    """Security classification."""
+    """Security metadata."""
 
     model_config = ConfigDict(extra="allow")
 
