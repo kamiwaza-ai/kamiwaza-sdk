@@ -78,10 +78,16 @@ def _matching_entries(test_name: str) -> list[emitter.MapEntry]:
 
 
 def _defined_in_module(predicate: Callable[[object], bool], prefix: str) -> set[str]:
+    """Names pytest would collect from this module, wherever they were defined.
+
+    A test imported into the module (``from other import test_x``) collects under
+    this module's nodeid and feeds these entries, so it is not filtered out by
+    ``__module__``.
+    """
     return {
         name
-        for name, member in inspect.getmembers(t02_module, predicate)
-        if name.startswith(prefix) and member.__module__ == t02_module.__name__
+        for name, _member in inspect.getmembers(t02_module, predicate)
+        if name.startswith(prefix)
     }
 
 

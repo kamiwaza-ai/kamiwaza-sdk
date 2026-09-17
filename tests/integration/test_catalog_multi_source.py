@@ -135,24 +135,27 @@ def _delete_and_confirm_absent(
             problems.append(f"delete {kind} {urn}: {type(exc).__name__}: {exc}")
             continue
         deleted.append((urn, delete_note))
-    deadline = time.monotonic() + ABSENCE_TIMEOUT_S
+    deleted_at = time.monotonic()
+    deadline = deleted_at + ABSENCE_TIMEOUT_S
     for urn, delete_note in deleted:
-        problem = _absence_problem(read, urn, deadline)
+        problem = _absence_problem(read, urn, deadline, deleted_at)
         if problem:
             problems.append(f"{kind} {urn}{delete_note}: {problem}")
     if problems:
         pytest.fail(f"{kind} cleanup incomplete:\n" + "\n".join(problems))
 
 
-def _absence_problem(read: Callable[[str], object], urn: str, deadline: float) -> str:
+def _absence_problem(
+    read: Callable[[str], object], urn: str, deadline: float, deleted_at: float
+) -> str:
     """Read ``urn`` until it returns 404; return why it did not, or "" once it does.
 
     Any other read error ends the poll at once. A delete the catalog shows late still
     counts as gone while ``deadline`` (a monotonic time) has not passed. The failure
-    reports the reads this URN actually got, which is one for a URN whose turn came
-    after the shared deadline had passed.
+    reports the reads this URN got and the time since the deletes were issued: a URN
+    whose turn comes after the deadline is read once, but by then the catalog has had
+    the whole budget to stop serving it.
     """
-    started = time.monotonic()
     reads = 0
     while True:
         try:
@@ -163,8 +166,8 @@ def _absence_problem(read: Callable[[str], object], urn: str, deadline: float) -
             return f"read back failed: {type(exc).__name__}: {exc}"
         reads += 1
         if time.monotonic() >= deadline:
-            polled_s = time.monotonic() - started
-            return f"still readable after delete ({reads} reads over {polled_s:.0f}s)"
+            waited_s = time.monotonic() - deleted_at
+            return f"still readable {waited_s:.0f}s after delete ({reads} reads)"
         time.sleep(ABSENCE_POLL_INTERVAL_S)
 
 
@@ -506,8 +509,9 @@ def _chunk_rows(chunk: RetrievalStreamEvent, context: str) -> list[dict[str, Any
         f"{chunk.data.get('media_type')!r} ({context})"
     )
     rows = chunk.data.get("data")
-    assert isinstance(rows, list), (
-        f"chunk {chunk.data.get('sequence')!r} carries no row list ({context})"
+    assert isinstance(rows, list) and all(isinstance(row, dict) for row in rows), (
+        f"chunk {chunk.data.get('sequence')!r} carries no row list ({context}): "
+        f"{type(rows).__name__}"
     )
     return rows
 
@@ -521,6 +525,10 @@ def _stream_rows(
     was read from the 1.2.1 retrieval source and has not been seen on a live stream,
     because SSE fails on the evidence instance (ENG-12300).
     """
+    # _collect_stream drains to the end of the response rather than stopping at the
+    # first complete event, which is what lets this require complete to be last. A
+    # server that holds the stream open after it fails the deadline instead, with
+    # the events it did send named in the failure.
     names = [event.event for event in events]
     chunks = [event for event in events if event.event == "chunk"]
     assert chunks, (
@@ -620,7 +628,9 @@ def _create_container_or_skip(client: KamiwazaClient) -> str:
     workroom with 403 unless the caller has the ``admin`` role. So a 403 skips
     for an identity without that role and fails for an identity that has it.
     Roles are compared case-insensitively, as the SDK's own AuthService.require_admin
-    does; /auth/users/me returns them unnormalised.
+    does; /auth/users/me returns them unnormalised. An identity that reports no roles
+    at all fails too: only an identity shown to lack the role may turn a 403 into a
+    skip, since ``UserInfo.roles`` defaults to an empty list.
     """
     try:
         return client.catalog.containers.create(
@@ -636,8 +646,11 @@ def _create_container_or_skip(client: KamiwazaClient) -> str:
     # describing this refusal keeps its SDK frames (and the bearer they carry)
     # unprinted. A refusal that is not a 403 re-raises above, and still prints them.
     roles = client.auth.get_current_user().roles
-    if "admin" in {role.lower() for role in roles}:
-        pytest.fail(f"container create refused for an admin identity -- {refusal}")
+    if not roles or "admin" in {role.lower() for role in roles}:
+        pytest.fail(
+            f"container create refused for an identity with roles {sorted(roles)}, "
+            f"which is not shown to lack the admin role -- {refusal}"
+        )
     pytest.skip(
         f"Container create returned 403 for an identity with roles {sorted(roles)}; "
         f"1.2.1 lets only admin create containers in the Global workroom -- {refusal}"
