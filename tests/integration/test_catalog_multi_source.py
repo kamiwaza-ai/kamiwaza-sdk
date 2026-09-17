@@ -14,10 +14,13 @@ before their ingestion or retrieval starts and name the prerequisite they are
 missing. The Kafka test has no skip of its own: catalog-stack setup waits for the
 Kafka port, and when setup fails every test that uses the stack skips at setup.
 
-Every dataset and container a test creates is deleted in fixture teardown and must
-then read as 404 through the test's client, so a cleanup failure fails the test.
-Catalog reads are scoped to the caller's visible workrooms, so this confirms the
-object is gone for that client, not that no copy exists in another workroom.
+The datasets an ingestion returns and the containers a test creates directly are
+deleted in fixture teardown and must then read as 404 through the test's client, so
+a cleanup failure fails the test. Catalog reads are scoped to the caller's visible
+workrooms, so this confirms the object is gone for that client, not that no copy
+exists in another workroom. Containers that ingestion creates for the source are
+not returned by it and are left in place: at 1.2.1, S3 ingestion upserts a bucket
+container and one per key folder, and their names are fixed, so reruns reuse them.
 ``KEEP_CATALOG_DATASETS=1`` skips dataset cleanup for debugging; under
 ``--emit-evidence`` it stops the run with a usage error, so no evidence is written.
 The catalog stack, its object keys and the resulting dataset URNs are shared by
@@ -53,6 +56,7 @@ from kamiwaza_sdk.schemas.retrieval import (
 )
 from pydantic import ValidationError
 from requests.adapters import HTTPAdapter
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -80,7 +84,10 @@ CATALOG_PROPAGATION_TIMEOUT_S = 30.0
 # sends none) are bounded only per read.
 SSE_READ_TIMEOUT_S = 60.0
 SSE_STREAM_TIMEOUT_S = 120.0
-CLEANUP_ERRORS = (KamiwazaError, requests.RequestException, ValidationError)
+# The SDK wraps requests exceptions in APIError; requests re-raises some urllib3
+# errors unwrapped.
+TRANSPORT_ERRORS = (KamiwazaError, requests.RequestException, Urllib3HTTPError)
+CLEANUP_ERRORS = (*TRANSPORT_ERRORS, ValidationError)
 
 
 def _delete_and_confirm_absent(
@@ -89,7 +96,7 @@ def _delete_and_confirm_absent(
     delete: Callable[[str], None],
     read: Callable[[str], object],
 ) -> None:
-    """Attempt every deletion, then fail once listing whatever still reads back.
+    """Attempt every deletion, then fail once listing every URN not confirmed gone.
 
     Only a read that returns 404 counts as gone. A 404 from delete does not: the
     1.2.1 catalog also answers 404 when it refuses a delete. Reads are scoped to the
@@ -355,7 +362,7 @@ def _collect_stream(
                     break
         finally:
             stream.close()
-    except (KamiwazaError, requests.RequestException) as exc:
+    except TRANSPORT_ERRORS as exc:
         failure = f"failed: {exc}"
     finally:
         for prefix, adapter in adapters.items():
