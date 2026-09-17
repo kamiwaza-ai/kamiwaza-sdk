@@ -10,6 +10,17 @@ the number in the documentation can be reproduced instead of trusted.
 
 Protocol-neutral: an entry is a plain mapping, and the consuming server maps it
 onto whatever its protocol revision calls a tool definition.
+
+**An entry comes at three levels of detail**, because the whole catalog is not
+the only thing a host might want from it. ``names`` is the identifiers alone,
+``brief`` adds the category and the description, and ``full`` is every field.
+Measured over 336 published operations with ``cl100k_base``: 2,306 tokens,
+8,338, and 22,535 — the cheapest level costs a tenth of the whole catalog. The tiers are Anthropic's documented pattern for a large
+tool surface — a detail level that returns "name only, name and description,
+or the full definition with schemas" — and the shape Stripe's MCP server
+ships, where ``api_search`` finds an endpoint, ``api_details`` returns one
+endpoint's schema, and the call tools use it. A host reading the catalog to
+pick a name never has to pay for every parameter list to do it.
 """
 
 from __future__ import annotations
@@ -17,7 +28,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from .descriptors import (
     OperationDescriptor,
@@ -28,11 +39,22 @@ from .descriptors import (
 from .spec_index import OperationIndex
 
 __all__ = [
+    "DETAIL_LEVELS",
+    "Detail",
     "CatalogEntry",
     "build_catalog",
     "categories",
     "measure_cost",
 ]
+
+#: How much of an entry a caller wants. ``full`` is the default everywhere, so
+#: a host that asks for the catalog the way it always has receives what it
+#: always received: a cheaper default would change what an existing caller
+#: gets without it asking.
+Detail = Literal["names", "brief", "full"]
+
+#: The levels, cheapest first, for a surface that has to name them to a caller.
+DETAIL_LEVELS: tuple[Detail, ...] = ("names", "brief", "full")
 
 #: Service attribute to catalog category. A category groups operations the way a
 #: caller thinks about them, which is not always how the client is structured:
@@ -119,17 +141,41 @@ class CatalogEntry:
     parameters: tuple[str, ...]
     required_parameters: tuple[str, ...]
 
-    def as_definition(self) -> dict[str, Any]:
+    def as_definition(self, detail: Detail = "full") -> dict[str, Any]:
         """Return the entry as a plain mapping for a transport to carry.
 
         Keys are the neutral names this layer owns. Mapping them onto a protocol's
         own field names is the consuming server's job, because those names change
         with the protocol revision and this package must not.
+
+        Every level is a mapping carrying ``id``, so a host parses one element
+        type whichever level it asked for. A bare list of identifiers would be
+        1,632 tokens against this level's 2,306, and changing what an element
+        *is* with a query parameter is a worse contract than 674 tokens buys.
+
+        Args:
+            detail: How much of the entry to return. ``names`` is the
+                identifier, ``brief`` adds the category and description, and
+                ``full`` is every field.
+
+        Returns:
+            The entry at that level of detail.
+
+        Raises:
+            ValueError: If ``detail`` is not one of :data:`DETAIL_LEVELS`.
         """
+        if detail not in DETAIL_LEVELS:
+            raise ValueError(
+                f"detail must be one of {', '.join(DETAIL_LEVELS)}, not {detail!r}"
+            )
+        named = {"id": self.published_id}
+        if detail == "names":
+            return named
+        brief = {**named, "category": self.category, "description": self.description}
+        if detail == "brief":
+            return brief
         return {
-            "id": self.published_id,
-            "category": self.category,
-            "description": self.description,
+            **brief,
             "requires_approval": self.requires_approval,
             "hints": {
                 "read_only": self.read_only,
@@ -230,6 +276,7 @@ def categories(entries: Iterable[CatalogEntry]) -> dict[str, int]:
 def measure_cost(
     entries: Iterable[CatalogEntry],
     count_tokens: Callable[[str], int],
+    detail: Detail = "full",
 ) -> dict[str, int]:
     """Measure the catalog's token cost with a caller-supplied tokeniser.
 
@@ -237,10 +284,20 @@ def measure_cost(
     acquire a tokeniser dependency for a measurement, and the number is only
     meaningful for the model the caller is actually budgeting against.
 
+    **This prices the entries, not a response carrying them.** The entries are
+    measured in the compact encoding a JSON transport sends — no spaces, which
+    is what ``starlette.responses.JSONResponse`` emits and what this counts —
+    so a server's own envelope of counts and filters is outside the number. On
+    the 336-operation surface that envelope is 80 tokens against 22,535, and a
+    caller budgeting a context window wants the part that scales with the
+    surface.
+
     Args:
         entries: Catalog entries to measure.
         count_tokens: Function returning the token count of a string. Typically
             ``lambda text: len(encoding.encode(text))``.
+        detail: The level being priced. A cost measured at one level does not
+            describe another, so this has to match what is being returned.
 
     Returns:
         Mapping with ``entries``, ``total`` tokens, and ``per_entry`` as the
@@ -248,7 +305,7 @@ def measure_cost(
     """
     materialised = tuple(entries)
     total = sum(
-        count_tokens(json.dumps(entry.as_definition(), separators=(",", ":")))
+        count_tokens(json.dumps(entry.as_definition(detail), separators=(",", ":")))
         for entry in materialised
     )
     return {

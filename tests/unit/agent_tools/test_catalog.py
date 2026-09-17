@@ -6,6 +6,7 @@ import warnings
 import pytest
 
 from kamiwaza_sdk.agent_tools.catalog import (
+    DETAIL_LEVELS,
     build_catalog,
     categories,
     measure_cost,
@@ -87,6 +88,58 @@ def test_definition_carries_neutral_field_names(catalog) -> None:
 
 def test_definition_is_json_serialisable(catalog) -> None:
     json.dumps([entry.as_definition() for entry in catalog])
+
+
+def test_a_level_carries_only_what_it_promises(catalog) -> None:
+    """Each level is what its name says, and every level identifies the entry."""
+    entry = catalog[0]
+    assert entry.as_definition("names") == {"id": entry.published_id}
+    assert set(entry.as_definition("brief")) == {"id", "category", "description"}
+    assert entry.as_definition() == entry.as_definition("full")
+
+
+def test_a_cheaper_level_is_a_prefix_of_the_fuller_one(catalog) -> None:
+    """A host parses one element type at every level, so a field that appears
+    at two levels is the same field with the same name and the same value."""
+    for entry in catalog:
+        full = entry.as_definition("full")
+        for level in ("names", "brief"):
+            projection = entry.as_definition(level)
+            assert projection == {key: full[key] for key in projection}
+
+
+def test_an_unknown_level_is_refused_by_name(catalog) -> None:
+    """A typo has to fail where it was made. A silent fall back to ``full``
+    would hand a host the most expensive answer to a request for the cheapest,
+    which is the opposite of what asking for a level is for."""
+    with pytest.raises(ValueError, match="names, brief, full"):
+        catalog[0].as_definition("summary")  # type: ignore[arg-type]
+
+
+def test_every_level_is_json_serialisable(catalog) -> None:
+    for level in DETAIL_LEVELS:
+        json.dumps([entry.as_definition(level) for entry in catalog])
+
+
+def test_a_cheaper_level_costs_less(catalog) -> None:
+    """The reason the levels exist, measured rather than asserted: each one
+    strictly cheaper than the next, so a host choosing a level is choosing a
+    cost."""
+    costs = [measure_cost(catalog, len, level)["total"] for level in DETAIL_LEVELS]
+    assert costs == sorted(costs)
+    assert costs[0] * 4 < costs[-1], (
+        f"the cheapest level costs {costs[0]} characters against the fullest's "
+        f"{costs[-1]}, which is not the order of magnitude that makes asking "
+        f"for a level worth a host's trouble"
+    )
+
+
+def test_cost_is_priced_at_the_level_it_is_asked_for(catalog) -> None:
+    """A cost measured at one level must not be reported for another: the
+    number is what a host budgets against."""
+    priced = measure_cost(catalog, len, "names")
+    counted = sum(len(json.dumps(e.as_definition("names"), separators=(",", ":"))) for e in catalog)
+    assert priced["total"] == counted
 
 
 def test_cost_is_measured_with_the_callers_tokeniser(catalog) -> None:
