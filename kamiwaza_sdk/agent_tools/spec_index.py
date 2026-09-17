@@ -239,6 +239,41 @@ _CALLER_VOCABULARY: dict[str, tuple[str, ...]] = {
     # for one, because the platform reports them per node and per host.
     "gpu": ("hardware", "nodes"),
     "gpus": ("hardware", "nodes"),
+    # diagnose: diagnose_cluster, and the diagnose_deployment workflow whose
+    # summary reads "Report why a deployment is not serving". A member asking
+    # why something is broken is asking for that family; "why" reaches
+    # nothing on its own, because no identifier spells it.
+    "why": ("diagnose",),
+    # compatible: filter_compatible_models, "Filter models based on server
+    # compatibility". "fit" is how a member says it and appears nowhere.
+    "fit": ("compatible",),
+    "fits": ("compatible",),
+    # active: list_active_deployments_serving, run_active_ingestion. The
+    # platform calls a serving deployment active; "running" keeps matching
+    # get_running_nodes_cluster and list_nodes_cluster on its own, so the
+    # cluster reading and the serving reading both stay reachable.
+    "running": ("active",),
+    # activity, recent: get_recent_activity, "List recent platform activity,
+    # newest first". Neither word is one a member reaches for.
+    "happening": ("activity",),
+    "lately": ("recent",),
+    "recently": ("recent",),
+    # federation: pair_federations, list_federations, get_federations,
+    # reconnect_federation_cluster. The other cluster in a federation is what
+    # a member calls the partner.
+    "partner": ("federation",),
+    "partners": ("federation",),
+    # pair: pair_federations, and the pair_federation_and_allow_user
+    # workflow. Joining two clusters is pairing here. "connect" means two
+    # things on this platform and keeps both: expansion is additive, so
+    # list_connectors and verify_connection_connectors still match it, and
+    # which reading wins is left to the ranking.
+    "connect": ("pair",),
+    # status: get_job_status_ingestion, get_deployment_status_serving,
+    # check_download_status_models. Whether work finished is reported as its
+    # status; no identifier or summary contains "finished" or "done" at all.
+    "finished": ("status",),
+    "done": ("status",),
 }
 
 
@@ -274,14 +309,41 @@ def meaningful_terms(query: str) -> list[str]:
         matching everything. A query of nothing but noise keeps its words, so
         "id" and "the" still search for something instead of silently
         matching every operation.
+
+        A possessive loses its ``'s`` and a word said twice is kept once.
+        Both are about what a term means rather than about English: no
+        identifier contains an apostrophe, so "partner's" anchored at a word
+        start matched nothing at all, and "connect this cluster to our
+        partner's cluster" counted "cluster" twice — two hits and two of the
+        four required terms for every operation that mentions the cluster
+        once, which is the wrong weight and the wrong narrowing level.
     """
-    terms = [t for t in query.lower().split() if t]
+    terms = [_normalised(t) for t in query.lower().split() if t]
     signal = [
         t
         for t in terms
         if len(t) >= _SHORTEST_MEANINGFUL_TERM and t not in _NOISE_TERMS
     ]
-    return signal or terms
+    return list(dict.fromkeys(signal or terms))
+
+
+def _normalised(term: str) -> str:
+    """Strip a possessive ending from one already-lowercased term.
+
+    Args:
+        term: One word from the query, already lowercased.
+
+    Returns:
+        The term without a trailing ``'s`` or ``’s``, and unchanged
+        otherwise. Not stemming: only the possessive marker goes, because it
+        is punctuation between the caller's noun and the platform's word for
+        it, and :func:`_matches` anchors at a word start so it can never
+        match.
+    """
+    for ending in ("'s", "\u2019s"):
+        if term.endswith(ending) and len(term) > len(ending):
+            return term[: -len(ending)]
+    return term
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,11 +474,21 @@ class OperationIndex:
         summary. Measured: "stop deployment" and "delete user" both put a
         ``get_*`` operation first without it, because the next tie-break is
         the shorter identifier and a generic reader is always shorter than the
-        verb the caller asked for. Length still breaks what position cannot:
-        "list models" scored ``list_models`` and ``list_guides_models``
-        identically, and a shorter identifier carrying the same terms has
-        fewer words the caller did not ask for. Alphabetical order settles the
-        rest, so the same words always return the same sequence.
+        verb the caller asked for.
+
+        What position cannot break, rarity does: of two operations that
+        matched one word each, the one that matched a word almost nothing
+        carries said more than the one that matched a word the whole catalog
+        carries (see :func:`rarest_matched`). Measured: "find out why my
+        model will not start" relaxed to one term and put ``get_model``
+        second of 66, where ``diagnose_cluster`` — the only operation that
+        matched "why", through ``diagnose`` — sat eighth.
+
+        Length still breaks what rarity cannot: "list models" scored
+        ``list_models`` and ``list_guides_models`` identically, and a shorter
+        identifier carrying the same terms has fewer words the caller did not
+        ask for. Alphabetical order settles the rest, so the same words
+        always return the same sequence.
 
         Args:
             query: Words to search for. Case and order do not matter.
@@ -430,23 +502,24 @@ class OperationIndex:
         terms = meaningful_terms(query)
         if not terms:
             return SearchRanking((), (), 0, 0)
+        # Graded through `_grade` rather than `score_terms`, which sums it:
+        # the carrier counts below have to know which term matched.
         graded = [
-            (score_terms(terms, (entry.published_id, entry.selector), entry.summary), entry)
+            (*_grade(terms, (entry.published_id, entry.selector), entry.summary), entry)
             for entry in self.published
         ]
+        carriers = [
+            sum(1 for weights, _, _ in graded if weights[position])
+            for position in range(len(terms))
+        ]
         for required in range(len(terms), 0, -1):
-            rows = [
-                (-score, -lead, len(entry.published_id), entry.published_id, entry)
-                for (score, hits, lead), entry in graded
-                if hits >= required
-            ]
-            if rows:
-                rows.sort()
+            ranked = _ranked(graded, carriers, required=required)
+            if ranked:
                 return SearchRanking(
-                    entries=tuple(entry for *_, entry in rows[:limit]),
+                    entries=tuple(ranked[:limit]),
                     terms=tuple(terms),
                     required_terms=required,
-                    matched_count=len(rows),
+                    matched_count=len(ranked),
                 )
         return SearchRanking((), tuple(terms), 0, 0)
 
@@ -504,21 +577,111 @@ def score_terms(
         1 when an identifier carries it further along, 0 when only the summary
         did or nothing did.
     """
+    weights, lead = _grade(terms, identifiers, summary)
+    return sum(weights), sum(1 for weight in weights if weight), lead
+
+
+def _grade(
+    terms: Sequence[str],
+    identifiers: Sequence[str],
+    summary: str | None,
+) -> tuple[tuple[int, ...], int]:
+    """Weigh each term separately and place the caller's leading one.
+
+    The per-term detail :func:`score_terms` adds up, kept separate because
+    :meth:`OperationIndex.search_ranking` has to know *which* word matched:
+    counting how many operations carry each word is what tells "diagnose",
+    which one carries, from "model", which dozens do, and the two are
+    indistinguishable once summed.
+
+    Args:
+        terms: Lowercased search terms, the caller's leading one first.
+        identifiers: Names to match, the primary one first.
+        summary: One sentence of prose to match, or ``None``.
+
+    Returns:
+        One weight per term, in the order given, and the leading term's
+        position. A weight is :data:`_IDENTIFIER_WEIGHT` when the term or a
+        platform form of it starts a word in an identifier,
+        :data:`_SUMMARY_WEIGHT` when only the summary carries it, and 0 when
+        nothing did.
+    """
     words = [name.lower().replace("_", " ") for name in identifiers]
     haystack = " ".join(words)
     prose = (summary or "").lower()
-    score = 0
-    hits = 0
+    weights: list[int] = []
     for term in terms:
         forms = _CALLER_VOCABULARY.get(term)
         if _matches_any(term, forms, haystack):
-            score += _IDENTIFIER_WEIGHT
-            hits += 1
+            weights.append(_IDENTIFIER_WEIGHT)
         elif _matches_any(term, forms, prose):
-            score += _SUMMARY_WEIGHT
-            hits += 1
-    lead = _lead_position(words, terms[0]) if terms else 0
-    return score, hits, lead
+            weights.append(_SUMMARY_WEIGHT)
+        else:
+            weights.append(0)
+    return tuple(weights), (_lead_position(words, terms[0]) if terms else 0)
+
+
+def _ranked(
+    graded: Sequence[tuple[Sequence[int], int, OperationEntry]],
+    carriers: Sequence[int],
+    *,
+    required: int,
+) -> list[OperationEntry]:
+    """The operations matching at least ``required`` terms, best first.
+
+    Separated from the relaxation walk because the walk's job is to decide how
+    many terms to insist on, and this one's is to order what qualifies. The
+    sort key is documented on :meth:`OperationIndex.search_ranking`, which is
+    where a reader asks why it is in that order.
+
+    Args:
+        graded: Per-term weights, the leading term's position, and the entry.
+        carriers: How many operations carry each term, for the rarity break.
+        required: How many of the caller's terms an entry has to match.
+
+    Returns:
+        The qualifying entries in ranked order, empty when none qualifies.
+    """
+    rows = sorted(
+        (
+            -sum(weights),
+            -lead,
+            _rarest_matched(weights, carriers),
+            len(entry.published_id),
+            entry.published_id,
+            entry,
+        )
+        for weights, lead, entry in graded
+        if sum(1 for weight in weights if weight) >= required
+    )
+    return [entry for *_, entry in rows]
+
+
+def _rarest_matched(weights: Sequence[int], carriers: Sequence[int]) -> int:
+    """How few operations carry the rarest word this one matched.
+
+    The tie-break for a relaxed search, where matching one word out of six
+    puts most of the catalog on the same score. Measured: "find out why my
+    model will not start" relaxed to one term and matched 66 operations.
+    ``get_model`` matched "model", which dozens carry; ``diagnose_cluster``
+    matched "why" through ``diagnose``, which one carries. The rarer word is
+    the one that told the search something, so the operation that matched it
+    ranks first — Neon's point that a raw REST operation is not automatically
+    a good agent tool holds for the order as much as for the naming, since a
+    caller reads the first few results and stops.
+
+    Args:
+        weights: This operation's per-term weights, from :func:`_grade`.
+        carriers: How many operations matched each term, in the same order.
+
+    Returns:
+        The smallest carrier count among the terms this operation matched,
+        and a number above every carrier count when it matched none, so that
+        sorting ascending puts the discriminating match first and never
+        rewards matching nothing.
+    """
+    matched = [count for weight, count in zip(weights, carriers) if weight]
+    return min(matched, default=max(carriers, default=0) + 1)
 
 
 def _matches_any(term: str, forms: tuple[str, ...] | None, text: str) -> bool:

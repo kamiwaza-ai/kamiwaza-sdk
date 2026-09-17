@@ -132,9 +132,16 @@ def search_workflows(query: str, *, limit: int = 20) -> tuple[WorkflowSpec, ...]
     by words finds it only by reading the whole tool listing. The ranking is
     the operation ranking applied to the two fields a spec already carries:
     the name is the identifier and the summary is the prose, scored by
-    :func:`~kamiwaza_sdk.agent_tools.spec_index.score_terms` and ordered on the
-    same keys, so a caller asking for one word sees workflows and operations
-    sorted by the same rule.
+    :func:`~kamiwaza_sdk.agent_tools.spec_index.score_terms` and ordered on
+    score, the leading term's position, then length, so a caller asking for
+    one word sees workflows and operations sorted by the same rule.
+
+    The operation ranking's rarity tie-break is deliberately not applied
+    here. It counts how many things carry each word, and seventeen workflows
+    do not make a frequency worth counting: measured, it put
+    ``export_workroom_bundle`` above ``grant_subject_access`` for "give Alice
+    access to the finance workroom", because two workflow names carry
+    "workroom" and five carry a word for access.
 
     Every term is required first; when nothing matches them all the
     requirement drops by one, down to a single term. Seventeen workflows is a

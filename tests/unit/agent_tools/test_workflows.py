@@ -402,6 +402,13 @@ def test_the_spec_refuses_an_approval_step_on_a_read_only_workflow() -> None:
         ("ask a question over my documents", "rag_query"),
         ("create a workroom", "create_workroom_and_enter"),
         ("deploy an app from the garden", "deploy_app_from_garden"),
+        # "connect" reads two ways on this platform: pairing two clusters and
+        # reaching a deployment. Both must stay findable.
+        (
+            "connect this cluster to our partner's cluster",
+            "pair_federation_and_allow_user",
+        ),
+        ("deploy a model and connect to it", "deploy_and_connect_model"),
     ],
 )
 def test_a_workflow_is_found_by_the_words_a_caller_uses(

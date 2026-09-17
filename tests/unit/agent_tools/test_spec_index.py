@@ -239,6 +239,77 @@ def test_an_expanded_term_counts_as_the_term_the_caller_gave(index) -> None:
     assert any("add" in e.published_id for e in index.search("add publisher", limit=5))
 
 
+def test_a_members_noun_reaches_the_operation_the_platform_named(index) -> None:
+    """The same table read the other way: the caller's noun, not its verb.
+
+    Measured before these entries existed: each of these relaxed to the bare
+    noun and answered with a generic reader — "which models will fit on this
+    hardware" led with `get_model`, and "what has been happening in this
+    workroom lately" led with `get_workrooms`, because "fit", "happening"
+    and "lately" name nothing on this platform.
+    """
+    assert index.search("which models will fit on this hardware")[0].published_id == (
+        "filter_compatible_models"
+    )
+    assert index.search("list everything that is running")[0].published_id == (
+        "list_active_deployments_serving"
+    )
+    assert index.search("what has been happening in this workroom lately")[
+        0
+    ].published_id == "get_recent_activity"
+    finished = index.search("check whether the last ingestion finished", limit=3)
+    assert "get_job_status_ingestion" in {e.published_id for e in finished}
+
+
+def test_a_possessive_and_a_repeated_word_are_one_term(index) -> None:
+    """Punctuation and repetition are not signal, and both skewed the search.
+
+    No identifier holds an apostrophe, so "partner's" anchored at a word
+    start matched nothing at all; and "cluster" said twice counted twice,
+    which handed three of four required terms to every connector operation
+    that mentions the cluster once.
+    """
+    assert meaningful_terms("connect this cluster to our partner's cluster") == [
+        "connect",
+        "cluster",
+        "partner",
+    ]
+    assert index.search("connect this cluster to our partner's cluster")[
+        0
+    ].published_id == "pair_federations"
+
+
+def test_a_word_that_means_two_things_keeps_both_readings(index) -> None:
+    """"connect" is pairing two clusters and reaching a deployment.
+
+    The vocabulary adds "pair" beside it rather than rewriting it, so the
+    connector family stays reachable by the same word and the ranking decides
+    which reading a query meant.
+    """
+    connectors = {
+        e.published_id for e in index.search("verify a connector connection", limit=5)
+    }
+    assert connectors & {"verify_connection_connectors", "list_connectors"}
+    assert index.search("connect two clusters")[0].published_id.startswith("pair")
+
+
+def test_the_rarer_word_breaks_a_tie_the_position_cannot(index) -> None:
+    """One word out of six puts most of the catalog on the same score.
+
+    Measured: "find out why my model will not start" relaxed to one term and
+    matched 66 operations. `get_model` matched "model", which dozens of
+    operations carry; `diagnose_cluster` matched "why" through "diagnose",
+    which one carries. Ordered by identifier length instead, the answer sat
+    eighth and the wrong one sat second.
+    """
+    ranked = [
+        e.published_id
+        for e in index.search("find out why my model will not start", limit=20)
+    ]
+    assert "diagnose_cluster" in ranked
+    assert ranked.index("diagnose_cluster") < ranked.index("get_model")
+
+
 def test_every_vocabulary_entry_maps_onto_a_published_operation(index) -> None:
     """An entry that no operation name carries is dead weight, so it must fail.
 
