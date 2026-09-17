@@ -191,19 +191,20 @@
 
 # ENG-12327 (T09). Two files with one test each (shared helpers in
 # model_deployment_live_support.py). Both deploy a llama.cpp GGUF target: the
-# explicit fleet target when one is set, else GGUF_LLM_TARGET; an explicit target
-# on another engine skips both tests as not applicable. Before anything is
-# created each test checks that the target's weights and at least one model
+# explicit fleet target when one is set, else GGUF_LLM_TARGET; an explicit
+# target on another engine skips both tests as not applicable. Before anything
+# is created each test checks that the target's weights and at least one model
 # config are already on the cluster; a missing prerequisite skips an optional
 # target and fails a fleet-required one, and no SDK download method is called.
 # Every run deploys, so neither can pass on a warm cluster without deploying -
 # the gap that retired the 1.2.1 model records. Each deployment is checked to
 # carry the requested config, weights file and engine. One capability per test,
-# so an inference failure cannot mark local deployment as failing; the inference
-# test must deploy first, so a deployment failure fails both. The lifecycle test
-# creates, reads, lists and updates a disposable model config, deploys with it to
-# DEPLOYED, checks the deployment, active listing, instances, captured logs and
-# log stream, stops it without force to STOPPED, and deletes the config.
+# so an inference failure cannot mark local deployment as failing; the
+# inference test deploys its own model first, so its record also fails if that
+# deployment fails. The lifecycle test creates, reads, lists and updates a
+# disposable model config, deploys with it to DEPLOYED, checks the deployment,
+# active listing, instances, captured logs and log stream, stops it without
+# force to STOPPED, and deletes the config.
 - pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_model_config_and_local_deployment_lifecycle"
   capability_ids: [models.local-deployment]
   scenario_name: "Model config and local deployment lifecycle through the SDK"

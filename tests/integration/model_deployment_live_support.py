@@ -51,8 +51,11 @@ def stop_and_wait(client, deployment_id: UUID, *, force: bool) -> None:
     stop to a cleanup that marks the row STOPPED and returns True, so only an
     unforced stop can show that stopping works. Teardown forces.
     """
-    assert (
-        client.serving.stop_deployment(deployment_id=deployment_id, force=force) is True
+    # pytest does not rewrite asserts outside test modules, so every assert in
+    # this module carries its own message.
+    stopped = client.serving.stop_deployment(deployment_id=deployment_id, force=force)
+    assert stopped is True, (
+        f"stop_deployment({deployment_id}, force={force}) returned {stopped!r}"
     )
     client.serving.wait_for_deployment(
         deployment_id,
@@ -222,10 +225,15 @@ def assert_deployed_as_requested(
     config_id: UUID,
     file_id: UUID,
 ) -> None:
-    assert (
+    actual = (
         deployment.id,
         deployment.status,
         deployment.m_config_id,
         deployment.m_file_id,
         deployment.engine_name,
-    ) == (deployment_id, "DEPLOYED", config_id, file_id, target.engine_name)
+    )
+    requested = (deployment_id, "DEPLOYED", config_id, file_id, target.engine_name)
+    assert actual == requested, (
+        "deployment (id, status, m_config_id, m_file_id, engine_name) is "
+        f"{actual!r}, requested {requested!r}"
+    )
