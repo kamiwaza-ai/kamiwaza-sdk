@@ -1,29 +1,32 @@
 """Multi-source catalog ingestion and retrieval against a live platform (T02).
 
 Registry tests ingest a seeded source and assert the catalog retained its source
-metadata; retrieval tests run a retrieval job over seeded data and assert the job
-completed and returned the seeded rows. Keeping the two apart means a retrieval
-failure cannot fail the registry evidence, and the reverse. Parquet content is
-compared by row count, column names and ``id`` values; the other parquet columns
-are random per seed and are not compared.
+metadata; they never retrieve, so a retrieval failure cannot fail the registry
+evidence. Retrieval tests run a retrieval job over seeded data and assert the job
+completed and returned the seeded rows. They need a registered dataset to retrieve,
+so an ingestion or catalog-lookup failure also fails them (retrieval requires the
+dataset registry). Parquet content is compared by row count, column names and
+``id`` values; the other parquet columns are not compared.
 
-Optional paths (file roots, Kafka, Slack, oversized objects) skip before their
-ingestion or retrieval starts and name the prerequisite they are missing; they are
-excluded from the evidence map in tests/e2e/capability_map.yaml.
+Optional paths are not T02 coverage and are excluded from the evidence map in
+tests/e2e/capability_map.yaml. The file, Slack and oversized-object tests skip
+before their ingestion or retrieval starts and name the prerequisite they are
+missing. The Kafka test runs whenever the catalog stack is up: stack setup waits for
+the Kafka broker, so without one every test in this module skips at setup.
 
 Every dataset and container a test creates is deleted and confirmed absent in
-fixture teardown, so a cleanup failure fails the test (``KEEP_CATALOG_DATASETS=1``
-skips dataset cleanup for debugging). The catalog stack, its object keys and the
-resulting dataset URNs are shared by every checkout on a host: concurrent runs can
-reseed or delete data under each other, so capture evidence with no other catalog
-run in progress.
+fixture teardown, so a cleanup failure fails the test. ``KEEP_CATALOG_DATASETS=1``
+skips dataset cleanup for debugging and is refused under ``--emit-evidence``. The
+catalog stack, its object keys and the resulting dataset URNs are shared by every
+checkout on a host: concurrent runs can reseed or delete data under each other, so
+capture evidence with no other catalog run in progress.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import socket
+import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
@@ -46,7 +49,7 @@ from kamiwaza_sdk.schemas.retrieval import (
     RetrievalStreamEvent,
     TransportType,
 )
-from tests.integration import conftest as integration_conftest
+from pydantic import ValidationError
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -66,6 +69,10 @@ INLINE_MAX_BYTES_1_2_1 = 1_000_000
 SSE_SYMPTOM_REPORT = "ENG-12300"
 TERMINAL_JOB_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELED"})
 CATALOG_PROPAGATION_TIMEOUT_S = 30.0
+# The SDK sets no timeout on the SSE request; bound the whole read so a stream that
+# never closes fails the test instead of hanging the run.
+SSE_STREAM_TIMEOUT_S = 120.0
+CLEANUP_ERRORS = (KamiwazaError, requests.RequestException, ValidationError)
 
 
 def _delete_and_confirm_absent(
@@ -79,14 +86,16 @@ def _delete_and_confirm_absent(
     for urn in dict.fromkeys(urns):
         try:
             delete(urn)
-        except (KamiwazaError, requests.RequestException) as exc:
+        except NotFoundError:
+            continue  # already absent
+        except CLEANUP_ERRORS as exc:
             problems.append(f"delete {kind} {urn}: {exc}")
             continue
         try:
             read(urn)
         except NotFoundError:
             continue
-        except (KamiwazaError, requests.RequestException) as exc:
+        except CLEANUP_ERRORS as exc:
             problems.append(f"read back {kind} {urn}: {exc}")
         else:
             problems.append(f"{kind} {urn} is still readable after delete")
@@ -95,14 +104,22 @@ def _delete_and_confirm_absent(
 
 
 @pytest.fixture
-def created_datasets(live_kamiwaza_client: KamiwazaClient) -> Iterator[list[str]]:
+def created_datasets(
+    live_kamiwaza_client: KamiwazaClient, request: pytest.FixtureRequest
+) -> Iterator[list[str]]:
     """Collect ingested dataset URNs; delete and confirm each is gone.
 
-    ``KEEP_CATALOG_DATASETS=1`` skips both steps.
+    ``KEEP_CATALOG_DATASETS=1`` skips both steps, so it is refused when the run emits
+    evidence: the evidence claims cleanup was verified.
     """
+    keep = os.environ.get("KEEP_CATALOG_DATASETS") == "1"
+    if keep and request.config.getoption("emit_evidence", default=False):
+        pytest.fail(
+            "KEEP_CATALOG_DATASETS=1 skips the cleanup that --emit-evidence records"
+        )
     urns: list[str] = []
     yield urns
-    if os.environ.get("KEEP_CATALOG_DATASETS") == "1":
+    if keep:
         return
     datasets = live_kamiwaza_client.catalog.datasets
     _delete_and_confirm_absent("dataset", urns, datasets.delete, datasets.get)
@@ -253,31 +270,53 @@ def _wait_for(
         time.sleep(1)
 
 
-def _terminal_status(client: KamiwazaClient, job_id: str) -> RetrievalJobStatus:
+def _terminal_status(
+    client: KamiwazaClient, job_id: str, *, context: str
+) -> RetrievalJobStatus:
     deadline = time.monotonic() + CATALOG_PROPAGATION_TIMEOUT_S
     status = client.retrieval.get_job(job_id)
     while status.status not in TERMINAL_JOB_STATUSES:
         if time.monotonic() >= deadline:
             pytest.fail(
                 f"job {job_id} still {status.status} after "
-                f"{CATALOG_PROPAGATION_TIMEOUT_S:.0f}s waiting for a terminal status"
+                f"{CATALOG_PROPAGATION_TIMEOUT_S:.0f}s waiting for a terminal status "
+                f"({context})"
             )
         time.sleep(1)
         status = client.retrieval.get_job(job_id)
     return status
 
 
-def _broker_reachable(bootstrap: str, timeout_s: float = 3.0) -> bool:
-    for endpoint in bootstrap.split(","):
-        host, _, port = endpoint.strip().rpartition(":")
-        if not host or not port.isdigit():
-            continue
+def _collect_stream(
+    client: KamiwazaClient, job_id: str, *, timeout_s: float = SSE_STREAM_TIMEOUT_S
+) -> list[RetrievalStreamEvent]:
+    """Read the whole SSE stream, failing if it is still open after ``timeout_s``.
+
+    A daemon thread does the blocking read so a stream that never closes cannot stop
+    the interpreter from exiting; its error, if any, is re-raised here.
+    """
+    events: list[RetrievalStreamEvent] = []
+    failure: list[BaseException] = []
+
+    def consume() -> None:
         try:
-            with socket.create_connection((host, int(port)), timeout=timeout_s):
-                return True
-        except OSError:
-            continue
-    return False
+            for event in client.retrieval.stream_events(job_id):
+                events.append(event)
+        except BaseException as exc:
+            failure.append(exc)
+            raise
+
+    reader = threading.Thread(target=consume, name=f"sse-{job_id}", daemon=True)
+    reader.start()
+    reader.join(timeout_s)
+    if reader.is_alive():
+        pytest.fail(
+            f"SSE stream for job {job_id} still open after {timeout_s:.0f}s; "
+            f"events so far={[event.event for event in events]}"
+        )
+    if failure:
+        raise failure[0]
+    return events
 
 
 def test_catalog_file_ingestion_metadata(
@@ -516,18 +555,18 @@ def test_catalog_sse_retrieval_emits_terminal_event(
         )
     )
     assert job.transport == TransportType.SSE
-    events: list[RetrievalStreamEvent] = list(
-        live_kamiwaza_client.retrieval.stream_events(job.job_id)
-    )
-    status = _terminal_status(live_kamiwaza_client, job.job_id)
-
+    events = _collect_stream(live_kamiwaza_client, job.job_id)
     names = [event.event for event in events]
-    context = (
-        f"job {job.job_id}: events={names}, job status={status.status}; "
-        f"see {SSE_SYMPTOM_REPORT} for the same symptom on the 1.2.1 evidence instance"
+    status = _terminal_status(
+        live_kamiwaza_client, job.job_id, context=f"job {job.job_id}: events={names}"
     )
+
+    context = f"job {job.job_id}: events={names}, job status={status.status}"
     chunks = [event for event in events if event.event == "chunk"]
-    assert chunks, f"SSE stream emitted no chunk events ({context})"
+    assert chunks, (
+        f"SSE stream emitted no chunk events ({context}); {SSE_SYMPTOM_REPORT} "
+        "records this symptom on the Azure 1.2.1 evidence instance"
+    )
     assert names[-1] == "complete" and names.count("complete") == 1, (
         f"SSE stream did not end with exactly one terminal complete event ({context})"
     )
@@ -571,9 +610,9 @@ def test_catalog_inline_large_object_hits_threshold(
     if not oversized.is_file() or oversized.stat().st_size <= INLINE_MAX_BYTES_1_2_1:
         pytest.skip(
             f"Optional oversized-object path, not T02 coverage: {oversized.name} is "
-            f"missing or not larger than {INLINE_MAX_BYTES_1_2_1} bytes (the 1.2.1 default "
-            "inline_max_bytes); catalog-stack setup needs pandas, numpy and pyarrow to "
-            "generate it"
+            f"missing or not larger than {INLINE_MAX_BYTES_1_2_1} bytes (assumes the server "
+            "uses the 1.2.1 default inline_max_bytes); catalog-stack setup needs pandas, "
+            "numpy and pyarrow to generate it"
         )
 
     cfg = catalog_stack_environment["object"]
@@ -598,13 +637,8 @@ def test_catalog_kafka_ingestion_metadata(
     catalog_stack_environment: dict[str, Any],
     created_datasets: list[str],
 ) -> None:
-    bootstrap = integration_conftest.CATALOG_KAFKA_BOOTSTRAP
-    if not _broker_reachable(bootstrap):
-        pytest.skip(
-            f"Optional path, not T02 coverage: no Kafka broker reachable at {bootstrap} "
-            "(set CATALOG_STACK_KAFKA_BOOTSTRAP)"
-        )
-
+    # Runs whenever the catalog stack is up: setup-test-data.sh waits for the Kafka
+    # broker, so without one the stack fixture skips this module before reaching here.
     kafka = catalog_stack_environment["kafka"]
     response = live_kamiwaza_client.ingestion.run_active(
         "kafka",

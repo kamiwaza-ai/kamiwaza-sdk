@@ -82,6 +82,7 @@ Observed after successfully ingesting the same dataset via `/ingestion/ingest/ru
 - Upstream change (`kamiwaza/services/retrieval/adapters/s3.py`) now honors per-request overrides for `endpoint`, `endpoint_override`, and `region`, preventing the adapter from falling back to stale catalog metadata and crashing Ray when pointed at MinIO or other non-default endpoints.  
 - Regression coverage: `kamiwaza/services/retrieval/tests/test_s3_adapter.py` (mocks `pyarrow.fs.S3FileSystem` to assert overrides win) plus the SDK integration tests `test_catalog_inline_small_object_succeeds`, `test_catalog_inline_large_object_hits_threshold`, `test_catalog_large_object_sse_retrieval`, and `test_s3_ingest_and_retrieve_inline`. These verify <500 KB payloads stay inline, ~1.3 MB payloads raise the documented 422 threshold error, and SSE fallback still streams rows.  
 - Local stack expected to return 201/422/200 sequences per above; any regression will now surface as a hard test failure (no `xfail`).
+- 2026-09-16: `test_catalog_large_object_sse_retrieval` was renamed and now streams the small object; see [SSE retrieval ends with no events](#sse-retrieval-no-events).
 
 ### Ingestion router mounted as `/ingestion/ingest`
 Spec/`070-update.md` list endpoints as `/ingest/*`, but the FastAPI router is included under `/ingestion`, so the deployed path is `/ingestion/ingest/run`. Probably a docs fix (the service originated as standalone).
@@ -148,7 +149,7 @@ Ingesting `objects/sample.json` via the S3 plugin succeeds, but calling `/retrie
 ### Kafka retrieval missing {#kafka-retrieval-missing}
 Kafka ingestion populates catalog containers/topics, but `/retrieval/jobs` can't materialize topic metadata or events (`pytest tests/integration/test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata`). Until we have a streaming transport, keep the SDK test marked xfail to flag regressions.
 
-**Status – 2026-09-16 (ENG-12320):** the test no longer xfails. It asserts ingestion metadata only (one dataset for the seeded topic, platform `kafka`), skips when no broker is reachable at `CATALOG_STACK_KAFKA_BOOTSTRAP`, and is not mapped as retrieval evidence. The SDK still rejects Kafka dataset URNs before job creation.
+**Status – 2026-09-16 (ENG-12320):** the test no longer xfails. It asserts ingestion metadata only (one dataset for the seeded topic, platform `kafka`) and is not mapped as evidence. It runs whenever the catalog stack is up; stack setup waits for the Kafka broker, so without one every test in the module skips at setup. The SDK still rejects Kafka dataset URNs before job creation.
 
 ### Slack retrieval missing _(resolved 2025-11-14)_ {#slack-retrieval-missing}
 Slack ingestion can now stream conversations (and optional replies) via the retrieval API when supplied with a bot token. Regression coverage: `tests/integration/test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata` ingests a channel and asserts that `/retrieval/jobs` returns inline rows when `SLACK_TEST_TOKEN`/`SLACK_TEST_CHANNEL`/`SLACK_TEST_TEAM` env vars are provided.

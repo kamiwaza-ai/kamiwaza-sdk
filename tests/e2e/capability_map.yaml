@@ -212,11 +212,12 @@
 # format), postgres_ingestion_metadata (schema, table, column names), and
 # container_link_sets_dataset_container_urn (container membership both ways).
 # None of them retrieves, so a retrieval failure cannot fail this record.
-# Excluded: the retrieval tests mapped below, and the optional paths, which skip
-# before their ingestion or retrieval starts and are not T02 coverage --
-# file_ingestion_metadata (needs CATALOG_FILE_INGESTION_ROOT), kafka (needs a
-# reachable broker), slack (needs SLACK_TEST_* tokens) and
-# inline_large_object_hits_threshold (needs an object over the inline limit).
+# Excluded: the retrieval tests mapped below, and the optional paths, which are
+# not T02 coverage -- file_ingestion_metadata (skips without
+# CATALOG_FILE_INGESTION_ROOT), kafka (ingestion metadata only; optional per the
+# T02 plan), slack (skips without SLACK_TEST_* tokens) and
+# inline_large_object_hits_threshold (skips without an object over the inline
+# limit).
 # Cycle-authored, not harvested: these assertions were written for ENG-12320; the
 # earlier module checked platform names, container_urn and non-empty results,
 # not retained paths, schemas or cleanup.
@@ -248,9 +249,10 @@
 # them, and a COMPLETED job. Ingestion and the catalog path lookup are setup
 # here: retrieval needs a registered dataset.
 # The capability also covers cancel and Arrow Flight, which these tests do not
-# exercise; unverified_operations names them, so this record stays failed until
-# a mapped test performs them. On the Azure 1.2.1 evidence instance the SSE test
-# fails as well (ENG-12300, cause not yet established).
+# exercise; unverified_operations names them, and the emitter always adds them as
+# skipped required steps, so this record stays failed. Remove a name only once a
+# mapped test performs that operation. On the Azure 1.2.1 evidence instance the
+# SSE test fails as well (ENG-12300, cause not yet established).
 # Excluded: the registry tests above, container_link (it submits no retrieval
 # job), and the same optional paths as the registry entry.
 # Cycle-authored for the same reason as the registry entry above.
