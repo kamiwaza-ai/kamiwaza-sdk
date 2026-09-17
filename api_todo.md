@@ -5,8 +5,8 @@ Coverage: tests in tests/integration (direct client calls + SDK service method m
 Note: CLI/authenticator flows are mapped manually; OpenAI client calls are listed separately.
 
 Total endpoints: 266
-Covered by integration tests: 158
-Missing integration coverage: 108
+Covered by integration tests: 159
+Missing integration coverage: 107
 
 
 ## (TS0) ACTIVITY
@@ -122,7 +122,7 @@ Missing integration coverage: 108
 | TS3.020 | [x] | POST | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.create); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset) |
 | TS3.021 | [x] | DELETE | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.datasets.delete); test_catalog_multi_source.py::created_datasets (catalog.datasets.delete) |
 | TS3.022 | [x] | GET | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_seeded_dataset (catalog.datasets.get); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.create_dataset); test_catalog_live.py::test_catalog_dataset_lifecycle (catalog.get_dataset); test_catalog_multi_source.py::_dataset_at_path (catalog.datasets.get); test_catalog_multi_source.py::_ingest_postgres_orders (catalog.datasets.get); test_catalog_multi_source.py::created_datasets (catalog.datasets.get); test_catalog_multi_source.py::_file_retrieval_target (catalog.datasets.get); test_catalog_multi_source.py::test_catalog_container_link_sets_dataset_container_urn (catalog.datasets.get); test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata (catalog.datasets.get); test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata (catalog.datasets.get) |
-| TS3.023 | [ ] | PATCH | /catalog/datasets/by-urn |  |
+| TS3.023 | [x] | PATCH | /catalog/datasets/by-urn | test_catalog_dataset_sdk_lifecycle_live.py::test_dataset_lifecycle_through_dataset_client (catalog.datasets.update) |
 | TS3.024 | [x] | GET | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
 | TS3.025 | [x] | PUT | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
 | TS3.026 | [x] | DELETE | /catalog/datasets/v2/{dataset_urn:dataset_urn} | test_catalog_endpoints.py::test_catalog_dataset_delete_variants (direct) |
