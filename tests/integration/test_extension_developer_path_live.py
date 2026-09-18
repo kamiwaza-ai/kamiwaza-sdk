@@ -39,6 +39,7 @@ from uuid import uuid4
 
 import pytest
 import yaml
+from kamiwaza_extensions.validators.metadata import KamiwazaMetadata, check_cli_contract
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.extensions import (
     CreateExtension,
@@ -48,19 +49,18 @@ from kamiwaza_sdk.schemas.extensions import (
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
-# Manifest keys the deploy stage reads. Asserting them keeps this test honest
-# about what the scaffold hands the next station, without restating the whole
-# template.
-# Manifest keys the deploy stage reads, with the type each must carry. A
-# presence check alone admits [] or {}, which are neither None nor "" and are
-# just as unconsumable.
-MANIFEST_KEYS_THE_DEPLOY_CONSUMES = {
-    "name": str,
-    "version": str,
-    "type": str,
-    "kz_ext_version": str,
-    "risk_tier": int,
-}
+# Manifest keys the deploy stage reads, named so the failure says which one is
+# missing. Their *values* are not type-checked here: the real gates are called
+# instead (see the scaffold test), because a hand-written type table admits
+# values the deploy rejects -- `risk_tier: 3` is an int, and
+# `kz_ext_version: "banana"` is a str.
+MANIFEST_KEYS_THE_DEPLOY_CONSUMES = (
+    "name",
+    "version",
+    "type",
+    "kz_ext_version",
+    "risk_tier",
+)
 
 
 def _skip_or_fail(reason: str) -> NoReturn:
@@ -97,6 +97,39 @@ def _run(command: list[str], *, cwd: Path, timeout: int = 300) -> None:
         )
 
 
+def _assert_scaffold_is_consumable(manifest: dict, compose_data: dict) -> None:
+    """The scaffold satisfies the gates the deploy stage actually runs.
+
+    A named seam, so the gates can be driven with a corrupted manifest from
+    ``tests/unit/test_extension_scaffold_contract.py``: the scaffold test itself
+    regenerates the project, so nothing outside this function can hand it a bad
+    manifest to prove these assertions are load-bearing.
+
+    Calls the real validators rather than restating them. A hand-written type
+    table accepts `risk_tier: 3` (an int, but outside `Literal[0, 1, 2]`) and
+    `kz_ext_version: "banana"` (a str, but not a specifier set), both of which
+    the deploy rejects -- ``kz-ext dev`` runs ``check_cli_contract`` through
+    ``enforce_cli_contract`` before any side effect
+    (``kamiwaza_extensions/commands/dev_local.py``), and the manifest is loaded
+    into ``KamiwazaMetadata`` downstream.
+    """
+    services = compose_data.get("services")
+    # A mapping, not merely truthy: the deploy stage iterates `services.items()`,
+    # so `services: [echo]` or `services: broken` is truthy and still crashes it
+    # before anything is deployed.
+    assert isinstance(services, dict) and services, (
+        f"the generated compose file's `services` is {type(services).__name__} "
+        f"({services!r}); the deploy stage iterates it as a mapping"
+    )
+
+    contract_errors = check_cli_contract(manifest, compose_data)
+    assert not contract_errors, (
+        "kz-ext's own CLI-contract check rejects the manifest it just "
+        f"generated: {contract_errors}"
+    )
+    KamiwazaMetadata.model_validate(manifest)
+
+
 def test_kz_ext_scaffolds_an_extension_the_deploy_stage_can_consume(
     tmp_path: Path,
 ) -> None:
@@ -114,28 +147,14 @@ def test_kz_ext_scaffolds_an_extension_the_deploy_stage_can_consume(
     manifest_path = tmp_path / "kamiwaza.json"
     assert manifest_path.is_file(), "kz-ext create produced no kamiwaza.json"
     manifest = json.loads(manifest_path.read_text())
-    for key, expected_type in MANIFEST_KEYS_THE_DEPLOY_CONSUMES.items():
+    for key in MANIFEST_KEYS_THE_DEPLOY_CONSUMES:
         assert key in manifest, f"the manifest lacks {key!r}, which the deploy reads"
-        value = manifest[key]
-        # Presence is not consumability, and neither is "not empty": [] and {}
-        # pass both while giving the deploy stage nothing it can use. bool is
-        # excluded explicitly because it is a subclass of int.
-        assert isinstance(value, expected_type) and not isinstance(value, bool), (
-            f"the manifest's {key!r} is {value!r} ({type(value).__name__}); the "
-            f"deploy stage needs a {expected_type.__name__}"
-        )
-        if isinstance(value, str):
-            assert value.strip(), f"the manifest's {key!r} is blank"
     assert manifest["name"] == "eng12432extpath"
     assert manifest["type"] == "app"
 
     compose = tmp_path / "docker-compose.yml"
     assert compose.is_file(), "the deploy stage derives services from the compose file"
-    services = (yaml.safe_load(compose.read_text()) or {}).get("services") or {}
-    assert services, (
-        "the generated compose file declares no services, so the deploy stage "
-        "would have nothing to build"
-    )
+    _assert_scaffold_is_consumable(manifest, yaml.safe_load(compose.read_text()) or {})
 
 
 @pytest.fixture

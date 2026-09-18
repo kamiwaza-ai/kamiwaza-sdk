@@ -63,6 +63,14 @@ MCP_INITIALIZE = {
 # as the streamable-HTTP location and ``/sse`` as FastMCP's.
 MCP_PATH = "/mcp"
 
+# The two response media types MCP's streamable-HTTP transport defines. Compared
+# on the essence -- the part before any ``;`` parameters -- rather than by
+# substring: `text/plain; profile="application/json"` contains "json" while a
+# conforming client rejects it, so a substring test would bless a response no
+# real client would read.
+JSON_MEDIA_TYPE = "application/json"
+EVENT_STREAM_MEDIA_TYPE = "text/event-stream"
+
 # Refusals the platform returns *before* starting a deploy, because of the
 # template's administrative state on this instance rather than anything about the
 # Tool Shed path. Both were observed on the evidence host on 2026-09-18, and each
@@ -403,10 +411,10 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
     without a cluster; ``tests/unit/test_tool_shed_mcp_helpers.py`` exercises
     both transports and the catch-all.
     """
-    transport = content_type.lower()
-    if "json" in transport:
+    transport = content_type.split(";", 1)[0].strip().lower()
+    if transport == JSON_MEDIA_TYPE:
         return json.loads("\n".join(body_lines))
-    if "text/event-stream" in transport:
+    if transport == EVENT_STREAM_MEDIA_TYPE:
         # An event's consecutive ``data:`` fields are one payload joined by
         # newlines, and the blank line dispatches the event (HTML standard,
         # server-sent events). Parsing each line on its own would fail both
@@ -419,7 +427,12 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
         # passing record for a transport that answers nobody. Strictness costs a
         # false failure only for a server that is already non-conforming.
         fields: list[str] = []
-        for line in body_lines:
+        for index, raw in enumerate(body_lines):
+            # One leading byte-order mark is permitted on the stream and must be
+            # stripped, or the first field name reads as "\ufeffdata".
+            line = raw.lstrip("\ufeff") if index == 0 else raw
+            # A CR survives when the stream uses CRLF and the reader split on LF.
+            line = line[:-1] if line.endswith("\r") else line
             if line.startswith("data:"):
                 value = line[len("data:") :]
                 # The spec strips one optional space after the colon. Kept for
@@ -427,9 +440,14 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
                 # so no payload can tell the two spellings apart.
                 fields.append(value[1:] if value.startswith(" ") else value)
                 continue
-            if line.strip():
+            if line != "":
+                # Only an *empty* line dispatches. A whitespace-only line is an
+                # unknown field, which is ignored -- treating it as a terminator
+                # would dispatch an event the standard leaves pending, and accept
+                # a stream no conforming client reads an answer from.
+                #
                 # Comment lines (":") and the event/id/retry fields carry no
-                # payload. Only ``data:`` can.
+                # payload either. Only ``data:`` can.
                 continue
             frame = _decode_event(fields)
             fields = []
@@ -442,9 +460,12 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
             "standard discards it, so no conforming client would see it either"
         )
     raise AssertionError(
-        f"MCP initialize against {name} returned content-type {content_type!r}; "
-        "the gateway fell through to its HTML catch-all, so nothing is serving "
-        f"{MCP_PATH} at the advertised URL"
+        f"MCP initialize against {name} returned media type {transport!r} "
+        f"(content-type {content_type!r}), which is neither "
+        f"{JSON_MEDIA_TYPE!r} nor {EVENT_STREAM_MEDIA_TYPE!r}. A conforming MCP "
+        f"client rejects it; the gateway answers an unknown path under a tool's "
+        f"route with 200 and dashboard HTML, so nothing is serving {MCP_PATH} at "
+        "the advertised URL"
     )
 
 

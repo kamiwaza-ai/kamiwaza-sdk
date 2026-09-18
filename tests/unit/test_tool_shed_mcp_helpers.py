@@ -77,7 +77,7 @@ def test_jsonrpc_envelope_rejects_the_gateways_html_catch_all() -> None:
     An unknown path under a tool's route is answered with 200 and the dashboard
     page, so the status code alone establishes nothing.
     """
-    with pytest.raises(AssertionError, match="HTML catch-all"):
+    with pytest.raises(AssertionError, match="neither 'application/json'"):
         _jsonrpc_envelope("text/html; charset=utf-8", ["<!doctype html>"], "tool-abc")
 
 
@@ -229,3 +229,57 @@ def test_jsonrpc_envelope_rejects_a_stream_of_notifications_only() -> None:
             ['data: {"jsonrpc": "2.0", "method": "notifications/message"}', ""],
             "tool-abc",
         )
+
+
+def test_jsonrpc_envelope_rejects_a_media_type_that_merely_mentions_json() -> None:
+    """The check is on the media type, not on the string containing "json".
+
+    `text/plain; profile="application/json"` carries the substring while a
+    conforming MCP client rejects the response outright, so a substring test
+    would bless a reply no real client reads.
+    """
+    body = ['{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "1"}}']
+    with pytest.raises(AssertionError, match="neither 'application/json'"):
+        _jsonrpc_envelope('text/plain; profile="application/json"', body, "tool-abc")
+
+
+def test_jsonrpc_envelope_accepts_a_parameterised_json_media_type() -> None:
+    """Parameters are not part of the media type, so a charset must still pass."""
+    body = ['{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "1"}}']
+    assert (
+        _jsonrpc_envelope("Application/JSON; charset=utf-8", body, "tool-abc")["id"]
+        == 1
+    )
+
+
+def test_jsonrpc_envelope_ignores_a_whitespace_only_line() -> None:
+    """Only an empty line dispatches an event.
+
+    A whitespace-only line is an unknown field the standard ignores, so an event
+    followed by `" "` and end of stream stays pending and must not be read as an
+    answer.
+    """
+    body = [
+        'data: {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "1"}}',
+        " ",
+    ]
+    with pytest.raises(AssertionError, match="no conforming client"):
+        _jsonrpc_envelope("text/event-stream", body, "tool-abc")
+
+
+def test_jsonrpc_envelope_strips_one_leading_byte_order_mark() -> None:
+    """A BOM is permitted on the stream; it is not part of the first field name."""
+    body = [
+        '\ufeffdata: {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "1"}}',
+        "",
+    ]
+    assert _jsonrpc_envelope("text/event-stream", body, "tool-abc")["id"] == 1
+
+
+def test_jsonrpc_envelope_reads_a_crlf_terminated_stream() -> None:
+    """A CR left by a CRLF stream must not make the blank line non-empty."""
+    body = [
+        'data: {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "1"}}\r',
+        "\r",
+    ]
+    assert _jsonrpc_envelope("text/event-stream", body, "tool-abc")["id"] == 1
