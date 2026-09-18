@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import pytest
@@ -20,7 +21,10 @@ from kamiwaza_sdk.delegated_workloads.readiness import (
     ComponentStatus,
     ReadinessClient,
 )
-from kamiwaza_sdk.delegated_workloads.transport import DelegatedWorkloadTransport
+from kamiwaza_sdk.delegated_workloads.transport import (
+    DelegatedWorkloadTransport,
+    ResponsePort,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -28,14 +32,20 @@ _PROJECTED_ASSERTION = Path("/var/run/secrets/kamiwaza.ai/workload-identity/toke
 _REQUEST_TIMEOUT_SECONDS = 15
 
 
-class _BoundedSession(requests.Session):
-    """Bound both anonymous and SDK-issued live requests."""
+class _BoundedSession:
+    """Bound SDK requests and prevent assertion forwarding on redirects."""
 
-    def request(self, method: str, url: str, **kwargs: object) -> requests.Response:
+    def __init__(self, session: requests.Session) -> None:
+        self._session = session
+
+    def request(self, method: str, url: str, **kwargs: object) -> ResponsePort:
         kwargs.setdefault("timeout", _REQUEST_TIMEOUT_SECONDS)
-        kwargs.setdefault("verify", self.verify)
+        kwargs.setdefault("verify", self._session.verify)
         kwargs.setdefault("allow_redirects", False)
-        return super().request(method, url, **kwargs)
+        return cast(
+            ResponsePort,
+            self._session.request(method, url, **cast(Any, kwargs)),
+        )
 
 
 def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
@@ -61,7 +71,7 @@ def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
         urlsplit(api_root).username is None
     ), "live base URL must not embed credentials"
     base_url = api_root + "/v1/delegated-workloads"
-    with _BoundedSession() as session:
+    with requests.Session() as session:
         # No netrc credentials or proxy for this identity probe.
         session.trust_env = False
         verify_ssl = os.getenv("KAMIWAZA_VERIFY_SSL", "true").strip().lower() not in {
@@ -76,7 +86,12 @@ def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
             )
         else:
             session.verify = False
-        anonymous = session.get(base_url + "/capabilities")
+        anonymous = session.get(
+            base_url + "/capabilities",
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+            verify=session.verify,
+            allow_redirects=False,
+        )
         assert not {
             "Authorization",
             "X-Kamiwaza-Workload-Assertion",
@@ -92,7 +107,7 @@ def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
         )
 
         proof = WorkloadProof.kubernetes(profile)
-        transport = DelegatedWorkloadTransport(session, proof=proof)
+        transport = DelegatedWorkloadTransport(_BoundedSession(session), proof=proof)
         try:
             discovery = ReadinessClient(
                 base_url,
