@@ -9,11 +9,11 @@
     "models": 62
   },
   "counts": {
-    "documented": 361,
-    "operations": 362,
+    "documented": 365,
+    "operations": 366,
     "published": 335,
-    "services": 34,
-    "unpublished": 27
+    "services": 35,
+    "unpublished": 31
   },
   "descriptions": {
     "absent": 0,
@@ -155,6 +155,10 @@
     "connectors.subscribe",
     "connectors.update",
     "connectors.verify_connection",
+    "console.act_approvals.consume",
+    "console.act_approvals.create",
+    "console.act_approvals.get",
+    "console.act_approvals.resolve",
     "context.add_entity",
     "context.add_knowledge",
     "context.agentic_search",
@@ -387,7 +391,7 @@
     "workrooms.list",
     "workrooms.update"
   ],
-  "source_digest": "8b48ee2bcede0d1104dfebef71dfe4026bc2335c41ae1d51e4adb013dffd0735",
+  "source_digest": "7c9a63c22e3112fe0caa730da2455afc1a6dc49c7050c83b49750a864cb22632",
   "underivable_schemas": [
     "retrieval.flight_batches"
   ],
@@ -402,6 +406,10 @@
     "catalog.encode_urn",
     "catalog.secrets.encode_path_urn",
     "cluster.rotate_preshared_key",
+    "console.act_approvals.consume",
+    "console.act_approvals.create",
+    "console.act_approvals.get",
+    "console.act_approvals.resolve",
     "embedding.HuggingFaceEmbedding",
     "embedding.call",
     "embedding.get_embedder",

@@ -1117,6 +1117,15 @@ class KamiwazaClient:
         return self._gates
 
     @property
+    def console(self):
+        """Console surface: the act-approval path a human decides on."""
+        if not hasattr(self, "_console"):
+            from .services.console import ConsoleAPI
+
+            self._console = ConsoleAPI(self)
+        return self._console
+
+    @property
     def activity(self):
         if not hasattr(self, "_activity"):
             self._activity = ActivityService(self)

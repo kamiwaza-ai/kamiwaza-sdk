@@ -163,7 +163,7 @@ def published_id(op_selector: str) -> str:
 
 #: Operations deliberately not published, each with a stated reason.
 #:
-#: Four groups, per FR-005e, each read from the client rather than assumed.
+#: Five groups, per FR-005e, each read from the client rather than assumed.
 #:
 #: ``tools`` is :class:`~kamiwaza_sdk.services.tools.ToolService`, whose own
 #: class docstring carries a ``.. deprecated::`` notice: the Docker
@@ -189,9 +189,15 @@ def published_id(op_selector: str) -> str:
 #: search, where ``auth.require_admin`` ranks for "admin" ahead of the
 #: operations that administer anything.
 #:
-#: The last group never returns a result. ``embedding.call`` is the whole of
+#: The fourth group never returns a result. ``embedding.call`` is the whole of
 #: it: its body is one ``raise``, so a published call hands an agent an
 #: exception every time it is invoked.
+#:
+#: The last group is the act-approval path, ``console.act_approvals.*``. It is
+#: withheld for who is meant to call it rather than for what it returns: the
+#: decision on a gated act belongs to a person other than the requester, and
+#: the opening and the spending of an approval belong to the MCP server that
+#: runs the gate.
 UNPUBLISHED: dict[str, UnpublishedReason] = {
     f"tools.{method}": UnpublishedReason(
         reason=(
@@ -343,6 +349,40 @@ UNPUBLISHED: dict[str, UnpublishedReason] = {
             "object it cannot invoke, and the proxy's probe and disconnect "
             "calls are outside the published surface either way, so "
             "withholding this factory hides nothing that was reachable."
+        ),
+    ),
+    # The act-approval path exists so a person, not the caller, decides a gated
+    # act. Publishing any part of it as a tool hands that decision back to the
+    # agent: `resolve` approves the agent's own act, and `create` and `consume`
+    # are the server's half of the handshake, reached on the caller's behalf
+    # rather than chosen by an agent. `get` is withheld with them because an
+    # approval is read on the console, by the requester or an approver.
+    "console.act_approvals.create": UnpublishedReason(
+        reason=(
+            "Opens an act approval on the caller's behalf. The MCP server "
+            "opens it as part of the gate it runs, so an agent never chooses "
+            "to call it."
+        ),
+    ),
+    "console.act_approvals.get": UnpublishedReason(
+        reason=(
+            "Reads one act approval, including who decided it. The requester "
+            "and the approvers read it on the console, and the server reads it "
+            "when it resumes an approved call."
+        ),
+    ),
+    "console.act_approvals.resolve": UnpublishedReason(
+        reason=(
+            "Records the human decision on a gated act. An agent that can "
+            "call it approves its own act, which leaves the gate as a "
+            "formality."
+        ),
+    ),
+    "console.act_approvals.consume": UnpublishedReason(
+        reason=(
+            "Spends an approval so its act runs once. The MCP server consumes "
+            "it while resuming the approved call, and a published call would "
+            "let an agent spend an approval outside that path."
         ),
     ),
 }
