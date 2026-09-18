@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,8 +19,6 @@ from kamiwaza_sdk.validation import (
     model_digest,
 )
 from kamiwaza_sdk.validation.federation_fixture import (
-    GATE_CLASSPATH,
-    GATE_PACKAGE_SPEC,
     KNOWN,
     PERSONAS,
     TENANT_NEGATIVE_PERSONAS,
@@ -41,42 +38,12 @@ from kamiwaza_sdk.validation.federation_spec import (
 from kamiwaza_sdk.validation.models import RuntimeSecretReference
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.testkit import RecordingFixtureStateWriter
+from tests.contract.validation.federation_cluster_fakes import _ClusterFactory
+from tests.contract.validation.federation_idp_fakes import _Admin, _AdminFactory
+from tests.contract.validation.federation_test_support import _profile, _runtime
 from tests.contract.validation.support import profile_payload
 
 pytestmark = pytest.mark.contract
-
-
-def _profile() -> ValidationProfile:
-    payload = profile_payload()
-    payload["validation"] = {
-        "level": "smoke",
-        "fixture_mode": "owned",
-        "include": [FEDERATION_SCENARIO_ID],
-        "exclude": [],
-    }
-    payload["clusters"] = [
-        {
-            "id": "edge-a",
-            "roles": ["controller"],
-            "node_count": 1,
-            "hardware": {"accelerators": []},
-            "features": {"rebac": True},
-        },
-        {
-            "id": "edge-b",
-            "roles": ["controller"],
-            "node_count": 1,
-            "hardware": {"accelerators": []},
-            "features": {"rebac": True},
-        },
-    ]
-    payload["mesh"] = {
-        "edges": [
-            {"initiator": "edge-a", "receiver": "edge-b", "identity_mode": "shared_idp"}
-        ]
-    }
-    payload.pop("inference_targets", None)
-    return ValidationProfile.model_validate(payload)
 
 
 def test_provider_records_match_the_canonical_integration_fixture() -> None:
@@ -158,271 +125,6 @@ def test_provider_mesh_retrieval_explicitly_requests_sse(
         )
     ]
     assert response.closed
-
-
-def _runtime(tmp_path: Path) -> RuntimeContext:
-    ownership = tmp_path / "ownership.key"
-    ownership.write_bytes(b"o" * 48)
-    ownership.chmod(0o600)
-    password = tmp_path / "persona.password"
-    password.write_text("persona-secret\n", encoding="utf-8")
-    return RuntimeContext.model_validate(
-        {
-            "schema": "kamiwaza.runtime-context/v1",
-            "run_id": "run-federation-1",
-            "ownership_key_ref": ownership.as_uri(),
-            "secret_refs": {
-                "shared-idp-admin-password": "file:///run/secrets/admin.password",
-                "shared-idp-persona-password": password.as_uri(),
-            },
-            "clusters": [
-                {
-                    "id": "edge-a",
-                    "base_url": "https://edge-a.test/api",
-                    "api_key_ref": "file:///run/secrets/edge-a.api-key",
-                    "kubeconfig_ref": "file:///run/secrets/edge-a.kubeconfig",
-                },
-                {
-                    "id": "edge-b",
-                    "base_url": "https://edge-b.test/api",
-                    "api_key_ref": "file:///run/secrets/edge-b.api-key",
-                    "kubeconfig_ref": "file:///run/secrets/edge-b.kubeconfig",
-                },
-            ],
-        }
-    )
-
-
-def _jwt(subject: str) -> str:
-    header = base64.urlsafe_b64encode(b'{"alg":"none"}').decode().rstrip("=")
-    payload = (
-        base64.urlsafe_b64encode(json.dumps({"sub": subject}).encode())
-        .decode()
-        .rstrip("=")
-    )
-    return f"{header}.{payload}.signature"
-
-
-class _NotFound(RuntimeError):
-    status_code = 404
-
-
-class _Users:
-    def __init__(self) -> None:
-        self.added: list[str] = []
-
-    def add(
-        self, external_id: str, *, initial_tuples: list[dict[str, str]]
-    ) -> dict[str, str]:
-        del initial_tuples
-        self.added.append(external_id)
-        return {"id": external_id}
-
-
-class _FederationProxy:
-    def __init__(self) -> None:
-        self.users = _Users()
-
-
-class _Federations:
-    def __init__(self, cluster_id: str, remote_id: str) -> None:
-        self.cluster_id = cluster_id
-        self.remote_id = remote_id
-        self.proxies: dict[str, _FederationProxy] = {}
-        self.id_proxies: dict[str, _FederationProxy] = {}
-        self.deleted: list[str] = []
-        self.revoked: set[str] = set()
-
-    def pair(self, *, name: str, role: str, **kwargs: Any) -> dict[str, str]:
-        del kwargs
-        proxy = self.proxies.setdefault(name, _FederationProxy())
-        federation_id = f"{role}-{self.cluster_id}-fed"
-        self.id_proxies[federation_id] = proxy
-        return {"id": federation_id, "name": name}
-
-    def get(self, federation_id: str) -> dict[str, str]:
-        del federation_id
-        return {"remote_cluster_id": self.remote_id}
-
-    def __getitem__(self, name: str) -> _FederationProxy:
-        return self.proxies[name]
-
-    def by_id(
-        self, federation_id: str, *, remote_name: str | None = None
-    ) -> _FederationProxy:
-        del remote_name
-        return self.id_proxies[federation_id]
-
-
-class _ClusterAPI:
-    def __init__(self) -> None:
-        self.execution_gate_calls: list[tuple[str, dict[str, Any]]] = []
-
-    def declare_attribute(self, name: str, *, type: str) -> None:
-        del name, type
-
-    def get_execution_gate(self) -> Any:
-        raise _NotFound("no execution gate")
-
-    def set_execution_gate(self, *, type: str, config: dict[str, Any]) -> None:
-        self.execution_gate_calls.append((type, config))
-
-    def clear_execution_gate(self) -> None:
-        self.execution_gate_calls.append(("clear", {}))
-
-
-class _Packages:
-    def list(self) -> list[Any]:
-        return [
-            SimpleNamespace(
-                name="acme-gates",
-                package_spec=GATE_PACKAGE_SPEC,
-                version="1.2.0",
-                hash_digest="sha256:" + "0" * 64,
-                status="active",
-                classpaths=[GATE_CLASSPATH],
-            )
-        ]
-
-    def uninstall(self, package_name: str) -> None:
-        del package_name
-
-
-class _Gates:
-    def __init__(self) -> None:
-        self.packages = _Packages()
-
-    def discover(self, classpath: str) -> Any:
-        assert classpath == GATE_CLASSPATH
-        return SimpleNamespace(name="mini_access_tier_gate")
-
-
-class _Datasets:
-    def __init__(self) -> None:
-        self.created: list[str] = []
-
-    def create(self, **kwargs: Any) -> str:
-        del kwargs
-        urn = "urn:li:dataset:(urn:li:dataPlatform:file,/tmp/access_tier,PROD)"
-        self.created.append(urn)
-        return urn
-
-    def set_gate(self, urn: str, *, type: str, config: dict[str, Any]) -> None:
-        del urn, type, config
-
-    def delete(self, urn: str) -> None:
-        if urn not in self.created:
-            raise _NotFound("dataset is already absent")
-        self.created.remove(urn)
-
-
-class _Client:
-    def __init__(self, cluster_id: str, remote_id: str) -> None:
-        self.cluster_id = cluster_id
-        self.federations = _Federations(cluster_id, remote_id)
-        self.datasets = _Datasets()
-        self.gates = _Gates()
-        self.cluster = _ClusterAPI()
-        self.requests: list[tuple[str, str]] = []
-
-    def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        del kwargs
-        if method in {"DELETE", "POST"} and any(
-            old_method == method and old_path == path
-            for old_method, old_path in self.requests
-        ):
-            raise _NotFound("federation is already absent")
-        self.requests.append((method, path))
-        return {}
-
-    def close(self) -> None:
-        return None
-
-
-class _ClusterWrapper:
-    def __init__(self, client: _Client) -> None:
-        self.client = client
-
-    def close(self) -> None:
-        self.client.close()
-
-
-class _ClusterFactory:
-    def __init__(self) -> None:
-        self.clients = {
-            "edge-a": _ClusterWrapper(_Client("edge-a", "edge-b")),
-            "edge-b": _ClusterWrapper(_Client("edge-b", "edge-a")),
-        }
-
-    def __call__(self, runtime_cluster: Any) -> _ClusterWrapper:
-        return self.clients[str(runtime_cluster.id)]
-
-
-class _Admin:
-    def __init__(self) -> None:
-        self.deleted_users: list[str] = []
-        self.deleted_clients: list[str] = []
-        self.deleted_realms: list[str] = []
-        self.token_client_ids: list[str] = []
-
-    def create_owned_realm(self, realm: str, owner_nonce: str) -> dict[str, Any]:
-        del owner_nonce
-        return {"realm": realm, "created": True}
-
-    def delete_owned_realm(self, realm: str, owner_nonce: str) -> bool:
-        del owner_nonce
-        if realm in self.deleted_realms:
-            raise _NotFound("realm is already absent")
-        self.deleted_realms.append(realm)
-        return True
-
-    def set_unmanaged_attributes(self, realm: str, *, policy: str = "ENABLED") -> None:
-        del realm, policy
-
-    def ensure_ropc_client(self, realm: str, client_id: str) -> dict[str, str]:
-        del realm, client_id
-        return {"id": "client-uuid"}
-
-    def ensure_attribute_mapper(
-        self, realm: str, client_uuid: str, *, attribute: str
-    ) -> None:
-        del realm, client_uuid, attribute
-
-    def ensure_user(
-        self, realm: str, username: str, *, password: str, attributes: dict[str, Any]
-    ) -> dict[str, str]:
-        del realm, password, attributes
-        return {"id": f"user-{username}"}
-
-    def delete_user(self, realm: str, user_id: str) -> bool:
-        del realm
-        if user_id in self.deleted_users:
-            raise _NotFound("user is already absent")
-        self.deleted_users.append(user_id)
-        return True
-
-    def delete_client(self, realm: str, client_uuid: str) -> bool:
-        del realm
-        if client_uuid in self.deleted_clients:
-            raise _NotFound("client is already absent")
-        self.deleted_clients.append(client_uuid)
-        return True
-
-    def ropc_token(
-        self, realm: str, client_id: str, username: str, password: str
-    ) -> str:
-        del realm, password
-        self.token_client_ids.append(client_id)
-        return _jwt(username)
-
-
-class _AdminFactory:
-    def __init__(self, admin: _Admin) -> None:
-        self.admin = admin
-
-    def __call__(self, runtime: RuntimeContext, cluster: Any) -> _Admin:
-        del runtime, cluster
-        return self.admin
 
 
 class _RunPersona:

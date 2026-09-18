@@ -23,10 +23,10 @@ from kamiwaza_sdk.validation.model_mesh_provider import ModelMeshLifecycleProvid
 from kamiwaza_sdk.validation.models import FixtureState, RuntimeContext, ScenarioPlan
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.testkit import RecordingFixtureStateWriter
+from tests.contract.validation.federation_test_support import _profile, _runtime
 from tests.contract.validation.test_delegated_workload_provider import (
     _profile as _delegated_profile,
 )
-from tests.contract.validation.test_federation_provider import _profile, _runtime
 from tests.contract.validation.test_model_mesh_spec import _profile as _mesh_profile
 
 pytestmark = pytest.mark.contract

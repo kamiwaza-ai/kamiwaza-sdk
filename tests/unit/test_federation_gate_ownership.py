@@ -15,7 +15,7 @@ from kamiwaza_sdk.validation.federation_state import (
 from kamiwaza_sdk.validation.inference_state import runtime_ownership_key
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.testkit import RecordingFixtureStateWriter
-from tests.contract.validation.test_federation_provider import _profile, _runtime
+from tests.contract.validation.federation_test_support import _profile, _runtime
 from tests.unit.test_access_tier_fixture_version import _client
 from tests.unit.test_access_tier_fixture_version import gate_fixture as gate_fixture
 

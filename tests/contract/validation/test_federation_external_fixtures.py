@@ -18,13 +18,9 @@ from kamiwaza_sdk.validation.inference_state import runtime_ownership_key
 from kamiwaza_sdk.validation.models import FixtureMutation
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.testkit import RecordingFixtureStateWriter
-from tests.contract.validation.test_federation_provider import (
-    _Admin,
-    _AdminFactory,
-    _ClusterFactory,
-    _profile,
-    _runtime,
-)
+from tests.contract.validation.federation_cluster_fakes import _ClusterFactory
+from tests.contract.validation.federation_idp_fakes import _Admin, _AdminFactory
+from tests.contract.validation.federation_test_support import _profile, _runtime
 
 pytestmark = pytest.mark.contract
 
