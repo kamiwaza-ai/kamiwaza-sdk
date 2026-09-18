@@ -114,7 +114,7 @@ def test_export_enumerates_a_seeded_dataset_in_manifest_summary_and_bundle(
     raw = workrooms.export_bundle(workroom_id)
     assert isinstance(raw, bytes)
     with zipfile.ZipFile(io.BytesIO(raw)) as bundle:
-        names = set(bundle.namelist())
+        members = bundle.namelist()
         assert json.loads(bundle.read("workroom.json"))["id"] == workroom_id
         bundled_manifest = json.loads(bundle.read("manifest.json"))
         assert bundled_manifest["workroom_id"] == workroom_id
@@ -128,13 +128,18 @@ def test_export_enumerates_a_seeded_dataset_in_manifest_summary_and_bundle(
         assert [entry["urn"] for entry in index] == [urn]
         descriptor_path = f"datasets/{index[0]['id']}.json"
         # Metadata and descriptors only: the archive holds nothing else.
-        assert names == {
-            "workroom.json",
-            "manifest.json",
-            "data_sources/index.json",
-            "datasets/index.json",
-            descriptor_path,
-        }
+        # Sorted lists rather than sets, because a set folds a repeated member
+        # away and this assertion is the one that certifies exact contents: a
+        # ZIP carrying the same path twice would otherwise read as clean.
+        assert sorted(members) == sorted(
+            [
+                "workroom.json",
+                "manifest.json",
+                "data_sources/index.json",
+                "datasets/index.json",
+                descriptor_path,
+            ]
+        )
         assert json.loads(bundle.read("data_sources/index.json")) == []
         assert json.loads(bundle.read(descriptor_path)) == index[0]
 

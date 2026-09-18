@@ -151,7 +151,14 @@ def test_a_dataset_still_readable_after_deletion_fails_cleanup() -> None:
 
 
 def test_forgetting_one_dataset_leaves_the_others_recorded() -> None:
-    """T03 forgets its refused write while its own datasets are still recorded."""
+    """Forgetting one record leaves the rest tracked.
+
+    ``proven_gone`` forgets a dataset only after proving it absent, one at a
+    time, so a ledger holding several must drop exactly the one named. No live
+    test calls ``forget_dataset`` directly any more -- the refused write that
+    used to is deliberately kept recorded for the unscoped sweep -- so this
+    pins the method for the path that does use it.
+    """
     ledger, _, owner, _ = make_ledger(binds_session=False)
     workroom_id = ledger.create_workroom("forget-one")
     _kept_name, kept_urn = ledger.create_dataset("kept", workroom_id)

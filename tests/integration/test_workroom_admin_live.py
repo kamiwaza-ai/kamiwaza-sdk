@@ -8,9 +8,8 @@ non-admin user so that neither claim can rest on administrator authority:
   is refused both admin routes with the admin-role error; the administrator
   finds it in the platform-wide listing with that user as owner and the
   owner's username resolved, deletes it, and proves it left the listing but is
-  retained as deleted. The admin router
-  on 1.2.1 has no preview route, so the delete preview is evidenced by the
-  owner in the second test.
+  retained as deleted. The capability covers the admin listing and admin
+  delete and names no preview route, so nothing here defers to one.
 * ``test_owner_archives_restores_previews_and_deletes_a_workroom`` evidences
   ``workrooms.archive-and-delete``. Every owner action is the non-admin's; only
   the final retention read uses the administrator listing. The owner archives

@@ -67,12 +67,54 @@ def test_a_bound_ledger_leaves_even_when_only_the_test_entered() -> None:
     """The test enters on its own, so the ledger cannot condition on its own enters."""
     ledger, workrooms, owner, _ = make_ledger(binds_session=True)
     ledger.create_workroom("entered-by-the-test")
-    owner.workrooms.enter("whatever-the-test-entered")
+    # A workroom that exists but this ledger did not create, so the binding is
+    # one only the test knows about. It has to exist: entering a workroom that
+    # does not is a 404, and a double that let that through is what hid a
+    # teardown failure on the real deployment.
+    entered_by_the_test = "workroom-the-test-entered"
+    workrooms.rooms[entered_by_the_test] = "not-this-ledgers"
+    owner.workrooms.enter(entered_by_the_test)
     workrooms.calls.clear()
 
     ledger.remove_remaining()
 
     assert ("leave", None) in workrooms.calls
+
+
+def test_a_dataset_outlives_the_workroom_it_was_recorded_for() -> None:
+    """A recorded dataset whose workroom the test already deleted still sweeps.
+
+    The session-scoping test keeps its refused write recorded so the unscoped
+    sweep can reach a mis-scoped copy, and deletes both workrooms before
+    teardown. Entering a deleted workroom is a 404, so a teardown that reaches
+    for the recorded scope first must treat that as "not reachable here" and
+    hand the dataset to the sweep -- not fail the whole cleanup, which would
+    stop the sweep from ever running.
+    """
+    ledger, workrooms, owner, _ = make_ledger(binds_session=True)
+    workroom_id = ledger.create_workroom("retired")
+    name = ledger.record_dataset("refused-unbound", workroom_id)
+    ledger.declined(name)
+    workrooms.deleted.add(workroom_id)  # the test deleted it before teardown
+
+    ledger.remove_remaining()
+
+    assert ("leave", None) in workrooms.calls, "the sweep never ran"
+
+
+def test_a_dataset_left_behind_by_a_deleted_workroom_is_still_swept() -> None:
+    """The point of keeping the record: a copy elsewhere is still removed."""
+    ledger, workrooms, owner, _ = make_ledger(binds_session=True)
+    workroom_id = ledger.create_workroom("retired")
+    name = ledger.record_dataset("refused-unbound", workroom_id)
+    urn = ledger.dataset_urn(name)
+    ledger.declined(name)
+    owner.store[urn] = name  # refused, but the server persisted it anyway
+    workrooms.deleted.add(workroom_id)
+
+    ledger.remove_remaining()
+
+    assert urn not in owner.store, "the mis-scoped copy survived teardown"
 
 
 def test_a_registered_cleanup_runs_inside_the_ledgers_own_teardown() -> None:

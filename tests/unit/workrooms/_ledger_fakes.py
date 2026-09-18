@@ -59,7 +59,14 @@ class Workrooms:
         return SimpleNamespace(id=workroom_id)
 
     def enter(self, workroom_id):
+        # Refuses a workroom that is gone, like ``get`` above and like the
+        # server, which answers 404 for entering a deleted workroom. A double
+        # whose enter always succeeds cannot reach the teardown path where a
+        # test deletes its workroom while a dataset record is still
+        # outstanding -- which is how that path shipped unnoticed.
         self.calls.append(("enter", workroom_id))
+        if workroom_id in self.deleted or workroom_id not in self.rooms:
+            raise NotFoundError(f"Workroom {workroom_id} not found")
         self.bound = workroom_id
 
     def leave(self):

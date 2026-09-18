@@ -546,17 +546,27 @@ class WorkroomLedger:
         self._unbound = True
 
     def _remove_dataset(self, dataset: _RecordedDataset) -> None:
-        with self._writer(dataset.workroom_id) as writer:
-            datasets = writer.catalog.datasets
-            try:
-                datasets.delete(dataset.urn)
-            except NotFoundError:
-                # Never created, already deleted, or written into some other
-                # scope. The unscoped sweep decides between those.
-                self._unaccounted.append(dataset)
-            expect_not_found(
-                partial(datasets.get, dataset.urn), f"dataset {dataset.name}"
-            )
+        try:
+            with self._writer(dataset.workroom_id) as writer:
+                datasets = writer.catalog.datasets
+                try:
+                    datasets.delete(dataset.urn)
+                except NotFoundError:
+                    # Never created, already deleted, or written into some other
+                    # scope. The unscoped sweep decides between those.
+                    self._unaccounted.append(dataset)
+                expect_not_found(
+                    partial(datasets.get, dataset.urn), f"dataset {dataset.name}"
+                )
+        except NotFoundError:
+            # Reaching the recorded scope failed because the workroom is gone:
+            # a test that deleted it before teardown, which the retirement flow
+            # does and the session-scoping flow does for both of its own. That
+            # is the same answer as a dataset the scope does not hold -- not
+            # reachable here -- so it goes to the sweep. Raising instead would
+            # fail this step and stop the sweep from running at all, which is
+            # the one thing that could still find a mis-scoped copy.
+            self._unaccounted.append(dataset)
 
     def _sweep_unscoped(self) -> None:
         """Remove a dataset that was not in the scope it was recorded for.
