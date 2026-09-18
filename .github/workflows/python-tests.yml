@@ -24,6 +24,33 @@ permissions:
   contents: read
 
 jobs:
+  fixture-images:
+    name: Integration Fixture Images
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify compose image references are available
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          docker_images="$(docker compose -f tests/integration/docker/docker-compose.yml config --images)"
+          catalog_images="$(docker compose -f tests/integration/catalog_stack/docker-compose.yml config --images)"
+          while IFS= read -r image; do
+            echo "Checking $image"
+            for attempt in 1 2 3; do
+              if docker manifest inspect "$image" > /dev/null; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::Unable to resolve $image after $attempt attempts"
+                exit 1
+              fi
+              sleep $((attempt * 10))
+            done
+          done < <(printf '%s\n%s\n' "$docker_images" "$catalog_images" | sort -u)
+
   test:
     name: Unit Tests
     runs-on: ubuntu-latest

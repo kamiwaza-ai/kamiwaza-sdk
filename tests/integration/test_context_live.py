@@ -135,6 +135,7 @@ def _wait_for_ontology_ready(
     service: ContextService,
     ontology_id: str,
     *,
+    workroom_id: str | None = None,
     timeout_seconds: float | None = None,
     poll_seconds: float = 2.0,
 ) -> None:
@@ -147,7 +148,7 @@ def _wait_for_ontology_ready(
 
     while True:
         try:
-            instance = service.get_ontology(ontology_id)
+            instance = service.get_ontology(ontology_id, workroom_id=workroom_id)
         except APIError:
             if time.monotonic() >= deadline:
                 raise
@@ -379,9 +380,11 @@ def _create_temp_ontology(service: ContextService, *, prefix: str) -> str:
     return ontology_id
 
 
-def _safe_delete_ontology(service: ContextService, ontology_id: str) -> None:
+def _safe_delete_ontology(
+    service: ContextService, ontology_id: str, *, workroom_id: str | None = None
+) -> None:
     try:
-        service.delete_ontology(ontology_id)
+        service.delete_ontology(ontology_id, workroom_id=workroom_id)
     except APIError:
         pass
 
@@ -969,6 +972,124 @@ def test_context_ontology_search_knowledge(
     assert isinstance(search["facts"], list)
 
 
+@pytest.mark.skipif(
+    not os.getenv("KAMIWAZA_CONTEXT_FOREIGN_API_KEY", "").strip()
+    or not os.getenv("KAMIWAZA_CONTEXT_FOREIGN_WORKROOM_ID", "").strip(),
+    reason="Ontology isolation needs a second user PAT and separate workroom",
+)
+@pytest.mark.requires_embedding_model
+def test_context_ontology_known_answer_isolated_by_workroom(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    context_required_llm: str,
+) -> None:
+    """Require a retrievable answer and deny a user outside its workroom."""
+    assert context_required_llm
+    service = shared_context_service
+    foreign_api_key = os.getenv("KAMIWAZA_CONTEXT_FOREIGN_API_KEY", "").strip()
+    foreign_workroom_id = os.getenv("KAMIWAZA_CONTEXT_FOREIGN_WORKROOM_ID", "").strip()
+    if not foreign_api_key or not foreign_workroom_id:
+        pytest.skip(
+            "Ontology isolation needs a second user PAT and separate workroom "
+            "via KAMIWAZA_CONTEXT_FOREIGN_API_KEY and "
+            "KAMIWAZA_CONTEXT_FOREIGN_WORKROOM_ID"
+        )
+    foreign_service = KamiwazaClient(
+        service.client.base_url, api_key=foreign_api_key
+    ).context
+    assert (
+        service.client.auth.get_current_user().sub
+        != foreign_service.client.auth.get_current_user().sub
+    ), "Ontology isolation fixture must use a distinct user"
+    marker = f"sdkprobe{uuid4().hex}"
+    group_id = f"sdk-group-{uuid4().hex[:8]}"
+    created = service.create_ontology(
+        name=f"sdk-known-answer-{uuid4().hex[:8]}",
+        backend="graphiti",
+        workroom_id=session_workroom,
+    )
+    ontology_id = str(created["id"])
+    try:
+        _wait_for_ontology_ready(service, ontology_id, workroom_id=session_workroom)
+        added = service.add_knowledge(
+            ontology_id,
+            group_id=group_id,
+            messages=[
+                {"role": "user", "content": f"The answer to {marker} is cobalt."}
+            ],
+            workroom_id=session_workroom,
+        )
+        assert added["group_id"] == group_id
+
+        deadline = time.monotonic() + 90
+        while True:
+            found = service.search_knowledge(
+                ontology_id,
+                query=f"What is the answer to {marker}?",
+                group_ids=[group_id],
+                workroom_id=session_workroom,
+            )
+            facts = found["facts"]
+            assert isinstance(facts, list)
+            if "cobalt" in str(facts).lower():
+                break
+            if time.monotonic() >= deadline:
+                pytest.fail(f"Known answer for {marker} was not retrieved: {facts}")
+            time.sleep(3)
+
+        health = service.ontology_health(ontology_id, workroom_id=session_workroom)
+        assert health["ontology_id"] == ontology_id
+        assert health["healthy"] is True
+        memory = service.get_memory(
+            ontology_id,
+            group_id=group_id,
+            query=f"What is the answer to {marker}?",
+            workroom_id=session_workroom,
+        )
+        assert "cobalt" in str(memory["facts"]).lower()
+        episodes = service.get_episodes(
+            ontology_id,
+            group_id=group_id,
+            workroom_id=session_workroom,
+        )
+        assert episodes["episodes"]
+        assert marker in str(episodes["episodes"])
+
+        own = service.list_ontologies(workroom_id=session_workroom)
+        assert ontology_id in {str(item["id"]) for item in own}
+        with pytest.raises(KamiwazaError) as source_denied:
+            foreign_service.get_ontology(ontology_id, workroom_id=session_workroom)
+        assert source_denied.value.status_code in {
+            403,
+            404,
+        }, "Ontology isolation fixture user must not belong to the source workroom"
+        visible = foreign_service.list_ontologies(workroom_id=foreign_workroom_id)
+        assert ontology_id not in {str(item["id"]) for item in visible}
+        with pytest.raises(KamiwazaError) as denied:
+            foreign_service.get_ontology(ontology_id, workroom_id=foreign_workroom_id)
+        assert denied.value.status_code in {403, 404}
+        try:
+            foreign_search = foreign_service.search_knowledge(
+                ontology_id,
+                query=f"What is the answer to {marker}?",
+                group_ids=[group_id],
+                workroom_id=foreign_workroom_id,
+            )
+        except KamiwazaError as denied_search:
+            assert denied_search.status_code in {403, 404}
+        else:
+            assert not foreign_search["facts"], "Foreign user read the answer"
+        unrelated = service.search_knowledge(
+            ontology_id,
+            query=f"What is the answer to {marker}?",
+            group_ids=[f"sdk-unrelated-{uuid4().hex[:8]}"],
+            workroom_id=session_workroom,
+        )
+        assert not unrelated["facts"], "Unrelated group exposed the answer"
+    finally:
+        _safe_delete_ontology(service, ontology_id, workroom_id=session_workroom)
+
+
 @pytest.mark.requires_embedding_model
 def test_context_ontology_get_memory(
     live_kamiwaza_client,
@@ -1267,11 +1388,21 @@ def _assert_owner_can_find(doc: _IndexedDocument) -> None:
 def _assert_foreign_search_misses(
     search: Callable[[], dict[str, Any]], needle: str
 ) -> None:
-    """A foreign workroom is denied outright or sees none of the document."""
+    """A foreign workroom is denied outright or sees none of the document.
+
+    The probe runs against a room whose VectorDB is already provisioned (see
+    ``_create_foreign_workroom``), so it reaches backend resolution and this
+    stays a real isolation assertion. A ``503 vectordb_instance_not_found``
+    here means the room lost its backend after we waited for it — a
+    provisioning regression, not a pass.
+    """
     try:
         results = search()["results"]
     except KamiwazaError as error:
-        assert error.status_code in {403, 404}
+        assert error.status_code in {403, 404}, (
+            f"foreign-workroom search answered {error.status_code}; expected a "
+            f"denial or a miss against its provisioned backend: {error}"
+        )
     else:
         assert all(needle not in item["content"] for item in results)
 
@@ -1308,11 +1439,39 @@ def _assert_foreign_workroom_denied(doc: _IndexedDocument, foreign_id: str) -> N
 def _create_foreign_workroom(
     service: ContextService, cleanups: list[tuple[str, Callable[[], object]]]
 ) -> str:
+    """Create an ephemeral room that already has a VectorDB, ready to probe.
+
+    The room needs a backend for the probes to mean anything: a search against
+    a room with no VectorDB answers ``503 vectordb_instance_not_found`` before
+    resolving anything, which proves nothing about isolation.
+
+    Provision it explicitly rather than waiting on core's auto-provisioner.
+    That provisioner is eager only by default: with
+    ``WORKROOM_CONTEXT_AUTO_PROVISION_MODE=lazy`` a new room is provisioned on
+    first *write* (never by a search), and ``disabled`` leaves it to an
+    operator, so waiting would hang and fail on two supported deployments.
+    This mirrors how the owner's room gets its backend (``_create_temp_vectordb``
+    via the ``shared_workroom_vectordb`` fixture), which keeps both sides of the
+    isolation comparison set up the same way.
+    """
     workrooms = service.client.workrooms
     foreign_id = str(
         workrooms.create(f"sdk-t14-other-{uuid4().hex[:8]}", "ephemeral").id
     )
     cleanups.append(("foreign workroom", lambda: workrooms.delete(foreign_id)))
+    vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-t14-other-vdb",
+        workroom_id=foreign_id,
+    )
+    cleanups.append(
+        (
+            "foreign workroom vectordb",
+            lambda: _safe_delete_vectordb(
+                service, vectordb_id, workroom_id=foreign_id
+            ),
+        )
+    )
     return foreign_id
 
 
@@ -1380,7 +1539,9 @@ def test_context_uploaded_document_is_searchable_only_in_its_workroom(
                 ),
             )
         )
-        job = _wait_for_document_job(service, workroom_id=doc.workroom_id, job_id=job_id)
+        job = _wait_for_document_job(
+            service, workroom_id=doc.workroom_id, job_id=job_id
+        )
         assert job["collection_name"] == doc.collection_name
         items = service.list_pipeline_job_items(
             workroom_id=doc.workroom_id, job_id=job_id

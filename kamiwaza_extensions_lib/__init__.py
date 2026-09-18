@@ -25,6 +25,7 @@ from .errors import (
     OutOfEnvelopeAccessError,
     PlatformOutageError,
     PlatformRedirectError,
+    PlatformResponseTooLargeError,
     StreamInterruptedError,
     UnexpectedContextError,
 )
@@ -62,6 +63,7 @@ __all__ = [
     "OutOfEnvelopeAccessError",
     "PlatformOutageError",
     "PlatformRedirectError",
+    "PlatformResponseTooLargeError",
     "StreamInterruptedError",
     "get_model_client",
     "list_available_models",

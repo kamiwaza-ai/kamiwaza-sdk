@@ -83,7 +83,7 @@ class ToolTemplate(BaseModel):
     license: Optional[str] = None
     homepage: Optional[str] = None
     image: Optional[str] = None
-    capabilities: List[str] = []
+    capabilities: Optional[List[str]] = Field(default_factory=list)
     required_env_vars: List[str] = []
     env_defaults: Dict[str, str] = {}
     risk_tier: int = 1

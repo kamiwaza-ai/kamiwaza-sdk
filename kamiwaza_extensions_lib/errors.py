@@ -118,3 +118,9 @@ class StreamInterruptedError(KamiwazaRuntimeError):
     """
 
     class_name = "stream_interrupted"
+
+
+class PlatformResponseTooLargeError(KamiwazaRuntimeError):
+    """A bounded platform response exceeded its configured byte limit."""
+
+    class_name = "platform_response_too_large"

@@ -12,7 +12,12 @@ from fastapi import Request
 from ._headers import has_http_control_character, header_bytes, is_http_token
 from .auth import is_forwarded_auth_header, platform_auth_httpx_headers
 from .config import AuthConfig
-from .errors import PlatformOutageError, PlatformRedirectError, UnexpectedContextError
+from .errors import (
+    PlatformOutageError,
+    PlatformRedirectError,
+    PlatformResponseTooLargeError,
+    UnexpectedContextError,
+)
 from .url import _strip_api_suffix
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -161,6 +166,42 @@ def _request_headers(
     )
 
 
+async def _bounded_response(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    headers: httpx.Headers,
+    limit: int,
+    kwargs: dict[str, Any],
+) -> httpx.Response:
+    """Read at most limit bytes, without decompressing an untrusted response."""
+    headers["Accept-Encoding"] = "identity"
+    async with client.stream(method, url, headers=headers, **kwargs) as response:
+        if response.status_code in _REDIRECT_STATUS_CODES:
+            return response
+        if response.headers.get("content-encoding", "identity").strip().lower() not in (
+            "",
+            "identity",
+        ):
+            raise UnexpectedContextError(
+                "Bounded platform responses require identity encoding"
+            )
+        body = bytearray()
+        async for chunk in response.aiter_raw():
+            if len(chunk) > limit - len(body):
+                raise PlatformResponseTooLargeError(
+                    "Platform response exceeds configured byte limit"
+                )
+            body.extend(chunk)
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            content=bytes(body),
+            request=response.request,
+            extensions=response.extensions,
+        )
+
+
 async def platform_request(
     request: Request,
     method: str,
@@ -168,6 +209,7 @@ async def platform_request(
     *,
     headers: Mapping[str, str] | None = None,
     timeout: float = _DEFAULT_TIMEOUT_SECONDS,
+    max_response_bytes: int | None = None,
     **kwargs: Any,
 ) -> httpx.Response:
     """Call a canonical platform path with the incoming user's auth envelope.
@@ -179,6 +221,10 @@ async def platform_request(
     prompting the caller to correct the platform path rather than risk losing
     auth headers.
 
+    Set max_response_bytes to bound the returned body, including error bodies.
+    Bounded mode requests identity encoding, rejects compressed responses, and
+    closes the stream immediately on overflow without following redirects.
+
     The response is returned without calling ``raise_for_status`` so an
     extension can preserve the platform's 4xx/5xx status and error contract.
 
@@ -189,7 +235,14 @@ async def platform_request(
         UnexpectedContextError: If required runtime configuration is invalid.
         PlatformRedirectError: If the canonical platform route redirects.
         PlatformOutageError: If the platform transport fails.
+        PlatformResponseTooLargeError: If the bounded response exceeds its limit.
     """
+    if max_response_bytes is not None and (
+        isinstance(max_response_bytes, bool)
+        or not isinstance(max_response_bytes, int)
+        or max_response_bytes < 1
+    ):
+        raise ValueError("max_response_bytes must be a positive integer")
     forbidden = _FORBIDDEN_REQUEST_KWARGS.intersection(kwargs)
     if forbidden:
         names = ", ".join(sorted(forbidden))
@@ -208,12 +261,22 @@ async def platform_request(
             timeout=timeout,
             trust_env=False,
         ) as client:
-            response = await client.request(
-                method.upper(),
-                url,
-                headers=outbound_headers,
-                **kwargs,
-            )
+            if max_response_bytes is not None:
+                response = await _bounded_response(
+                    client,
+                    method.upper(),
+                    url,
+                    outbound_headers,
+                    max_response_bytes,
+                    kwargs,
+                )
+            else:
+                response = await client.request(
+                    method.upper(),
+                    url,
+                    headers=outbound_headers,
+                    **kwargs,
+                )
     except httpx.InvalidURL as exc:
         raise ValueError("platform_request received an invalid platform path") from exc
     except httpx.TransportError as exc:
