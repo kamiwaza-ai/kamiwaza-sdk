@@ -42,6 +42,12 @@ class _ByUrnClient(BaseService):
     route taking the URN as a query parameter — so the request plumbing lives
     here once. Each sub-client keeps its own public methods, because the models
     they parse and the promises they make differ.
+
+    Holding the request lines here takes each caller out of view of
+    ``agent_tools.descriptors._request_signature``, which reads a method's own
+    source: nine of the catalogue's published reads resolve no verb for that
+    reason, and the hint sweep skips what it cannot read. They are named in
+    ``_REQUEST_LINE_UNSEEN`` in ``tests/unit/agent_tools/test_hint_safety.py``.
     """
 
     _BASE_PATH: str

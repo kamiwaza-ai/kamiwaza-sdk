@@ -14,13 +14,19 @@ onto whatever its protocol revision calls a tool definition.
 **An entry comes at three levels of detail**, because the whole catalog is not
 the only thing a host might want from it. ``names`` is the identifiers alone,
 ``brief`` adds the category and the description, and ``full`` is every field.
-Measured over 335 published operations with ``cl100k_base``: 2,299 tokens,
-8,315, and 22,481 — the cheapest level costs a tenth of the whole catalog. The tiers are Anthropic's documented pattern for a large
-tool surface — a detail level that returns "name only, name and description,
-or the full definition with schemas" — and the shape Stripe's MCP server
-ships, where ``api_search`` finds an endpoint, ``api_details`` returns one
-endpoint's schema, and the call tools use it. A host reading the catalog to
-pick a name never has to pay for every parameter list to do it.
+Measured over 335 published operations with ``cl100k_base``, entries priced
+one at a time and summed, which is what :func:`measure_cost` returns: 2,631
+tokens, 8,650, and 22,481 — the cheapest level costs an eighth of the whole
+catalog. Serialising the same entries as one JSON array is a different
+measurement and a slightly smaller one, because an array shares separators
+between entries: 2,299, 8,317 and 22,483. ``COST.md`` carries both.
+
+The tiers are Anthropic's documented pattern for a large tool surface — a
+detail level that returns "name only, name and description, or the full
+definition with schemas" — and the shape Stripe's MCP server ships, where
+``api_search`` finds an endpoint, ``api_details`` returns one endpoint's
+schema, and the call tools use it. A host reading the catalog to pick a name
+never has to pay for every parameter list to do it.
 """
 
 from __future__ import annotations
@@ -149,9 +155,10 @@ class CatalogEntry:
         with the protocol revision and this package must not.
 
         Every level is a mapping carrying ``id``, so a host parses one element
-        type whichever level it asked for. A bare list of identifiers would be
-        1,627 tokens against this level's 2,299, and changing what an element
-        *is* with a query parameter is a worse contract than 672 tokens buys.
+        type whichever level it asked for. Serialised as one array — both sides
+        measured the same way — a bare list of identifiers is 1,627 tokens
+        against this level's 2,299, and changing what an element *is* with a
+        query parameter is a worse contract than 672 tokens buys.
 
         Args:
             detail: How much of the entry to return. ``names`` is the
@@ -288,9 +295,9 @@ def measure_cost(
     measured in the compact encoding a JSON transport sends — no spaces, which
     is what ``starlette.responses.JSONResponse`` emits and what this counts —
     so a server's own envelope of counts and filters is outside the number. On
-    the 335-operation surface that envelope is 85 tokens against 22,481, and a
-    caller budgeting a context window wants the part that scales with the
-    surface.
+    the 335-operation surface that envelope is 85 tokens against the 22,481
+    this sums at ``full``, and a caller budgeting a context window wants the
+    part that scales with the surface.
 
     Args:
         entries: Catalog entries to measure.

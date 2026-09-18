@@ -43,7 +43,14 @@ class ServingService(BaseService):
 
     def estimate_model_vram(self, deployment_request: CreateModelDeployment) -> dict:
         """Estimate the VRAM required for a model deployment."""
-        return self.client.post("/serving/estimate_model_vram", json=deployment_request.model_dump())
+        # mode="json" because the request carries UUIDs and `requests` encodes
+        # json= with the stdlib encoder: a raw model_dump() raised
+        # "TypeError: Object of type UUID is not JSON serializable" on every
+        # call, so no caller of this method ever reached the transport.
+        return self.client.post(
+            "/serving/estimate_model_vram",
+            json=deployment_request.model_dump(mode="json"),
+        )
     
     def deploy_model(self,
                 model_id: Optional[Union[str, UUID]] = None,
@@ -131,14 +138,13 @@ class ServingService(BaseService):
             **kwargs
         )
 
-        # Convert UUIDs to strings in the deployment_request dictionary
-        request_dict = deployment_request.model_dump()
-        request_dict['m_id'] = str(request_dict['m_id'])
-        if request_dict.get('m_file_id'):
-            request_dict['m_file_id'] = str(request_dict['m_file_id'])
-        request_dict['m_config_id'] = str(request_dict['m_config_id'])
-    
-        response = self.client.post("/serving/deploy_model", json=request_dict)
+        # Same mode="json" dump as estimate_model_vram: it stringifies the
+        # three UUID fields the platform expects as strings, and keeps a
+        # missing m_file_id null, which is what the per-field conversion this
+        # replaces did in four lines.
+        response = self.client.post(
+            "/serving/deploy_model", json=deployment_request.model_dump(mode="json")
+        )
         deployment_id = UUID(response) if isinstance(response, str) else response
 
         if wait and isinstance(deployment_id, UUID):

@@ -435,9 +435,9 @@
     "install_and_bind_gate_package",
     "pair_federation_and_allow_user",
     "preflight_and_deploy_model",
-    "prepare_dataset_ingestion",
     "rag_query",
     "replace_gate_package",
-    "retire_deployment"
+    "retire_deployment",
+    "run_source_ingestion"
   ]
 }

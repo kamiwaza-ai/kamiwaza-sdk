@@ -441,7 +441,7 @@ def test_the_spec_refuses_an_approval_step_on_a_read_only_workflow() -> None:
     [
         ("diagnose deployment", "diagnose_deployment"),
         ("why is my deployment not serving", "diagnose_deployment"),
-        ("ask a question over my documents", "rag_query"),
+        ("get rows from a dataset", "rag_query"),
         ("create a workroom", "create_workroom_and_enter"),
         ("deploy an app from the garden", "deploy_app_from_garden"),
         # "connect" reads two ways on this platform: pairing two clusters and
@@ -472,6 +472,12 @@ def test_a_query_matching_no_workflow_returns_nothing() -> None:
     """FR-040: the honest answer, not the least-bad workflow."""
     assert search_workflows("xylophone repair scheduling") == ()
     assert search_workflows("   ") == ()
+    # This phrase used to return rag_query, and the match was the defect:
+    # rag_query takes no question and answers none, it materialises rows from
+    # a dataset. A caller with a question wants the context search and
+    # retrieve operations, which no workflow collapses. Finding nothing here
+    # is the truthful answer, so it is pinned rather than left to drift back.
+    assert search_workflows("ask a question over my documents") == ()
 
 
 def test_the_search_limit_is_honoured() -> None:

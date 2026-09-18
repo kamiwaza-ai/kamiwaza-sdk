@@ -51,7 +51,7 @@ def endpoint_of(instances: list[Any]) -> str | None:
 
 def _await_deployment(
     client: Any, deployment: Any, model_id: str, timeout_seconds: int
-) -> DeploymentOutcome:
+) -> DeploymentOutcome | Refusal:
     """Wait for a deployment to report ready and collect its endpoint.
 
     The single polling step shared by the deployment workflows. Keeping it in
@@ -64,8 +64,19 @@ def _await_deployment(
         timeout_seconds: Bound on the wait.
 
     Returns:
-        The deployment with its instances and endpoint.
+        The deployment with its instances and endpoint, or a refusal when the
+        platform did not accept the deploy.
     """
+    # ``ServingService.deploy_model`` returns ``Union[UUID, bool]`` and answers
+    # False when the platform refuses the request. That False used to flow into
+    # ``wait_deployment_ready``, which resolves its argument with
+    # ``UUID(str(deployment_id))`` — so a refused deploy surfaced as a status
+    # lookup on the id False rather than as a refusal.
+    if deployment is False:
+        return Refusal(
+            reason="The platform refused the deploy request.",
+            shortfall="a deployment the platform accepted",
+        )
     deployment_id = getattr(deployment, "id", deployment)
     ready = client.serving.wait_deployment_ready(
         deployment_id, timeout_seconds=timeout_seconds
@@ -109,12 +120,13 @@ def find_and_deploy_model(
         timeout_seconds: Bound on the readiness wait.
 
     Returns:
-        The ready deployment, or a :class:`Refusal` naming the search term when
-        nothing matched — an empty search result is not a deployment failure,
-        and reporting it as one sends an agent retrying a term that will never
-        match.
+        The ready deployment, or a refusal — nothing matched the search term,
+        or the platform declined the deploy.
     """
     matches = client.models.search_models(query, limit=1)
+    # An empty search result is not a deployment failure, and reporting it as
+    # one sends an agent retrying a term that will never match. This rationale
+    # sat in the docstring, which every listing pays for: 30 tokens.
     if not matches:
         return Refusal(
             reason="No catalogued model matches that search term.",
@@ -144,7 +156,7 @@ def find_and_deploy_model(
 )
 def deploy_and_connect_model(
     client: Any, model_id: str, *, timeout_seconds: int = 3600
-) -> DeploymentOutcome:
+) -> DeploymentOutcome | Refusal:
     """Deploy a model by identifier and return its endpoint.
 
     Args:
@@ -153,7 +165,8 @@ def deploy_and_connect_model(
         timeout_seconds: Bound on the readiness wait.
 
     Returns:
-        The ready deployment and its endpoint.
+        The ready deployment and its endpoint, or a refusal when the platform
+        declined the deploy.
     """
     deployment = client.serving.deploy_model(model_id=model_id, wait=False)
     return _await_deployment(client, deployment, model_id, timeout_seconds)

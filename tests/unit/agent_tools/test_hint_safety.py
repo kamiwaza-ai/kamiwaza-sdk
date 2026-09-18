@@ -24,6 +24,7 @@ from kamiwaza_sdk.agent_tools.descriptors import (
     resolve_service,
     unknown_verbs,
 )
+from kamiwaza_sdk.agent_tools.envelopes import CallContext, platform_fault
 from kamiwaza_sdk.agent_tools.ids import UNPUBLISHED
 from kamiwaza_sdk.agent_tools.schemas import underivable
 from kamiwaza_sdk.agent_tools.spec_index import build_index
@@ -76,6 +77,49 @@ _QUERY_STYLE_POSTS: dict[str, str] = {
     ),
 }
 
+#: Published reads whose request line ``_request_signature`` cannot see.
+#:
+#: The sweep below reads the HTTP verb out of the method's own source, so an
+#: operation that issues its request from somewhere else — a shared base-class
+#: helper, a streaming transport, a path built at call time — yields no
+#: signature and is skipped rather than checked. Skipped is not checked, so the
+#: set is written down: measured on this branch, 24 of the 163 published reads,
+#: nine of them the catalogue's by-URN reads whose request lines moved into
+#: ``_ByUrnClient`` in ``services/catalog.py``.
+#:
+#: Each was read by hand and none of them writes. The test asserts the set
+#: exactly, in both directions: a new read that hides its request line has to
+#: be added here deliberately, and one that becomes readable has to be removed
+#: so the sweep starts covering it.
+_REQUEST_LINE_UNSEEN: frozenset[str] = frozenset(
+    {
+        "agents.list",
+        "apps.find_template",
+        "catalog.containers.get",
+        "catalog.containers.list",
+        "catalog.datasets.get",
+        "catalog.datasets.get_schema",
+        "catalog.datasets.list",
+        "catalog.get_dataset",
+        "catalog.list_containers",
+        "catalog.list_datasets",
+        "catalog.list_secrets",
+        "connectors.browse_surface",
+        "connectors.search_surface",
+        "federations.list",
+        "kaizen_ops.get_model_settings",
+        "models.check_download_status",
+        "models.filter_compatible_models",
+        "models.get_model_by_repo_id",
+        "models.get_model_download_status",
+        "retrieval.flight_batches",
+        "retrieval.slack_messages",
+        "retrieval.stream_job",
+        "serving.list_active_deployments",
+        "serving.stream_deployment_logs",
+    }
+)
+
 
 def _request_verb(client, selector: str, method: str) -> tuple[str, str] | None:
     """Return the HTTP method and path the operation issues, if it is literal.
@@ -119,6 +163,33 @@ def test_no_published_read_issues_a_state_changing_request(index, client) -> Non
     )
 
 
+def test_the_sweeps_blind_spot_is_exactly_the_named_set(index, client) -> None:
+    """A read the sweep cannot see passes it silently, so name every one.
+
+    The sweep skips an operation whose request line is not in its own source.
+    Without this the skipped set is free to grow with every refactor that moves
+    a request into a helper, and nothing says which reads are unchecked.
+    """
+    unseen = {
+        descriptor.selector
+        for descriptor in describe_all(index)
+        if descriptor.hints.read_only
+        and _request_verb(client, descriptor.selector, descriptor.entry.method)
+        is None
+    }
+    added = sorted(unseen - _REQUEST_LINE_UNSEEN)
+    removed = sorted(_REQUEST_LINE_UNSEEN - unseen)
+    assert not added, (
+        "these published reads no longer show the sweep a request line, so it "
+        "cannot check them. Read each one and add it to _REQUEST_LINE_UNSEEN, "
+        f"or give it a literal request call: {added}"
+    )
+    assert not removed, (
+        "the sweep can now read these, so they are checked and their exemption "
+        f"is stale. Delete them from _REQUEST_LINE_UNSEEN: {removed}"
+    )
+
+
 def test_the_query_style_exemptions_are_all_still_read_only_posts(
     index, client
 ) -> None:
@@ -154,6 +225,31 @@ def test_verify_connection_publishes_as_an_open_world_write(index) -> None:
     assert derive_hints("connectors.verify_connection", "verify_connection") is None, (
         "'verify' must classify nothing, so a future verify_* cannot inherit a read"
     )
+
+
+def test_verify_connection_does_not_publish_as_retry_safe(index) -> None:
+    """Its docstring forbids polling, and ``idempotent`` is published as retry safety.
+
+    ``envelopes.platform_fault`` carries ``idempotent`` to a host as
+    ``safe_to_retry``. Declaring it on an operation whose docstring says "do
+    not poll it on a timer or fan it out across a catalog" invites exactly the
+    automatic retry the docstring warns against.
+    """
+    descriptor = next(
+        d for d in describe_all(index) if d.selector == "connectors.verify_connection"
+    )
+    assert not descriptor.hints.idempotent
+    context = CallContext(
+        status="502",
+        code="provider_unreachable",
+        timeout_ms=5_000,
+        source="platform",
+        request_id="req-1",
+    )
+    failure = platform_fault(
+        "the provider did not answer", context, idempotent=descriptor.hints.idempotent
+    )
+    assert failure.detail == {"safe_to_retry": False}
 
 
 def test_gates_discover_publishes_as_a_write(index) -> None:

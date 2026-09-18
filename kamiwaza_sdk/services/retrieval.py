@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Generator, Iterator, Optional, Sequence
 
 from pydantic import SecretStr, ValidationError as PydanticValidationError
 
@@ -44,6 +44,46 @@ class RetrievalResult:
     inline: Optional[InlineData] = None
     stream: Optional[Iterator[RetrievalStreamEvent]] = None
     grpc: Optional[GrpcHandshake] = None
+
+
+class _OwnedEventStream(Iterator[RetrievalStreamEvent]):
+    """An SSE event iterator that owns the HTTP response behind it.
+
+    Measured on a stubbed transport: closing the bare ``_iter_sse`` generator
+    before its first ``next`` ran no ``finally`` block, so the response
+    recorded 0 close calls and the socket outlived the caller that refused the
+    stream. Holding the response here makes ``close`` release it whether or not
+    an event was ever read.
+    """
+
+    __slots__ = ("_events", "_response")
+
+    def __init__(
+        self,
+        response: Any,
+        events: Generator[RetrievalStreamEvent, None, None],
+    ) -> None:
+        """Take the open response and the generator reading it.
+
+        Args:
+            response: The streaming HTTP response to release on close.
+            events: The generator decoding that response.
+        """
+        self._response = response
+        self._events = events
+
+    def __next__(self) -> RetrievalStreamEvent:
+        """Return the next event the response carries.
+
+        Returns:
+            RetrievalStreamEvent: The next decoded event.
+        """
+        return next(self._events)
+
+    def close(self) -> None:
+        """End the decoding and release the response."""
+        self._events.close()
+        self._response.close()
 
 
 class RetrievalService(BaseService):
@@ -120,7 +160,7 @@ class RetrievalService(BaseService):
             stream=True,
         )
         response.raise_for_status()
-        return self._iter_sse(response)
+        return _OwnedEventStream(response, self._iter_sse(response))
 
     def stream_job(self, job_id: str) -> Iterator[RetrievalStreamEvent]:
         """Stream a retrieval job's events; alias of stream_events."""
@@ -345,7 +385,7 @@ class RetrievalService(BaseService):
             return value.isoformat()
         return value
 
-    def _iter_sse(self, response) -> Iterator[RetrievalStreamEvent]:
+    def _iter_sse(self, response) -> Generator[RetrievalStreamEvent, None, None]:
         buffer: list[str] = []
         event_type = "message"
         try:

@@ -69,8 +69,8 @@ from .data import (
     complete_dataset_ingestion,
     enclave_ingest,
     ingest_dataset_and_index,
-    prepare_dataset_ingestion,
     rag_query,
+    run_source_ingestion,
 )
 from .models import (
     deploy_and_connect_model,
@@ -103,9 +103,9 @@ __all__ = [
     "install_and_bind_gate_package",
     "pair_federation_and_allow_user",
     "preflight_and_deploy_model",
-    "prepare_dataset_ingestion",
     "rag_query",
     "register",
     "replace_gate_package",
     "retire_deployment",
+    "run_source_ingestion",
 ]

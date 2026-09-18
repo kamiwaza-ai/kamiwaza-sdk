@@ -289,11 +289,17 @@ HINT_OVERRIDES: dict[str, BehaviourHints] = {
     # `verify` is not a read verb here. The platform probes the provider and
     # persists the resulting connection health, so one call can move a
     # member's stored connection into degraded or reauth-required. The probe
-    # reaches the third-party provider, so it is open-world as well, and the
-    # health it writes is a state the same call would write again, so a repeat
-    # is not a second thing.
+    # reaches the third-party provider, so it is open-world as well.
+    #
+    # Not idempotent, and the docstring is why: it says the call issues live
+    # third-party calls and must not be polled on a timer or fanned out across
+    # a catalog. `envelopes.platform_fault` publishes `idempotent` as
+    # `safe_to_retry`, so declaring it here would tell a host that the one
+    # thing the docstring forbids is safe. Repeating the call also re-probes
+    # the provider and can land on a different health than the first, which is
+    # not the same-result-on-repeat this hint promises.
     "connectors.verify_connection": BehaviourHints(
-        read_only=False, destructive=False, idempotent=True, open_world=True
+        read_only=False, destructive=False, idempotent=False, open_world=True
     ),
     # `POST /authz/gates/discover` imports a caller-supplied dotted classpath
     # server-side, which runs that module's top-level code inside the

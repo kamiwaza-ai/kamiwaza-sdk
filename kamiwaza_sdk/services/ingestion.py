@@ -32,7 +32,8 @@ class IngestionService(BaseService):
             **kwargs: Source-specific ingestion options.
 
         Returns:
-            IngestResponse: The accepted ingestion and its job identifier.
+            IngestResponse: The urns the run created, its status and any
+            errors it reported. The immediate run reports no job identifier.
         """
         payload = ActiveIngestRequest(source_type=source_type, kwargs=kwargs)
         response = self.client.post("/ingestion/ingest/run", json=payload.model_dump())
@@ -128,13 +129,14 @@ class IngestionService(BaseService):
         return OperationStatus.model_validate(response)
 
     def get_job_status(self, job_id: str) -> IngestJobStatus:
-        """Fetch one ingestion job's status, including its row counts.
+        """Fetch one ingestion job's status, error count and created urns.
 
         Args:
             job_id: Identifier of the ingestion job.
 
         Returns:
-            IngestJobStatus: The job's current state.
+            IngestJobStatus: The job's state, its last run, how many errors it
+            counted and the urns it created. No row or schema count.
         """
         response = self.client.get(f"/ingestion/ingest/status/{job_id}")
         return IngestJobStatus.model_validate(response)

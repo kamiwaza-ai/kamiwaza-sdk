@@ -1,6 +1,5 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import TYPE_CHECKING, List, Dict, Any, Optional
 import platform
-from uuid import UUID
 from ...exceptions import APIError
 from ...schemas.models.model_file import ModelFile
 from ...schemas.models.model_search import HubModelFileSearch
@@ -8,6 +7,20 @@ from ...schemas.models.model_search import HubModelFileSearch
 
 class CompatibilityMixin:
     """Mixin for OS compatibility checks."""
+
+    # The host class supplies these; this mixin only uses them. Same
+    # declaration as ModelDownloadMixin in downloads.py, for the same reason:
+    # a mixin read on its own has no attributes, so without this every use of
+    # them is an error the moment this file is type-checked. ModelService sets
+    # _server_info to None in __init__ and this file fills it, so it is
+    # Optional here rather than Any.
+    if TYPE_CHECKING:
+        client: Any
+        _server_info: Optional[Dict[str, Any]]
+
+        def search_models(self, *args: Any, **kwargs: Any) -> List[Any]: ...
+
+        def search_hub_model_files(self, *args: Any, **kwargs: Any) -> List[Any]: ...
     
     def _get_server_os(self) -> str:
         """
@@ -43,7 +56,9 @@ class CompatibilityMixin:
         Returns:
             List[Dict[str, Any]]: A list of compatible models with their files.
         """
-        server_os = self._get_server_os()
+        # Called for its caching side effect: it populates `self._server_info`,
+        # which each entry carries below. The returned OS string is not read.
+        self._get_server_os()
         models = self.search_models(model_name)
         
         # Let server handle compatibility via download endpoint

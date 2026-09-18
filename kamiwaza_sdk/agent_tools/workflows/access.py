@@ -1,10 +1,10 @@
 """Federation, subject, and gate-package workflows.
 
-Every workflow here reads back what it wrote, and carries the read as JSON
-data rather than as an SDK object. Access control that reports success
-without confirming the resulting grant is the failure mode these exist to
-catch: an agent told "granted" moves on, and the member still cannot reach
-anything.
+Every workflow here reads the platform back after it writes, and carries the
+read as JSON data rather than as an SDK object. Access control that reports
+success without confirming the resulting grant is the failure mode these
+exist to catch: an agent told "granted" moves on, and the member still
+cannot reach anything.
 """
 
 from __future__ import annotations
@@ -12,7 +12,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from kamiwaza_sdk.schemas.authz import ObjectModel, RelationshipTuple, SubjectModel
+from kamiwaza_sdk.schemas.authz import (
+    CheckRequest,
+    ObjectModel,
+    RelationshipTuple,
+    SubjectModel,
+)
 
 from ._contract import WorkflowSpec, register
 
@@ -66,16 +71,15 @@ def _grants_of(client: Any, username: str) -> Any:
     return _as_data(client.subjects.grants(username).list())
 
 
+# The hash is a required field rather than an optional argument: a gate
+# package decides whether other code may run, so identifying one by name
+# alone would let the index decide what executes.
 @dataclass(frozen=True, slots=True)
 class GatePackageRef:
     """A gate package, pinned.
 
-    The hash is a required field rather than an optional argument: a gate
-    package decides whether other code may run, so identifying one by name
-    alone would let the index decide what executes.
-
     Attributes:
-        name: Installed package name, used to read the binding back.
+        name: Installed package name; reads the binding back.
         spec: Package specifier.
         hash_digest: Hash the package must match.
         index_url: Package index, when not the default.
@@ -91,12 +95,16 @@ class GatePackageRef:
     WorkflowSpec(
         name="install_and_bind_gate_package",
         summary="Install a hash-pinned gate package and read back its binding.",
-        terminal_artifact="The installed package's state, read back after install.",
+        terminal_artifact="The installed package's state, read back.",
         polling_step=None,
         approval_step="Installing the package.",
-        idempotent=True,
+        idempotent=False,
         reads_only=False,
         destructive=False,
+        not_idempotent_because=(
+            "Installing POSTs a new package record, so a second call "
+            "conflicts rather than reinstalling. Read the binding first."
+        ),
     )
 )
 def install_and_bind_gate_package(
@@ -109,12 +117,12 @@ def install_and_bind_gate_package(
         package: The pinned package to install.
 
     Returns:
-        Mapping with the ``install`` result as data and the ``binding`` read
-        back. Installing without confirming leaves an agent believing an
-        unverified package is bound. ``install`` carries the whole
-        ``GatePackageInstallResult``, since that model has no single status
-        field and stringifying it published a model repr instead of data.
+        Mapping with the ``install`` result and the ``binding`` read back.
     """
+    # Installing without confirming leaves an agent believing an unverified
+    # package is bound. ``install`` carries the whole
+    # ``GatePackageInstallResult``: that model has no single status field, and
+    # stringifying it published a model repr instead of data.
     installed = client.gates.packages.install(
         package.spec, package.hash_digest, index_url=package.index_url
     )
@@ -127,22 +135,22 @@ def install_and_bind_gate_package(
 @register(
     WorkflowSpec(
         name="replace_gate_package",
-        summary="Replace an installed gate package and report every binding.",
-        terminal_artifact="The new package hash and a report of all bindings.",
+        summary="Replace an installed gate package and report the bindings.",
+        terminal_artifact="The new package hash and the first page of bindings.",
         polling_step=None,
         approval_step="Replacing the package.",
         idempotent=False,
         reads_only=False,
         destructive=True,
         not_idempotent_because=(
-            "Replacing re-resolves every existing binding, and a failed "
-            "replace can leave bindings pointing at the previous package. "
-            "Read the binding report before calling again."
+            "Replacing re-resolves every binding, and a failed replace can "
+            "leave them pointing at the previous package. Read the binding "
+            "report first."
         ),
     )
 )
 def replace_gate_package(client: Any, package: GatePackageRef) -> dict[str, Any]:
-    """Replace a gate package and report what every binding now resolves to.
+    """Replace a gate package and report the bindings the platform lists.
 
     Args:
         client: The platform client.
@@ -150,9 +158,12 @@ def replace_gate_package(client: Any, package: GatePackageRef) -> dict[str, Any]
 
     Returns:
         Mapping with ``replaced``, the new ``hash``, the ``result`` as data,
-        and a ``bindings`` report covering every package the platform now
-        holds.
+        and ``bindings``, one page whose ``total`` counts them all.
     """
+    # ``GatePackagesAPI.list`` takes no page argument, so ``bindings`` is the
+    # first page the platform serves (20 per page by default) and ``total``
+    # is how many exist. Calling this a report of every binding overstated a
+    # page whenever a cluster held more.
     replaced = client.gates.packages.replace(
         package.name,
         package.spec,
@@ -177,6 +188,7 @@ class FederationEnrolment:
         username: User to enrol.
         remote_url: Remote federation URL, when the role needs one.
         attributes: Attributes to set on the subject.
+        preshared_key: Key both sides of the pairing must share.
     """
 
     name: str
@@ -184,37 +196,48 @@ class FederationEnrolment:
     username: str
     remote_url: str | None = None
     attributes: dict[str, Any] | None = None
+    preshared_key: str | None = None
 
 
 @register(
     WorkflowSpec(
         name="pair_federation_and_allow_user",
-        summary="Pair a federation and grant one user access across it.",
-        terminal_artifact="The federation id and the verified grant.",
+        summary="Pair a federation and enrol one user across it.",
+        terminal_artifact="The federation id, the subject, and its grants.",
         polling_step=None,
         approval_step="Pairing the federation.",
-        idempotent=True,
+        idempotent=False,
         reads_only=False,
         destructive=False,
+        not_idempotent_because=(
+            "Pairing POSTs a new federation record on every call, so a "
+            "second call adds a second pairing. Read the federation list "
+            "before calling again."
+        ),
     )
 )
 def pair_federation_and_allow_user(
     client: Any, enrolment: FederationEnrolment
 ) -> dict[str, Any]:
-    """Pair a federation, enrol a user, and read the grant back.
+    """Pair a federation, enrol a user, and read that user's grants.
+
+    Writes no grant: the grants read back are the ones the subject already
+    holds, and ``grant_subject_access`` adds one. Omitting ``preshared_key``
+    mints a UUID4 nothing returns, so a two-sided pairing must supply it.
 
     Args:
         client: The platform client.
         enrolment: The pairing and the user to enrol.
 
     Returns:
-        Mapping with ``federation``, ``subject`` and the ``grants`` list read
-        back after the enrolment.
+        Mapping with ``federation``, ``subject`` and the ``grants`` the
+        subject holds.
     """
     federation = client.federations.pair(
         name=enrolment.name,
         role=enrolment.role,
         remote_url=enrolment.remote_url,
+        preshared_key=enrolment.preshared_key,
     )
     subject = client.subjects.upsert(
         enrolment.username, attributes=enrolment.attributes or {}
@@ -230,7 +253,7 @@ def pair_federation_and_allow_user(
     WorkflowSpec(
         name="grant_subject_access",
         summary="Create or update a subject, grant access, and read it back.",
-        terminal_artifact="The subject and its effective grants.",
+        terminal_artifact="The grant written and the check that confirms it.",
         polling_step=None,
         approval_step="Creating the grant.",
         idempotent=True,
@@ -248,7 +271,7 @@ def grant_subject_access(
     subject_type: str = "user",
     attributes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Grant one subject access: upsert it, write the tuple, read the grant back.
+    """Grant one subject access, then confirm it for that same subject.
 
     Args:
         client: The platform client.
@@ -260,17 +283,29 @@ def grant_subject_access(
         attributes: Attributes to set on the subject.
 
     Returns:
-        Mapping with ``subject`` and its ``grants``, read back after the write.
+        Mapping with ``subject``, the ``grant`` written, and the ``check``
+        of that same grant.
     """
     subject = client.subjects.upsert(username, attributes=attributes or {})
-    client.authz.upsert_tuple(
-        RelationshipTuple(
-            subject=SubjectModel(namespace=subject_type, id=username),
-            relation=relation,
-            object=ObjectModel(namespace=object_type, id=object_id),
+    # The tuple routes key a subject by the namespace and id in the body.
+    # ``subjects.grants(username).list()`` reads a different route, which
+    # resolves its path segment to a Keycloak id first, so a username written
+    # here need not be the id that list is keyed on. The check below reuses
+    # this tuple's own subject and object, so the confirmation names the
+    # identity the write named either way the platform resolves the string.
+    granted = RelationshipTuple(
+        subject=SubjectModel(namespace=subject_type, id=username),
+        relation=relation,
+        object=ObjectModel(namespace=object_type, id=object_id),
+    )
+    client.authz.upsert_tuple(granted)
+    decision = client.authz.check_access(
+        CheckRequest(
+            subject=granted.subject, relation=relation, object=granted.object
         )
     )
     return {
         "subject": getattr(subject, "username", username),
-        "grants": _grants_of(client, username),
+        "grant": _as_data(granted),
+        "check": _as_data(decision),
     }
