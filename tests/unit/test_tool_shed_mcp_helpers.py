@@ -170,20 +170,46 @@ def test_jsonrpc_envelope_skips_a_notification_sent_before_the_response() -> Non
 
     Returning the first JSON object would hand back the notification, whose id
     does not correlate, and fail a healthy server. The response is the frame
-    carrying result or error and no method.
+    carrying result or error and no method. Events are separated by blank
+    lines, which is what makes these three separate messages rather than one.
     """
     body = [
         'data: {"jsonrpc": "2.0", "method": "notifications/message", '
         '"params": {"level": "info"}}',
+        "",
         'data: {"jsonrpc": "2.0", "id": 99, "method": "roots/list"}',
+        "",
         'data: {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-03-26"}}',
+        "",
     ]
     assert _jsonrpc_envelope("text/event-stream", body, "tool-abc") == ENVELOPE
 
 
+def test_jsonrpc_envelope_reads_a_response_split_across_data_fields() -> None:
+    """One event's consecutive data fields are a single payload.
+
+    The HTML standard joins them with newlines before dispatch, so parsing each
+    line on its own would fail both halves and report a healthy tool as never
+    having answered.
+    """
+    body = [
+        "event: message",
+        'data: {"jsonrpc": "2.0", "id": 1,',
+        'data:  "result": {"protocolVersion": "2025-03-26"}}',
+        "",
+    ]
+    assert _jsonrpc_envelope("text/event-stream", body, "tool-abc") == ENVELOPE
+
+
+def test_jsonrpc_envelope_reads_an_event_the_stream_never_dispatched() -> None:
+    """A stream that ends without a trailing blank line still carries its reply."""
+    body = ['data: {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "1"}}']
+    assert _jsonrpc_envelope("text/event-stream", body, "tool-abc")["id"] == 1
+
+
 def test_jsonrpc_envelope_returns_an_error_response() -> None:
     """A JSON-RPC error is an answer; the caller asserts on it, not the parser."""
-    body = ['data: {"jsonrpc": "2.0", "id": 1, "error": {"code": -32601}}']
+    body = ['data: {"jsonrpc": "2.0", "id": 1, "error": {"code": -32601}}', ""]
     envelope = _jsonrpc_envelope("text/event-stream", body, "tool-abc")
     assert envelope["error"] == {"code": -32601}
 
@@ -192,6 +218,6 @@ def test_jsonrpc_envelope_rejects_a_stream_of_notifications_only() -> None:
     with pytest.raises(AssertionError, match="no JSON-RPC response"):
         _jsonrpc_envelope(
             "text/event-stream",
-            ['data: {"jsonrpc": "2.0", "method": "notifications/message"}'],
+            ['data: {"jsonrpc": "2.0", "method": "notifications/message"}', ""],
             "tool-abc",
         )

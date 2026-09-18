@@ -31,6 +31,7 @@ import json
 import os
 import time
 from collections.abc import Iterable, Iterator
+from itertools import chain
 from contextlib import suppress
 from typing import NoReturn
 from uuid import UUID, uuid4
@@ -355,6 +356,20 @@ def _mcp_endpoint(advertised_url: str) -> str:
     return f"{base}{MCP_PATH}"
 
 
+def _decode_event(fields: list[str]) -> object | None:
+    """One server-sent event's data fields, decoded, or None if not JSON.
+
+    A keepalive or a partial event is not an error to raise on -- the reader
+    moves to the next event -- so an undecodable payload comes back as None.
+    """
+    if not fields:
+        return None
+    try:
+        return json.loads("\n".join(fields))
+    except json.JSONDecodeError:
+        return None
+
+
 def _is_jsonrpc_response(frame: object) -> bool:
     """Whether a decoded stream frame is the answer to a call.
 
@@ -393,21 +408,32 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
     if "json" in transport:
         return json.loads("\n".join(body_lines))
     if "text/event-stream" in transport:
-        for line in body_lines:
-            if not line.startswith("data:"):
-                # Comment lines (":") and the event/id fields carry no payload,
-                # and a keepalive frame is not the reply. Only `data:` can be.
+        # An event's consecutive ``data:`` fields are one payload joined by
+        # newlines, and the blank line dispatches the event (HTML standard,
+        # server-sent events). Parsing each line on its own would fail both
+        # halves of a response the server split across two fields and report a
+        # healthy tool as never having answered. The synthetic trailing blank
+        # line dispatches a stream that ends without one.
+        fields: list[str] = []
+        for line in chain(body_lines, [""]):
+            if line.startswith("data:"):
+                value = line[len("data:") :]
+                # The spec strips one optional space after the colon. Kept for
+                # faithfulness, not pinned by a test: JSON ignores whitespace,
+                # so no payload can tell the two spellings apart.
+                fields.append(value[1:] if value.startswith(" ") else value)
                 continue
-            payload = line[len("data:") :].strip()
-            try:
-                frame = json.loads(payload)
-            except json.JSONDecodeError:
+            if line.strip():
+                # Comment lines (":") and the event/id/retry fields carry no
+                # payload. Only ``data:`` can.
                 continue
+            frame = _decode_event(fields)
+            fields = []
             if _is_jsonrpc_response(frame):
                 return frame
         raise AssertionError(
             f"the event-stream reply from {name} carried no JSON-RPC response in "
-            "any data: frame, so the initialize call was never answered"
+            "any event, so the initialize call was never answered"
         )
     raise AssertionError(
         f"MCP initialize against {name} returned content-type {content_type!r}; "
@@ -498,7 +524,7 @@ def _assert_appears_in_discovery(client, deployment_id: UUID, name: str) -> None
 
 @pytest.mark.usefixtures("live_server_available")
 def test_tool_shed_template_deploy_names_missing_required_env_vars(
-    live_kamiwaza_client,
+    live_kamiwaza_client, stopped_tool_deployments
 ) -> None:
     """A template deploy missing a required variable names the variable.
 
@@ -532,10 +558,17 @@ def test_tool_shed_template_deploy_names_missing_required_env_vars(
     template = candidates[0]
     required = template.required_env_vars[0]
 
+    # Registered before the call, even though the call is expected to fail: if
+    # the platform regresses and accepts the deploy, pytest.raises fails here
+    # while discarding the returned deployment, so only a name registered in
+    # advance can reconcile the workload off this shared host.
+    name = _unique("eng12432-missingenv")
+    stopped_tool_deployments.append(name)
+
     with pytest.raises(APIError) as exc:
         client.tools.deploy_from_template(
             template_name=template.name,
-            name=_unique("eng12432-missingenv"),
+            name=name,
         )
 
     message = str(exc.value)

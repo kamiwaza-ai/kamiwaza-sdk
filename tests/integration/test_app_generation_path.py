@@ -333,12 +333,14 @@ def test_kz_ext_dev_local_serves_the_scaffolded_app(
         "the frontend did not render the scaffolded app name"
     )
 
-    _assert_backend_image_carries_the_local_runtime_lib(scaffold)
+    _assert_backend_image_carries_the_local_runtime_lib(scaffold, project)
 
 
-def _assert_backend_image_carries_the_local_runtime_lib(scaffold: Path) -> None:
+def _assert_backend_image_carries_the_local_runtime_lib(
+    scaffold: Path, project: str
+) -> None:
     """The running backend must import the version this checkout ships."""
-    container = _compose_container_id(scaffold, "backend")
+    container = _compose_container_id(scaffold, "backend", project)
     probe = subprocess.run(
         [
             "docker",
@@ -403,9 +405,16 @@ def _assert_runtime_lib_came_from_the_local_checkout(container: str) -> None:
     )
 
 
-def _compose_container_id(scaffold: Path, service: str) -> str:
+def _compose_container_id(scaffold: Path, service: str, project: str) -> str:
+    """The container id for one service of the project the test started.
+
+    Addressed by project name, not by directory: the ``up`` runs under a
+    run-unique project (see ``COMPOSE_PROJECT_ENV``), so a lookup that let
+    Compose derive the name from the directory would query a different project
+    and find nothing on a perfectly healthy run.
+    """
     result = _run(
-        ["docker", "compose", "ps", "-q", service],
+        [*detect_compose_command(), "-p", project, "ps", "-q", service],
         cwd=scaffold,
         timeout=120,
     )
