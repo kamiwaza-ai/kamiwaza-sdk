@@ -280,6 +280,21 @@ def test_the_decline_predicate_says_nothing_without_a_status() -> None:
     assert support.declined_by_the_server(RuntimeError("no status")) is False
 
 
+def test_a_non_int_status_does_not_mask_a_4xx_status_code() -> None:
+    """Each spelling is judged on its own, not the first one that is set.
+
+    Taking the first non-``None`` attribute would answer False here and the
+    ledger would report a workroom the server had already refused to create.
+    The parametrized test above varies the spelling but sets only one at a
+    time, so this crossed case is the one it cannot reach.
+    """
+    error = RuntimeError("refused")
+    error.status = "403 Forbidden"  # type: ignore[attr-defined]
+    error.status_code = 403  # type: ignore[attr-defined]
+
+    assert support.declined_by_the_server(error) is True
+
+
 def test_proven_gone_forgets_only_after_the_read_answers_404() -> None:
     """One step, so an interrupt cannot land between the proof and the forget."""
     ledger, _, owner, _ = make_ledger(binds_session=False)

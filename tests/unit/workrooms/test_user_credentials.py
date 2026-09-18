@@ -30,6 +30,28 @@ from tests.unit.workrooms._user_fakes import (
 pytestmark = pytest.mark.unit
 
 
+def test_a_non_int_status_is_not_rendered_in_the_withheld_message() -> None:
+    """The message is validated too, not only the attribute it stores.
+
+    ``_withheld`` exists so that nothing the failed call carried reaches the
+    output; a status it interpolated without checking would be rendered by the
+    very text that withholds the rest.
+    """
+    marker = "status-carrying-a-credential"
+
+    class _Odd(Exception):
+        status_code = marker
+
+    def credential_call() -> None:
+        raise _Odd("boom")
+
+    with pytest.raises(disposable.CredentialRequestError) as raised:
+        disposable._withheld("password login", credential_call)
+
+    assert marker not in str(raised.value)
+    assert raised.value.status is None
+
+
 def test_create_failure_withholds_the_sdk_message() -> None:
     # The server declined with 400, so nothing was created and cleanup has
     # nothing to report: the withheld setup error is what surfaces.

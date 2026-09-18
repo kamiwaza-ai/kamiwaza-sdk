@@ -183,11 +183,17 @@ def declined_by_the_server(error: BaseException) -> bool:
     reaches this predicate: ``KamiwazaError`` and its subclasses carry
     ``status_code``, and others carry ``status``. One predicate reading both
     keeps a caller from being fixed without its sibling.
+
+    Each spelling is judged on its own rather than the first non-``None`` one
+    winning: an attribute that is present but not an int would otherwise mask
+    the other, and a 4xx this run did decline would read as an unknown outcome
+    and be reported as a resource that may exist.
     """
-    status = getattr(error, "status", None)
-    if status is None:
-        status = getattr(error, "status_code", None)
-    return isinstance(status, int) and 400 <= status < 500
+    for name in ("status", "status_code"):
+        status = getattr(error, name, None)
+        if isinstance(status, int):
+            return 400 <= status < 500
+    return False
 
 
 def admin_workroom_ids(
@@ -264,20 +270,29 @@ def await_condition(
     raise AssertionError(failure)
 
 
+def rendered_with_summary(exc: BaseException, carried: BaseException | None) -> str:
+    """``exc`` as text, folding in a ``CleanupError`` summary it carries.
+
+    A stop signal raised out of an ``attempt_all`` carries that call's summary
+    as its cause, and that summary is the only place the resources it never
+    reached are named -- ``str(KeyboardInterrupt())`` is empty. Anything that
+    re-raises such a signal with a different cause has to fold the old text in
+    rather than replace it. Both places that do so call this, so the rule is
+    written once instead of paraphrased twice.
+    """
+    detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    if isinstance(carried, CleanupError):
+        detail = f"{detail} ({carried})"
+    return detail
+
+
 def _describe(description: str, exc: BaseException) -> str:
     """Name a failed step, folding in a nested cleanup's own summary.
 
     A step can itself be an ``attempt_all``: the ledger's removals run as one
-    step of the disposable user's teardown. An interrupt from that inner call
-    carries its summary as ``__cause__``, and re-raising the same object here
-    would overwrite it, so the text is folded in instead. Without this the
-    resources the inner call never reached are named nowhere, because
-    ``str(KeyboardInterrupt())`` is empty.
+    step of the disposable user's teardown.
     """
-    detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
-    if isinstance(exc.__cause__, CleanupError):
-        detail = f"{detail} ({exc.__cause__})"
-    return f"{description}: {detail}"
+    return f"{description}: {rendered_with_summary(exc, exc.__cause__)}"
 
 
 def attempt_all(steps: Iterable[Step]) -> None:

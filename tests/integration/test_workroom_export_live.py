@@ -19,8 +19,15 @@ authenticating as the same admin can see in the meantime.
 Workrooms on the 1.2.1 evidence deployment can carry app deployments and
 extensions the deployment provisions on its own schedule (present in some
 reads and absent in others on 2026-09-17), which the manifest lists as
-non-exportable. The assertions tolerate any number of them and pin the seeded
-dataset.
+non-exportable. The manifest and summary assertions tolerate any number of
+them, reading only the entries typed ``dataset``.
+
+The archive's own file set is pinned exactly, because "the bundle holds
+nothing else" is what this test evidences rather than an incidental detail.
+That is deliberately brittle in one direction: 1.2.1 already writes an empty
+``data_sources/index.json``, so a release adding an index for another resource
+type would fail here. That is the intended signal, to be re-checked against the
+capability document rather than absorbed by loosening the assertion.
 
 Not evidenced here: the documented exclusion of underlying data from the
 bundle. The seeded dataset is metadata pointing at an unpopulated location, so

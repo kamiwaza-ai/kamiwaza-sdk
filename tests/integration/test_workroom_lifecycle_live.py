@@ -29,6 +29,16 @@ it is deleted. Two behaviors observed on the 1.2.1 evidence deployment
 ``X-Workroom-Id``, so other views are read after ``leave``; and writes need a
 binding, so datasets are deleted while bound.
 
+This evidences session scoping on a deployment that holds the binding server
+side, which is what the 1.2.1 evidence deployment does. ``enter`` also answers
+with an ``access_token``, and on a deployment that carries the binding in that
+token instead (Lite/SAML) this test would not hold: ``WorkroomService.enter``
+documents that the SDK never installs a returned token, so the client would
+keep its password-grant token and the headerless reads below would run
+unbound. The test does not install it either -- doing so would evidence
+token-carried scoping rather than the session binding named here -- so a
+failure on such a deployment is that gap, not a platform regression.
+
 Ids are read out of the enter and leave responses before they are asserted,
 because those responses carry an access token. Not covered: a response that
 fails the SDK's validation echoes the body it could not parse, tokens included,

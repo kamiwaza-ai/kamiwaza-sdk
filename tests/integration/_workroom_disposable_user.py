@@ -90,6 +90,7 @@ from ._workroom_support import (
     declined_by_the_server,
     expect_not_found,
     refuse_unconfirmed,
+    rendered_with_summary,
 )
 
 DISPOSABLE_IDENTITIES_ENV = "KAMIWAZA_TEST_DISPOSABLE_IDENTITIES"
@@ -262,11 +263,16 @@ def _withheld(operation: str, call: Callable[[], T]) -> T:
             else KeyboardInterrupt()
         )
     except Exception as exc:  # noqa: BLE001 - re-raised below without its message
+        # Validated before it is interpolated, not only before it is stored:
+        # the message is what pytest prints, so an attribute that was not an
+        # int would have its repr rendered by the very text whose job is to
+        # withhold everything else the exception carried.
         status = getattr(exc, "status_code", None)
+        status = status if isinstance(status, int) else None
         failure = CredentialRequestError(
             f"{operation} failed with {type(exc).__name__} (HTTP status {status}); "
             "the original message is withheld because it can carry the credential",
-            status=status if isinstance(status, int) else None,
+            status=status,
         )
     finally:
         client_logger.disabled = previously_disabled
@@ -319,12 +325,13 @@ def _with_setup_failure(
     ``attempt_all`` re-raises an interrupt with a ``CleanupError`` naming every
     step that failed in the same pass. Re-raising that interrupt ``from`` the
     setup failure replaces its cause, so those names would be dropped -- the
-    one thing the summary exists to prevent, and what ``_describe`` already
-    guards against one level down. Both are kept instead.
+    one thing the summary exists to prevent. Both are kept instead, through the
+    same folding helper ``_describe`` uses one level down, so the rule has one
+    implementation rather than two that can be fixed apart.
     """
     if not isinstance(carried, CleanupError):
         return setup_error
-    return CleanupError(f"{type(setup_error).__name__}: {setup_error} ({carried})")
+    return CleanupError(rendered_with_summary(setup_error, carried))
 
 
 def _remove_failed_setup(
