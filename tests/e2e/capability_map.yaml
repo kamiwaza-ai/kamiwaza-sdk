@@ -95,6 +95,13 @@
 # Restore a models.discover-and-download mapping only for a cold-cluster test
 # that initiates, polls, and verifies acquisition in the same run.
 
+# ENG-12436: the dedicated live test seeds a unique graph answer inside a
+# workroom, retrieves it, and checks scoped discovery and unrelated groups.
+- pattern: "tests/integration/test_context_live.py::test_context_ontology_known_answer_isolated_by_workroom"
+  capability_ids: [ontology.workroom-knowledge-graph]
+  scenario_name: "Workroom ontology known-answer search and isolation"
+  evidence_provenance: cycle-authored
+
 # ENG-12269: the tests below prove individual chat or image paths, not every
 # operation declared by models.openai-compatible-inference (chat, embeddings,
 # transcription, image generation). Only the explicit incomplete-operation
