@@ -972,6 +972,11 @@ def test_context_ontology_search_knowledge(
     assert isinstance(search["facts"], list)
 
 
+@pytest.mark.skipif(
+    not os.getenv("KAMIWAZA_CONTEXT_FOREIGN_API_KEY", "").strip()
+    or not os.getenv("KAMIWAZA_CONTEXT_FOREIGN_WORKROOM_ID", "").strip(),
+    reason="Ontology isolation needs a second user PAT and separate workroom",
+)
 @pytest.mark.requires_embedding_model
 def test_context_ontology_known_answer_isolated_by_workroom(
     shared_context_service: ContextService,
