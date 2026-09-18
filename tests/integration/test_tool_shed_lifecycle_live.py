@@ -63,8 +63,6 @@ DEPLOYED_STATUSES = frozenset({"DEPLOYED", "RUNNING"})
 # STOP_REQUESTED proves only that the request was accepted — a workload that
 # never actually stops would satisfy it while still running on a shared host.
 RETIRED_STATUSES = frozenset({"STOPPED"})
-# Accepted but not yet terminal: keep waiting rather than concluding either way.
-RETIRING_STATUSES = frozenset({"STOP_REQUESTED", "STOPPING"})
 SETTLED_STATUSES = frozenset({"DEPLOYED", "RUNNING", "FAILED", "STOPPED"})
 
 
@@ -148,10 +146,13 @@ def stopped_tool_deployments(live_kamiwaza_client) -> Iterator[list[str]]:
     yield names
 
     unretired: list[str] = []
+    unmatched: list[str] = []
     for name in names:
+        matched = 0
         for deployment in client.tools.list_deployments():
             if not str(deployment.name).endswith(name):
                 continue
+            matched += 1
             with suppress(APIError):
                 client.tools.stop_deployment(deployment.id)
             # Poll until STOPPED. A stop the platform applies asynchronously
@@ -164,6 +165,15 @@ def stopped_tool_deployments(live_kamiwaza_client) -> Iterator[list[str]]:
                 time.sleep(1)
             else:
                 unretired.append(f"{deployment.name}={final.status}")
+        if matched == 0:
+            # Finding nothing is not evidence of retirement: if the platform
+            # normalised the name differently or omitted the row from this
+            # listing, nothing was stopped and teardown would otherwise pass.
+            unmatched.append(name)
+    assert not unmatched, (
+        f"teardown found no deployment matching {unmatched}, so nothing was "
+        "stopped; a workload may still be running on this shared host"
+    )
     assert not unretired, (
         f"tool deployments did not reach a retired state and may still be "
         f"running on a shared host: {unretired}"
@@ -225,6 +235,13 @@ def test_tool_shed_deploy_health_discovery_and_stop(
 
     _assert_mcp_handshake(client, deployment, name)
     _assert_appears_in_discovery(client, deployment_id, name)
+
+    # Stop is a station of this capability, so it is asserted here rather than
+    # left to the finalizer, which suppresses errors by design so that it can
+    # still run after a failed body.
+    assert client.tools.stop_deployment(deployment_id), (
+        f"stop_deployment({deployment_id}) did not report success for {name}"
+    )
 
     # Retirement is asserted by the `stopped_tool_deployments` finalizer, which
     # reconciles by name and requires a status in RETIRED_STATUSES. Asserting it

@@ -55,6 +55,10 @@ SETTLED_STATUSES = frozenset(
     {"DEPLOYED", "RUNNING", "FAILED", "STOP_REQUESTED", "STOPPED"}
 )
 RUNNING_STATUSES = frozenset({"DEPLOYED", "RUNNING"})
+# What a successful stop must reach. STOP_REQUESTED is accepted here because the
+# platform may reap the row before a later poll observes STOPPED; the finalizer
+# then proves the row is gone.
+STOPPED_STATUSES = frozenset({"STOPPED", "STOP_REQUESTED"})
 
 # Images served from a developer's local registry cannot be pulled by the
 # cluster, so a template referencing one would fail the deploy for reasons that
@@ -225,6 +229,7 @@ def test_app_garden_deploy_lifecycle_and_reserved_env_keys(
 
     _assert_reserved_key_boundary(client, deployment_id, sentinel)
     _assert_monitoring_stations(client, deployment_id, name)
+    _assert_retirement_station(client, deployment_id, name)
 
 
 def _assert_reserved_key_boundary(client, deployment_id: UUID, sentinel: str) -> None:
@@ -288,6 +293,42 @@ def _assert_monitoring_stations(client, deployment_id: UUID, name: str) -> None:
     assert instances, (
         f"deployment {name} reports {status!r} but the platform lists no "
         "instances for it; a status field is not proof the deploy ran"
+    )
+    # Correlate: a filter the platform ignored would otherwise let an unrelated
+    # instance from this shared host satisfy the claim that THIS deploy ran.
+    foreign = [
+        str(i.deployment_id)
+        for i in instances
+        if str(i.deployment_id) != str(deployment_id)
+    ]
+    assert not foreign, (
+        f"list_instances({deployment_id}) returned instances belonging to other "
+        f"deployments {foreign}; the filter cannot be relied on, so an unrelated "
+        "instance would have satisfied this station"
+    )
+
+
+def _assert_retirement_station(client, deployment_id: UUID, name: str) -> None:
+    """Stop is a station of the capability, so the test asserts it.
+
+    Not left to the teardown finalizer: that suppresses errors by design (it must
+    run after a failed body) and purges independently, so a broken
+    ``stop_deployment`` followed by a successful purge would leave teardown green
+    and publish stop-lifecycle evidence that nothing established.
+    """
+    assert client.apps.stop_deployment(deployment_id), (
+        f"stop_deployment({deployment_id}) did not report success for {name}"
+    )
+    deadline = time.monotonic() + 300
+    status = client.apps.get_deployment_status(deployment_id)
+    while time.monotonic() < deadline:
+        if status in STOPPED_STATUSES:
+            return
+        time.sleep(5)
+        status = client.apps.get_deployment_status(deployment_id)
+    pytest.fail(
+        f"deployment {name} did not reach a stopped state within 300s of "
+        f"stop_deployment (last status {status!r}); the stop station is unproven"
     )
 
 
