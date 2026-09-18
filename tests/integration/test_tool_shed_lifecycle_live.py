@@ -31,7 +31,6 @@ import json
 import os
 import time
 from collections.abc import Iterable, Iterator
-from itertools import chain
 from contextlib import suppress
 from typing import NoReturn
 from uuid import UUID, uuid4
@@ -412,10 +411,15 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
         # newlines, and the blank line dispatches the event (HTML standard,
         # server-sent events). Parsing each line on its own would fail both
         # halves of a response the server split across two fields and report a
-        # healthy tool as never having answered. The synthetic trailing blank
-        # line dispatches a stream that ends without one.
+        # healthy tool as never having answered.
+        #
+        # A stream that ends mid-event is NOT dispatched, because the standard
+        # discards pending data at end of stream: a conforming client receives no
+        # response from such an endpoint, so accepting one here would publish a
+        # passing record for a transport that answers nobody. Strictness costs a
+        # false failure only for a server that is already non-conforming.
         fields: list[str] = []
-        for line in chain(body_lines, [""]):
+        for line in body_lines:
             if line.startswith("data:"):
                 value = line[len("data:") :]
                 # The spec strips one optional space after the colon. Kept for
@@ -433,7 +437,9 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
                 return frame
         raise AssertionError(
             f"the event-stream reply from {name} carried no JSON-RPC response in "
-            "any event, so the initialize call was never answered"
+            "any dispatched event, so the initialize call was never answered. An "
+            "event the stream left pending at end of stream does not count: the "
+            "standard discards it, so no conforming client would see it either"
         )
     raise AssertionError(
         f"MCP initialize against {name} returned content-type {content_type!r}; "

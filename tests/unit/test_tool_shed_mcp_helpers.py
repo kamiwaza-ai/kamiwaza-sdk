@@ -201,10 +201,18 @@ def test_jsonrpc_envelope_reads_a_response_split_across_data_fields() -> None:
     assert _jsonrpc_envelope("text/event-stream", body, "tool-abc") == ENVELOPE
 
 
-def test_jsonrpc_envelope_reads_an_event_the_stream_never_dispatched() -> None:
-    """A stream that ends without a trailing blank line still carries its reply."""
+def test_jsonrpc_envelope_refuses_an_event_the_stream_left_pending() -> None:
+    """A stream ending mid-event has not answered, and must not read as one.
+
+    The standard discards pending data at end of stream, so a conforming client
+    receives nothing from an endpoint that closes without the blank line. An
+    earlier version of this reader appended a synthetic terminator and accepted
+    the payload, which would have published a passing record for a transport that
+    answers nobody.
+    """
     body = ['data: {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "1"}}']
-    assert _jsonrpc_envelope("text/event-stream", body, "tool-abc")["id"] == 1
+    with pytest.raises(AssertionError, match="no conforming client"):
+        _jsonrpc_envelope("text/event-stream", body, "tool-abc")
 
 
 def test_jsonrpc_envelope_returns_an_error_response() -> None:
