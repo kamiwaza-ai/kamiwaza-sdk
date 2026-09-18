@@ -77,9 +77,8 @@ def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) 
     suffix = uuid4().hex[:12]
     connector_type = f"sdkverify-{suffix}"
     manifest["connector_type"] = connector_type
-    manifest["provider_id"] = connector_type
-    manifest["provider_label"] = f"SDK verification {suffix}"
-    if not manifest.get("deployment", {}).get("image_repository"):
+    deployment = manifest.get("deployment")
+    if not isinstance(deployment, dict) or not deployment.get("image_repository"):
         pytest.fail("ENG-12433 managed fixture needs an approved image repository")
 
     client = request.getfixturevalue("live_kamiwaza_client")
@@ -136,10 +135,20 @@ def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) 
         )
     finally:
         try:
-            if connector_id is not None:
-                client.connectors.delete(connector_id)
+            cleanup_ids = (
+                [connector_id]
+                if connector_id is not None
+                else [
+                    item.id
+                    for item in client.connectors.list()
+                    if item.connector_type == connector_type
+                ]
+            )
+            for cleanup_id in cleanup_ids:
+                client.connectors.delete(cleanup_id)
         finally:
             if catalog_created:
+                # No typed unregister_type method exists yet in the SDK.
                 client.delete(f"/connectors/catalog/{connector_type}")
 
 
@@ -153,12 +162,10 @@ def _fetch_digest(client, ref: ConnectorSurfaceRef, item: dict) -> str:
 
 def _expect_denied(client, ref: ConnectorSurfaceRef, item: dict) -> None:
     _require_fields(item, "node_id", "request")
+    request = ConnectorContentRequest.model_validate(item["request"])
+    assert request.surface == "files"
     with pytest.raises(APIError) as denied:
-        client.connectors.fetch_surface_content(
-            ref,
-            item["node_id"],
-            ConnectorContentRequest.model_validate(item["request"]),
-        )
+        client.connectors.fetch_surface_content(ref, item["node_id"], request)
     assert denied.value.status_code in (403, 404)
 
 
