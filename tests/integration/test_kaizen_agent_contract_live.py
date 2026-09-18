@@ -11,6 +11,7 @@ hosts don't run one, and a red suite there would say nothing about the contract.
 
 from __future__ import annotations
 
+import os
 from uuid import uuid4
 
 import pytest
@@ -77,6 +78,70 @@ def canonical_kaizen(live_kamiwaza_client):
             f"no reachable '{CANONICAL_EXTENSION_NAME}' extension in any workroom"
         )
     return found
+
+
+@pytest.fixture
+def disposable_canonical_kaizen(live_kamiwaza_client):
+    """Require an operator-designated ephemeral workroom for write probes.
+
+    A shared Kaizen instance is never selected implicitly for this test. The
+    extension identity must be the canonical ``kaizen`` contract, not the
+    unrelated ``kaizen-next`` or ``kaizen-legacy`` API.
+    """
+    workroom_id = os.environ.get("KAMIWAZA_KAIZEN_TEST_WORKROOM_ID", "").strip()
+    if not workroom_id:
+        pytest.skip("set KAMIWAZA_KAIZEN_TEST_WORKROOM_ID to an ephemeral workroom")
+
+    workroom = live_kamiwaza_client.workrooms.get(workroom_id)
+    if workroom.type != "ephemeral":
+        pytest.skip(f"workroom {workroom_id} is not ephemeral; refusing writes")
+
+    client = scoped_client_for_workroom(live_kamiwaza_client, workroom_id)
+    try:
+        base_url = resolve_base_url(
+            client, CANONICAL_EXTENSION_NAME, workroom_id=workroom_id
+        )
+    except ValueError as exc:
+        pytest.skip(f"canonical Kaizen is not installed in {workroom_id}: {exc}")
+    if not _is_serving(client, base_url, workroom_id=workroom_id):
+        pytest.skip(f"canonical Kaizen is not serving in {workroom_id}")
+    return client, workroom_id, base_url
+
+
+def _bound_skill_ids(agent):
+    context = (agent.agent_config or {}).get("agent_context", {})
+    return {binding["skill_id"] for binding in context.get("skill_bindings", [])}
+
+
+def test_custom_agent_binds_published_library_skill(disposable_canonical_kaizen):
+    """Create, bind, read back and remove a specialised agent on live Kaizen."""
+    client, workroom_id, base_url = disposable_canonical_kaizen
+    published = client.skills.list_skills(status="published", page_size=100).items
+    if not published:
+        pytest.skip("no published Skills Library skill is available to bind")
+    skill = client.skills.get_skill(published[0].id)
+    assert skill.status == "published"
+
+    agent = client.agents.create_canonical(
+        AgentDefinition(
+            name=f"sdk-skill-contract-{uuid4().hex[:8]}",
+            persona="You are a disposable skill-binding contract test agent.",
+        ),
+        base_url=base_url,
+        workroom_id=workroom_id,
+    )
+    try:
+        updated = client.agents.bind_skill(
+            agent.id, skill.id, base_url=base_url, workroom_id=workroom_id
+        )
+        assert updated.id == agent.id
+        assert str(skill.id) in _bound_skill_ids(updated)
+
+        listed = client.agents.list(base_url=base_url, workroom_id=workroom_id)
+        read_back = next(item for item in listed if item.id == agent.id)
+        assert str(skill.id) in _bound_skill_ids(read_back)
+    finally:
+        client.agents.delete(agent.id, base_url=base_url, workroom_id=workroom_id)
 
 
 def test_canonical_agent_create_accepts_the_content_contract(canonical_kaizen):
