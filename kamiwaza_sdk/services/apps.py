@@ -43,8 +43,7 @@ def _is_trusted_kaizen_v4_template(template: AppTemplate) -> bool:
             template.source_type.value == "kamiwaza",
             template.visibility.value == "public",
             all(
-                marker in template.compose_yml
-                for marker in _KAIZEN_V4_COMPOSE_MARKERS
+                marker in template.compose_yml for marker in _KAIZEN_V4_COMPOSE_MARKERS
             ),
         )
     )
@@ -407,7 +406,7 @@ class AppService(BaseService):
         List pre-built applications available in the Kamiwaza garden.
 
         Note: This is backed by the remote catalog endpoint (`GET /apps/remote/apps`).
-        
+
         Returns:
             List of GardenApp objects
         """
@@ -473,6 +472,17 @@ class AppService(BaseService):
         """
         try:
             response = self.client.post(f"/apps/images/pull/{template_id}")
+            # 1.2.1 returns this smaller wire shape when the template has no
+            # images. Normalize that documented no-op, but let every other
+            # unexpected response fail validation instead of hiding drift.
+            if response == {"message": "No images to pull", "images": []}:
+                response = {
+                    "template_id": template_id,
+                    "total_images": 0,
+                    "successful_pulls": 0,
+                    "results": [],
+                    "all_successful": True,
+                }
             return ImagePullResult.model_validate(response)
         except APIError as e:
             if "404" in str(e):

@@ -33,8 +33,8 @@
 # harvested from coverage that already existed. The accepted values are the
 # schema's own (harness.EVIDENCE_PROVENANCES); anything else is a refusal.
 #
-# DELIBERATELY UNMAPPED (reviewed 2026-08-10; empty mapping is the honest
-# answer — do not "fix" without new tests):
+# DELIBERATELY UNMAPPED (reviewed 2026-08-10, auth entries 2026-09-17; empty
+# mapping is the honest answer — do not "fix" without new tests):
 #   * models.external-endpoints — no existing e2e/live test registers or
 #     exercises an external/BYO OpenAI-compatible endpoint.
 #   * context.workroom-document-search — the search/retrieve/agentic-search
@@ -47,11 +47,35 @@
 #     that the result is a list. No existing test searches indexed content and
 #     asserts what came back, so this capability has no honest mapping until
 #     one is written.
-#   * auth.enterprise-sso — test_auth_live.py covers password + PAT auth
-#     and test_auth_endpoints_live.py the auth endpoint surface; neither
-#     is an enterprise SSO/IdP login. The federation shared-IdP suites
+#   * auth.enterprise-sso — test_auth_live.py covers password + PAT auth,
+#     test_auth_endpoints_live.py the auth endpoint surface, and
+#     test_auth_admin_live.py / test_auth_sessions_live.py administer and end
+#     LOCAL accounts; none is an enterprise SSO/IdP login. The federation
+#     shared-IdP suites
 #     (test_federation_idp_lifecycle_live.py, ..._shared_idp_gated_...)
 #     provision Keycloak trust for FEDERATION, not enterprise SSO sign-in.
+#   * test_auth_admin_live.py::test_deleted_local_user_sign_in_attempt and
+#     test_auth_admin_live.py::test_deleted_local_user_pat_request — strict
+#     xfails pinning behavior on the deployment under test. An xfail folds to a
+#     skipped step, so mapping them would add nothing now. If the pinned
+#     behavior changes and a marker is removed, either would pass on its own and
+#     over-claim auth.local-user-administration, which the mapped lifecycle test
+#     in that file already carries.
+#   * test_auth_sessions_live.py::test_sdk_logout_then_refresh — the same kind
+#     of strict xfail. Nothing in test_auth_sessions_live.py is mapped (see the
+#     next note), so it has no entry to over-claim against; it stays unmapped
+#     because an xfail establishes nothing either way.
+#   * test_auth_sessions_live.py::test_session_revocation_lifecycle — it has
+#     never run. The platform session store is off by default
+#     (AUTH_REBAC_SESSION_ENABLED=false) and was off on the deployment under
+#     test, so its precheck skips before anything is created and its assertions
+#     are derived from the v1.2.1 session code rather than observed. Review also
+#     found two ways a wrong platform still satisfies them: both steps log out
+#     the first-opened session of their pair, so a store that drops the oldest
+#     record passes; and the control is a session a purge already counted as
+#     revoked. Mapping it would let a test that has never executed carry
+#     auth.session-revocation. Close both gaps and re-map once a store-enabled
+#     deployment can run it.
 #   * tests/e2e/scenarios/test_s1..s5 drivers — they already emit native
 #     scenario-evidence.v2 records through the harness (cycle-authored);
 #     mapping them here would double-count the same runs.
@@ -64,7 +88,7 @@
 #   * test_retrieval_live.py — TestRetrievalJobOperations::test_create_and_get_job
 #     does create a real job and poll it, but its status assertion is
 #     `isinstance(status, str)`, so a job that ran and FAILED passes. Every
-#     test under the two retained retrieval entries below asserts a real
+#     test under the retained retrieval entries below asserts a real
 #     retrieval *artifact* instead — rows returned (row_count > 0), SSE events
 #     emitted, or a gRPC transport handshake — which is strictly stronger;
 #     mapping this one alongside them would only weaken the claim, so
@@ -153,13 +177,61 @@
   scenario_name: "OpenAI-compatible inference operation set"
   unverified_operations: [embeddings, transcription, image_generation]
 
-# Justification: test_s3_ingest_and_retrieve_inline / _grpc ingest a sample
-# dataset into the catalog and then run retrieval jobs streaming results
-# inline and over gRPC (per test_retrieval_live.py's docstring these carry
-# TS17.001/TS17.003 coverage).
-- pattern: "tests/integration/test_catalog_ingest_retrieval.py::*"
+# ENG-12327 (T09). Deploys a llama.cpp GGUF target: the explicit fleet target
+# when one is set, else GGUF_LLM_TARGET; an explicit target on another engine
+# skips the test as not applicable. Before anything is created the test checks
+# that the target's weights and at least one model config are already on the
+# cluster; a missing prerequisite skips an optional target and fails a
+# fleet-required one, and no SDK download method is called. Every run makes a
+# fresh deployment, so the test cannot pass on a warm cluster without
+# deploying, and the deployment is checked to carry the requested config,
+# weights file and engine. The test creates, reads, lists and updates a
+# disposable model config, deploys with it to DEPLOYED, checks the deployment,
+# active listing and instances, serves one chat completion through the
+# deployment (the reply must contain the sum of two per-run numbers, which the
+# prompt does not), reads captured logs and the log stream, stops it without
+# force to STOPPED, and deletes the config. The chat call shows the deployment
+# serves; it does not claim models.openai-compatible-inference, whose document
+# allows a pass only with a representative call per declared operation (chat,
+# embeddings, transcription, image generation), which develop's capability map
+# enforces since ENG-12269.
+- pattern: "tests/integration/test_model_deployment_lifecycle_live.py::test_model_config_and_local_deployment_lifecycle"
+  capability_ids: [models.local-deployment]
+  scenario_name: "Model config and local deployment lifecycle through the SDK"
+  evidence_provenance: cycle-authored
+
+# The two catalog ingest-to-retrieval tests are mapped separately under the
+# PER-TEST RULE. Each writes its own run-unique parquet object, ingests exactly
+# that object with ingestion.run_active, and reads the dataset back through
+# catalog.datasets.get before deleting the dataset, the object, and the catalog
+# secret and proving each absent. They differ in how the rows come back.
+#
+# The inline test retrieves through retrieval.create_job/get_job with the inline
+# transport and requires COMPLETED, the exact seeded rows, and the job's
+# processed-row count. Returned rows meet the retrieval bar in the
+# test_retrieval_live.py note above, so it claims both capabilities. A run
+# without the gRPC test can therefore report retrieval as passing from this
+# inline slice alone; Arrow Flight is evidenced only by the gRPC entry below. The
+# record still fails if the test's inline retrieval or its cleanup of the
+# dataset, object, or secret fails, because a record reflects the whole test.
+# It is deliberately not modelled as an incomplete operation set (ENG-12269's
+# unverified_operations, which fails the record): like the multi-source entry,
+# the inline slice earns the retrieval claim, and Arrow Flight gets its own
+# record instead.
+- pattern: "tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline"
   capability_ids: [catalog.dataset-registry, retrieval.async-retrieval-jobs]
-  scenario_name: "Catalog ingest to retrieval round-trip (inline and gRPC)"
+  scenario_name: "Catalog S3 dataset registration, inline retrieval, and deletion"
+  evidence_provenance: cycle-authored
+
+# The gRPC test creates a grpc-transport retrieval job, requires the arrow-flight
+# handshake, reads the seeded rows over Arrow Flight with flight_batches, and
+# requires the job to reach COMPLETED. It is the only T01 test that exercises
+# Arrow Flight, and its own entry gives the Flight leg a separate record, so a
+# Flight failure stays visible beside a passing inline record.
+- pattern: "tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc"
+  capability_ids: [retrieval.async-retrieval-jobs]
+  scenario_name: "Arrow Flight retrieval of an ingested S3 dataset"
+  evidence_provenance: cycle-authored
 
 # Justification: test_catalog_dataset_lifecycle registers a dataset, reads it
 # back through the catalog, and verifies its path/location metadata.
@@ -190,6 +262,36 @@
   capability_ids: [auth.personal-access-tokens]
   scenario_name: "Personal access token authentication and revocation"
 
+# Three PATs are minted and all are listed as the caller's. The raw list
+# response (the typed model would silently drop an extra field) contains no
+# minted token, no JWT-shaped value outside the caller-chosen PAT name, and no
+# token- or secret-named key at any depth. The PAT configuration is read, and
+# its field types, scopes and TTL bounds are checked. The middle PAT is revoked
+# (so revoking by position cannot pass), and the listing plus real
+# authentications prove exactly that one stopped working while the other two
+# still authenticate as the same user. Cleanup revokes every minted PAT without
+# trusting the listing.
+- pattern: "tests/integration/test_auth_live.py::test_pat_inventory_lists_without_token_material_and_revokes_one"
+  capability_ids: [auth.personal-access-tokens]
+  scenario_name: "Personal access token inventory and individual revocation"
+  evidence_provenance: cycle-authored
+
+# One disposable local user is created, read back, and listed, and it signs
+# in as itself (the login's username is the account's). As that non-admin it
+# gets 403 from list, read, update (an attempt to grant itself the admin role),
+# password reset, and delete on its own account; read-backs show its roles
+# unchanged and its password still signing in. The
+# SDK's client-side admin guard rejects its roles and accepts an admin's. Its
+# email update and password reset are read back (new password works, old one
+# is rejected); then it is deleted and proven absent from the admin views.
+# Account creation by a non-admin is not attempted. The unmapped
+# test_deleted_local_user_* siblings pin 1.2.1 deletion behavior. Opt-in:
+# KAMIWAZA_TEST_DISPOSABLE_IDENTITIES=1.
+- pattern: "tests/integration/test_auth_admin_live.py::test_local_user_administration_lifecycle"
+  capability_ids: [auth.local-user-administration]
+  scenario_name: "Local user administration with non-admin denial"
+  evidence_provenance: cycle-authored
+
 # Justification: dataset schema/variant endpoints, container list/URN/path/v2
 # endpoints, and secret endpoints — the catalog registry API surface
 # (test_catalog_dataset_schema_endpoints, test_catalog_dataset_variant_endpoints,
@@ -206,31 +308,94 @@
     - "*::test_catalog_secret_list"
     - "*::test_catalog_secret_endpoints"
 
-# Justification: every test in the module ingests from some source
-# (file/object/parquet/postgres/kafka/slack) and asserts the resulting
-# dataset's catalog metadata, so the whole module evidences the registry.
+# ENG-12327 (T06). Where test_catalog_endpoints.py drives most dataset and
+# container routes over raw HTTP, these two drive them through the SDK clients,
+# one test per file (shared helpers in catalog_sdk_lifecycle_support.py). Each
+# asserted write is read back through a separate call: a dataset's description,
+# tags, path and schema; a container's platform, description, tags and dataset
+# membership (added, then removed). Each URN path helper's output must equal
+# the standard percent-encoding of the URN, and must return the same entity on
+# the live /v2 route. Each delete is proven by NotFound on a URN the test read
+# successfully earlier. Written this cycle to evidence the registry through the
+# SDK.
+- pattern: "tests/integration/test_catalog_dataset_sdk_lifecycle_live.py::test_dataset_lifecycle_through_dataset_client"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Catalog dataset lifecycle through the SDK dataset client"
+  evidence_provenance: cycle-authored
+
+- pattern: "tests/integration/test_catalog_container_sdk_lifecycle_live.py::test_container_lifecycle_and_membership_through_container_client"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Catalog container lifecycle and dataset membership through the SDK container client"
+  evidence_provenance: cycle-authored
+
+# Justification (ENG-12320, T02): the retained tests each ingest a seeded
+# source through client.ingestion and assert only what the catalog retained --
+# object_ingestion_metadata and parquet_ingestion_metadata (platform, s3:// path,
+# format), postgres_ingestion_metadata (schema, table, column names), and
+# container_link_sets_dataset_container_urn (container membership both ways).
+# None of them retrieves, so a retrieval failure cannot fail this record.
+# Excluded: the retrieval tests mapped below, and the optional paths, which are
+# not T02 coverage -- file_ingestion_metadata (skips without
+# CATALOG_FILE_INGESTION_ROOT), kafka (ingestion metadata only; optional per the
+# T02 plan), slack (skips without SLACK_TEST_* tokens) and
+# inline_large_object_hits_threshold (the oversized-object path: it asserts that
+# inline retrieval of an object over the inline limit is refused, so it evidences
+# no retrieval, and it skips when no such object was generated).
+# Cycle-authored, not harvested: these assertions were written for ENG-12320; the
+# earlier module checked platform names, container_urn and non-empty results,
+# not retained paths, schemas or cleanup.
 # Split from the retrieval entry below: `exclude` is per-entry, so a single
 # entry claiming two capabilities cannot satisfy the per-test rule for both.
+# Both entries match every test in the module unless excluded, so a new or renamed
+# test would feed both claims; tests/e2e/test_catalog_multi_source_evidence_map.py
+# fails until each test in the module is listed with the claims it feeds.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [catalog.dataset-registry]
   scenario_name: "Multi-source catalog ingestion"
+  evidence_provenance: cycle-authored
+  exclude:
+    - "*::test_catalog_file_ingestion_metadata"
+    - "*::test_catalog_kafka_ingestion_metadata"
+    - "*::test_catalog_slack_ingestion_metadata"
+    - "*::test_catalog_inline_large_object_hits_threshold"
+    - "*::test_catalog_object_ingestion_inline_retrieval"
+    - "*::test_catalog_parquet_ingestion_inline_retrieval"
+    - "*::test_catalog_inline_small_object_succeeds"
+    - "*::test_catalog_postgres_inline_retrieval"
+    - "*::test_catalog_sse_retrieval_emits_terminal_event"
 
-# Justification: the subset that actually submits a retrieval job over the
-# ingested data and asserts the result — the two *_inline_retrieval tests,
-# inline_small_object and file_ingestion_metadata (both POST /retrieval/jobs
-# and assert row_count), large_object_sse_retrieval, and
-# postgres_ingestion_metadata.
-# Excluded: kafka (xfails before any retrieval), slack, and container_link
-# never submit a job at all, and inline_large_object_hits_threshold asserts a
-# 422 rejection rather than a successful retrieval.
+# Justification (ENG-12320, T02): the retained tests each run a retrieval job
+# through client.retrieval over seeded data. The inline object, parquet,
+# small-object and postgres tests require the job COMPLETED on create and on
+# read-back with rows_processed equal to row_count, and compare content with the
+# seed: the whole sample.json document, parquet row count, column names and id
+# values (other parquet columns are not compared), and the postgres
+# name/total pairs. sse_retrieval_emits_terminal_event requires chunk events
+# whose rows match the seed the same way, one terminal complete event counting
+# them, and a COMPLETED job. Ingestion and the catalog dataset lookup are setup
+# here: retrieval needs a registered dataset.
+# These tests do not exercise cancel or Arrow Flight. Like the T01 inline entry,
+# this entry does not declare them as unverified_operations: the retained tests
+# earn the retrieval claim on their own, and Arrow Flight has its own record from
+# test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc. On the
+# Azure 1.2.1 evidence instance the SSE test fails (ENG-12300, cause not yet
+# established), so this record is failed there.
+# Excluded: the registry tests above, container_link (it submits no retrieval
+# job), and the same optional paths as the registry entry.
+# Cycle-authored for the same reason as the registry entry above.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [retrieval.async-retrieval-jobs]
   scenario_name: "Multi-source inline and SSE retrieval"
+  evidence_provenance: cycle-authored
   exclude:
+    - "*::test_catalog_file_ingestion_metadata"
     - "*::test_catalog_kafka_ingestion_metadata"
     - "*::test_catalog_slack_ingestion_metadata"
-    - "*::test_catalog_container_link_sets_dataset_container_urn"
     - "*::test_catalog_inline_large_object_hits_threshold"
+    - "*::test_catalog_object_ingestion_metadata"
+    - "*::test_catalog_parquet_ingestion_metadata"
+    - "*::test_catalog_postgres_ingestion_metadata"
+    - "*::test_catalog_container_link_sets_dataset_container_urn"
 
 # Justification: TestWorkroomCrudIsolation — create/get/list/update/archive
 # workrooms. Every retained test creates one, either through the workroom_a /

@@ -2,6 +2,12 @@
 
 Track integration issues observed while exercising catalog, ingestion, and retrieval flows via the SDK.
 
+## 2026-09-16
+
+### SSE retrieval ends with no events on the Azure 1.2.1 evidence instance {#sse-retrieval-no-events}
+
+`test_catalog_large_object_sse_retrieval` is now `test_catalog_sse_retrieval_emits_terminal_event` (ENG-12320). It streams the small parquet object and requires `chunk` events carrying the seeded rows, exactly one terminal `complete` event whose `sequence` counts the chunks, and a COMPLETED job. On the Azure 1.2.1 evidence instance the stream returned HTTP 200 with no events and the job ended FAILED, so the test fails there. The cause is not established; see ENG-12300.
+
 ## 2026-06-17
 
 ### Catalog container list endpoint returns 500
@@ -76,6 +82,7 @@ Observed after successfully ingesting the same dataset via `/ingestion/ingest/ru
 - Upstream change (`kamiwaza/services/retrieval/adapters/s3.py`) now honors per-request overrides for `endpoint`, `endpoint_override`, and `region`, preventing the adapter from falling back to stale catalog metadata and crashing Ray when pointed at MinIO or other non-default endpoints.  
 - Regression coverage: `kamiwaza/services/retrieval/tests/test_s3_adapter.py` (mocks `pyarrow.fs.S3FileSystem` to assert overrides win) plus the SDK integration tests `test_catalog_inline_small_object_succeeds`, `test_catalog_inline_large_object_hits_threshold`, `test_catalog_large_object_sse_retrieval`, and `test_s3_ingest_and_retrieve_inline`. These verify <500 KB payloads stay inline, ~1.3 MB payloads raise the documented 422 threshold error, and SSE fallback still streams rows.  
 - Local stack expected to return 201/422/200 sequences per above; any regression will now surface as a hard test failure (no `xfail`).
+- 2026-09-16: `test_catalog_large_object_sse_retrieval` was renamed and now streams the small object; see [SSE retrieval ends with no events](#sse-retrieval-no-events).
 
 ### Ingestion router mounted as `/ingestion/ingest`
 Spec/`070-update.md` list endpoints as `/ingest/*`, but the FastAPI router is included under `/ingestion`, so the deployed path is `/ingestion/ingest/run`. Probably a docs fix (the service originated as standalone).
@@ -93,7 +100,7 @@ The earlier `location` mismatch defect still applies; ingestion writes `properti
   Result: API responds 400 `"Dataset is missing a location property"`. Retrieval service expects `properties["location"]`, but ingestion writes `path`. Manual PATCH adding `location` works around it.  
   **Status – 2025-11-16**: Server now backfills `properties.location` directly. Removed the SDK-side patching in `tests/integration/test_catalog_ingest_retrieval.py` + `test_catalog_multi_source.py` and reran `pytest tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline` twice with clean passes.
 
-### Retrieval gRPC transport fails {#retrieval-grpc-transport-fails}
+### Retrieval gRPC transport fails _(superseded 2026-09-16, see [below](#t01-retrieval-evidence-20260916))_ {#retrieval-grpc-transport-fails}
 ```
 POST /retrieval/jobs HTTP/1.1
 Content-Type: application/json
@@ -112,7 +119,7 @@ HTTP/1.1 500 Internal Server Error
 {"detail":"Internal Server Error"}
 ```
 
-The same dataset/materialisation succeeds via inline transport, but requesting `transport="grpc"` never returns a handshake. `tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc` is marked `pytest.skip` until the server can establish a gRPC job. Tracked as `INC-006` in `docs-local/03-sdk-inconsistencies.md`.
+The same dataset/materialisation succeeds via inline transport, but requesting `transport="grpc"` never returns a handshake. `tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc` was marked `pytest.skip` on this basis and tracked as `INC-006` in a tracking file that no longer exists. The skip was removed on 2026-09-16, see [below](#t01-retrieval-evidence-20260916).
 
 ### Ingestion router mounted as `/ingestion/ingest` _(resolved 2025-11-12)_
 Spec `kamiwaza-openapi-spec.json` already reflects the `/ingestion/ingest/*` prefix, so the doc drift noted earlier has been cleared. Any lingering references to `/ingest/*` in docs should be updated; the SDK now consistently calls `/ingestion/ingest/run` and friends.
@@ -125,16 +132,24 @@ pytest tests/integration/test_catalog_multi_source.py -k file_ingestion_metadata
 ```
 Recent backend change whitelisted `tests/integration/catalog_stack/state/test-data`, so the File ingester now accepts the path we exercise in CI without the "Path outside allowed directories" error. Keep an eye on regressions if the allowlist changes again.
 
+**Status – 2026-09-16 (ENG-12320):** `test_catalog_file_ingestion_metadata` no longer ingests this path. It skips unless `CATALOG_FILE_INGESTION_ROOT` is set. Set it to a directory the platform's ingestion workers can read: a root the platform rejects or cannot read fails the test rather than skipping it.
+
 ### File retrieval missing _(resolved 2025-11-14)_ {#file-retrieval-missing}
 File ingests that point at `tests/integration/catalog_stack/state/test-data` can return inline payloads via `/retrieval/jobs` once the backend sets `RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS` to include that path. Regression covered by `tests/integration/test_catalog_multi_source.py::test_catalog_file_ingestion_metadata`, which ingests the sample tree and asserts `row_count >= 1` from the inline job response (skips when the server has filesystem retrieval disabled).
 
+**Status – 2026-09-16 (ENG-12320):** the test now requires a COMPLETED inline job that returns rows, and fails rather than skips when filesystem retrieval is disabled.
+
 ### Object JSON retrieval {#object-json-retrieval}
 Ingesting `objects/sample.json` via the S3 plugin succeeds, but calling `/retrieval/jobs` with `format_hint="json"` returns 422 "Unsupported transport". Repro: `pytest tests/integration/test_catalog_multi_source.py::test_catalog_object_ingestion_inline_retrieval`. Retrieving Parquet blobs is supposed to work once the inline fix rolls out broadly, so this entry tracks the non-tabular JSON gap specifically.
+
+**Status – 2026-09-16 (ENG-12320):** on the Azure 1.2.1 evidence instance, inline retrieval of `objects/sample.json` with `format_hint="json"` returned a COMPLETED job whose data is the seeded document. The test now asserts that and no longer xfails.
 
 
 
 ### Kafka retrieval missing {#kafka-retrieval-missing}
 Kafka ingestion populates catalog containers/topics, but `/retrieval/jobs` can't materialize topic metadata or events (`pytest tests/integration/test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata`). Until we have a streaming transport, keep the SDK test marked xfail to flag regressions.
+
+**Status – 2026-09-16 (ENG-12320):** the test no longer xfails. It asserts ingestion metadata only (one dataset for the seeded topic, platform `kafka`) and is not mapped as evidence. It has no skip of its own: catalog-stack setup waits for the Kafka port, and when setup fails every test that uses the stack skips at setup. The SDK still rejects Kafka dataset URNs before job creation.
 
 ### Slack retrieval missing _(resolved 2025-11-14)_ {#slack-retrieval-missing}
 Slack ingestion can now stream conversations (and optional replies) via the retrieval API when supplied with a bot token. Regression coverage: `tests/integration/test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata` ingests a channel and asserts that `/retrieval/jobs` returns inline rows when `SLACK_TEST_TOKEN`/`SLACK_TEST_CHANNEL`/`SLACK_TEST_TEAM` env vars are provided.
@@ -154,3 +169,12 @@ Branch: `chore/reenable-tests`.
 - **Slack ingest regressed despite provided env.** `tests/integration/test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata` fails with `500` and detail `Unexpected ingestion failure: Event loop is closed` while the Slack plugin creates the DataHub secret. Slack `auth.test` succeeds; `team.info` also reports missing `team:read`, which is a secondary token-scope issue rather than the 500 root cause.
 - **Llama.cpp deploy path has platform blockers.** After the harness gate/quant fixes, deploy reached the live platform but the host requested `kamiwaza_gpus: 1.0` on a no-GPU/UMA setup, and Ray autoscaler reported no node type could satisfy it. Core logs also showed GGUF download failures under `/app/models/unsloth/...` with permission denied. The deployment status read was also affected by the external auth `403` blocker above.
 - **Catalog file/Kafka remain expected xfails.** File ingestion metadata still returns no retrievable datasets in this topology, and Kafka still exposes metadata without a retrieval transport.
+
+## 2026-09-16 - 1.2.1 T01 retrieval evidence {#t01-retrieval-evidence-20260916}
+
+Branch: `test/eng-12319-t01-catalog-retrieval` (ENG-12319).
+
+### Retrieval gRPC returns 503 on 1.2.1 (ENG-12300)
+- **Symptom.** On the Azure 1.2.1 instance, `POST /retrieval/jobs` with `transport: "grpc"` returns HTTP 503 `Arrow Flight retrieval is not configured: set RETRIEVAL_FLIGHT_ADVERTISED_LOCATIONS and run the retrieval streamer, or explicitly enable insecure local mode for development`, although that variable is set for the API processes.
+- **Cause.** The API's stored `retrieval` runtime config does not contain `flight_advertised_locations_raw`, and the platform settings loader resets every field before applying the stored keys, so the environment value is discarded. Diagnosis and evidence are in ENG-12300.
+- **SDK coverage.** `tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc` is no longer skipped. The retrieval capability includes Arrow Flight, so on this 503 the test fails with a message naming ENG-12300. Repro: `pytest tests/integration/test_catalog_ingest_retrieval.py --live-base-url <cluster>/api`; result on the Azure 1.2.1 instance, 2026-09-16: `1 failed, 1 passed` (inline passed, gRPC failed on the 503).
