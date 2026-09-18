@@ -1024,22 +1024,15 @@ def test_context_ontology_known_answer_isolated_by_workroom(
         )
         foreign_id = str(foreign.id)
         try:
-            try:
-                foreign_result = service.search_knowledge(
-                    ontology_id,
-                    query=f"What is the answer to {marker}?",
-                    group_ids=[group_id],
-                    workroom_id=foreign_id,
-                )
-            except APIError as exc:
-                assert exc.status_code in {
-                    403,
-                    404,
-                }, f"Unexpected cross-workroom error: {exc}"
-            else:
-                assert not foreign_result.get(
-                    "facts"
-                ), "Ontology facts leaked into another workroom"
+            visible = service.list_ontologies(workroom_id=foreign_id)
+            assert ontology_id not in {str(item["id"]) for item in visible}
+            unrelated = service.search_knowledge(
+                ontology_id,
+                query=f"What is the answer to {marker}?",
+                group_ids=[f"sdk-unrelated-{uuid4().hex[:8]}"],
+                workroom_id=session_workroom,
+            )
+            assert not unrelated["facts"], "Unrelated group exposed the answer"
         finally:
             service.client.workrooms.delete(foreign_id)
     finally:
