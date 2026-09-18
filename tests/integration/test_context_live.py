@@ -978,9 +978,24 @@ def test_context_ontology_known_answer_isolated_by_workroom(
     session_workroom: str,
     context_required_llm: str,
 ) -> None:
-    """Require a retrievable answer and prove another workroom cannot read it."""
+    """Require a retrievable answer and deny a user outside its workroom."""
     assert context_required_llm
     service = shared_context_service
+    foreign_api_key = os.getenv("KAMIWAZA_CONTEXT_FOREIGN_API_KEY", "").strip()
+    foreign_workroom_id = os.getenv("KAMIWAZA_CONTEXT_FOREIGN_WORKROOM_ID", "").strip()
+    if not foreign_api_key or not foreign_workroom_id:
+        pytest.skip(
+            "Ontology isolation needs a second user PAT and separate workroom "
+            "via KAMIWAZA_CONTEXT_FOREIGN_API_KEY and "
+            "KAMIWAZA_CONTEXT_FOREIGN_WORKROOM_ID"
+        )
+    foreign_service = KamiwazaClient(
+        service.client.base_url, api_key=foreign_api_key
+    ).context
+    assert (
+        service.client.auth.get_current_user().sub
+        != foreign_service.client.auth.get_current_user().sub
+    ), "Ontology isolation fixture must use a distinct user"
     marker = f"sdkprobe{uuid4().hex}"
     group_id = f"sdk-group-{uuid4().hex[:8]}"
     created = service.create_ontology(
@@ -1035,40 +1050,31 @@ def test_context_ontology_known_answer_isolated_by_workroom(
         assert episodes["episodes"]
         assert marker in str(episodes["episodes"])
 
-        foreign = service.client.workrooms.create(
-            f"sdk-foreign-{uuid4().hex[:8]}",
-            "ephemeral",
-            description="Ephemeral workroom for ontology isolation check",
-        )
-        foreign_id = str(foreign.id)
+        own = service.list_ontologies(workroom_id=session_workroom)
+        assert ontology_id in {str(item["id"]) for item in own}
+        visible = foreign_service.list_ontologies(workroom_id=foreign_workroom_id)
+        assert ontology_id not in {str(item["id"]) for item in visible}
+        with pytest.raises(KamiwazaError) as denied:
+            foreign_service.get_ontology(ontology_id, workroom_id=foreign_workroom_id)
+        assert denied.value.status_code in {403, 404}
         try:
-            own = service.list_ontologies(workroom_id=session_workroom)
-            assert ontology_id in {str(item["id"]) for item in own}
-            visible = service.list_ontologies(workroom_id=foreign_id)
-            assert ontology_id not in {str(item["id"]) for item in visible}
-            with pytest.raises(KamiwazaError) as denied:
-                service.get_ontology(ontology_id, workroom_id=foreign_id)
-            assert denied.value.status_code in {403, 404}
-            try:
-                foreign_search = service.search_knowledge(
-                    ontology_id,
-                    query=f"What is the answer to {marker}?",
-                    group_ids=[group_id],
-                    workroom_id=foreign_id,
-                )
-            except KamiwazaError as denied_search:
-                assert denied_search.status_code in {403, 404}
-            else:
-                assert not foreign_search["facts"], "Foreign workroom read the answer"
-            unrelated = service.search_knowledge(
+            foreign_search = foreign_service.search_knowledge(
                 ontology_id,
                 query=f"What is the answer to {marker}?",
-                group_ids=[f"sdk-unrelated-{uuid4().hex[:8]}"],
-                workroom_id=session_workroom,
+                group_ids=[group_id],
+                workroom_id=foreign_workroom_id,
             )
-            assert not unrelated["facts"], "Unrelated group exposed the answer"
-        finally:
-            service.client.workrooms.delete(foreign_id)
+        except KamiwazaError as denied_search:
+            assert denied_search.status_code in {403, 404}
+        else:
+            assert not foreign_search["facts"], "Foreign user read the answer"
+        unrelated = service.search_knowledge(
+            ontology_id,
+            query=f"What is the answer to {marker}?",
+            group_ids=[f"sdk-unrelated-{uuid4().hex[:8]}"],
+            workroom_id=session_workroom,
+        )
+        assert not unrelated["facts"], "Unrelated group exposed the answer"
     finally:
         _safe_delete_ontology(service, ontology_id, workroom_id=session_workroom)
 
