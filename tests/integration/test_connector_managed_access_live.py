@@ -31,7 +31,7 @@ from uuid import uuid4
 import pytest
 
 from kamiwaza_sdk import KamiwazaClient
-from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.exceptions import APIError, KamiwazaError
 from kamiwaza_sdk.schemas.connector_surfaces import (
     ConnectorContentRequest,
     ConnectorSurfaceRef,
@@ -97,7 +97,7 @@ def _verify_until_ready(client, connector_id, *, wait=sleep) -> None:
     while True:
         try:
             verification = client.connectors.verify_connection(connector_id)
-        except APIError as exc:
+        except KamiwazaError as exc:
             if exc.status_code not in (502, 503, 504) or monotonic() >= deadline:
                 raise
             wait(3)
@@ -231,9 +231,21 @@ def _expect_denied(client, ref: ConnectorSurfaceRef, item: dict) -> None:
     _require_fields(item, "node_id", "request")
     request = ConnectorContentRequest.model_validate(item["request"])
     assert request.surface == "files"
-    with pytest.raises(APIError) as denied:
+    with pytest.raises(KamiwazaError) as denied:
         client.connectors.fetch_surface_content(ref, item["node_id"], request)
     assert denied.value.status_code in (403, 404)
+
+
+def test_denied_accepts_typed_authorization_error() -> None:
+    from kamiwaza_sdk.exceptions import AuthorizationError
+
+    class FakeConnectors:
+        def fetch_surface_content(self, _ref, _node_id, _request):
+            raise AuthorizationError("denied", status_code=403)
+
+    client = type("Client", (), {"connectors": FakeConnectors()})()
+    ref = ConnectorSurfaceRef(workroom_id="room", connector_id="connector")
+    _expect_denied(client, ref, {"node_id": "item", "request": {"surface": "files"}})
 
 
 def test_m365_workroom_and_provider_access(request: pytest.FixtureRequest) -> None:
@@ -291,7 +303,7 @@ def test_m365_workroom_and_provider_access(request: pytest.FixtureRequest) -> No
             ref_b.workroom_id, connected_only=True
         )
     )
-    with pytest.raises(APIError) as denied_catalog:
+    with pytest.raises(KamiwazaError) as denied_catalog:
         a.connectors.list_surface_catalog(ref_b.workroom_id, connected_only=True)
     assert denied_catalog.value.status_code in (403, 404)
 
