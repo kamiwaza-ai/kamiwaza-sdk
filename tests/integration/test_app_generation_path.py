@@ -41,6 +41,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Distribution name as it appears in the generated backend requirements.
 RUNTIME_LIB_DISTRIBUTION = "kamiwaza-extensions-lib"
 
+# Where `kz-ext dev local --sdk-repo` mounts the checkout inside the backend
+# image; the CLI reports it as `PYTHONPATH: /sdk`.
+SDK_OVERLAY_MOUNT = "/sdk"
+
 # `kz-ext dev local` reports each service on its own line, e.g.
 #   backend: http://localhost:55012
 SERVICE_URL_RE = re.compile(r"^(?P<service>backend|frontend):\s+(?P<url>https?://\S+)$")
@@ -320,10 +324,13 @@ def _assert_runtime_lib_came_from_the_local_checkout(container: str) -> None:
     )
     module_path = probe.stdout.strip()
     assert module_path, "the runtime lib reported no module path"
-    assert "site-packages" not in module_path, (
-        f"the runtime library resolves from {module_path!r}, which is an "
-        "installed distribution rather than the mounted checkout — --sdk-repo "
-        "did not take effect, and the matching version only coincided"
+    # Asserted positively. Excluding only site-packages would still admit
+    # dist-packages or a copy vendored elsewhere in the image; the claim is that
+    # the module came from the --sdk-repo overlay, so assert that mount.
+    assert module_path.startswith(f"{SDK_OVERLAY_MOUNT}/"), (
+        f"the runtime library resolves from {module_path!r}, not from the "
+        f"{SDK_OVERLAY_MOUNT!r} overlay --sdk-repo mounts; the matching version "
+        "only coincided and provenance is unproven"
     )
 
 

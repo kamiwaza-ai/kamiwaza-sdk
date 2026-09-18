@@ -58,10 +58,13 @@ MCP_INITIALIZE = {
 }
 
 DEPLOYED_STATUSES = frozenset({"DEPLOYED", "RUNNING"})
-# Retirement is asserted positively. "not in DEPLOYED_STATUSES" would accept
-# FAILED or PENDING as a successful stop, which claims a clean retirement for a
-# deployment that may have broken instead.
-RETIRED_STATUSES = frozenset({"STOPPED", "STOP_REQUESTED"})
+# Retirement is asserted positively, and only STOPPED counts. "not in
+# DEPLOYED_STATUSES" would accept FAILED or PENDING as a clean stop, and
+# STOP_REQUESTED proves only that the request was accepted — a workload that
+# never actually stops would satisfy it while still running on a shared host.
+RETIRED_STATUSES = frozenset({"STOPPED"})
+# Accepted but not yet terminal: keep waiting rather than concluding either way.
+RETIRING_STATUSES = frozenset({"STOP_REQUESTED", "STOPPING"})
 SETTLED_STATUSES = frozenset({"DEPLOYED", "RUNNING", "FAILED", "STOPPED"})
 
 
@@ -151,8 +154,15 @@ def stopped_tool_deployments(live_kamiwaza_client) -> Iterator[list[str]]:
                 continue
             with suppress(APIError):
                 client.tools.stop_deployment(deployment.id)
-            final = client.tools.get_deployment(deployment.id)
-            if final.status not in RETIRED_STATUSES:
+            # Poll until STOPPED. A stop the platform applies asynchronously
+            # would otherwise read as unretired on a healthy run, and breaking
+            # on STOP_REQUESTED would accept "asked to stop" as "stopped".
+            for _ in range(60):
+                final = client.tools.get_deployment(deployment.id)
+                if final.status in RETIRED_STATUSES:
+                    break
+                time.sleep(1)
+            else:
                 unretired.append(f"{deployment.name}={final.status}")
     assert not unretired, (
         f"tool deployments did not reach a retired state and may still be "

@@ -51,13 +51,16 @@ pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresp
 # Manifest keys the deploy stage reads. Asserting them keeps this test honest
 # about what the scaffold hands the next station, without restating the whole
 # template.
-MANIFEST_KEYS_THE_DEPLOY_CONSUMES = (
-    "name",
-    "version",
-    "type",
-    "kz_ext_version",
-    "risk_tier",
-)
+# Manifest keys the deploy stage reads, with the type each must carry. A
+# presence check alone admits [] or {}, which are neither None nor "" and are
+# just as unconsumable.
+MANIFEST_KEYS_THE_DEPLOY_CONSUMES = {
+    "name": str,
+    "version": str,
+    "type": str,
+    "kz_ext_version": str,
+    "risk_tier": int,
+}
 
 
 def _skip_or_fail(reason: str) -> NoReturn:
@@ -111,20 +114,20 @@ def test_kz_ext_scaffolds_an_extension_the_deploy_stage_can_consume(
     manifest_path = tmp_path / "kamiwaza.json"
     assert manifest_path.is_file(), "kz-ext create produced no kamiwaza.json"
     manifest = json.loads(manifest_path.read_text())
-    for key in MANIFEST_KEYS_THE_DEPLOY_CONSUMES:
+    for key, expected_type in MANIFEST_KEYS_THE_DEPLOY_CONSUMES.items():
         assert key in manifest, f"the manifest lacks {key!r}, which the deploy reads"
-        # Presence is not consumability: a null or blank value satisfies `in`
-        # while giving the deploy stage nothing to read.
         value = manifest[key]
-        assert value is not None and value != "", (
-            f"the manifest's {key!r} is {value!r}; the deploy stage cannot "
-            "consume an empty value"
+        # Presence is not consumability, and neither is "not empty": [] and {}
+        # pass both while giving the deploy stage nothing it can use. bool is
+        # excluded explicitly because it is a subclass of int.
+        assert isinstance(value, expected_type) and not isinstance(value, bool), (
+            f"the manifest's {key!r} is {value!r} ({type(value).__name__}); the "
+            f"deploy stage needs a {expected_type.__name__}"
         )
+        if isinstance(value, str):
+            assert value.strip(), f"the manifest's {key!r} is blank"
     assert manifest["name"] == "eng12432extpath"
     assert manifest["type"] == "app"
-    assert isinstance(manifest["risk_tier"], int), (
-        f"risk_tier must be numeric for the deploy stage; got {manifest['risk_tier']!r}"
-    )
 
     compose = tmp_path / "docker-compose.yml"
     assert compose.is_file(), "the deploy stage derives services from the compose file"

@@ -48,7 +48,12 @@ UNRESERVED_LOOKALIKE_KEY = "KAMIWAZA_MODEL_DEPLOYMENT_ID"
 PLAIN_PROBE_KEY = "ENG12432_PROBE"
 
 # The statuses the platform treats as settled for a deployment.
-SETTLED_STATUSES = frozenset({"DEPLOYED", "FAILED", "STOP_REQUESTED", "STOPPED"})
+# Every state the poll may stop on. RUNNING belongs here as well as in
+# RUNNING_STATUSES: a status the arm treats as success must also end the wait,
+# or a legitimately RUNNING deployment polls to the timeout and fails.
+SETTLED_STATUSES = frozenset(
+    {"DEPLOYED", "RUNNING", "FAILED", "STOP_REQUESTED", "STOPPED"}
+)
 RUNNING_STATUSES = frozenset({"DEPLOYED", "RUNNING"})
 
 # Images served from a developer's local registry cannot be pulled by the
@@ -145,8 +150,15 @@ def retired_app_deployments(live_kamiwaza_client) -> Iterator[list[str]]:
             with suppress(APIError):
                 client.apps.stop_deployment(deployment.id)
             _purge(client, deployment.id)
-        survivors = [d.name for d in client.apps.list_deployments() if d.name == name]
-        if survivors:
+        # Poll rather than asserting one call after the purge: a purge the
+        # platform completes asynchronously would otherwise be reported as a
+        # leak on a perfectly healthy run. The extensions finalizer already
+        # polls; this keeps the three consistent.
+        for _ in range(30):
+            if not any(d.name == name for d in client.apps.list_deployments()):
+                break
+            time.sleep(1)
+        else:
             leaked.append(name)
     assert not leaked, (
         f"deployments survived stop + purge and are leaked on a shared host: {leaked}"
