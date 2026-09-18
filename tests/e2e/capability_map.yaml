@@ -489,3 +489,13 @@
   capability_ids: [skills.skills-library]
   scenario_name: "Skills Library import, curation, export and soft delete"
   evidence_provenance: cycle-authored
+
+# ENG-12326: independently reviewed; live pass on the pinned develop recovery
+# build. Both target orderings have isolated count checks before identity
+# checks, and refresh is tested against an untouched control. This proves
+# tracked-record removal and refresh-token logout, NOT issued access-token
+# invalidation. Destructive counts still rely on successful login persistence.
+- pattern: "tests/integration/test_session_recovery_live.py::test_session_record_lifecycle_with_fresh_control"
+  capability_ids: [auth.session-revocation]
+  scenario_name: "Tracked session removal and refresh-token logout with fresh control"
+  evidence_provenance: cycle-authored
