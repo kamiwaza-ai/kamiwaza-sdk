@@ -1267,11 +1267,21 @@ def _assert_owner_can_find(doc: _IndexedDocument) -> None:
 def _assert_foreign_search_misses(
     search: Callable[[], dict[str, Any]], needle: str
 ) -> None:
-    """A foreign workroom is denied outright or sees none of the document."""
+    """A foreign workroom is denied outright or sees none of the document.
+
+    The probe runs against a room whose VectorDB is already provisioned (see
+    ``_create_foreign_workroom``), so it reaches backend resolution and this
+    stays a real isolation assertion. A ``503 vectordb_instance_not_found``
+    here means the room lost its backend after we waited for it — a
+    provisioning regression, not a pass.
+    """
     try:
         results = search()["results"]
     except KamiwazaError as error:
-        assert error.status_code in {403, 404}
+        assert error.status_code in {403, 404}, (
+            f"foreign-workroom search answered {error.status_code}; expected a "
+            f"denial or a miss against its provisioned backend: {error}"
+        )
     else:
         assert all(needle not in item["content"] for item in results)
 
@@ -1308,11 +1318,39 @@ def _assert_foreign_workroom_denied(doc: _IndexedDocument, foreign_id: str) -> N
 def _create_foreign_workroom(
     service: ContextService, cleanups: list[tuple[str, Callable[[], object]]]
 ) -> str:
+    """Create an ephemeral room that already has a VectorDB, ready to probe.
+
+    The room needs a backend for the probes to mean anything: a search against
+    a room with no VectorDB answers ``503 vectordb_instance_not_found`` before
+    resolving anything, which proves nothing about isolation.
+
+    Provision it explicitly rather than waiting on core's auto-provisioner.
+    That provisioner is eager only by default: with
+    ``WORKROOM_CONTEXT_AUTO_PROVISION_MODE=lazy`` a new room is provisioned on
+    first *write* (never by a search), and ``disabled`` leaves it to an
+    operator, so waiting would hang and fail on two supported deployments.
+    This mirrors how the owner's room gets its backend (``_create_temp_vectordb``
+    via the ``shared_workroom_vectordb`` fixture), which keeps both sides of the
+    isolation comparison set up the same way.
+    """
     workrooms = service.client.workrooms
     foreign_id = str(
         workrooms.create(f"sdk-t14-other-{uuid4().hex[:8]}", "ephemeral").id
     )
     cleanups.append(("foreign workroom", lambda: workrooms.delete(foreign_id)))
+    vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-t14-other-vdb",
+        workroom_id=foreign_id,
+    )
+    cleanups.append(
+        (
+            "foreign workroom vectordb",
+            lambda: _safe_delete_vectordb(
+                service, vectordb_id, workroom_id=foreign_id
+            ),
+        )
+    )
     return foreign_id
 
 
