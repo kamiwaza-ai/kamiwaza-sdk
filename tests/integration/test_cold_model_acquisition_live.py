@@ -77,7 +77,9 @@ def _assert_acquired_file(client, file) -> None:
 
 def test_cold_model_search_download_and_acquired_file(live_kamiwaza_client) -> None:
     """Prove a chosen quantized weight moves from absent to stored, not warm reuse."""
-    repo_id = os.getenv("KAMIWAZA_COLD_MODEL_REPO", "Qwen/Qwen3-0.6B-GGUF")
+    repo_id = os.getenv("KAMIWAZA_COLD_MODEL_REPO", "").strip()
+    if not repo_id:
+        pytest.skip("KAMIWAZA_COLD_MODEL_REPO must select an uncached test target")
     quantization = os.getenv("KAMIWAZA_COLD_MODEL_QUANTIZATION", "q8_0")
     timeout = int(os.getenv("KAMIWAZA_COLD_MODEL_TIMEOUT_SECONDS", "900"))
     client = live_kamiwaza_client
