@@ -32,8 +32,7 @@ def _target_file(client, repo_id: str, quantization: str):
         f"Expected one {quantization} GGUF file for {repo_id}; "
         f"found {[file.name for file in files]}"
     )
-    assert model.id is not None
-    return model.id, files[0]
+    return files[0]
 
 
 def test_cold_model_search_download_and_acquired_file(live_kamiwaza_client) -> None:
@@ -43,11 +42,16 @@ def test_cold_model_search_download_and_acquired_file(live_kamiwaza_client) -> N
     timeout = int(os.getenv("KAMIWAZA_COLD_MODEL_TIMEOUT_SECONDS", "900"))
     client = live_kamiwaza_client
 
-    model_id, before = _target_file(client, repo_id, quantization)
+    before = _target_file(client, repo_id, quantization)
+    stored_model = client.models.get_model_by_repo_id(repo_id)
     stored_before = next(
         (
             file
-            for file in client.models.get_model_files_by_model_id(model_id)
+            for file in (
+                client.models.get_model_files_by_model_id(stored_model.id)
+                if stored_model and stored_model.id
+                else []
+            )
             if file.name == before.name
         ),
         None,
@@ -74,10 +78,15 @@ def test_cold_model_search_download_and_acquired_file(live_kamiwaza_client) -> N
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        stored_model = client.models.get_model_by_repo_id(repo_id)
         after = next(
             (
                 file
-                for file in client.models.get_model_files_by_model_id(model_id)
+                for file in (
+                    client.models.get_model_files_by_model_id(stored_model.id)
+                    if stored_model and stored_model.id
+                    else []
+                )
                 if file.name == before.name
             ),
             None,
