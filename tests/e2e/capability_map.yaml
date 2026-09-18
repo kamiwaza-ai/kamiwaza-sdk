@@ -246,7 +246,92 @@
     - "*::test_cannot_delete_global_workroom"
 
 # ENG-12269: workroom isolation tests do not enter/leave a session or prove
-# the documented 403 denial. A session-scoping mapping requires that workflow.
+# the documented 403 denial. A session-scoping mapping requires that workflow,
+# which the ENG-12325 entry below supplies.
+
+# ENG-12325 (T03): a disposable user enters workroom A and creates a catalog
+# dataset with no X-Workroom-Id header, so only the session binding scopes it;
+# the bound view lists it. Rebound to workroom B, it creates a second dataset,
+# and B's bound view lists that one and not A's. After leave, the unscoped
+# (Global) view lists neither and each workroom's explicit view lists only its
+# own. A conditional leave naming a workroom the session is not bound to is
+# refused with 409 session_conflict and leaves the binding (raw API: the SDK's
+# leave takes no expected_workroom_id). The documented denial is fail-closed
+# and typed: a non-member is refused A's view with 403 "Workroom access denied",
+# and the unbound session's POST to A is refused with 403 "Authenticated
+# workroom context missing.", with a by-URN read in the workroom scope -- where
+# the same identity is shown to read an existing dataset -- proving nothing
+# landed there. Only "Workroom access denied" is a documented contract; the
+# unbound-write detail is observed on 1.2.1.
+# Each view's absence check runs after the same identity has listed the dataset
+# (listings are polled for presence), and each workroom is read before it is
+# deleted. Datasets are deleted while bound, each read by URN before its
+# delete and proven absent by a by-URN 404 after; both workrooms are deleted
+# and proven absent. Opt-in: KAMIWAZA_TEST_DISPOSABLE_IDENTITIES=1.
+# Not evidenced: where a refused unbound write would land if it were accepted
+# (the identity holds no dataset outside a workroom, so an unscoped by-URN read
+# has no positive control); and any failure mode of enter itself -- every enter
+# here succeeds, including the rebind from A to B, so the 409 session_conflict
+# path is observed only on a conditional leave.
+- pattern: "tests/integration/test_workroom_lifecycle_live.py::test_entered_workroom_scopes_datasets_and_leave_clears_the_scope"
+  capability_ids: [workrooms.session-scoping]
+  scenario_name: "Workroom enter and leave scope catalog datasets to the session"
+  evidence_provenance: cycle-authored
+
+# ENG-12325 (T04): one catalog dataset is seeded into a new workroom through
+# the explicit workroom scope and shown to list. The export manifest names it
+# as the only exportable dataset, the ingestion summary counts exactly one
+# catalog entry, and the downloaded ZIP carries workroom.json and manifest.json
+# naming the workroom plus a dataset index whose single entry is the seeded URN
+# with its descriptor file; the archive holds exactly those files and a data
+# source index that reads empty. The test then deletes the dataset (read by URN
+# first) and proves it gone by a by-URN 404; the summary's count also reads 0
+# again. It then proves the workroom gone. No session is entered.
+# Not evidenced: the bundle's exclusion of underlying data (the seeded dataset
+# has no payload to exclude).
+- pattern: "tests/integration/test_workroom_export_live.py::test_export_enumerates_a_seeded_dataset_in_manifest_summary_and_bundle"
+  capability_ids: [workrooms.export-bundle]
+  scenario_name: "Workroom export manifest, summary, and bundle enumerate a seeded dataset"
+  evidence_provenance: cycle-authored
+
+# ENG-12325 (T05): a disposable non-admin creates and archives a workroom and
+# is refused both admin routes with 403 "Role 'admin' is required to access
+# this resource" (observed on 1.2.1, not a documented contract). The
+# administrator's paginated platform-wide listing finds it
+# archived with that user as owner and the owner's username resolved; admin
+# delete removes it from the listing,
+# include_deleted still shows it as deleted, and the owner can no longer read
+# it. The listing is paged by offset while other runs change it, which bounds
+# what the absent result proves once it spans pages. 1.2.1 has no admin
+# preview route; the owner's preview is in the next entry. Opt-in:
+# KAMIWAZA_TEST_DISPOSABLE_IDENTITIES=1.
+- pattern: "tests/integration/test_workroom_admin_live.py::test_admin_finds_and_deletes_another_users_archived_workroom"
+  capability_ids: [workrooms.admin-oversight]
+  scenario_name: "Administrator finds and deletes another user's archived workroom"
+  evidence_provenance: cycle-authored
+
+# ENG-12325 (T05): every owner action is a disposable non-admin's; only the
+# final retention read uses the administrator listing. Archive hides the
+# workroom from the default listing but not from include_archived, a repeat
+# archive is accepted, and an update is refused with 409 while archived.
+# Restore returns it to active, after which the same update is accepted. The
+# lifecycle summary and delete preview report no catalog entry; the owner then
+# seeds one catalog dataset through a session binding, after which the summary
+# reads active with one catalog entry and one active member and the preview
+# names the owner as the one member losing access and reports one catalog entry
+# (restore, summary and preview over the raw API: the SDK has no methods for
+# them). App deployment and extension counts are not evidenced:
+# they depend on the deployment's own provisioning and read 0 in one run. The
+# dataset is deleted by URN and proven gone before the workroom. Delete
+# succeeds, the workroom is unreadable, a retried delete is 404, and the record
+# is retained as deleted in the administrator listing. Not evidenced: the
+# cascading purge of the workroom's tagged resources, since the test removes
+# its own dataset first.
+# Opt-in: KAMIWAZA_TEST_DISPOSABLE_IDENTITIES=1.
+- pattern: "tests/integration/test_workroom_admin_live.py::test_owner_archives_restores_previews_and_deletes_a_workroom"
+  capability_ids: [workrooms.archive-and-delete]
+  scenario_name: "Owner archives, restores, previews, and deletes a workroom"
+  evidence_provenance: cycle-authored
 
 # Justification: test_federated_job_audit_actor_round_trip runs a job on the
 # peer cluster through the mesh and proves the originating identity survives
