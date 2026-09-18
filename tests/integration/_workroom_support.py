@@ -184,10 +184,14 @@ def declined_by_the_server(error: BaseException) -> bool:
     ``status_code``, and others carry ``status``. One predicate reading both
     keeps a caller from being fixed without its sibling.
 
-    Each spelling is judged on its own rather than the first non-``None`` one
-    winning: an attribute that is present but not an int would otherwise mask
-    the other, and a 4xx this run did decline would read as an unknown outcome
-    and be reported as a resource that may exist.
+    The first spelling carrying an ``int`` decides, and a spelling holding
+    anything else is passed over rather than ending the search: a present but
+    unusable attribute would otherwise mask a usable one, and a 4xx this run
+    did decline would read as an unknown outcome. Two disagreeing ints are not
+    reconciled -- the first still decides -- which leaves an ambiguous pair out
+    of the decline set, the safe direction here: a resource wrongly called
+    declined is never reported, while one wrongly called undecided is only
+    reported twice.
     """
     for name in ("status", "status_code"):
         status = getattr(error, name, None)
@@ -271,14 +275,20 @@ def await_condition(
 
 
 def rendered_with_summary(exc: BaseException, carried: BaseException | None) -> str:
-    """``exc`` as text, folding in a ``CleanupError`` summary it carries.
+    """``exc`` as text, with ``carried``'s ``CleanupError`` summary folded in.
+
+    ``carried`` is passed separately rather than read off ``exc`` because the
+    two callers pair them differently: naming a failed step folds in that
+    step's own cause, while replacing a stop signal's cause folds the summary
+    that signal carried into the *setup* failure now taking its place.
 
     A stop signal raised out of an ``attempt_all`` carries that call's summary
     as its cause, and that summary is the only place the resources it never
-    reached are named -- ``str(KeyboardInterrupt())`` is empty. Anything that
-    re-raises such a signal with a different cause has to fold the old text in
-    rather than replace it. Both places that do so call this, so the rule is
-    written once instead of paraphrased twice.
+    reached are named -- ``str(KeyboardInterrupt())`` is empty, which is also
+    why the type name is rendered when the text is. Anything re-raising such a
+    signal with a different cause has to fold the old text in rather than
+    replace it. Both places that do so call this, so the rule is written once
+    instead of paraphrased twice.
     """
     detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
     if isinstance(carried, CleanupError):

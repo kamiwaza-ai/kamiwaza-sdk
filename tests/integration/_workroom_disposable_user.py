@@ -358,6 +358,17 @@ def _remove_failed_setup(
         # reported as unconfirmed: this cannot tell "never created" from "not
         # listed yet", and the difference matters on a shared deployment.
         def remove_by_username() -> None:
+            # The lookup runs even for a declined create, because a 4xx does
+            # not prove nothing was stored: a server that persisted the account
+            # and then refused the response is exactly the case above, and
+            # leaving that account behind is the failure this module exists to
+            # prevent. The name is the ownership proof -- it carries this run's
+            # own 64-bit suffix (NAME_SUFFIX_HEX) -- so a match is this run's
+            # account rather than a stranger's. That bounds, without erasing,
+            # the converse risk: were a create declined *because* the name were
+            # already taken, this would delete the holder's account. Reaching
+            # that needs a suffix collision or an actor acting on the name
+            # _announce_account prints before the create.
             for user in admin.auth.list_users():
                 if user.username == username:
                     attempt_all(_account_removal_steps(admin, username, user.id))

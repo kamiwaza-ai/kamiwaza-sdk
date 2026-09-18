@@ -32,7 +32,7 @@ binding, so datasets are deleted while bound.
 This evidences session scoping on a deployment that holds the binding server
 side, which is what the 1.2.1 evidence deployment does. ``enter`` also answers
 with an ``access_token``, and on a deployment that carries the binding in that
-token instead (Lite/SAML) this test would not hold: ``WorkroomService.enter``
+token instead this test would not hold: ``WorkroomService.enter``
 documents that the SDK never installs a returned token, so the client would
 keep its password-grant token and the headerless reads below would run
 unbound. The test does not install it either -- doing so would evidence

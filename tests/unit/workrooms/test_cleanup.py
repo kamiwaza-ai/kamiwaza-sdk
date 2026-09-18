@@ -18,6 +18,30 @@ from tests.integration import _workroom_support as support
 pytestmark = pytest.mark.unit
 
 
+def test_a_stop_signal_with_no_message_is_named_by_its_type() -> None:
+    """``str(KeyboardInterrupt())`` is empty, so the type name must carry it.
+
+    The interrupt is the case that matters: it is what a Ctrl-C during cleanup
+    raises, and the summary folded in beside it is the only place the resources
+    that pass could not reach are named. Rendering it as the bare text would
+    leave a dangling separator and no subject.
+    """
+    carried = support.CleanupError("cleanup failed: delete refused")
+
+    rendered = support.rendered_with_summary(KeyboardInterrupt(), carried)
+
+    assert rendered == f"KeyboardInterrupt ({carried})"
+
+
+def test_an_exception_with_a_message_is_rendered_with_it() -> None:
+    """The other half of the same branch, so neither side can be dropped."""
+    carried = support.CleanupError("cleanup failed: delete refused")
+
+    rendered = support.rendered_with_summary(RuntimeError("setup broke"), carried)
+
+    assert rendered == f"RuntimeError: setup broke ({carried})"
+
+
 def test_attempt_all_runs_every_step_and_reports_each_failure() -> None:
     ran: list[str] = []
 

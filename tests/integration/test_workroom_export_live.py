@@ -24,10 +24,14 @@ them, reading only the entries typed ``dataset``.
 
 The archive's own file set is pinned exactly, because "the bundle holds
 nothing else" is what this test evidences rather than an incidental detail.
-That is deliberately brittle in one direction: 1.2.1 already writes an empty
-``data_sources/index.json``, so a release adding an index for another resource
-type would fail here. That is the intended signal, to be re-checked against the
-capability document rather than absorbed by loosening the assertion.
+That is deliberately brittle, and in more than one direction: 1.2.1 already
+writes an empty ``data_sources/index.json``, so a release adding an index for
+another resource family would fail here -- and so would this deployment on its
+own, if one of the app deployments or extensions described above turned out to
+add an archive entry. Nothing here evidences that a non-exportable manifest
+item contributes no file; the runs this was written against simply never
+produced one. Either way the failure is a signal to re-check against the
+capability document, not to absorb by loosening the assertion.
 
 Not evidenced here: the documented exclusion of underlying data from the
 bundle. The seeded dataset is metadata pointing at an unpopulated location, so

@@ -287,11 +287,16 @@
 # source index that reads empty. The test then deletes the dataset (read by URN
 # first) and proves it gone by a by-URN 404; the summary's count also reads 0
 # again. It then proves the workroom gone. No session is entered.
-# Not evidenced: the bundle's exclusion of underlying data (the seeded dataset
-# has no payload to exclude).
+# The capability guarantees the bundle carries no underlying data payloads, and
+# its coverage notes ask an SDK runbook to populate minimally and assert the
+# populated data is absent. The seeded dataset is metadata over an unpopulated
+# location, so this run cannot make that assertion: payload_exclusion is
+# declared unverified so the record carries the gap rather than certifying the
+# whole capability on a comment no consumer reads.
 - pattern: "tests/integration/test_workroom_export_live.py::test_export_enumerates_a_seeded_dataset_in_manifest_summary_and_bundle"
   capability_ids: [workrooms.export-bundle]
   scenario_name: "Workroom export manifest, summary, and bundle enumerate a seeded dataset"
+  unverified_operations: [payload_exclusion]
   evidence_provenance: cycle-authored
 
 # ENG-12325 (T05): a disposable non-admin creates and archives a workroom and
@@ -324,13 +329,17 @@
 # they depend on the deployment's own provisioning and read 0 in one run. The
 # dataset is deleted by URN and proven gone before the workroom. Delete
 # succeeds, the workroom is unreadable, a retried delete is 404, and the record
-# is retained as deleted in the administrator listing. Not evidenced: the
-# cascading purge of the workroom's tagged resources, since the test removes
-# its own dataset first.
+# is retained as deleted in the administrator listing. The capability also
+# guarantees a cascading purge of the workroom's tagged resources, which this
+# test cannot exercise: it removes its own dataset before the delete, so the
+# workroom is empty by then, and the purge is a background sweep with bounded
+# retries that a synchronous run cannot observe. cascading_purge is declared
+# unverified so the record names the gap instead of certifying it.
 # Opt-in: KAMIWAZA_TEST_DISPOSABLE_IDENTITIES=1.
 - pattern: "tests/integration/test_workroom_admin_live.py::test_owner_archives_restores_previews_and_deletes_a_workroom"
   capability_ids: [workrooms.archive-and-delete]
   scenario_name: "Owner archives, restores, previews, and deletes a workroom"
+  unverified_operations: [cascading_purge]
   evidence_provenance: cycle-authored
 
 # Justification: test_federated_job_audit_actor_round_trip runs a job on the
