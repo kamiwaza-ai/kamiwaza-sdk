@@ -5,6 +5,9 @@ from uuid import uuid4
 import pytest
 
 from kamiwaza_sdk.schemas.models.model_file import ModelFile
+from tests.integration.test_cold_model_acquisition_live import (
+    test_cold_model_search_download_and_acquired_file as run_cold_download,
+)
 from tests.integration.test_model_files_live import (
     TestModelFileCreateAndDelete as _TestModelFileCreateAndDelete,
 )
@@ -50,3 +53,10 @@ def test_live_model_file_cleanup_runs_when_test_body_raises() -> None:
         _TestModelFileCreateAndDelete().test_create_model_file(client)
 
     client.models.delete_model_file.assert_called_once_with(created_file.id)
+
+
+def test_cold_download_requires_an_explicit_target(monkeypatch) -> None:
+    monkeypatch.delenv("KAMIWAZA_COLD_MODEL_REPO", raising=False)
+
+    with pytest.raises(pytest.skip.Exception, match="KAMIWAZA_COLD_MODEL_REPO"):
+        run_cold_download(object())

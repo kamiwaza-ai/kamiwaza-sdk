@@ -123,6 +123,18 @@
 # ENG-12269: these warm-cluster tests can return before a download starts.
 # Restore a models.discover-and-download mapping only for a cold-cluster test
 # that initiates, polls, and verifies acquisition in the same run.
+- pattern: "tests/integration/test_cold_model_acquisition_live.py::test_cold_model_search_download_and_acquired_file"
+  capability_ids: [models.discover-and-download]
+  scenario_name: "Cold quantized model acquisition"
+  evidence_provenance: cycle-authored
+
+# ENG-12436: the dedicated live test seeds a unique graph answer inside a
+# workroom, retrieves it through search and memory, checks episodes/health,
+# and verifies scoped discovery and unrelated groups.
+- pattern: "tests/integration/test_context_live.py::test_context_ontology_known_answer_isolated_by_workroom"
+  capability_ids: [ontology.workroom-knowledge-graph]
+  scenario_name: "Workroom ontology known-answer search and isolation"
+  evidence_provenance: cycle-authored
 
 # ENG-12269: the tests below prove individual chat or image paths, not every
 # operation declared by models.openai-compatible-inference (chat, embeddings,
