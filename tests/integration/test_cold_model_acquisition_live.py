@@ -1,6 +1,6 @@
 """Cold model acquisition verification against a live platform.
 
-Set KAMIWAZA_COLD_MODEL_REPO to an uncached GGUF repository before running.
+Set KAMIWAZA_COLD_MODEL_REPO to an uncached, single-file GGUF repository.
 Warm files cannot prove that a new download works, so this test skips them.
 """
 

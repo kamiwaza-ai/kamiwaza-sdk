@@ -1024,6 +1024,8 @@ def test_context_ontology_known_answer_isolated_by_workroom(
         )
         foreign_id = str(foreign.id)
         try:
+            own = service.list_ontologies(workroom_id=session_workroom)
+            assert ontology_id in {str(item["id"]) for item in own}
             visible = service.list_ontologies(workroom_id=foreign_id)
             assert ontology_id not in {str(item["id"]) for item in visible}
             unrelated = service.search_knowledge(
