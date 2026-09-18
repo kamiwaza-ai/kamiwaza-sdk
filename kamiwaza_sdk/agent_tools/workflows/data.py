@@ -176,23 +176,20 @@ def complete_dataset_ingestion(
 ) -> dict[str, Any] | Refusal:
     """Promote a staged ingestion into the catalogue.
 
-    The second half of the pair, and the only approval-bearing half. Splitting
-    them is what lets a member see the staging run's report before agreeing to
-    anything.
+    The approval-bearing half of the pair, so a member sees the staging
+    report first.
 
     Args:
         client: The platform client.
-        job_id: Identifier of a scheduled ingestion job, the kind
-            ``get_job_status`` reports on. An immediate staging run reports no
-            identifier, so its own report is what a member inspects.
+        job_id: A scheduled ingestion job, the kind ``get_job_status`` reports
+            on. An immediate staging run reports no identifier.
         target: Where to register the promoted dataset.
 
     Returns:
         Mapping with the promoted ``dataset`` and its ``job``, or a
-        :class:`Refusal` when the staged job has not reported a finished
-        state — including when it reports no state at all. Promoting from a
-        job that is not known to have finished catalogues a partial dataset,
-        so an unrecognised state refuses rather than promotes.
+        :class:`Refusal` when the job has not reported a finished state —
+        including no state at all, since that would catalogue a partial
+        dataset.
     """
     status = client.ingestion.get_job_status(job_id)
     state = str(getattr(status, "status", "") or "").strip().lower()
@@ -231,39 +228,29 @@ def rag_query(
 ) -> dict[str, Any]:
     """Retrieve over a dataset and return the rows with their source.
 
-    Takes the four arguments a retrieval needs rather than a whole
-    ``RetrievalRequest``. Two reasons, and the second is not about tokens: the
-    request model has eleven fields, and two of them — ``credential_override``
-    and ``sdk_session`` — must never appear on an agent-facing surface, because
-    a published field is an invitation to set it.
-
-    The request asks for the inline transport, because returning the rows is
-    what this workflow is for. ``materialize`` answers a streaming or Flight
-    transport with an iterator or a handshake instead of a payload, and
-    neither can be returned as rows here, so that answer raises rather than
-    reporting empty rows.
+    Asks for the inline transport, because returning the rows is the point. A
+    streaming answer raises rather than reporting empty rows.
 
     Args:
         client: The platform client.
         dataset_urn: Dataset to retrieve over.
         limit_rows: Most rows to return.
-        columns: Columns to return, or every column when omitted.
+        columns: Columns to return, or all when omitted.
         filters: Column filters to apply.
 
     Returns:
         Mapping with ``dataset``, ``rows``, ``row_count`` and ``media_type``.
-        ``dataset`` is the urn on the descriptor the platform resolved, not
-        the argument echoed back, so an agent reports the dataset the rows
-        actually came from. ``InlineData`` carries no per-row source, so no
-        citation list is published: the dataset urn and the media type are the
-        attribution the payload can support.
+        ``dataset`` is the urn the platform resolved, not the argument echoed
+        back. No citation list: the payload carries no per-row source.
 
     Raises:
-        TransportNotSupportedError: When the platform answered on a transport
-            that streams instead of returning a payload. The job exists and is
-            named in the message, so it can be read with the retrieval
-            streaming or Flight helpers.
+        TransportNotSupportedError: The platform answered on a streaming
+            transport. The job is named in the message.
     """
+    # Four arguments rather than a whole ``RetrievalRequest``: the request
+    # model has eleven fields, and two of them — ``credential_override`` and
+    # ``sdk_session`` — must never appear on an agent-facing surface, because
+    # a published field is an invitation to set it.
     request = RetrievalRequest(
         dataset_urn=dataset_urn,
         transport=TransportType.INLINE.value,
@@ -315,15 +302,8 @@ def enclave_ingest(
 ) -> dict[str, Any]:
     """Create an enclave connector and start its ingest.
 
-    Takes the connector's own fields rather than a ``ConnectorCreate``, so the
-    published shape names what to supply instead of nesting a model definition
-    a caller has to read twice.
-
-    Nothing here waits: ``trigger_ingest`` returns as soon as the run is
-    accepted, its ``TriggerResponse`` carries a status and nothing else, and
-    the enclave API publishes no per-run status call to poll. Read the
-    connector back with the connector-get or connector-list operations to see
-    where its ingest got to.
+    Nothing waits: the trigger returns on acceptance and the enclave API
+    publishes no per-run status call. Read the connector back to follow it.
 
     Args:
         client: The platform client.

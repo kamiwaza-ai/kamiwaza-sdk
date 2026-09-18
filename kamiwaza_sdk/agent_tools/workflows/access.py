@@ -250,10 +250,6 @@ def grant_subject_access(
 ) -> dict[str, Any]:
     """Upsert a subject, write one authorization tuple, and confirm the result.
 
-    The tuple is assembled here from its parts rather than accepted whole. A
-    ``RelationshipTuple`` nests a subject model and an object model, so
-    publishing it meant a caller reading three definitions to write one grant.
-
     Args:
         client: The platform client.
         username: Subject to upsert and grant to.
@@ -264,8 +260,7 @@ def grant_subject_access(
         attributes: Attributes to set on the subject.
 
     Returns:
-        Mapping with ``subject`` and its ``grants`` list, read back after the
-        write.
+        Mapping with ``subject`` and its ``grants``, read back after the write.
     """
     subject = client.subjects.upsert(username, attributes=attributes or {})
     client.authz.upsert_tuple(

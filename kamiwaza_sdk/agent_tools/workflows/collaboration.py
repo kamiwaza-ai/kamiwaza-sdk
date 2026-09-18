@@ -145,11 +145,9 @@ def deploy_app_from_garden(
 ) -> dict[str, Any] | Refusal:
     """Install an app by name from the garden and deploy it.
 
-    Nothing here waits. ``get_deployment_status`` is read once, immediately
-    after the install, so the status it returns is the one the deployment
-    starts in — ``PENDING`` or ``STARTING`` on a deployment that has not
-    settled yet — and is published as that rather than as a settled state.
-    Follow it with get_deployment_status_apps to see where it ends up.
+    Nothing waits: the status is read once after the install, so it is the one
+    the deployment starts in, not a settled one. Follow with
+    get_deployment_status_apps.
 
     Args:
         client: The platform client.

@@ -291,45 +291,35 @@ def preflight_and_deploy_model(
 ) -> DeploymentOutcome | Refusal:
     """Estimate memory, compare it against the cluster, then deploy or refuse.
 
-    Refusing before anything is created is the point: a deployment that fails
-    on capacity after the fact leaves a half-built thing an agent must find and
-    clean up.
+    Refusing before anything is created is the point: a capacity failure
+    afterwards leaves a half-built deployment to find and clean up.
 
-    The comparison is the platform's own. The estimate carries both the
-    requirement and ``highest_node_vram``, the accelerator memory on the
-    largest node the platform can see, and the platform refuses a deployment
-    whose requirement passes that figure. It is a node total rather than free
-    memory: neither the estimate nor ``get_running_nodes`` reports what other
-    deployments already hold, and ``NodeListNode`` carries no memory field at
-    all. So this gate catches the requirement no cluster node could ever hold —
-    the case no retry fixes — and a deployment can still be refused later on
-    memory another deployment is using.
-
-    Takes the three identifiers it uses rather than a ``CreateModelDeployment``.
-    The request model has sixteen fields and this workflow reads three of them,
-    so accepting the whole thing published 720 tokens of schema on every
-    listing and invited a caller to set thirteen fields that would be ignored.
-
-    That leaves five parameters, which is one past what a static analyser
-    recommends for a Python function, and the trade is deliberate: this
-    signature *is* the published tool shape, so grouping arguments into an
-    object to reduce the count would put a nested definition back into every
-    listing to satisfy a threshold written for ordinary call sites. Each of the
-    five is a value a caller genuinely decides.
+    The figure compared is the largest node's *total* accelerator memory, not
+    its free memory. So a refusal means no node could ever hold this, and a
+    deployment that passes can still be refused later on memory in use.
 
     Args:
         client: The platform client.
         model_id: Model to deploy.
-        model_config_id: Configuration to deploy it with. Required, because the
-            platform's own deployment request requires it — a workflow that
-            defaulted it would fail at the platform instead of at the argument.
+        model_config_id: Configuration to deploy it with.
         model_file_id: Specific model file, when the model has more than one.
         timeout_seconds: Bound on the readiness wait.
 
     Returns:
-        The ready deployment, or a :class:`Refusal` naming the estimated
-        requirement and the largest node figure the estimate reports.
+        The ready deployment, or a :class:`Refusal` naming the requirement and
+        the largest node figure.
     """
+    # Three identifiers rather than a ``CreateModelDeployment``: the request
+    # model has sixteen fields and this reads three, so accepting the whole
+    # thing published 720 tokens of schema on every listing and invited a
+    # caller to set thirteen fields that would be ignored. ``model_config_id``
+    # is required because the platform's own request requires it — defaulting
+    # it would fail at the platform instead of at the argument.
+    #
+    # That leaves five parameters, one past what a static analyser recommends.
+    # Deliberate: this signature *is* the published tool shape, so grouping
+    # arguments into an object would put a nested definition back into every
+    # listing to satisfy a threshold written for ordinary call sites.
     deployment_request = CreateModelDeployment(
         m_id=UUID(str(model_id)),
         m_config_id=UUID(str(model_config_id)),
