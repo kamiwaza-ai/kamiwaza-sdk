@@ -1057,6 +1057,12 @@ def test_context_ontology_known_answer_isolated_by_workroom(
 
         own = service.list_ontologies(workroom_id=session_workroom)
         assert ontology_id in {str(item["id"]) for item in own}
+        with pytest.raises(KamiwazaError) as source_denied:
+            foreign_service.get_ontology(ontology_id, workroom_id=session_workroom)
+        assert source_denied.value.status_code in {
+            403,
+            404,
+        }, "Ontology isolation fixture user must not belong to the source workroom"
         visible = foreign_service.list_ontologies(workroom_id=foreign_workroom_id)
         assert ontology_id not in {str(item["id"]) for item in visible}
         with pytest.raises(KamiwazaError) as denied:

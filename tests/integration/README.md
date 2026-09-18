@@ -24,6 +24,8 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_CONTEXT_LLM_REPO` | Higher-precedence required model override for context tests; readiness/deployment failures fail rather than skip | shared platform target |
 | `KAMIWAZA_CONTEXT_LLM_ENGINE` | Higher-precedence engine override for context tests | shared platform target |
 | `KAMIWAZA_CONTEXT_LLM_QUANTIZATION` | Quantization override for context tests | shared target, or `q6_k` with an explicit context repo |
+| `KAMIWAZA_CONTEXT_FOREIGN_API_KEY` | PAT for a second user who is not a member of the ontology test's source workroom | unset; ontology isolation test skips before live setup |
+| `KAMIWAZA_CONTEXT_FOREIGN_WORKROOM_ID` | Workroom ID accessible to that second user, distinct from the source workroom | unset; ontology isolation test skips before live setup |
 | `KAMIWAZA_TEST_DIFFUSION_REPO` | Required Hugging Face image model used for DiffusionEngine validation | `dg845/tiny-random-stable-diffusion` |
 | `KAMIWAZA_TEST_DIFFUSION_FAMILY` | Diffusion family passed in the test model config | `sd15` |
 | `KAMIWAZA_TEST_DIFFUSION_BACKEND` | Runtime backend (`auto`, CPU, CUDA/NVIDIA, ROCm/AMD, MLX/MPS, or Intel) | `auto` |
@@ -57,6 +59,15 @@ password can be resolved, even when `KAMIWAZA_API_KEY` is set. They never send a
 empty password or skip this coverage. PAT-only client tests remain usable when
 selected independently. A full live/UAT run must supply a resolvable password;
 missing credentials are a harness failure, not a successful acceptance run.
+
+The ontology known-answer isolation test requires both foreign-user variables.
+Use a second user who can access the foreign workroom but is **not** a member of
+the source workroom. The test first confirms the users have distinct identities
+and that the foreign user cannot open the source ontology with the source
+workroom ID. It then checks listing, direct lookup, and known-ID search from
+the foreign workroom. Missing variables skip the test before any live fixtures
+run, and a skip is not verification evidence. Keep the PAT out of logs and
+reports.
 
 For source-based user-space acceptance, source
 `scripts/prepare_diffusion_live.sh` before `pytest -m integration`, or run
