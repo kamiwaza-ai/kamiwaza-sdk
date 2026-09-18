@@ -24,7 +24,7 @@ from kamiwaza_extensions.registry_builder import RegistryBuilder
 console = Console(stderr=True)
 
 DEFAULT_CATALOG_SCHEMA: int = 3
-SUPPORTED_CATALOG_SCHEMAS: frozenset[int] = frozenset({2, 3})
+SUPPORTED_CATALOG_SCHEMAS: frozenset[int | str] = frozenset({2, 3, "compat-v1"})
 
 # Revision grammar (Open Q #8 resolution): 1-64 chars, starts with
 # alphanumeric, allows lowercase letters, digits, hyphens, and dots.
@@ -56,7 +56,7 @@ class PublishResult:
 
     extension_name: str
     version: str
-    action: str  # "insert" or "replace"
+    action: str  # "insert", "replace" (legacy only), or "unchanged"
     registry_url: str  # Where images were pushed
     catalog_file: str  # S3 key of the updated file
     images_pushed: List[str]
@@ -158,7 +158,7 @@ class CatalogPublisher:
     def __init__(
         self,
         profile: PublishProfile,
-        catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
+        catalog_schema: int | str = DEFAULT_CATALOG_SCHEMA,
         extension_dir: Optional[Path] = None,
     ) -> None:
         """Initialize S3 client from profile credentials.
@@ -166,8 +166,9 @@ class CatalogPublisher:
         Args:
             profile: Publish profile with S3 endpoint and credentials.
             catalog_schema: Catalog schema version (determines the
-                ``garden/v{N}/`` path). Defaults to 3 (current schema for
-                K8s/v3 extensions). Pass ``2`` to publish to the legacy
+                ``garden/v{N}/`` path), or ``compat-v1`` for independent
+                version history under ``garden/compat-v1/``. Defaults to 3
+                (current schema for K8s/v3 extensions). Pass ``2`` to publish to the legacy
                 ``garden/v2/`` catalog. Must be in
                 ``SUPPORTED_CATALOG_SCHEMAS``; otherwise raises
                 ``ValueError``.
@@ -178,7 +179,7 @@ class CatalogPublisher:
         if catalog_schema not in SUPPORTED_CATALOG_SCHEMAS:
             raise ValueError(
                 f"Unsupported catalog_schema={catalog_schema!r}. "
-                f"Supported values: {sorted(SUPPORTED_CATALOG_SCHEMAS)}."
+                f"Supported values: {sorted(SUPPORTED_CATALOG_SCHEMAS, key=str)}."
             )
         try:
             import boto3
@@ -198,11 +199,12 @@ class CatalogPublisher:
         self._extension_dir = extension_dir if extension_dir is not None else Path.cwd()
 
         # Build garden directory incorporating the optional catalog_prefix.
+        generation = "compat-v1" if catalog_schema == "compat-v1" else f"v{catalog_schema}"
         prefix = profile.catalog_prefix.strip("/")
         if prefix:
-            self._garden_dir = f"{prefix}/garden/v{catalog_schema}/"
+            self._garden_dir = f"{prefix}/garden/{generation}/"
         else:
-            self._garden_dir = f"garden/v{catalog_schema}/"
+            self._garden_dir = f"garden/{generation}/"
 
         # Validate endpoint to prevent SSRF via env var override
         endpoint = profile.catalog_endpoint
@@ -226,6 +228,33 @@ class CatalogPublisher:
     # Public API
     # ------------------------------------------------------------------
 
+    def preflight_new_release(self, name: str, version: str, extension_type: str) -> None:
+        """Refuse known releases before CLI build/push can overwrite their tags.
+
+        This read is not a reservation. Catalog CAS still protects the final
+        write; concurrent first publishers and external registry writers require
+        separate registry tag immutability and artifact retention policies.
+        """
+        if self._catalog_schema != "compat-v1":
+            raise ValueError("Immutable release preflight requires compat-v1")
+        if extension_type not in _TYPE_FILE_MAP or extension_type == "connector":
+            raise ValueError(f"Unsupported compat-v1 extension type: {extension_type}")
+        from kamiwaza_extensions.compat_catalog import (
+            _read, matching_releases, require_conditional_writes,
+        )
+
+        require_conditional_writes()
+        key = f"{self._garden_dir}{_TYPE_FILE_MAP[extension_type]}"
+        try:
+            existing, _etag = _read(self, key)
+        except Exception as exc:
+            raise CatalogPublishError("Cannot read catalog; refusing build or push") from exc
+        if matching_releases({"name": name, "version": version}, existing):
+            raise ValueError(
+                f"Release {name} {version} already exists; refusing build or push. "
+                "Publish a new version, or use --no-build --no-push for an exact repeat."
+            )
+
     def publish(
         self,
         entry: Dict[str, Any],
@@ -242,7 +271,7 @@ class CatalogPublisher:
                 compose extensions, or the connector entry builder for connectors).
             extension_type: One of ``"app"``, ``"tool"``, ``"service"``, or
                 ``"connector"``.
-            force: Overwrite existing entry with same (name, semver, revision).
+            force: Overwrite legacy entries; never permits changing a compat-v1 release.
             dry_run: Perform merge logic but skip all S3 writes.
             preview_image_path: Local path to preview image to upload.
             revision: Optional revision identifier to attach to the entry
@@ -273,6 +302,17 @@ class CatalogPublisher:
         type_file = _TYPE_FILE_MAP[extension_type]
         s3_key = f"{self._garden_dir}{type_file}"
         backup_path: Optional[Path] = None
+
+        if self._catalog_schema == "compat-v1":
+            from kamiwaza_extensions.compat_catalog import publish_compat
+
+            if extension_type == "connector":
+                raise ValueError("compat-v1 supports apps, services, and tools only")
+            CatalogDedupGuard().check([], entry)
+            return publish_compat(self, entry, {
+                "key": s3_key, "force": force, "dry_run": dry_run,
+                "preview_image_path": preview_image_path,
+            })
 
         if dry_run:
             return self._dry_run_publish(entry, type_file, s3_key, force)

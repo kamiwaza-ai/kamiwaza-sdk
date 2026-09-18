@@ -1,0 +1,350 @@
+[
+  {
+    "name": "compat-live-app-0-5-0-96a62344-web-5575ff5fb5-mdvjc",
+    "uid": "0009cc8c-dc8e-48fc-967f-652dfbb841b9",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "web",
+        "ready": true,
+        "imageID": "docker.io/library/python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+      }
+    ]
+  },
+  {
+    "name": "compat-live-app-0-6-0-a24a985c-web-655f8fcb59-gds4n",
+    "uid": "cb323f19-7cea-41d0-a562-0b14f1fb700f",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "web",
+        "ready": true,
+        "imageID": "docker.io/library/python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+      }
+    ]
+  },
+  {
+    "name": "compat-live-service-0-5-0-cc37ec32-web-b67fb4844-68j94",
+    "uid": "f5da0795-4f80-4c7b-90b9-ad089946a11d",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "web",
+        "ready": true,
+        "imageID": "docker.io/library/python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+      }
+    ]
+  },
+  {
+    "name": "compat-live-service-0-6-0-2129fb35-web-67dfd9ccf8-wsw5n",
+    "uid": "a488c9da-711b-42ae-9e9d-981f82675fc8",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "web",
+        "ready": true,
+        "imageID": "docker.io/library/python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+      }
+    ]
+  },
+  {
+    "name": "core-db-init-1-6nm7p",
+    "uid": "fc9c4710-72dd-4bca-b33b-80738e75ffd8",
+    "phase": "Succeeded",
+    "containers": [
+      {
+        "name": "db-init",
+        "ready": false,
+        "imageID": "ghcr.io/kamiwaza-internal/kamiwaza/images/core-dev@sha256:abf0b6d0bf4eaad416eb35f01a716b42a9b8111a1b6d26402a761b80a6903eae"
+      }
+    ]
+  },
+  {
+    "name": "core-etcd-0",
+    "uid": "cbdae459-07d6-4908-b646-3ad7a0d7912a",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "etcd",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/etcd@sha256:7f25a141acdb0066ad380d2687a5c184c5e75c6b3f761f7aa162e96585f2d0a4"
+      }
+    ]
+  },
+  {
+    "name": "core-etcd-1",
+    "uid": "6a1f2bfe-28db-42fb-950a-92f162c381b2",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "etcd",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/etcd@sha256:7f25a141acdb0066ad380d2687a5c184c5e75c6b3f761f7aa162e96585f2d0a4"
+      }
+    ]
+  },
+  {
+    "name": "core-etcd-2",
+    "uid": "7ecfab28-a816-4409-8d5e-d93444effd30",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "etcd",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/etcd@sha256:7f25a141acdb0066ad380d2687a5c184c5e75c6b3f761f7aa162e96585f2d0a4"
+      }
+    ]
+  },
+  {
+    "name": "core-postgres-0",
+    "uid": "b1bea194-1524-4fab-905c-569a244bb013",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "postgres",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/postgres@sha256:1d6a6dc618192f5e4e7472771259661aeb3538bc250ab74e62e2fdb0282078dc"
+      }
+    ]
+  },
+  {
+    "name": "core-raycluster-head-5b4c458c99-r9l46",
+    "uid": "0137f55c-3435-4f04-b80f-ab12fd9851e8",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "ray-head",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/kamiwaza/images/core-dev@sha256:abf0b6d0bf4eaad416eb35f01a716b42a9b8111a1b6d26402a761b80a6903eae"
+      }
+    ]
+  },
+  {
+    "name": "core-scheduler-589bc5cb6b-96sdg",
+    "uid": "bd6856df-8284-495f-8f0c-43a664376869",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "core",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/kamiwaza/images/core-dev@sha256:abf0b6d0bf4eaad416eb35f01a716b42a9b8111a1b6d26402a761b80a6903eae"
+      }
+    ]
+  },
+  {
+    "name": "core-spicedb-0",
+    "uid": "86d62252-6dc7-474d-8018-30a566062d71",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "spicedb",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/spicedb@sha256:d92219ac08ff61b603e469227061c2ed67610c9737a3ac4b86ce88536949e158"
+      }
+    ]
+  },
+  {
+    "name": "core-spicedb-postgres-0",
+    "uid": "6f792f3a-d77d-4e67-bed3-62200034891c",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "postgres",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/postgres@sha256:1d6a6dc618192f5e4e7472771259661aeb3538bc250ab74e62e2fdb0282078dc"
+      }
+    ]
+  },
+  {
+    "name": "frontend-5b774c6b95-ctpt5",
+    "uid": "c7b5204b-e11e-4058-b021-a2ffc1dd7fd5",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "frontend",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/kamiwaza/images/frontend-dev@sha256:e2d3ba977e19f25c0383e5303e21821ee09c18d3ff1486838faa0367a204bed8"
+      }
+    ]
+  },
+  {
+    "name": "kamiwaza-init-keycloak-cli-client-5lxcm",
+    "uid": "2819e87c-0e36-4b9d-9757-5e3277eb00b7",
+    "phase": "Succeeded",
+    "containers": [
+      {
+        "name": "init-keycloak-cli-client",
+        "ready": false,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/curl@sha256:7f8ee82d74ba675657137ade542e21d06daa180e6c9c5420dcc664c627dd080d"
+      }
+    ]
+  },
+  {
+    "name": "kamiwaza-init-keycloak-realm-5xpjd",
+    "uid": "78ab1eb1-a679-4a19-819c-211c267bb9bb",
+    "phase": "Succeeded",
+    "containers": [
+      {
+        "name": "init-keycloak-realm",
+        "ready": false,
+        "imageID": "ghcr.io/kamiwaza-internal/kamiwaza/images/init-keycloak-users@sha256:c90fc892b40b48c33e8a80f80ad946fac586412e63a3522a7b8650a46d0c56cc"
+      }
+    ]
+  },
+  {
+    "name": "kamiwaza-init-keycloak-users-bqrpf",
+    "uid": "4f62c5ee-2ef9-4cc1-a1aa-3991b4b7b37a",
+    "phase": "Succeeded",
+    "containers": [
+      {
+        "name": "init-keycloak-users",
+        "ready": false,
+        "imageID": "ghcr.io/kamiwaza-internal/kamiwaza/images/init-keycloak-users@sha256:c90fc892b40b48c33e8a80f80ad946fac586412e63a3522a7b8650a46d0c56cc"
+      }
+    ]
+  },
+  {
+    "name": "kamiwaza-rebac-bootstrap-qr2bw",
+    "uid": "98a197ca-8441-4229-8a96-346e309930a5",
+    "phase": "Succeeded",
+    "containers": [
+      {
+        "name": "rebac-bootstrap",
+        "ready": false,
+        "imageID": "ghcr.io/kamiwaza-internal/kamiwaza/images/core@sha256:c98603df2a5360b476d53605dbb2bef0e06df8066d63257cd1e959e37bfb0437"
+      }
+    ]
+  },
+  {
+    "name": "kamiwaza-registry-6b8d85f98b-shkpn",
+    "uid": "774e904d-f800-4487-8782-a0370f7cdc75",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "registry",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/registry@sha256:966bcd92d8b2c8b44ef8faee20c6aeb21bc9865707f468960644ceed52c6220f"
+      }
+    ]
+  },
+  {
+    "name": "kamiwaza-spicedb-cutover-6nkw9",
+    "uid": "a03c7379-198b-4042-8780-47bfd2836c6b",
+    "phase": "Succeeded",
+    "containers": [
+      {
+        "name": "spicedb-cutover",
+        "ready": false,
+        "imageID": "ghcr.io/kamiwaza-internal/kamiwaza/images/core-dev@sha256:abf0b6d0bf4eaad416eb35f01a716b42a9b8111a1b6d26402a761b80a6903eae"
+      }
+    ]
+  },
+  {
+    "name": "kamiwaza-spicedb-datastore-migrate-r1-fs8tf",
+    "uid": "b419cea4-a6f2-49a5-9d49-5c9d52579ee4",
+    "phase": "Succeeded",
+    "containers": [
+      {
+        "name": "spicedb-datastore-migrate",
+        "ready": false,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/spicedb@sha256:d92219ac08ff61b603e469227061c2ed67610c9737a3ac4b86ce88536949e158"
+      }
+    ]
+  },
+  {
+    "name": "kamiwaza-spicedb-schema-bootstrap-r1-c6h7z",
+    "uid": "9123d4f0-d153-41c6-b777-b1e1364754bb",
+    "phase": "Succeeded",
+    "containers": [
+      {
+        "name": "spicedb-schema-bootstrap",
+        "ready": false,
+        "imageID": "ghcr.io/kamiwaza-internal/kamiwaza/images/core-dev@sha256:abf0b6d0bf4eaad416eb35f01a716b42a9b8111a1b6d26402a761b80a6903eae"
+      }
+    ]
+  },
+  {
+    "name": "kamiwaza-workload-registrar-bootstrap-pch6g",
+    "uid": "a22a2523-d365-46e4-9713-4178d02dfd92",
+    "phase": "Succeeded",
+    "containers": [
+      {
+        "name": "workload-registrar-bootstrap",
+        "ready": false,
+        "imageID": "ghcr.io/kamiwaza-internal/kamiwaza/images/init-keycloak-users@sha256:c90fc892b40b48c33e8a80f80ad946fac586412e63a3522a7b8650a46d0c56cc"
+      }
+    ]
+  },
+  {
+    "name": "keycloak-5599dfb6d9-nn2lw",
+    "uid": "aac30671-3a94-44ff-8ba5-1f647ef08b21",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "keycloak",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/keycloak@sha256:ed907de15e7f7afe2db5fd9f6ea41f86fac0d8dfda7c6a17c1bfcf4d37a8571a"
+      }
+    ]
+  },
+  {
+    "name": "keycloak-postgres-0",
+    "uid": "7c6a7787-ddd8-461a-b14d-9eeb28762e27",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "postgres",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/postgres@sha256:1d6a6dc618192f5e4e7472771259661aeb3538bc250ab74e62e2fdb0282078dc"
+      }
+    ]
+  },
+  {
+    "name": "llamacpp-e8f46beb-969cb9d58-52q7b",
+    "uid": "3a09aad9-3b7e-461b-aa2e-f69b7fff733b",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "llamacpp",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/llamacpp-cpu@sha256:e3501543683e1d65546bb7396ed2c7482b55f9de541bfd1b3d047dc760443302"
+      }
+    ]
+  },
+  {
+    "name": "seaweedfs-5c5cfc4cbd-cq649",
+    "uid": "9898a731-96d7-43e7-b792-54e2e0e8db94",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "seaweedfs",
+        "ready": true,
+        "imageID": "ghcr.io/kamiwaza-internal/containers/images/seaweedfs@sha256:90b8b9be163baba660825fd61d859cebbe28ddf1f44fca1e0b135ea4a5b35b32"
+      }
+    ]
+  },
+  {
+    "name": "tool-compat-live-tool-0-5-0-207af3e0-web-7869fcb759-zd59t",
+    "uid": "48a188ca-c159-4e30-ac2a-a00cb3045c67",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "web",
+        "ready": true,
+        "imageID": "docker.io/library/python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+      }
+    ]
+  },
+  {
+    "name": "tool-compat-live-tool-0-6-0-fdd9207a-web-5f5dd9647b-vgpgg",
+    "uid": "57338115-a562-4dd9-a345-5c68ed03c96d",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "web",
+        "ready": true,
+        "imageID": "docker.io/library/python@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
+      }
+    ]
+  }
+]

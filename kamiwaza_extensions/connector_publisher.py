@@ -27,6 +27,7 @@ from rich.console import Console
 from rich.markup import escape as escape_markup
 
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
+from kamiwaza_extensions.publish_preflight import preflight_catalog_types
 from kamiwaza_extensions.extension_detector import ExtensionInfo
 
 console = Console(stderr=True)
@@ -149,7 +150,7 @@ def publish_connector(
     no_push: bool = False,
     revision: str | None = None,
     digest: str | None = None,
-    catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
+    catalog_schema: int | str = DEFAULT_CATALOG_SCHEMA,
 ) -> None:
     """Publish one detected connector extension to ``connectors.json``."""
     from kamiwaza_extensions.catalog_publisher import (
@@ -160,6 +161,7 @@ def publish_connector(
     from kamiwaza_extensions.exit_codes import ExitCode
     from kamiwaza_extensions.profile_manager import ProfileManager
 
+    preflight_catalog_types([info], catalog_schema)
     manifest = _validate_manifest(info)
     # A supplied revision is the build's canonical image tag and overrides the
     # manifest's deployment.image_tag, which is only the static authoring default

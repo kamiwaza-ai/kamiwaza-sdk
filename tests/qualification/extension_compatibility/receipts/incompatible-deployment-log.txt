@@ -1,0 +1,1 @@
+Validation error in deploy_app: Extension 'compat-blocked-ee511141' requires Kamiwaza '>=9.0.0'; this instance runs 1.3.0. Select a compatible extension release.

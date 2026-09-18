@@ -190,7 +190,7 @@ class MetadataValidator:
         # Version range fields. kz_ext_version is checked by the shared CLI
         # contract gate below so validate/dev/publish cannot disagree.
         if metadata.kamiwaza_version is not None:
-            if not _is_valid_specifier_set(metadata.kamiwaza_version):
+            if not _is_valid_platform_constraint(metadata.kamiwaza_version):
                 errors.append(
                     "Invalid kamiwaza_version range "
                     f"'{metadata.kamiwaza_version}' — use semver ranges like "
@@ -646,3 +646,13 @@ def _capability_floor_error(
         f"the declared range {declared}. Raise its lower bound to at least "
         f"'>={minimum}' or remove the capability"
     )
+
+
+def _is_valid_platform_constraint(value: str) -> bool:
+    from kamiwaza_extensions.compat_catalog import validate_constraint
+
+    try:
+        validate_constraint(value)
+        return True
+    except ValueError:
+        return False

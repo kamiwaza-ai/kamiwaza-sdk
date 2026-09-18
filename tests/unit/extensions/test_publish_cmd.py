@@ -4118,3 +4118,66 @@ class TestTagSeparatorSharedByBothHelpers:
         assert _replace_image_tag(ref, "2.0.0-dev") == (
             f"{registry}/{repository}:2.0.0-dev"
         )
+
+
+@pytest.fixture
+def preview_publish_io(monkeypatch, tmp_path):
+    """Keep real CLI transformation/publication; replace only external IO."""
+    targets = {
+        "detector": "extension_detector.ExtensionDetector",
+        "metadata": "validators.metadata.MetadataValidator",
+        "compose": "validators.compose.ComposeValidator",
+        "profile": "profile_manager.ProfileManager",
+        "builder": "image_builder.ImageBuilder",
+        "pusher": "image_pusher.ImagePusher",
+    }
+    mocks = {name: MagicMock() for name in targets}
+    for name, target in targets.items():
+        monkeypatch.setattr(f"kamiwaza_extensions.{target}", mocks[name])
+    for name in ("metadata", "compose"):
+        mocks[name].return_value.validate.return_value = _make_validation_result()
+    mocks["profile"].return_value.resolve_profile.return_value = _make_profile()
+    info = _make_extension_info(tmp_path)
+    info.metadata["preview_image"] = "preview.PNG"
+    (tmp_path / "preview.PNG").write_bytes(b"immutable preview bytes")
+    mocks["detector"].return_value.detect.return_value = info
+    storage = MagicMock()
+    monkeypatch.setattr(
+        "kamiwaza_extensions.catalog_publisher.CatalogPublisher._create_s3_client",
+        lambda self, profile: storage,
+    )
+    return mocks, storage
+
+
+def test_cli_preview_dry_run_matches_published_digest_without_writes(preview_publish_io):
+    import hashlib
+    import io
+    import json
+
+    from typer.testing import CliRunner
+
+    from kamiwaza_extensions.cli import app
+
+    mocks, storage = preview_publish_io
+    storage.get_object.return_value = {"Body": io.BytesIO(b"[]"), "ETag": '"empty"'}
+    args = [
+        "publish", "--stage", "dev", "--catalog-schema", "compat-v1",
+        "--no-build", "--no-push", "--digest", "sha256:" + "a" * 64,
+    ]
+    live = CliRunner().invoke(app, args)
+    assert live.exit_code == 0, live.output
+    writes = storage.put_object.call_args_list
+    assert len(writes) == 2  # One preview and one catalog object.
+    catalog = writes[-1].kwargs["Body"]
+    expected_preview = "images/" + hashlib.sha256(b"immutable preview bytes").hexdigest() + ".png"
+    assert json.loads(catalog)[0]["preview_image"] == expected_preview
+    assert writes[0].kwargs["Key"].endswith(expected_preview)
+    storage.reset_mock()
+    storage.get_object.return_value = {"Body": io.BytesIO(catalog), "ETag": '"published"'}
+    dry_run = CliRunner().invoke(app, [*args, "--dry-run"])
+    assert dry_run.exit_code == 0, dry_run.output
+    assert "unchanged" in dry_run.output
+    storage.put_object.assert_not_called()
+    storage.delete_object.assert_not_called()
+    mocks["builder"].assert_not_called()
+    mocks["pusher"].assert_not_called()

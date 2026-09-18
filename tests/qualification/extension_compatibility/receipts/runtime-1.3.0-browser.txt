@@ -1,0 +1,5 @@
+Browser snapshots of actual workload responses:
+- generic [active] [ref=f3e1]: "{\"name\": \"compat-proof-app\", \"version\": \"0.3.0\"}"
+- generic [active] [ref=f4e1]: "{\"name\": \"compat-proof-tool\", \"version\": \"0.3.0\"}"
+Internal service response from scheduler:
+200 {"name": "compat-proof-service", "version": "0.3.0"}

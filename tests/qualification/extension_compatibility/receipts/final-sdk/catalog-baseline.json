@@ -1,0 +1,125 @@
+{
+  "phase": "baseline",
+  "endpoint": "http://127.0.0.1:18334",
+  "image": "docker.io/library/python:3.12-alpine@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a",
+  "conditional_rejections": [
+    412,
+    412
+  ],
+  "concurrent_releases_retained": 4,
+  "objects": {
+    "garden/compat-v1/apps.json": {
+      "sha256": "1ee70713a539877476b4c989bc2ba7fd2b7b0ca9d4bcbe426c1510c634aaa799",
+      "etag": "\"d3b980a04d497a1ef220bafb9defa44a\"",
+      "metadata": {
+        "writer-capability": "compat-v1-cas"
+      },
+      "releases": [
+        {
+          "name": "compat-future-app",
+          "version": "9.0.0",
+          "kamiwaza_version": ">=9.0.0"
+        },
+        {
+          "name": "compat-future-service",
+          "version": "9.0.0",
+          "kamiwaza_version": ">=9.0.0"
+        },
+        {
+          "name": "compat-proof-app",
+          "version": "0.2.0",
+          "kamiwaza_version": ">=1.2.1"
+        },
+        {
+          "name": "compat-proof-app",
+          "version": "0.3.0",
+          "kamiwaza_version": ">=1.3.0"
+        },
+        {
+          "name": "compat-proof-app",
+          "version": "0.4.0",
+          "kamiwaza_version": ">=1.3.1"
+        },
+        {
+          "name": "compat-proof-app",
+          "version": "0.5.0",
+          "kamiwaza_version": ">=1.4.0"
+        },
+        {
+          "name": "compat-proof-service",
+          "version": "0.2.0",
+          "kamiwaza_version": ">=1.2.1"
+        },
+        {
+          "name": "compat-proof-service",
+          "version": "0.3.0",
+          "kamiwaza_version": ">=1.3.0"
+        },
+        {
+          "name": "compat-proof-service",
+          "version": "0.4.0",
+          "kamiwaza_version": ">=1.3.1"
+        },
+        {
+          "name": "compat-proof-service",
+          "version": "0.5.0",
+          "kamiwaza_version": ">=1.4.0"
+        },
+        {
+          "name": "compat-race-app",
+          "version": "0.1.0",
+          "kamiwaza_version": ">=1.3.0"
+        },
+        {
+          "name": "compat-race-app",
+          "version": "0.1.1",
+          "kamiwaza_version": ">=1.3.0"
+        },
+        {
+          "name": "compat-race-app",
+          "version": "0.1.2",
+          "kamiwaza_version": ">=1.3.0"
+        },
+        {
+          "name": "compat-race-app",
+          "version": "0.1.3",
+          "kamiwaza_version": ">=1.3.0"
+        }
+      ]
+    },
+    "garden/compat-v1/tools.json": {
+      "sha256": "dd7facf1e35eef6de5de24281391d0da9890a2ee545ce6dc528c32ef65baf38b",
+      "etag": "\"f3da6f04bff37789d0e6284d71182ece\"",
+      "metadata": {
+        "writer-capability": "compat-v1-cas"
+      },
+      "releases": [
+        {
+          "name": "compat-future-tool",
+          "version": "9.0.0",
+          "kamiwaza_version": ">=9.0.0"
+        },
+        {
+          "name": "compat-proof-tool",
+          "version": "0.2.0",
+          "kamiwaza_version": ">=1.2.1"
+        },
+        {
+          "name": "compat-proof-tool",
+          "version": "0.3.0",
+          "kamiwaza_version": ">=1.3.0"
+        },
+        {
+          "name": "compat-proof-tool",
+          "version": "0.4.0",
+          "kamiwaza_version": ">=1.3.1"
+        },
+        {
+          "name": "compat-proof-tool",
+          "version": "0.5.0",
+          "kamiwaza_version": ">=1.4.0"
+        }
+      ]
+    }
+  }
+}

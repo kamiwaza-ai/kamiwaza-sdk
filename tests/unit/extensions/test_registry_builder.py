@@ -1,6 +1,7 @@
 """Tests for RegistryBuilder."""
 
 import copy
+import json
 from typing import Any, Dict
 
 import pytest
@@ -2220,3 +2221,60 @@ class TestBuildEntryImageBasenameNormalization:
             metadata, transformed_compose, "kamiwazaai", "1.0.0"
         )
         assert "image_basename" not in entry
+
+
+class TestLegacyCoreConstraintGrammar:
+    @pytest.mark.parametrize("constraint", ["*", "1.3", "1.3.1", " 1.3 ", "1.3,!=1.4"])
+    def test_sequential_release_merge_preserves_metadata(self, builder, constraint):
+        first = {"name": "app", "version": "1.0.0", "kamiwaza_version": constraint}
+        stored, action = builder.merge_into_registry(first, [])
+        assert action == "insert"
+        # Model reading the JSON written by an earlier publication.
+        stored = json.loads(json.dumps(stored))
+        second = dict(first, version="1.1.0")
+        merged, action = builder.merge_into_registry(second, stored)
+        assert action == "replace"
+        assert merged == [second]
+        assert stored == [first]
+        with pytest.raises(ValueError, match="already exists"):
+            builder.merge_into_registry(second, merged)
+        assert builder.merge_into_registry(second, merged, force=True) == (
+            [second],
+            "replace",
+        )
+
+    @pytest.mark.parametrize("stored_constraint", ["1.3", "1.3.1"])
+    def test_existing_bare_constraint_matches_explicit_equality(
+        self, builder, stored_constraint
+    ):
+        stored = [
+            {"name": "app", "version": "1.0.0", "kamiwaza_version": stored_constraint}
+        ]
+        incoming = dict(
+            stored[0], version="1.1.0", kamiwaza_version=f"=={stored_constraint}"
+        )
+        assert builder.merge_into_registry(incoming, stored) == ([incoming], "replace")
+
+    def test_two_component_bare_equality_does_not_include_later_patch(self, builder):
+        stored = [{"name": "app", "version": "1.0.0", "kamiwaza_version": "1.3"}]
+        incoming = dict(stored[0], version="1.1.0", kamiwaza_version="1.3.1")
+        assert builder.merge_into_registry(incoming, stored) == (
+            stored + [incoming],
+            "insert",
+        )
+
+    @pytest.mark.parametrize("constraint", ["*", ">=1.3.0"])
+    def test_narrower_bare_constraint_still_rejected(self, builder, constraint):
+        stored = [{"name": "app", "version": "1.0.0", "kamiwaza_version": constraint}]
+        incoming = dict(stored[0], version="1.1.0", kamiwaza_version="1.3.1")
+        with pytest.raises(ValueError, match="overlaps"):
+            builder.merge_into_registry(incoming, stored)
+
+    @pytest.mark.parametrize("constraint", ["*", "1.3", "1.3.1"])
+    def test_compat_generation_still_keeps_both_releases(self, constraint):
+        from kamiwaza_extensions.compat_catalog import merge_release
+
+        first = {"name": "app", "version": "1.0.0", "kamiwaza_version": constraint}
+        stored, _ = merge_release(first, [])
+        second = dict(first, version="1.1.0")
+        assert merge_release(second, stored) == ([first, second], "insert")
