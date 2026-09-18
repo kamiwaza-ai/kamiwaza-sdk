@@ -63,7 +63,7 @@ def _require_fields(data: dict, *fields: str) -> None:
         pytest.fail(f"ENG-12433 fixture missing required fields: {', '.join(missing)}")
 
 
-def test_disposable_managed_connector_lifecycle(live_kamiwaza_client) -> None:
+def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) -> None:
     fixture = _fixture("managed")
     _require_fields(fixture, "manifest")
     if fixture.get("allow_deployment") is not True:
@@ -82,7 +82,7 @@ def test_disposable_managed_connector_lifecycle(live_kamiwaza_client) -> None:
     if not manifest.get("deployment", {}).get("image_repository"):
         pytest.fail("ENG-12433 managed fixture needs an approved image repository")
 
-    client = live_kamiwaza_client
+    client = request.getfixturevalue("live_kamiwaza_client")
     connector_id = None
     catalog_created = False
     try:
@@ -97,7 +97,7 @@ def test_disposable_managed_connector_lifecycle(live_kamiwaza_client) -> None:
             ConnectorCreate(
                 name=f"SDK verification {suffix}",
                 connector_type=connector_type,
-                config=fixture["config"],
+                config=fixture.pop("config"),
                 scopes=fixture.get("scopes", []),
             )
         )
@@ -117,7 +117,7 @@ def test_disposable_managed_connector_lifecycle(live_kamiwaza_client) -> None:
                 verification = client.connectors.verify_connection(connector_id)
                 break
             except APIError as exc:
-                if exc.status_code != 503 or monotonic() >= deadline:
+                if exc.status_code not in (502, 503, 504) or monotonic() >= deadline:
                     raise
                 sleep(3)
         assert verification.available, "Disposable connector verification did not pass"
@@ -162,9 +162,7 @@ def _expect_denied(client, ref: ConnectorSurfaceRef, item: dict) -> None:
     assert denied.value.status_code in (403, 404)
 
 
-def test_m365_workroom_and_provider_access(
-    live_server_available: str, live_kamiwaza_client
-) -> None:
+def test_m365_workroom_and_provider_access(request: pytest.FixtureRequest) -> None:
     fixture = _fixture("m365")
     _require_fields(
         fixture,
@@ -180,6 +178,8 @@ def test_m365_workroom_and_provider_access(
     )
     assert fixture["workroom_a_id"] != fixture["workroom_b_id"]
 
+    live_server_available = request.getfixturevalue("live_server_available")
+    live_kamiwaza_client = request.getfixturevalue("live_kamiwaza_client")
     verify_tls = live_kamiwaza_client.session.verify
     a = KamiwazaClient(
         live_server_available, api_key=fixture.pop("user_a_api_key"), verify=verify_tls
