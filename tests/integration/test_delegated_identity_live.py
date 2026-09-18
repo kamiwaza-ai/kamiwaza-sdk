@@ -39,9 +39,9 @@ class _BoundedSession:
         self._session = session
 
     def request(self, method: str, url: str, **kwargs: object) -> ResponsePort:
-        kwargs.setdefault("timeout", _REQUEST_TIMEOUT_SECONDS)
+        kwargs["timeout"] = _REQUEST_TIMEOUT_SECONDS
         kwargs.setdefault("verify", self._session.verify)
-        kwargs.setdefault("allow_redirects", False)
+        kwargs["allow_redirects"] = False
         return cast(
             ResponsePort,
             self._session.request(method, url, **cast(Any, kwargs)),
@@ -67,6 +67,7 @@ def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
         )
     api_root = live_base_url.rstrip("/")
     assert api_root.endswith("/api"), "live base URL must point at Core's /api"
+    assert urlsplit(api_root).scheme == "https", "workload proof requires HTTPS"
     assert (
         urlsplit(api_root).username is None
     ), "live base URL must not embed credentials"
@@ -101,6 +102,7 @@ def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
             "untrusted caller was not explicitly rejected by the enabled "
             f"delegated-workload route: HTTP {anonymous.status_code}"
         )
+        assert verify_ssl, "workload proof requires trusted TLS; configure a CA bundle"
         assert _PROJECTED_ASSERTION.is_file(), (
             "the approved pod must mount its projected workload assertion at "
             f"{_PROJECTED_ASSERTION}"
