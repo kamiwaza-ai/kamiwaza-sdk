@@ -1046,6 +1046,20 @@ def test_context_ontology_known_answer_isolated_by_workroom(
             assert ontology_id in {str(item["id"]) for item in own}
             visible = service.list_ontologies(workroom_id=foreign_id)
             assert ontology_id not in {str(item["id"]) for item in visible}
+            with pytest.raises(KamiwazaError) as denied:
+                service.get_ontology(ontology_id, workroom_id=foreign_id)
+            assert denied.value.status_code in {403, 404}
+            try:
+                foreign_search = service.search_knowledge(
+                    ontology_id,
+                    query=f"What is the answer to {marker}?",
+                    group_ids=[group_id],
+                    workroom_id=foreign_id,
+                )
+            except KamiwazaError as denied_search:
+                assert denied_search.status_code in {403, 404}
+            else:
+                assert not foreign_search["facts"], "Foreign workroom read the answer"
             unrelated = service.search_knowledge(
                 ontology_id,
                 query=f"What is the answer to {marker}?",
