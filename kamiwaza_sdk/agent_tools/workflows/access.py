@@ -248,7 +248,7 @@ def grant_subject_access(
     subject_type: str = "user",
     attributes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Upsert a subject, write one authorization tuple, and confirm the result.
+    """Grant one subject access: upsert it, write the tuple, read the grant back.
 
     Args:
         client: The platform client.
