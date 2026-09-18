@@ -559,13 +559,19 @@ class WorkroomLedger:
                     partial(datasets.get, dataset.urn), f"dataset {dataset.name}"
                 )
         except NotFoundError:
-            # Reaching the recorded scope failed because the workroom is gone:
-            # a test that deleted it before teardown, which the retirement flow
-            # does and the session-scoping flow does for both of its own. That
-            # is the same answer as a dataset the scope does not hold -- not
-            # reachable here -- so it goes to the sweep. Raising instead would
-            # fail this step and stop the sweep from running at all, which is
-            # the one thing that could still find a mis-scoped copy.
+            # Reaching the recorded scope failed because the workroom is gone.
+            # The session-scoping test is what gets here: it keeps its refused
+            # write recorded and deletes both of its workrooms before teardown.
+            # (The retirement test also deletes its workroom first, but it has
+            # already proven its dataset gone and forgotten it by then.) A
+            # workroom that no longer exists gives the same answer as a scope
+            # that does not hold the dataset -- not reachable here -- so it
+            # goes to the sweep. Raising instead would not stop the sweep:
+            # attempt_all runs every remaining step. It would leave
+            # _unaccounted empty, so the sweep would run and look for nothing,
+            # which is the same as not running for the one copy it could find.
+            # Only the session-bound path reaches this; workroom_scope builds
+            # its client without a request, so it cannot 404 here.
             self._unaccounted.append(dataset)
 
     def _sweep_unscoped(self) -> None:

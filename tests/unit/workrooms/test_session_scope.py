@@ -88,8 +88,9 @@ def test_a_dataset_outlives_the_workroom_it_was_recorded_for() -> None:
     sweep can reach a mis-scoped copy, and deletes both workrooms before
     teardown. Entering a deleted workroom is a 404, so a teardown that reaches
     for the recorded scope first must treat that as "not reachable here" and
-    hand the dataset to the sweep -- not fail the whole cleanup, which would
-    stop the sweep from ever running.
+    hand the dataset to the sweep. Failing the step instead does not stop the
+    sweep -- attempt_all runs it either way -- it leaves _unaccounted empty, so
+    the sweep runs and has nothing to look for.
     """
     ledger, workrooms, owner, _ = make_ledger(binds_session=True)
     workroom_id = ledger.create_workroom("retired")
@@ -99,7 +100,10 @@ def test_a_dataset_outlives_the_workroom_it_was_recorded_for() -> None:
 
     ledger.remove_remaining()
 
-    assert ("leave", None) in workrooms.calls, "the sweep never ran"
+    # The sweep's own unscoped delete, not the leave: attempt_all runs the
+    # leave step whether or not the dataset step failed, so asserting it would
+    # hold on the broken code too.
+    assert ("delete", None) in workrooms.calls, "the sweep had nothing to look for"
 
 
 def test_a_dataset_left_behind_by_a_deleted_workroom_is_still_swept() -> None:
