@@ -45,7 +45,13 @@ from kamiwaza_sdk.schemas.connectors import (
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
+class _PrivateFixture(dict):
+    def __repr__(self) -> str:
+        return "<private connector verification fixture>"
+
+
 def _fixture(section: str) -> dict:
+    __tracebackhide__ = True
     path = os.environ.get("KAMIWAZA_CONNECTOR_VERIFY_FIXTURE")
     if not path:
         pytest.skip(
@@ -54,7 +60,7 @@ def _fixture(section: str) -> dict:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get(section), dict):
         pytest.skip(f"ENG-12433: {section} fixture not supplied")
-    return data[section]
+    return _PrivateFixture(data[section])
 
 
 def _require_fields(data: dict, *fields: str) -> None:
@@ -91,14 +97,16 @@ def _verify_until_ready(client, connector_id, *, wait=sleep) -> None:
     while True:
         try:
             verification = client.connectors.verify_connection(connector_id)
-            assert verification.available, (
-                "Disposable connector verification did not pass"
-            )
-            return
         except APIError as exc:
             if exc.status_code not in (502, 503, 504) or monotonic() >= deadline:
                 raise
             wait(3)
+            continue
+        if verification.available:
+            return
+        if monotonic() >= deadline:
+            pytest.fail("Disposable connector verification did not pass in 90 seconds")
+        wait(3)
 
 
 def test_verification_retries_startup_errors() -> None:
@@ -111,6 +119,20 @@ def test_verification_retries_startup_errors() -> None:
             if self.calls == 1:
                 raise APIError("starting", status_code=502)
             return type("Verdict", (), {"available": True})()
+
+    client = type("Client", (), {"connectors": FakeConnectors()})()
+    _verify_until_ready(client, "disposable", wait=lambda _: None)
+    assert client.connectors.calls == 2
+
+
+def test_verification_retries_unavailable_warmup() -> None:
+    class FakeConnectors:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def verify_connection(self, _connector_id):
+            self.calls += 1
+            return type("Verdict", (), {"available": self.calls > 1})()
 
     client = type("Client", (), {"connectors": FakeConnectors()})()
     _verify_until_ready(client, "disposable", wait=lambda _: None)
