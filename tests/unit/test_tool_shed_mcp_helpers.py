@@ -15,7 +15,9 @@ imported and driven directly.
 
 import pytest
 
+from kamiwaza_sdk.exceptions import APIError
 from tests.integration.test_tool_shed_lifecycle_live import (
+    _is_instance_version_refusal,
     _jsonrpc_envelope,
     _mcp_endpoint,
 )
@@ -84,3 +86,53 @@ def test_jsonrpc_envelope_rejects_an_event_stream_carrying_no_envelope() -> None
         _jsonrpc_envelope(
             "text/event-stream", [": keepalive", "data: ping", ""], "tool-abc"
         )
+
+
+# Verbatim from the evidence host on 2026-09-18, when the selected release of
+# tool-kamiwaza-dde began pinning a range that excludes the 1.2.1 instance.
+VERSION_REFUSAL = (
+    'API request failed with status 400: {"detail":"Extension '
+    "'tool-kamiwaza-dde' requires Kamiwaza '>=1.0.0,<1.2.0'; this instance runs "
+    "1.2.1. Restore a compatible Kamiwaza version or ask an administrator to "
+    "choose a compatible extension release. Selection changes apply to new "
+    'deployments; existing deployments remain unchanged."}'
+)
+
+
+def test_a_version_gated_deploy_is_recognised_as_a_refusal() -> None:
+    """The refusal the candidate walk has to tell apart from a real failure."""
+    assert _is_instance_version_refusal(APIError(VERSION_REFUSAL, status_code=400))
+
+
+def test_another_bad_request_is_not_a_version_refusal() -> None:
+    """A 400 the test must still raise on, not skip past to the next template."""
+    error = APIError(
+        'API request failed with status 400: {"detail":"name already in use"}',
+        status_code=400,
+    )
+    assert not _is_instance_version_refusal(error)
+
+
+def test_a_server_error_quoting_the_sentence_is_not_a_version_refusal() -> None:
+    """The status code is checked, so the message alone cannot excuse a 500."""
+    assert not _is_instance_version_refusal(APIError(VERSION_REFUSAL, status_code=500))
+
+
+def test_a_local_error_carrying_no_status_is_not_a_version_refusal() -> None:
+    assert not _is_instance_version_refusal(APIError(VERSION_REFUSAL))
+
+
+def test_a_bad_request_merely_mentioning_kamiwaza_is_not_a_version_refusal() -> None:
+    """The needle is the phrase, not the product name.
+
+    Constructed rather than observed, and the more important of the two negative
+    cases: matching on "Kamiwaza" alone would let any Kamiwaza-worded 400 -- a
+    genuine deploy failure -- be walked past as though the template were merely
+    version-gated, turning a broken capability into a skipped one.
+    """
+    detail = "Extension 'tool-x' image is not present in the Kamiwaza registry"
+    error = APIError(
+        'API request failed with status 400: {"detail":"' + detail + '"}',
+        status_code=400,
+    )
+    assert not _is_instance_version_refusal(error)

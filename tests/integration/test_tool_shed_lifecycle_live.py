@@ -63,6 +63,11 @@ MCP_INITIALIZE = {
 # as the streamable-HTTP location and ``/sse`` as FastMCP's.
 MCP_PATH = "/mcp"
 
+# How the platform words a deploy refused because the template's release pins a
+# Kamiwaza range this instance is outside of, e.g. "Extension 'tool-kamiwaza-dde'
+# requires Kamiwaza '>=1.0.0,<1.2.0'; this instance runs 1.2.1."
+INSTANCE_VERSION_REFUSAL = "requires Kamiwaza"
+
 DEPLOYED_STATUSES = frozenset({"DEPLOYED", "RUNNING"})
 # Retirement is asserted positively, and only STOPPED counts. "not in
 # DEPLOYED_STATUSES" would accept FAILED or PENDING as a clean stop, and
@@ -83,13 +88,36 @@ def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex[:8]}"
 
 
-def _deployable_template(client) -> ToolTemplate:
-    """An imported template the cluster can pull and that needs no secrets.
+def _is_instance_version_refusal(error: APIError) -> bool:
+    """Whether the platform refused the deploy over the template's version pin.
 
-    ``KZ_TOOL_SHED_TEMPLATE`` pins a name explicitly. Otherwise take an
-    imported template whose image is not served from a developer's local
-    registry and which declares no required environment variables, since this
+    An extension release declares the Kamiwaza range it supports, and the
+    platform rejects a deploy outside that range with a 400 before creating
+    anything. ``ToolTemplate`` carries no field for the constraint -- verified
+    against ``kamiwaza_sdk/schemas/tools.py`` -- so the catalogue gives the SDK
+    nothing to pre-filter on and the refusal can only be recognised from the
+    message. That gap is recorded with the staged evidence.
+
+    Narrow on purpose: the status code is checked too, so a 500 whose body
+    happens to quote the same sentence is not read as a version refusal.
+    """
+    return error.status_code == 400 and INSTANCE_VERSION_REFUSAL in str(error)
+
+
+def _deployable_templates(client) -> list[ToolTemplate]:
+    """Every imported template this suite could deploy, in listing order.
+
+    ``KZ_TOOL_SHED_TEMPLATE`` pins a name explicitly. Otherwise take the
+    imported templates whose image is not served from a developer's local
+    registry and which declare no required environment variables, since this
     suite has no credentials to supply for one that does.
+
+    A list rather than the first match: a template can also be refused at deploy
+    time by the platform's own version gate, which the SDK's catalogue does not
+    expose (see ``_is_instance_version_refusal``). Returning one candidate made
+    the whole capability unevidenceable the moment the first listed template
+    pinned an incompatible Kamiwaza range -- which is a property of that
+    template, not of the Tool Shed.
     """
     templates = client.tools.list_imported_templates()
     if not templates:
@@ -99,10 +127,11 @@ def _deployable_template(client) -> ToolTemplate:
     if pinned:
         for template in templates:
             if template.name == pinned:
-                return template
+                return [template]
         _skip_or_fail(f"KZ_TOOL_SHED_TEMPLATE={pinned!r} is not imported here")
 
     rejected: list[str] = []
+    candidates: list[ToolTemplate] = []
     for template in templates:
         image = template.image or ""
         if any(marker in image for marker in LOCAL_DEV_REGISTRY_MARKERS):
@@ -113,7 +142,9 @@ def _deployable_template(client) -> ToolTemplate:
                 f"{template.name} (needs {', '.join(template.required_env_vars)})"
             )
             continue
-        return template
+        candidates.append(template)
+    if candidates:
+        return candidates
 
     _skip_or_fail("no imported template is deployable here: " + "; ".join(rejected))
 
@@ -144,21 +175,27 @@ def stopped_tool_deployments(live_kamiwaza_client) -> Iterator[list[str]]:
     as its own ERROR instead of masking the test's failure or being masked by it.
 
     1.2.1 offers no purge for tool deployments, so retirement is proven by the
-    status transition rather than by the row disappearing. The platform prefixes
-    the caller's name with ``tool-``, so matching is on suffix.
+    status transition rather than by the row disappearing. The platform derives
+    the row's name from the caller's -- it prefixes ``tool-`` -- so matching is
+    on the run-unique token appearing anywhere in it.
+
+    The closing assertion is an absence proof over a fresh listing, not a count
+    of what this teardown happened to match. Requiring a match read a deploy the
+    platform refused outright, which creates no row, as a teardown that stopped
+    nothing; re-listing answers the question that actually matters -- whether any
+    row carrying this run's token is still live -- and still catches a name the
+    platform normalised beyond recognition, because such a row would show up
+    here unretired.
     """
     client = live_kamiwaza_client
     names: list[str] = []
     yield names
 
     unretired: list[str] = []
-    unmatched: list[str] = []
     for name in names:
-        matched = 0
         for deployment in client.tools.list_deployments():
-            if not str(deployment.name).endswith(name):
+            if name not in str(deployment.name):
                 continue
-            matched += 1
             with suppress(APIError):
                 client.tools.stop_deployment(deployment.id)
             # Poll until STOPPED. A stop the platform applies asynchronously
@@ -171,18 +208,25 @@ def stopped_tool_deployments(live_kamiwaza_client) -> Iterator[list[str]]:
                 time.sleep(1)
             else:
                 unretired.append(f"{deployment.name}={final.status}")
-        if matched == 0:
-            # Finding nothing is not evidence of retirement: if the platform
-            # normalised the name differently or omitted the row from this
-            # listing, nothing was stopped and teardown would otherwise pass.
-            unmatched.append(name)
-    assert not unmatched, (
-        f"teardown found no deployment matching {unmatched}, so nothing was "
-        "stopped; a workload may still be running on this shared host"
-    )
+
+    # The delivery-site check: whatever this teardown did or did not match, no
+    # row carrying one of this run's tokens may still be live. A name the
+    # platform normalised past the matcher above lands here, and a run whose
+    # deploy was refused outright has nothing to find, which is correct rather
+    # than suspicious.
+    leftovers = [
+        f"{deployment.name}={deployment.status}"
+        for deployment in client.tools.list_deployments()
+        for name in names
+        if name in str(deployment.name) and deployment.status not in RETIRED_STATUSES
+    ]
     assert not unretired, (
         f"tool deployments did not reach a retired state and may still be "
         f"running on a shared host: {unretired}"
+    )
+    assert not leftovers, (
+        f"tool deployments carrying this run's names are still live on a shared "
+        f"host after teardown: {leftovers}"
     )
 
 
@@ -210,19 +254,36 @@ def test_tool_shed_deploy_health_discovery_and_stop(
 ) -> None:
     """The documented arm: deploy a template, prove MCP health, discover it, stop."""
     client = live_kamiwaza_client
-    template = _deployable_template(client)
+    candidates = _deployable_templates(client)
 
     pre_existing = {str(d.id) for d in client.tools.list_deployments()}
-    name = _unique("eng12432-tool")
-
-    # Registered before the creating call, so a deploy whose server side
-    # committed and whose response then raised is still reconciled by name.
-    stopped_tool_deployments.append(name)
-
-    deployment = client.tools.deploy_from_template(
-        template_name=template.name,
-        name=name,
-    )
+    refused: list[str] = []
+    deployment = None
+    for template in candidates:
+        name = _unique("eng12432-tool")
+        # Registered before the creating call, so a deploy whose server side
+        # committed and whose response then raised is still reconciled by name.
+        stopped_tool_deployments.append(name)
+        try:
+            deployment = client.tools.deploy_from_template(
+                template_name=template.name,
+                name=name,
+            )
+        except APIError as error:
+            if not _is_instance_version_refusal(error):
+                raise
+            # Refused before anything was created, so there is nothing to clean
+            # up and the next candidate is tried. Only a run where every
+            # candidate is refused has no prerequisite to work with.
+            refused.append(f"{template.name} ({error})")
+            continue
+        break
+    if deployment is None:
+        _skip_or_fail(
+            "every deployable tool template was refused by this instance's "
+            "version gate, so the Tool Shed capability has no fixture here: "
+            + "; ".join(refused)
+        )
     deployment_id = deployment.id
 
     assert str(deployment_id) not in pre_existing, (
