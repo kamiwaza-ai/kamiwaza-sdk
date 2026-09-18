@@ -466,3 +466,37 @@
   capability_ids: [apps.app-garden]
   scenario_name: "App Garden deploy lifecycle and reserved environment-key boundary"
   evidence_provenance: cycle-authored
+
+# ENG-12432. The capability document's arm: list templates, deploy one, assert
+# it reports healthy over MCP and appears in discovery, then stop it.
+#
+# MCP responsiveness is established by a real JSON-RPC `initialize` handshake
+# against the deployment's ADVERTISED URL, NOT by GET /tool/deployment/{id}/health.
+# That endpoint answers from the deployment's status field and reports a
+# hardcoded protocol_version without contacting the tool, so asserting it after
+# polling for DEPLOYED would be bounded by construction and could never fail.
+# The handshake asserts a JSON-RPC result carrying protocolVersion and
+# serverInfo -- values no status field can produce -- and asserts the response
+# is JSON, because the gateway answers an unknown path under a tool's route
+# with 200 and dashboard HTML rather than 404. Both guards are mutation-checked.
+#
+# Scope this record does NOT establish, so a characterized status is not read
+# wider than it earns:
+#   * the missing-required-environment-variable failure mode. No IMPORTED
+#     template on the evidence host declares required_env_vars, and importing
+#     one would mutate a shared catalogue, so its test skips with that reason.
+#   * whether discovery is filtered to running servers. It is not -- it returns
+#     STOPPED and FAILED records too -- but the document's heading and body
+#     disagree on whether it should, so the test asserts only that the
+#     deployment under test is discoverable and leaves the question to the
+#     document's owner rather than settling it whichever way passes.
+#   * the deploy-from-image path; only deploy-from-template is exercised.
+#
+# Template selection is host-dependent: the arm takes the first imported,
+# cluster-pullable template with no required variables. On this host that is an
+# MCP server; a host whose first match serves no /mcp would fail the
+# content-type guard, which is the correct outcome and not a flake.
+- pattern: "tests/integration/test_tool_shed_lifecycle_live.py::test_tool_shed_deploy_health_discovery_and_stop"
+  capability_ids: [tools.mcp-tool-shed]
+  scenario_name: "Tool Shed deploy, MCP protocol handshake, discovery and stop"
+  evidence_provenance: cycle-authored
