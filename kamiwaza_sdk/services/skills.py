@@ -39,7 +39,7 @@ class SkillsService(BaseService):
         page_size: int = 20,
     ) -> SkillLibraryListResponse:
         """List skills visible to the current caller."""
-        params = {"page": page, "page_size": page_size}
+        params: dict[str, str | int] = {"page": page, "page_size": page_size}
         if q is not None:
             params["q"] = q
         if category is not None:
@@ -149,7 +149,7 @@ class SkillsService(BaseService):
         return SkillLibraryDetailResponse.model_validate(response)
 
     def delete_skill(self, skill_id: UUID | str) -> bool:
-        """Soft-delete a skill."""
+        """Soft-delete a skill, keeping its record for audit."""
         try:
             self.client.delete(f"/skills/{skill_id}")
         except APIError as exc:

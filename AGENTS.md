@@ -153,6 +153,98 @@ Key points:
 - Maintain > 80% coverage on new code
 - Integration tests marked with `@pytest.mark.integration`
 
+## Agent tools contract (NON-NEGOTIABLE)
+
+`kamiwaza_sdk/agent_tools/` publishes this SDK's callable surface to AI agents
+through the Kamiwaza MCP server, which lives in the separate `kamiwaza-mcp`
+repository and consumes this package at an exact pinned version. The
+requirements are specified there, in `specs/001-mcp-server/`.
+
+Two consequences bind every change in this repository.
+
+### A published method's description ships with the method
+
+No description text is authored in the server repository. The MCP surface takes
+a tool's description from this package, in this precedence:
+
+1. the method's own docstring, first sentence;
+2. the OpenAPI description, first sentence;
+3. the OpenAPI summary.
+
+Source three is thin — 195 of 233 operations have a summary of three words or
+fewer, and the OpenAPI document covers only 233 of roughly 500 callable methods.
+So in practice the docstring is the description an agent reads.
+
+**Therefore: any method reachable through `agent_tools` requires a first-sentence
+docstring that states what the method does, regardless of complexity.** This
+narrows @.ai/rules/style.md's "Method Docstrings (Complex Methods Only)" for this
+subset only: complexity decides whether `Args:`, `Returns:`, and `Raises:`
+sections are needed, never whether the summary line exists. Google style, as
+that rule already requires.
+
+A one-line summary is not a formality here. It is the text an agent ranks on
+when choosing among hundreds of operations, and the text a human reads when
+approving a destructive one. "Deletes a deployment." passes a linter and still
+fails the approval requirement, which asks what will change.
+
+### The descriptor layer stays protocol-neutral
+
+`agent_tools` MUST NOT import an MCP library, encode an MCP wire shape, or take
+an MCP dependency. Descriptors are data: identity, description, input and output
+schema, behaviour hints, and whether the operation needs approval. The server
+maps them onto the protocol.
+
+There is deliberately no taxonomy of operation kinds in `agent_tools`. Each
+hint is derived from the method's leading verb, and the published contract is
+two facts per operation — whether it only reads, and whether it needs approval.
+A verb no set knows is treated as a destructive mutation needing approval, and
+`unknown_verbs()` reports it so the gap is closed rather than guessed at.
+
+Three reasons, in ascending cost of getting it wrong: every SDK consumer would
+inherit an MCP dependency it does not use; an MCP protocol revision would become
+an SDK release; and a descriptor is useful to someone building a custom agent
+with no MCP in sight.
+
+### Known gap: sub-clients returned by a method are outside the index
+
+`SubjectsAPI.grants(username)` returns a `SubjectGrantsAPI`, and that object
+carries `create`, `list` and `delete` for ReBAC grants. None of those three
+appears in the published surface. The index walks sub-clients held as
+attributes on a service, and this one is produced by a method call, so the walk
+never sees it. The result is that three authorization mutations on the SDK have
+no published operation at all.
+
+`subjects.grants` itself is withheld, because it hands back a local object an
+agent cannot invoke. That withholding does not close this gap: it removes a
+useless entry and leaves the three grant calls as unreachable as they were.
+Closing it needs the index to follow sub-clients returned by a method, which
+changes the walk for every service, so it is recorded here rather than done in
+passing.
+
+`FederationsAPI.by_id(federation_id)` is the same shape: it returns a
+`FederationProxy`, whose `probe` and `disconnect` are likewise unpublished.
+`disconnect` is a mutation, so this half of the gap hides a write rather than
+a read. `federations.by_id` is withheld for the same reason and with the same
+limit: withholding the factory removes an entry an agent could not use and
+leaves both proxy calls where they were.
+
+### What this means when you add or change a method
+
+- **Adding a service method** — write the docstring summary in the same change.
+  The method is reachable by agents the day this package releases, so an
+  undocumented method is a published tool with no description.
+- **Renaming a method** — the published tool identifier derives from
+  `service.method`, so a rename is a breaking change for every agent host. Treat
+  it as an API change, not a refactor.
+- **Adding a workflow tool** — its description is authored beside its composite
+  implementation, because no single underlying method describes it. It must name
+  exactly one polling step and carry at most one approval-bearing step.
+- **A method that must not be published** — add it to the explicit unpublished
+  set with a stated reason, rather than leaving it out silently. Anything whose
+  return value is itself a credential belongs there.
+- **Never** weaken the description gate to land a change. An empty sentence to
+  satisfy a linter is worse than a failing build: it looks like documentation.
+
 ## Common Pitfalls
 
 Before implementing, review @.ai/knowledge/failures/common-pitfalls.md to avoid:

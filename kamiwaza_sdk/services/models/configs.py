@@ -1,14 +1,19 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import TYPE_CHECKING, Any, List, Union
 from uuid import UUID
-from ...schemas.models.model import Model, ModelConfig, CreateModelConfig
+from ...schemas.models.model import ModelConfig, CreateModelConfig
 
 
 class ModelConfigMixin:
     """Mixin for model configuration operations."""
-    
+
+    # Supplied by BaseService once the mixin is composed into ModelService;
+    # declared here so the calls below type-check, matching ModelDownloadMixin.
+    if TYPE_CHECKING:
+        client: Any
+
     def create_model_config(self, config: CreateModelConfig) -> ModelConfig:
         """
-        Create a new model configuration.
+        Register a serving configuration for an existing model.
         
         Args:
             config (CreateModelConfig): The model configuration object to create.
@@ -79,7 +84,7 @@ class ModelConfigMixin:
     
     def delete_model_config(self, model_config_id: Union[str, UUID]) -> None:
         """
-        Delete a model configuration by its ID.
+        Delete one model configuration, leaving the model and its files.
         
         Args:
             model_config_id (Union[str, UUID]): The ID of the model configuration to delete.

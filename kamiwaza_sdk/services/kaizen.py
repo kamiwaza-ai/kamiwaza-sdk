@@ -627,7 +627,7 @@ class AgentService(BaseService):
         base_url: str,
         workroom_id: Optional[Union[str, object]] = None,
     ) -> Agent:
-        """Create an agent on canonical Kaizen via the ``content`` contract.
+        """Create an agent on canonical Kaizen through its content contract.
 
         Canonical Kaizen has no per-agent model binding — a model is resolved
         instance-wide from the ops chat-model setting (see
@@ -686,7 +686,7 @@ class AgentService(BaseService):
         mcp_headers: Optional[Dict[str, Dict[str, str]]] = None,
         workroom_id: Optional[Union[str, object]] = None,
     ) -> Agent:
-        """Create an agent bound to a model via ``agent_config.llm``.
+        """Create an agent bound to a model through its agent_config.llm setting.
 
         This is the **legacy** contract and only ``kaizen-legacy`` accepts it.
         Canonical Kaizen rejects this body outright (its schema forbids extra

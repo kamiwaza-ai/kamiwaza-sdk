@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from ..exceptions import APIError
 from .base_service import BaseService
 from ..schemas.enclaves import (
     ConnectorCreate,
@@ -33,6 +32,18 @@ class ConnectorClient(BaseService):
         enabled: bool | None = None,
         tag: str | None = None,
     ) -> ConnectorListResponse:
+        """List enclave connectors, filtered and paged.
+
+        Args:
+            limit: Maximum connectors to return.
+            offset: Number of connectors to skip.
+            source_type: Keep only connectors of this source type.
+            enabled: Keep only enabled or only disabled connectors.
+            tag: Keep only connectors carrying this tag.
+
+        Returns:
+            ConnectorListResponse: The matching page of connectors.
+        """
         params: Dict[str, Any] = {}
         if limit is not None:
             params["limit"] = limit
@@ -48,6 +59,17 @@ class ConnectorClient(BaseService):
         return ConnectorListResponse.model_validate(response)
 
     def create(self, payload: ConnectorCreate) -> ConnectorResponse:
+        """Register an enclave connector against an external source.
+
+        Registering does not ingest anything. Call ``trigger_ingest`` to start
+        the first run.
+
+        Args:
+            payload: Source type, credentials reference and connector options.
+
+        Returns:
+            ConnectorResponse: The registered connector.
+        """
         response = self.client.post(
             f"{self._BASE_PATH}/",
             json=payload.model_dump(mode="json", exclude_unset=True),
@@ -55,26 +77,65 @@ class ConnectorClient(BaseService):
         return ConnectorResponse.model_validate(response)
 
     def get(self, connector_id: UUID | str) -> ConnectorResponse:
-        response = self.client.get(f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}")
+        """Fetch one enclave connector by identifier.
+
+        Args:
+            connector_id: Identifier of the connector.
+
+        Returns:
+            ConnectorResponse: The connector's current configuration.
+        """
+        connector = _ensure_uuid(connector_id, field="connector_id")
+        response = self.client.get(f"{self._BASE_PATH}/{connector}")
         return ConnectorResponse.model_validate(response)
 
-    def update(self, connector_id: UUID | str, payload: ConnectorUpdate) -> ConnectorResponse:
+    def update(
+        self, connector_id: UUID | str, payload: ConnectorUpdate
+    ) -> ConnectorResponse:
+        """Update an enclave connector's configuration in place.
+
+        Args:
+            connector_id: Identifier of the connector to update.
+            payload: Fields to change.
+
+        Returns:
+            ConnectorResponse: The connector as it now stands.
+        """
+        connector = _ensure_uuid(connector_id, field="connector_id")
         response = self.client.put(
-            f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}",
+            f"{self._BASE_PATH}/{connector}",
             json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return ConnectorResponse.model_validate(response)
 
     def delete(self, connector_id: UUID | str) -> None:
+        """Delete an enclave connector, stopping any further ingestion from it.
+
+        Args:
+            connector_id: Identifier of the connector to delete.
+        """
+        connector = _ensure_uuid(connector_id, field="connector_id")
         self.client.delete(
-            f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}",
+            f"{self._BASE_PATH}/{connector}",
             expect_json=False,
         )
         return None
 
     def trigger_ingest(self, connector_id: UUID | str) -> TriggerResponse:
+        """Start an ingestion run for one enclave connector.
+
+        Returns as soon as the run is accepted; the run itself continues on the
+        platform, so poll the connector or list its documents to follow it.
+
+        Args:
+            connector_id: Identifier of the connector to run.
+
+        Returns:
+            TriggerResponse: The accepted run's status.
+        """
+        connector = _ensure_uuid(connector_id, field="connector_id")
         response = self.client.post(
-            f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}/trigger_ingest"
+            f"{self._BASE_PATH}/{connector}/trigger_ingest"
         )
         return TriggerResponse.model_validate(response)
 
@@ -86,6 +147,14 @@ class DocumentClient(BaseService):
     _SYSTEM_HIGH_HEADER = "X-User-System-High"
 
     def create(self, payload: IndexDocumentRequest) -> DocumentRecord:
+        """Index one document into an enclave source.
+
+        Args:
+            payload: The document's content, source and classification.
+
+        Returns:
+            DocumentRecord: The indexed document's record.
+        """
         response = self.client.post(
             f"{self._BASE_PATH}/",
             json=payload.model_dump(mode="json", exclude_unset=True),
@@ -103,7 +172,23 @@ class DocumentClient(BaseService):
         system_high: str | None = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> DocumentListResponse:
-        params: Dict[str, Any] = {"source_id": str(_ensure_uuid(source_id, field="source_id"))}
+        """List indexed documents for one enclave source, filtered and paged.
+
+        Args:
+            source_id: Identifier of the enclave source.
+            limit: Maximum documents to return.
+            offset: Number of documents to skip.
+            item_type: Keep only documents of this item type.
+            tag: Keep only documents carrying this tag.
+            system_high: System-high marking to assert on the request, which
+                decides what the caller is permitted to see.
+            headers: Extra request headers.
+
+        Returns:
+            DocumentListResponse: The matching page of documents.
+        """
+        source = _ensure_uuid(source_id, field="source_id")
+        params: Dict[str, Any] = {"source_id": str(source)}
         if limit is not None:
             params["limit"] = limit
         if offset is not None:
@@ -134,6 +219,18 @@ class DocumentClient(BaseService):
         system_high: str | None = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> DocumentRecord:
+        """Fetch one indexed enclave document by identifier.
+
+        Args:
+            document_id: Identifier of the document.
+            source_id: Identifier of the enclave source holding it.
+            system_high: System-high marking to assert on the request, which
+                decides whether the caller may read this document.
+            headers: Extra request headers.
+
+        Returns:
+            DocumentRecord: The document's record.
+        """
         params = {"source_id": str(_ensure_uuid(source_id, field="source_id"))}
         request_headers = _merge_system_high_header(
             headers=headers,

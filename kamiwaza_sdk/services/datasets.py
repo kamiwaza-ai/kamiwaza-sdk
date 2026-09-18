@@ -95,14 +95,14 @@ class DatasetsAPI(BaseService):
         return urn
 
     def get(self, urn: str) -> DatasetRef:
-        """Read a dataset by URN."""
+        """Fetch one dataset's definition by its URN."""
         response = self.client._request(
             "GET", "/catalog/datasets/by-urn", params={"urn": urn}
         )
         return DatasetRef.model_validate(response)
 
     def delete(self, urn: str) -> None:
-        """Delete the dataset by URN."""
+        """Delete a dataset and the gate configuration attached to it."""
         self.client._request("DELETE", "/catalog/datasets/by-urn", params={"urn": urn})
 
     # ─── gate binding (M3-specific surface) ──────────────────────────────

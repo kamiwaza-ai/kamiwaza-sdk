@@ -1,0 +1,163 @@
+name: agent-tools/drift
+
+# Drift gate for the agent tool surface.
+#
+# Two independent kinds of drift, checked separately because they fail for
+# different reasons and one of them needs no cluster:
+#
+#   1. Surface drift — the callable method surface this package derives its
+#      tool surface from. Pure introspection, so it runs on every PR that
+#      touches the client. A renamed method is a breaking change for every
+#      agent host, because the published identifier derives from the selector,
+#      and nothing else in the build would say so.
+#
+#   2. Interface document drift — the committed kamiwaza-openapi-spec.json, at
+#      the repository root, against a live platform's own document. FR-005a
+#      makes that file the schema source and the drift subject. It is a
+#      development artifact: the wheel ships only the description table
+#      generated from it, so this job also regenerates that table and fails
+#      when a document change did not reach it. Needs a reachable cluster, so
+#      it runs on a schedule and skips cleanly without secrets.
+#
+# Neither job opens a PR. A drift gate that fixes itself teaches nobody: the
+# point is that a human reads the diff and decides whether a rename was
+# intended.
+#
+# Interface-document job requires repository secrets:
+#   - KAMIWAZA_BASE_URL    (e.g., https://contract-tests.kamiwaza.dev/api)
+#
+# If that secret isn't present (fork PRs, no dev cluster), the job skips.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'kamiwaza_sdk/**'
+      - 'kamiwaza-openapi-spec.json'
+      - 'scripts/regenerate_agent_tools_surface.py'
+      - 'scripts/regenerate_interface_descriptions.py'
+      - '.github/workflows/agent-tools-drift.yml'
+  workflow_dispatch:
+  schedule:
+    # 06:47 UTC daily — off the :00 fleet collision, and before the working day
+    # so a platform change overnight is reported by the time anyone reads it.
+    - cron: '47 6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  surface:
+    name: Agent tools surface drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Install SDK + dev deps
+        run: uv sync --group dev
+
+      - name: Regenerate the recorded surface
+        run: uv run python scripts/regenerate_agent_tools_surface.py
+
+      - name: Regenerate the shipped interface descriptions
+        # The wheel ships this table rather than the whole document, so it is
+        # generated code: stale here means every published tool carries wording
+        # the vendored document no longer states.
+        run: uv run python scripts/regenerate_interface_descriptions.py
+
+      - name: Fail on any difference
+        run: |
+          git add -A
+          if ! git diff --cached --exit-code -- kamiwaza_sdk/agent_tools/SURFACE.json; then
+            echo "::error::The agent tools surface changed. Read the diff above:"
+            echo "::error::a renamed or removed selector is a breaking change for"
+            echo "::error::every agent host. Run the script locally and commit the"
+            echo "::error::result once the change is intended."
+            exit 1
+          fi
+          if ! git diff --cached --exit-code -- kamiwaza_sdk/agent_tools/INTERFACE_DESCRIPTIONS.json; then
+            echo "::error::The shipped interface descriptions are stale. Run"
+            echo "::error::scripts/regenerate_interface_descriptions.py and commit"
+            echo "::error::the result; the diff is a change to what every published"
+            echo "::error::tool says about itself."
+            exit 1
+          fi
+          echo "Recorded surface and shipped descriptions match their sources."
+
+  interface-document:
+    name: Interface document drift (live cluster)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe live cluster availability
+        id: probe
+        env:
+          KAMIWAZA_BASE_URL: ${{ secrets.KAMIWAZA_BASE_URL }}
+        run: |
+          if [ -z "$KAMIWAZA_BASE_URL" ]; then
+            echo "::warning::KAMIWAZA_BASE_URL secret not configured; skipping interface document check."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # `curl -w "%{http_code}"` prints 000 and exits non-zero when it
+          # never got an answer, so `|| echo 000` used to append a second one
+          # and produce status=000000 — which is not "000", so an unreachable
+          # host read as reachable and the next step hard-failed the job.
+          # Branch on curl's exit status for reachability, and on the status
+          # line for whether the answer is usable: a 404 or a 502 is a reply,
+          # but not from a platform that can serve /openapi.json.
+          curl_rc=0
+          status=$(curl --max-time 10 -s -o /dev/null -w "%{http_code}" "${KAMIWAZA_BASE_URL}/ping") || curl_rc=$?
+          if [ "$curl_rc" -ne 0 ]; then
+            echo "::warning::Live cluster not reachable (curl exit $curl_rc); skipping interface document check."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$status" in
+            2??)
+              echo "Cluster reachable (HTTP $status)"
+              echo "available=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::warning::Live cluster answered HTTP $status, not 2xx; skipping interface document check."
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Fetch the platform's own interface document
+        if: steps.probe.outputs.available == 'true'
+        env:
+          KAMIWAZA_BASE_URL: ${{ secrets.KAMIWAZA_BASE_URL }}
+        run: |
+          curl --max-time 60 -sSf "${KAMIWAZA_BASE_URL}/openapi.json" \
+            -o kamiwaza-openapi-spec.json
+
+      - name: Regenerate the shipped descriptions from the fetched document
+        if: steps.probe.outputs.available == 'true'
+        run: |
+          uv run python scripts/regenerate_interface_descriptions.py \
+            || python scripts/regenerate_interface_descriptions.py
+
+      - name: Fail on any difference
+        if: steps.probe.outputs.available == 'true'
+        run: |
+          git add -A
+          if ! git diff --cached --exit-code -- kamiwaza-openapi-spec.json kamiwaza_sdk/agent_tools/INTERFACE_DESCRIPTIONS.json; then
+            echo "::error::The committed interface document no longer matches the"
+            echo "::error::platform. It is the schema source for every published"
+            echo "::error::tool, so a stale copy means agents are being handed"
+            echo "::error::shapes the platform no longer accepts. Update it in a PR."
+            exit 1
+          fi
+          echo "Committed interface document matches the platform."

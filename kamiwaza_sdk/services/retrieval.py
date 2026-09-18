@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Generator, Iterator, Optional, Sequence
 
 from pydantic import SecretStr, ValidationError as PydanticValidationError
 
@@ -46,6 +46,46 @@ class RetrievalResult:
     grpc: Optional[GrpcHandshake] = None
 
 
+class _OwnedEventStream(Iterator[RetrievalStreamEvent]):
+    """An SSE event iterator that owns the HTTP response behind it.
+
+    Measured on a stubbed transport: closing the bare ``_iter_sse`` generator
+    before its first ``next`` ran no ``finally`` block, so the response
+    recorded 0 close calls and the socket outlived the caller that refused the
+    stream. Holding the response here makes ``close`` release it whether or not
+    an event was ever read.
+    """
+
+    __slots__ = ("_events", "_response")
+
+    def __init__(
+        self,
+        response: Any,
+        events: Generator[RetrievalStreamEvent, None, None],
+    ) -> None:
+        """Take the open response and the generator reading it.
+
+        Args:
+            response: The streaming HTTP response to release on close.
+            events: The generator decoding that response.
+        """
+        self._response = response
+        self._events = events
+
+    def __next__(self) -> RetrievalStreamEvent:
+        """Return the next event the response carries.
+
+        Returns:
+            RetrievalStreamEvent: The next decoded event.
+        """
+        return next(self._events)
+
+    def close(self) -> None:
+        """End the decoding and release the response."""
+        self._events.close()
+        self._response.close()
+
+
 class RetrievalService(BaseService):
     """High-level wrapper for dataset materialisation jobs."""
 
@@ -53,6 +93,14 @@ class RetrievalService(BaseService):
     _KAFKA_PLATFORM_TAG = "urn:li:dataset:(urn:li:dataplatform:kafka"
 
     def create_job(self, request: RetrievalRequest) -> RetrievalJob:
+        """Start a retrieval job over a catalogued dataset.
+
+        Args:
+            request: Dataset URN, transport and retrieval options.
+
+        Returns:
+            RetrievalJob: The accepted job, to be followed with ``get_job``.
+        """
         self._ensure_kafka_supported(request)
         try:
             payload = reveal_secrets(request.model_dump(exclude_none=True))
@@ -90,6 +138,14 @@ class RetrievalService(BaseService):
         return RetrievalResult(job=job, grpc=job.grpc)
 
     def get_job(self, job_id: str) -> RetrievalJobStatus:
+        """Fetch one retrieval job's current status and progress.
+
+        Args:
+            job_id: Identifier of the job.
+
+        Returns:
+            RetrievalJobStatus: The job's state.
+        """
         try:
             response = self.client.get(f"{self._BASE_PATH}/jobs/{job_id}")
         except APIError as exc:
@@ -104,10 +160,10 @@ class RetrievalService(BaseService):
             stream=True,
         )
         response.raise_for_status()
-        return self._iter_sse(response)
+        return _OwnedEventStream(response, self._iter_sse(response))
 
     def stream_job(self, job_id: str) -> Iterator[RetrievalStreamEvent]:
-        """Backward-compatible alias for :meth:`stream_events`."""
+        """Stream a retrieval job's events; alias of stream_events."""
         return self.stream_events(job_id)
 
     def flight_batches(
@@ -221,6 +277,18 @@ class RetrievalService(BaseService):
         credential_override: str | SecretStr | None = None,
         **options,
     ) -> RetrievalJob:
+        """Start a retrieval job with its options supplied inline.
+
+        Args:
+            dataset_urn: URN of the dataset to retrieve from.
+            format_hint: Source format, when the dataset does not declare one.
+            credential_override: Credential to use instead of the dataset's
+                stored one. Never logged and never returned in the job.
+            **options: Further source-specific retrieval options.
+
+        Returns:
+            RetrievalJob: The accepted job.
+        """
         credential = credential_override
         if isinstance(credential, str):
             credential = SecretStr(credential)
@@ -255,6 +323,24 @@ class RetrievalService(BaseService):
         transport: TransportType | str = TransportType.INLINE,
         format_hint: str = "json",
     ) -> list[dict]:
+        """Retrieve Slack messages from a catalogued Slack dataset.
+
+        Args:
+            dataset_urn: URN of the Slack dataset.
+            channels: Channels to include. Omit for every channel the dataset
+                covers.
+            include_replies: Include threaded replies alongside parents.
+            max_messages: Cap on messages returned.
+            since_ts: Earliest message timestamp to include.
+            until_ts: Latest message timestamp to include.
+            credential_override: Credential to use instead of the dataset's
+                stored one.
+            transport: How to move the result, inline by default.
+            format_hint: Source format of the dataset.
+
+        Returns:
+            list[dict]: The retrieved messages.
+        """
         options: dict[str, object] = {}
         if channels:
             options["channels"] = list(channels)
@@ -299,7 +385,7 @@ class RetrievalService(BaseService):
             return value.isoformat()
         return value
 
-    def _iter_sse(self, response) -> Iterator[RetrievalStreamEvent]:
+    def _iter_sse(self, response) -> Generator[RetrievalStreamEvent, None, None]:
         buffer: list[str] = []
         event_type = "message"
         try:

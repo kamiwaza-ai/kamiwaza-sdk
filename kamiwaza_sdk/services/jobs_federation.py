@@ -265,7 +265,7 @@ class JobsAPI(BaseService):
     def cancel(
         self, job_id: str, *, target_cluster: Optional[str] = None
     ) -> dict[str, Any]:
-        """Cancel a running job (T5.35 / ENG-4712).
+        """Cancel a running job, stopping the work it has not finished.
 
         POSTs to ``/api/cluster/jobs/{id}/cancel``. The server returns a
         JobRecord; we surface the raw dict so customers can inspect

@@ -29,7 +29,7 @@ from .base_service import BaseService
 class ServingService(BaseService):
     
     def start_ray(self, address: Optional[str] = None, runtime_env: Optional[dict] = None, options: Optional[dict] = None) -> None:
-        """Start Ray with given parameters."""
+        """Start the Ray serving runtime with the given parameters."""
         data = {
             "address": address,
             "runtime_env": runtime_env,
@@ -38,12 +38,19 @@ class ServingService(BaseService):
         return self.client.post("/serving/start", json=data)
 
     def get_status(self) -> dict:
-        """Get the status of Ray."""
+        """Report whether the Ray serving runtime is up."""
         return self.client.get("/serving/status")
 
     def estimate_model_vram(self, deployment_request: CreateModelDeployment) -> dict:
         """Estimate the VRAM required for a model deployment."""
-        return self.client.post("/serving/estimate_model_vram", json=deployment_request.model_dump())
+        # mode="json" because the request carries UUIDs and `requests` encodes
+        # json= with the stdlib encoder: a raw model_dump() raised
+        # "TypeError: Object of type UUID is not JSON serializable" on every
+        # call, so no caller of this method ever reached the transport.
+        return self.client.post(
+            "/serving/estimate_model_vram",
+            json=deployment_request.model_dump(mode="json"),
+        )
     
     def deploy_model(self,
                 model_id: Optional[Union[str, UUID]] = None,
@@ -131,14 +138,13 @@ class ServingService(BaseService):
             **kwargs
         )
 
-        # Convert UUIDs to strings in the deployment_request dictionary
-        request_dict = deployment_request.model_dump()
-        request_dict['m_id'] = str(request_dict['m_id'])
-        if request_dict.get('m_file_id'):
-            request_dict['m_file_id'] = str(request_dict['m_file_id'])
-        request_dict['m_config_id'] = str(request_dict['m_config_id'])
-    
-        response = self.client.post("/serving/deploy_model", json=request_dict)
+        # Same mode="json" dump as estimate_model_vram: it stringifies the
+        # three UUID fields the platform expects as strings, and keeps a
+        # missing m_file_id null, which is what the per-field conversion this
+        # replaces did in four lines.
+        response = self.client.post(
+            "/serving/deploy_model", json=deployment_request.model_dump(mode="json")
+        )
         deployment_id = UUID(response) if isinstance(response, str) else response
 
         if wait and isinstance(deployment_id, UUID):
@@ -154,6 +160,15 @@ class ServingService(BaseService):
 
 
     def list_active_deployments(self) -> List[ActiveModelDeployment]:
+        """List deployments that are serving, with their reachable endpoints.
+
+        Narrower than ``list_deployments``: this one keeps only deployments
+        that are actually serving and resolves each one's endpoint, so a caller
+        can use the result without a second lookup.
+
+        Returns:
+            List[ActiveModelDeployment]: The serving deployments.
+        """
         deployments = self.list_deployments()
         active = []
 
@@ -297,7 +312,7 @@ class ServingService(BaseService):
                     repo_id: Optional[str] = None,
                     force: Optional[bool] = False) -> bool:
         """
-        Stop a model deployment.
+        Stop a model deployment and release its instances.
         
         Args:
             deployment_id (Optional[UUID]): The ID of the deployment to stop.
@@ -348,10 +363,24 @@ class ServingService(BaseService):
             
         return self.client.delete(f"/serving/deployment/{deployment_id}", params={"force": force})
 
-    def get_deployment_status(self, deployment_id: UUID) -> ModelDeployment:
-        """Get the status of a specific model deployment."""
+    def get_deployment_status(self, deployment_id: UUID) -> str:
+        """Get the status of a specific model deployment.
+
+        The platform answers this route with a bare JSON string — measured
+        against a live cluster, ``"DEPLOYED"``. This used to declare
+        ``ModelDeployment`` and validate the response into one, so the call
+        raised a pydantic ``ValidationError`` for every deployment that exists
+        and no caller could ever have succeeded. Use
+        :meth:`get_deployment` when the rest of the deployment is wanted.
+
+        Args:
+            deployment_id: Identifier of the deployment.
+
+        Returns:
+            The status string, as the platform reports it.
+        """
         response = self.client.get(f"/serving/deployment/{deployment_id}/status")
-        return ModelDeployment.model_validate(response)
+        return response if isinstance(response, str) else str(response)
 
     def get_deployment_logs(self, deployment_id: UUID) -> ContainerLogResponse:
         """Fetch captured logs for a deployment."""
@@ -401,12 +430,12 @@ class ServingService(BaseService):
         return self.client.get("/serving/health")
 
     def unload_model(self, request: UnloadModelRequest) -> UnloadModelResponse:
-        """Unload a model."""
+        """Unload a model from a deployment, freeing its memory."""
         response = self.client.post("/unload_model", json=request.model_dump())
         return UnloadModelResponse.model_validate(response)
 
     def load_model(self, request: LoadModelRequest) -> LoadModelResponse:
-        """Load a model."""
+        """Load a model into a running deployment's memory."""
         response = self.client.post("/load_model", json=request.model_dump())
         return LoadModelResponse.model_validate(response)
 

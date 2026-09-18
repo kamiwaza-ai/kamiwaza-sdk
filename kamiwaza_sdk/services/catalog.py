@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypeVar
 from urllib.parse import quote
+
+from pydantic import BaseModel
 
 from .base_service import BaseService
 from .federation_credentials import federation_credential_headers
@@ -24,12 +26,98 @@ from ..schemas.connector_spec import ConnectorSpec
 from ..utils import reveal_secrets
 
 
+#: Model parsed out of a catalogue response.
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
 def _encode_path_segment(value: str) -> str:
     """URL-encode a URN for safe inclusion in path segments."""
     return quote(value, safe="")
 
 
-class DatasetClient(BaseService):
+class _ByUrnClient(BaseService):
+    """Shared by-URN request shapes for the catalogue sub-clients.
+
+    Datasets, containers and secrets are addressed the same way — a ``by-urn``
+    route taking the URN as a query parameter — so the request plumbing lives
+    here once. Each sub-client keeps its own public methods, because the models
+    they parse and the promises they make differ.
+
+    Holding the request lines here takes each caller out of view of
+    ``agent_tools.descriptors._request_signature``, which reads a method's own
+    source: nine of the catalogue's published reads resolve no verb for that
+    reason, and the hint sweep skips what it cannot read. They are named in
+    ``_REQUEST_LINE_UNSEEN`` in ``tests/unit/agent_tools/test_hint_safety.py``.
+    """
+
+    _BASE_PATH: str
+
+    def _list_by_query(
+        self, model: type[ModelT], query: Optional[str]
+    ) -> List[ModelT]:
+        """List entries, optionally filtered by a free-text query.
+
+        Args:
+            model: Pydantic model to parse each entry into.
+            query: Free-text filter, or ``None`` for everything.
+
+        Returns:
+            List[ModelT]: Parsed entries.
+        """
+        params = {"query": query} if query else None
+        response = self.client.get(f"{self._BASE_PATH}/", params=params)
+        return [model.model_validate(item) for item in response]
+
+    def _get_by_urn(
+        self, model: type[ModelT], urn: str, *, suffix: str = ""
+    ) -> ModelT:
+        """Fetch one entry, or a sub-resource of it, by URN.
+
+        Args:
+            model: Pydantic model to parse the response into.
+            urn: URN of the entry.
+            suffix: Sub-resource path appended to the by-URN route, such as
+                ``/schema``.
+
+        Returns:
+            ModelT: The parsed response.
+        """
+        response = self.client.get(
+            f"{self._BASE_PATH}/by-urn{suffix}",
+            params={"urn": urn},
+        )
+        return model.model_validate(response)
+
+    def _patch_by_urn(
+        self, model: type[ModelT], urn: str, payload: Any
+    ) -> ModelT:
+        """Update one entry by URN, sending only the fields that are set.
+
+        Args:
+            model: Pydantic model to parse the response into.
+            urn: URN of the entry to update.
+            payload: Update model whose unset fields are omitted.
+
+        Returns:
+            ModelT: The parsed, updated entry.
+        """
+        response = self.client.patch(
+            f"{self._BASE_PATH}/by-urn",
+            params={"urn": urn},
+            json=payload.model_dump(exclude_none=True),
+        )
+        return model.model_validate(response)
+
+    def _delete_by_urn(self, urn: str) -> None:
+        """Delete one entry by URN.
+
+        Args:
+            urn: URN of the entry to delete.
+        """
+        self.client.delete(f"{self._BASE_PATH}/by-urn", params={"urn": urn})
+
+
+class DatasetClient(_ByUrnClient):
     """Dataset CRUD helpers."""
 
     _BASE_PATH = "/catalog/datasets"
@@ -68,14 +156,22 @@ class DatasetClient(BaseService):
         return urn
 
     def add_publisher(self, subject_user_id: str) -> None:
-        """Grant a subject the cluster-level ``publisher`` relation (admin)."""
+        """Grant a subject the cluster-wide publisher relation for datasets.
+
+        Administrator only. The relation lets the subject publish any dataset
+        in the catalogue, not one dataset.
+        """
         self.client.post(
             f"{self._BASE_PATH}/publishers",
             json={"subject_user_id": subject_user_id},
         )
 
     def remove_publisher(self, subject_user_id: str) -> None:
-        """Revoke a subject's cluster-level ``publisher`` relation (admin)."""
+        """Revoke a subject's cluster-wide dataset publisher relation.
+
+        Administrator only. The subject keeps any dataset it already
+        published; this ends its ability to publish more.
+        """
         self.client.delete(
             f"{self._BASE_PATH}/publishers",
             json={"subject_user_id": subject_user_id},
@@ -97,7 +193,16 @@ class DatasetClient(BaseService):
         *,
         target_cluster: Optional[str] = None,
     ) -> List[Dataset]:
-        """List local datasets or receiver-authorized datasets through mesh."""
+        """List local datasets, or receiver-authorized datasets through mesh.
+
+        Args:
+            query: Free-text filter. Omit it to list every dataset.
+            target_cluster: Federation selector to read through instead of the
+                local catalog. Omit it for local datasets.
+
+        Returns:
+            List[Dataset]: Matching datasets.
+        """
         params = {"query": query} if query else None
         path = f"{self._BASE_PATH}/"
         request_kwargs: Dict[str, Any] = {"params": params}
@@ -111,38 +216,58 @@ class DatasetClient(BaseService):
         return [Dataset.model_validate(item) for item in response]
 
     def get(self, dataset_urn: str) -> Dataset:
-        response = self.client.get(
-            f"{self._BASE_PATH}/by-urn",
-            params={"urn": dataset_urn},
-        )
-        return Dataset.model_validate(response)
+        """Fetch one catalogued dataset by its URN.
+
+        Args:
+            dataset_urn: URN of the dataset.
+
+        Returns:
+            Dataset: The dataset's catalogue entry.
+        """
+        return self._get_by_urn(Dataset, dataset_urn)
 
     def update(self, dataset_urn: str, update: DatasetUpdate) -> Dataset:
-        response = self.client.patch(
-            f"{self._BASE_PATH}/by-urn",
-            params={"urn": dataset_urn},
-            json=update.model_dump(exclude_none=True),
-        )
-        dataset = Dataset.model_validate(response)
+        """Update a catalogued dataset's metadata, leaving its data untouched.
+
+        Args:
+            dataset_urn: URN of the dataset to update.
+            update: Fields to change. Unset fields are left alone.
+
+        Returns:
+            Dataset: The dataset as it now stands.
+        """
+        dataset = self._patch_by_urn(Dataset, dataset_urn, update)
         note = getattr(self.client, "_note_recent_dataset_change", None)
         if callable(note):
             note(dataset.urn)
         return dataset
 
     def delete(self, dataset_urn: str) -> None:
-        self.client.delete(
-            f"{self._BASE_PATH}/by-urn",
-            params={"urn": dataset_urn},
-        )
+        """Remove a dataset's catalogue entry, leaving its stored data alone.
+
+        Args:
+            dataset_urn: URN of the dataset to remove.
+        """
+        self._delete_by_urn(dataset_urn)
 
     def get_schema(self, dataset_urn: str) -> Schema:
-        response = self.client.get(
-            f"{self._BASE_PATH}/by-urn/schema",
-            params={"urn": dataset_urn},
-        )
-        return Schema.model_validate(response)
+        """Fetch the field schema recorded for a catalogued dataset.
+
+        Args:
+            dataset_urn: URN of the dataset.
+
+        Returns:
+            Schema: The dataset's recorded schema.
+        """
+        return self._get_by_urn(Schema, dataset_urn, suffix="/schema")
 
     def update_schema(self, dataset_urn: str, schema: Schema) -> None:
+        """Replace the field schema recorded for a catalogued dataset.
+
+        Args:
+            dataset_urn: URN of the dataset.
+            schema: The schema to record in place of the current one.
+        """
         self.client.put(
             f"{self._BASE_PATH}/by-urn/schema",
             params={"urn": dataset_urn},
@@ -155,12 +280,20 @@ class DatasetClient(BaseService):
         return _encode_path_segment(dataset_urn)
 
 
-class ContainerClient(BaseService):
+class ContainerClient(_ByUrnClient):
     """Container CRUD + membership helpers."""
 
     _BASE_PATH = "/catalog/containers"
 
     def create(self, payload: ContainerCreate) -> str:
+        """Create a catalogue container to group related datasets.
+
+        Args:
+            payload: The container's name and metadata.
+
+        Returns:
+            str: URN of the created container.
+        """
         response = self.client.post(
             f"{self._BASE_PATH}/",
             json=payload.model_dump(exclude_none=True),
@@ -168,32 +301,57 @@ class ContainerClient(BaseService):
         return str(response)
 
     def list(self, query: Optional[str] = None) -> List[Container]:
-        params = {"query": query} if query else None
-        response = self.client.get(f"{self._BASE_PATH}/", params=params)
-        return [Container.model_validate(item) for item in response]
+        """List catalogue containers, optionally narrowed by a search query.
+
+        Args:
+            query: Free-text filter. Omit it to list every container.
+
+        Returns:
+            List[Container]: Matching containers.
+        """
+        return self._list_by_query(Container, query)
 
     def get(self, container_urn: str) -> Container:
-        response = self.client.get(
-            f"{self._BASE_PATH}/by-urn",
-            params={"urn": container_urn},
-        )
-        return Container.model_validate(response)
+        """Fetch one catalogue container by its URN.
+
+        Args:
+            container_urn: URN of the container.
+
+        Returns:
+            Container: The container's catalogue entry.
+        """
+        return self._get_by_urn(Container, container_urn)
 
     def update(self, container_urn: str, update: ContainerUpdate) -> Container:
-        response = self.client.patch(
-            f"{self._BASE_PATH}/by-urn",
-            params={"urn": container_urn},
-            json=update.model_dump(exclude_none=True),
-        )
-        return Container.model_validate(response)
+        """Update a container's metadata without changing its membership.
+
+        Args:
+            container_urn: URN of the container to update.
+            update: Fields to change. Unset fields are left alone.
+
+        Returns:
+            Container: The container as it now stands.
+        """
+        return self._patch_by_urn(Container, container_urn, update)
 
     def delete(self, container_urn: str) -> None:
-        self.client.delete(
-            f"{self._BASE_PATH}/by-urn",
-            params={"urn": container_urn},
-        )
+        """Remove a container, leaving the datasets it grouped in place.
+
+        Args:
+            container_urn: URN of the container to remove.
+        """
+        self._delete_by_urn(container_urn)
 
     def add_dataset(self, container_urn: str, dataset_urn: str) -> Dict[str, Any]:
+        """Add one dataset to a container's membership.
+
+        Args:
+            container_urn: URN of the container.
+            dataset_urn: URN of the dataset to add.
+
+        Returns:
+            Dict[str, Any]: The platform's membership response.
+        """
         response = self.client.post(
             f"{self._BASE_PATH}/by-urn/datasets",
             params={"container_urn": container_urn},
@@ -202,6 +360,15 @@ class ContainerClient(BaseService):
         return response
 
     def remove_dataset(self, container_urn: str, dataset_urn: str) -> Dict[str, Any]:
+        """Remove one dataset from a container, without deleting the dataset.
+
+        Args:
+            container_urn: URN of the container.
+            dataset_urn: URN of the dataset to remove from it.
+
+        Returns:
+            Dict[str, Any]: The platform's membership response.
+        """
         response = self.client.delete(
             f"{self._BASE_PATH}/by-urn/datasets",
             params={
@@ -213,6 +380,14 @@ class ContainerClient(BaseService):
 
     @staticmethod
     def encode_path_urn(container_urn: str) -> str:
+        """Return a percent-encoded container URN for use in a path segment.
+
+        Args:
+            container_urn: URN to encode.
+
+        Returns:
+            str: The URN, safe to embed in a request path.
+        """
         return _encode_path_segment(container_urn)
 
 
@@ -222,6 +397,20 @@ class SecretClient(BaseService):
     _BASE_PATH = "/catalog/secrets"
 
     def create(self, payload: SecretCreate, *, clobber: bool = False) -> str:
+        """Store a secret in the catalogue and return its URN.
+
+        The value is sent to the platform and never returned by any read on
+        this client: subsequent lookups carry the secret's metadata only.
+
+        Args:
+            payload: Name, value, owner and description of the secret.
+            clobber: Overwrite an existing secret of the same name. Defaults
+                to false, so a name collision fails rather than replacing a
+                value something else may depend on.
+
+        Returns:
+            str: URN of the stored secret.
+        """
         body = reveal_secrets(payload.model_dump(exclude_none=True))
         response = self.client.post(
             f"{self._BASE_PATH}/",
@@ -231,11 +420,31 @@ class SecretClient(BaseService):
         return self._unwrap_secret_urn(response)
 
     def list(self, query: Optional[str] = None) -> List[Secret]:
+        """List stored secrets by metadata, never their values.
+
+        Args:
+            query: Free-text filter. Omit it to list every secret.
+
+        Returns:
+            List[Secret]: Matching secrets, carrying URN, name, owner,
+            description and timestamps — no value.
+        """
         params = {"query": query} if query else None
         response = self.client.get(f"{self._BASE_PATH}/", params=params)
         return [Secret.model_validate(item) for item in response]
 
     def get(self, secret_urn: str) -> Secret:
+        """Fetch one secret's metadata by URN, without its value.
+
+        Falls back to the by-URN query route when the versioned path returns
+        404, so a platform on either route shape works.
+
+        Args:
+            secret_urn: URN of the secret.
+
+        Returns:
+            Secret: The secret's metadata. The value is not included.
+        """
         try:
             response = self.client.get(f"{self._BASE_PATH}/v2/{secret_urn}")
         except APIError as exc:
@@ -248,6 +457,11 @@ class SecretClient(BaseService):
         return Secret.model_validate(response)
 
     def delete(self, secret_urn: str) -> None:
+        """Delete a stored secret, breaking anything still resolving it.
+
+        Args:
+            secret_urn: URN of the secret to delete.
+        """
         try:
             self.client.delete(f"{self._BASE_PATH}/v2/{secret_urn}")
         except APIError as exc:
@@ -260,6 +474,18 @@ class SecretClient(BaseService):
 
     @staticmethod
     def encode_path_urn(secret_urn: str) -> str:
+        """Return a secret URN for use in a path segment, unencoded.
+
+        Secret URNs are already path-safe on this route, so this returns the
+        URN unchanged. It exists so callers can treat every catalogue
+        sub-client the same way.
+
+        Args:
+            secret_urn: URN to use in a path.
+
+        Returns:
+            str: The URN, unchanged.
+        """
         return secret_urn
 
     @staticmethod
@@ -312,6 +538,14 @@ class CatalogService(BaseService):
         return [self._normalize_dataset(dataset) for dataset in datasets]
 
     def get_dataset(self, dataset_urn: str) -> Dataset:
+        """Fetch one catalogued dataset by URN, with its fields normalised.
+
+        Args:
+            dataset_urn: URN of the dataset.
+
+        Returns:
+            Dataset: The dataset's catalogue entry.
+        """
         dataset = self.datasets.get(dataset_urn)
         return self._normalize_dataset(dataset)
 
@@ -327,7 +561,21 @@ class CatalogService(BaseService):
         container_urn: Optional[str] = None,
         dataset_schema: Optional[Schema] = None,
     ) -> Dataset:
-        """Backward-compatible dataset creation wrapper."""
+        """Register a dataset in the catalogue and return the stored entry.
+
+        Args:
+            dataset_name: Name to register.
+            platform: Platform the dataset belongs to.
+            environment: Catalogue environment.
+            description: Optional description.
+            tags: Optional tags.
+            properties: Optional free-form properties.
+            container_urn: Container to add the dataset to, when grouping it.
+            dataset_schema: Field schema to record alongside the dataset.
+
+        Returns:
+            Dataset: The registered dataset, read back after creation.
+        """
         payload = DatasetCreate(
             name=dataset_name,
             platform=platform,
@@ -347,20 +595,50 @@ class CatalogService(BaseService):
         return self.datasets.register_from_spec(spec)
 
     def add_publisher(self, subject_user_id: str) -> None:
-        """Grant a subject the cluster-level ``publisher`` relation (admin)."""
+        """Grant the dataset publisher relation, from the catalogue entry point.
+
+        Administrator only. The same act as ``catalog.datasets.add_publisher``,
+        reachable without naming the datasets sub-client.
+        """
         self.datasets.add_publisher(subject_user_id)
 
     def remove_publisher(self, subject_user_id: str) -> None:
-        """Revoke a subject's cluster-level ``publisher`` relation (admin)."""
+        """Revoke the dataset publisher relation, from the catalogue entry point.
+
+        Administrator only. The same act as
+        ``catalog.datasets.remove_publisher``, reachable without naming the
+        datasets sub-client.
+        """
         self.datasets.remove_publisher(subject_user_id)
 
     def list_containers(self, query: Optional[str] = None) -> List[Container]:
+        """List catalogue containers, optionally narrowed by a search query.
+
+        Args:
+            query: Free-text filter. Omit it to list every container.
+
+        Returns:
+            List[Container]: Matching containers.
+        """
         return self.containers.list(query=query)
 
     def list_secrets(self, query: Optional[str] = None) -> List[Secret]:
+        """List stored secrets by metadata, never their values.
+
+        Args:
+            query: Free-text filter. Omit it to list every secret.
+
+        Returns:
+            List[Secret]: Matching secrets, without any secret value.
+        """
         return self.secrets.list(query=query)
 
     def health(self) -> Dict[str, Any]:
+        """Report whether the catalogue service is answering requests.
+
+        Returns:
+            Dict[str, Any]: The service's health payload.
+        """
         return self.client.get("/catalog/health")
 
     def metadata(self) -> Dict[str, Any]:

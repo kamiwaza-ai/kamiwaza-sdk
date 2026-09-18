@@ -35,7 +35,7 @@ ray_status = client.serving.get_status()
 - `list_active_deployments() -> List[UIModelDeployment]`: List only active deployments with running instances
 - `get_deployment(deployment_id: UUID) -> ModelDeployment`: Get deployment details
 - `stop_deployment(deployment_id: UUID)`: Stop a deployment
-- `get_deployment_status(deployment_id: UUID) -> DeploymentStatus`: Get deployment status
+- `get_deployment_status(deployment_id: UUID) -> str`: Get the deployment status as the platform reports it, e.g. `"DEPLOYED"`. **Changed:** this used to be declared as returning a `ModelDeployment` and validated the response into one. The route answers with a bare JSON string, so every call raised a pydantic `ValidationError`; no caller can have depended on the old return value. Use `get_deployment()` when the rest of the deployment record is wanted.
 
 ```python
 # Estimate VRAM requirements
@@ -62,7 +62,7 @@ active_deployments = client.serving.list_active_deployments()
 # - lb_port: The load balancer port
 # - endpoint: The HTTP endpoint for the deployment (e.g. http://hostname:port/v1)
 
-# Get deployment status
+# Get deployment status — a plain string such as "DEPLOYED"
 status = client.serving.get_deployment_status(deployment_id)
 
 # Stop deployment

@@ -12,12 +12,12 @@ from .base_service import BaseService
 
 class PromptsService(BaseService):
     def create_role(self, role: PromptRoleCreate) -> PromptRole:
-        """Create a new role."""
+        """Create a prompt role describing who the model acts as."""
         response = self.client.post("/prompts/roles/", json=role.model_dump())
         return PromptRole.model_validate(response)
 
     def list_roles(self, skip: int = 0, limit: int = 100) -> List[PromptRole]:
-        """Retrieve a list of roles."""
+        """List the prompt roles available for composition."""
         params = {"skip": skip, "limit": limit}
         response = self.client.get("/prompts/roles/", params=params)
         return [PromptRole.model_validate(item) for item in response]
@@ -28,12 +28,12 @@ class PromptsService(BaseService):
         return PromptRole.model_validate(response)
 
     def create_system(self, system: PromptSystemCreate) -> PromptSystem:
-        """Create a new system."""
+        """Create a system prompt that frames a model's behaviour."""
         response = self.client.post("/prompts/systems/", json=system.model_dump())
         return PromptSystem.model_validate(response)
 
     def list_systems(self, skip: int = 0, limit: int = 100) -> List[PromptSystem]:
-        """Retrieve a list of systems."""
+        """List the system prompts available for composition."""
         params = {"skip": skip, "limit": limit}
         response = self.client.get("/prompts/systems/", params=params)
         return [PromptSystem.model_validate(item) for item in response]
@@ -44,12 +44,12 @@ class PromptsService(BaseService):
         return PromptSystem.model_validate(response)
 
     def create_element(self, element: PromptElementCreate) -> PromptElement:
-        """Create a new element."""
+        """Create a reusable prompt element for composing templates."""
         response = self.client.post("/prompts/elements/", json=element.model_dump())
         return PromptElement.model_validate(response)
 
     def list_elements(self, skip: int = 0, limit: int = 100) -> List[PromptElement]:
-        """Retrieve a list of elements."""
+        """List the reusable prompt elements available for composition."""
         params = {"skip": skip, "limit": limit}
         response = self.client.get("/prompts/elements/", params=params)
         return [PromptElement.model_validate(item) for item in response]
@@ -60,12 +60,12 @@ class PromptsService(BaseService):
         return PromptElement.model_validate(response)
 
     def create_template(self, template: PromptTemplateCreate) -> PromptTemplate:
-        """Create a new template."""
+        """Create a prompt template assembled from roles and elements."""
         response = self.client.post("/prompts/templates/", json=template.model_dump())
         return PromptTemplate.model_validate(response)
 
     def list_templates(self, skip: int = 0, limit: int = 100) -> List[PromptTemplate]:
-        """Retrieve a list of templates."""
+        """List the prompt templates available for composition."""
         params = {"skip": skip, "limit": limit}
         response = self.client.get("/prompts/templates/", params=params)
         return [PromptTemplate.model_validate(item) for item in response]

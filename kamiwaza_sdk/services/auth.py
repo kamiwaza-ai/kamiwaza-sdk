@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 from .base_service import BaseService
@@ -74,7 +74,12 @@ class AuthService(BaseService):
         return TokenResponse.model_validate(response)
 
     def logout(self) -> LogoutResponse:
-        """Invoke the coordinated logout flow."""
+        """Sign the calling member out across the platform and the gateway.
+
+        Returns:
+            LogoutResponse: The logout outcome, including any provider-side
+            sign-out the gateway performed.
+        """
         response = self.client.post("/auth/logout", json={})
         return LogoutResponse.model_validate(response)
 
@@ -94,12 +99,21 @@ class AuthService(BaseService):
         return ValidationHeaders.from_headers(raw_response.headers)
 
     def get_jwks(self) -> JWKSResponse:
-        """Fetch the gateway JWKS set."""
+        """Fetch the gateway's public signing keys for token verification.
+
+        Returns:
+            JWKSResponse: The JSON Web Key Set. Public keys only; no secret
+            material is exposed by this read.
+        """
         response = self.client.get("/auth/jwks")
         return JWKSResponse.model_validate(response)
 
     def health(self) -> Dict[str, Any]:
-        """Retrieve auth service health metadata."""
+        """Report whether the authentication service is answering requests.
+
+        Returns:
+            Dict[str, Any]: The service's health payload.
+        """
         return self.client.get("/auth/health")
 
     def metadata(self) -> Dict[str, Any]:
@@ -115,16 +129,44 @@ class AuthService(BaseService):
         return PATCreateResponse.model_validate(response)
 
     def list_pats(self) -> PATListResponse:
+        """List the calling member's personal access tokens by metadata.
+
+        Returns:
+            PATListResponse: The member's tokens. Token secrets are issued
+            once at creation and are not returned by this read.
+        """
         response = self.client.get("/auth/pats")
         return PATListResponse.model_validate(response)
 
     def revoke_pat(self, jti: str) -> Dict[str, Any]:
+        """Revoke one of the calling member's personal access tokens.
+
+        Takes effect immediately, so anything still presenting the token
+        stops being able to authenticate.
+
+        Args:
+            jti: JWT identifier of the token to revoke.
+
+        Returns:
+            Dict[str, Any]: The platform's revocation response.
+        """
         return self.client.delete(f"/auth/pats/{jti}")
 
     # --------------------------------------------------------------------- #
     # Session administration
     # --------------------------------------------------------------------- #
     def purge_sessions(self, payload: SessionPurgeRequest) -> SessionPurgeResponse:
+        """Revoke every session belonging to the named subjects.
+
+        Signs the subjects out everywhere rather than from one device, so the
+        blast radius is every place they are currently signed in.
+
+        Args:
+            payload: Which subjects to purge.
+
+        Returns:
+            SessionPurgeResponse: How many sessions were revoked.
+        """
         response = self.client.post(
             "/auth/sessions/purge",
             json=payload.model_dump(),
@@ -132,22 +174,58 @@ class AuthService(BaseService):
         return SessionPurgeResponse.model_validate(response)
 
     def delete_session(self, session_id: str) -> Dict[str, Any]:
+        """Revoke one session, signing out that device only.
+
+        Args:
+            session_id: Identifier of the session to revoke.
+
+        Returns:
+            Dict[str, Any]: The platform's revocation response.
+        """
         return self.client.delete(f"/auth/sessions/{session_id}")
 
     # --------------------------------------------------------------------- #
     # Identity provider lifecycle
     # --------------------------------------------------------------------- #
     def list_identity_providers(self) -> IdentityProviderListResponse:
+        """List every registered identity provider, including disabled ones.
+
+        Returns:
+            IdentityProviderListResponse: The configured providers.
+        """
         response = self.client.get("/auth/idp/providers")
         return IdentityProviderListResponse.model_validate(response)
 
     def list_public_identity_providers(self) -> IdentityProviderListResponse:
+        """List the enabled identity providers a login page may offer.
+
+        The public view of the provider list: enabled providers only, and no
+        client secrets. Use :meth:`list_identity_providers` for the
+        administrative view, which also reports disabled providers.
+
+        Returns:
+            IdentityProviderListResponse: Alias, provider id, enabled flag and
+            display name for each provider a user can sign in with.
+        """
         response = self.client.get("/auth/idp/public/providers")
         return IdentityProviderListResponse.model_validate(response)
 
     def register_identity_provider(
         self, payload: RegisterIdPRequest
     ) -> IdentityProviderOperationResponse:
+        """Register an external identity provider, or update it if the alias exists.
+
+        Writes the provider into Keycloak, so it changes who can sign in to
+        the platform. Registering an alias that is already present replaces
+        its stored configuration.
+
+        Args:
+            payload: Provider configuration — alias, provider id, endpoints
+                and client credentials.
+
+        Returns:
+            IdentityProviderOperationResponse: The result of the registration.
+        """
         response = self.client.post(
             "/auth/idp/register",
             json=payload.model_dump(exclude_none=True),
@@ -159,6 +237,15 @@ class AuthService(BaseService):
         alias: str,
         payload: RegisterIdPRequest,
     ) -> IdentityProviderOperationResponse:
+        """Replace an identity provider's stored configuration wholesale.
+
+        Args:
+            alias: Alias of the provider to update.
+            payload: The configuration to store in place of the current one.
+
+        Returns:
+            IdentityProviderOperationResponse: The update result.
+        """
         response = self.client.put(
             f"/auth/idp/{alias}",
             json=payload.model_dump(exclude_none=True),
@@ -170,6 +257,18 @@ class AuthService(BaseService):
         alias: str,
         payload: ToggleIdPRequest,
     ) -> IdentityProviderOperationResponse:
+        """Enable or disable an identity provider without removing it.
+
+        Disabling stops new sign-ins through the provider while keeping its
+        configuration, which is the reversible half of delete.
+
+        Args:
+            alias: Alias of the provider to toggle.
+            payload: Whether the provider should be enabled.
+
+        Returns:
+            IdentityProviderOperationResponse: The toggle result.
+        """
         response = self.client.patch(
             f"/auth/idp/{alias}",
             json=payload.model_dump(),
@@ -177,6 +276,17 @@ class AuthService(BaseService):
         return IdentityProviderOperationResponse.model_validate(response)
 
     def delete_identity_provider(self, alias: str) -> IdentityProviderOperationResponse:
+        """Remove an identity provider, ending sign-in through it.
+
+        Members who authenticate only through this provider lose their route
+        in; check for dependants before calling it.
+
+        Args:
+            alias: Alias of the provider to remove.
+
+        Returns:
+            IdentityProviderOperationResponse: The removal result.
+        """
         response = self.client.delete(f"/auth/idp/{alias}")
         return IdentityProviderOperationResponse.model_validate(response)
 
@@ -184,21 +294,53 @@ class AuthService(BaseService):
     # Local user management
     # --------------------------------------------------------------------- #
     def list_users(self) -> list[LocalUserResponse]:
+        """List every local user account on the platform.
+
+        Returns:
+            list[LocalUserResponse]: The local accounts and their status.
+        """
         response = self.client.get("/auth/users/")
         return [LocalUserResponse.model_validate(user) for user in response]
 
     def get_user(self, user_id: UUID) -> LocalUserResponse:
+        """Fetch one local user account by identifier.
+
+        Args:
+            user_id: Identifier of the account.
+
+        Returns:
+            LocalUserResponse: The account's details.
+        """
         response = self.client.get(f"/auth/users/{user_id}")
         return LocalUserResponse.model_validate(response)
 
     def create_local_user(self, payload: LocalUserCreateRequest) -> LocalUserResponse:
+        """Create a local user account that signs in without a provider.
+
+        Args:
+            payload: Username, password and role for the new account.
+
+        Returns:
+            LocalUserResponse: The created account.
+        """
         response = self.client.post(
             "/auth/users/local",
             json=payload.model_dump(exclude_none=True),
         )
         return LocalUserResponse.model_validate(response)
 
-    def update_user(self, user_id: UUID, payload: LocalUserUpdateRequest) -> LocalUserResponse:
+    def update_user(
+        self, user_id: UUID, payload: LocalUserUpdateRequest
+    ) -> LocalUserResponse:
+        """Update a local user account's details or role.
+
+        Args:
+            user_id: Identifier of the account to update.
+            payload: Fields to change.
+
+        Returns:
+            LocalUserResponse: The account as it now stands.
+        """
         response = self.client.put(
             f"/auth/users/{user_id}",
             json=payload.model_dump(exclude_none=True),
@@ -206,6 +348,14 @@ class AuthService(BaseService):
         return LocalUserResponse.model_validate(response)
 
     def delete_user(self, user_id: UUID) -> LocalUserResponse:
+        """Delete a local user account and end its access.
+
+        Args:
+            user_id: Identifier of the account to delete.
+
+        Returns:
+            LocalUserResponse: The account as it was before deletion.
+        """
         response = self.client.delete(f"/auth/users/{user_id}")
         return LocalUserResponse.model_validate(response)
 
@@ -214,6 +364,18 @@ class AuthService(BaseService):
         user_id: UUID,
         payload: LocalUserPasswordResetRequest,
     ) -> LocalUserResponse:
+        """Set another member's password as an administrator.
+
+        Distinct from ``change_my_password``: this one acts on someone else's
+        account and does not require their current password.
+
+        Args:
+            user_id: Identifier of the account whose password is being set.
+            payload: The new password.
+
+        Returns:
+            LocalUserResponse: The affected account.
+        """
         response = self.client.post(
             f"/auth/users/{user_id}/password",
             json=payload.model_dump(),
@@ -224,6 +386,17 @@ class AuthService(BaseService):
         self,
         payload: LocalUserPasswordChangeRequest,
     ) -> PasswordChangeResponse:
+        """Change the calling member's own password.
+
+        Requires the current password, which is what separates it from the
+        administrative ``reset_user_password``.
+
+        Args:
+            payload: The current and replacement passwords.
+
+        Returns:
+            PasswordChangeResponse: The outcome of the change.
+        """
         try:
             response = self.client.post(
                 "/auth/users/me/password",

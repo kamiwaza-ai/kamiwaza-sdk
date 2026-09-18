@@ -83,7 +83,7 @@ class ModelService(BaseService,
 
     def create_model(self, model: CreateModel) -> Model:
         """
-        Create a new model.
+        Register a model in the catalogue without downloading it.
         
         Args:
             model (CreateModel): The model object to create.
@@ -197,7 +197,7 @@ class ModelService(BaseService,
 
     def delete_model(self, model_id: Union[str, UUID]) -> dict:
         """
-        Delete a specific model by its ID.
+        Delete a model, with its configurations and downloaded files.
         
         Args:
             model_id (Union[str, UUID]): The ID of the model to delete.
@@ -253,12 +253,38 @@ class ModelService(BaseService,
     # Guide helpers --------------------------------------------------
 
     def list_guides(self) -> List[ModelGuide]:
+        """List the model guides describing recommended configurations.
+
+        Returns:
+            List[ModelGuide]: Every guide entry the platform holds.
+        """
         response = self.client.get("/guide/")
         return [ModelGuide.model_validate(item) for item in response]
 
     def import_guides(self, *, replace: bool = False) -> dict:
+        """Import model guides from the platform's bundled guide file.
+
+        Loads the entries the platform ships in ``guide/default/models.json``
+        and writes them into the guide table.
+
+        Args:
+            replace: When True, every existing guide is deleted before the
+                import runs. Leave it False to add to what is already there.
+
+        Returns:
+            dict: The platform's import report.
+        """
         params = {"replace": replace} if replace else None
         return self.client.post("/guide/import", params=params)
 
     def refresh_guides(self) -> dict:
+        """Refresh the stored model guides from Kamiwaza's published guide data.
+
+        Fetches the current guide data from Kamiwaza infrastructure and
+        updates the platform's copy, so recommendations reflect the latest
+        published models.
+
+        Returns:
+            dict: The platform's refresh report.
+        """
         return self.client.post("/guide/refresh")

@@ -64,7 +64,7 @@ class ExtensionService(BaseService):
             raise
 
     def create_extension(self, request: CreateExtension) -> Extension:
-        """Create a new KamiwazaExtension CR.
+        """Create an extension custom resource on the cluster.
 
         Args:
             request: Extension specification.
@@ -128,7 +128,7 @@ class ExtensionService(BaseService):
             raise
 
     def delete_extension(self, name: str) -> bool:
-        """Delete an extension by name.
+        """Delete an extension and stop the workloads it runs.
 
         Args:
             name: CR name of the extension.

@@ -1,13 +1,17 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import TYPE_CHECKING, Any, List, Union
 from uuid import UUID
-from ...schemas.models.model import Model
 from ...schemas.models.model_file import ModelFile, CreateModelFile
 from ...schemas.models.model_search import HubModelFileSearch
 
 
 class ModelFileMixin:
     """Mixin for model file operations."""
-    
+
+    # Supplied by BaseService once the mixin is composed into ModelService;
+    # declared here so the calls below type-check, matching ModelDownloadMixin.
+    if TYPE_CHECKING:
+        client: Any
+
     def get_model_memory_usage(self, model_id: Union[str, UUID]) -> int:
         """
         Get the memory usage of a model.
@@ -28,7 +32,7 @@ class ModelFileMixin:
     
     def delete_model_file(self, model_file_id: Union[str, UUID]) -> dict:
         """
-        Delete a model file by its ID.
+        Delete one downloaded model file, leaving the model registered.
         
         Args:
             model_file_id (Union[str, UUID]): The ID of the model file to delete.
@@ -89,7 +93,7 @@ class ModelFileMixin:
     
     def list_model_files(self) -> List[ModelFile]:
         """
-        List all model files.
+        List every file registered against catalogued models.
         
         Returns:
             List[ModelFile]: A list of all model file objects.
@@ -99,7 +103,7 @@ class ModelFileMixin:
     
     def create_model_file(self, model_file: CreateModelFile) -> ModelFile:
         """
-        Create a new model file.
+        Register one file belonging to a catalogued model.
         
         Args:
             model_file (CreateModelFile): The model file object to create.

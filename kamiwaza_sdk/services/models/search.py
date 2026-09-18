@@ -1,11 +1,20 @@
-from typing import List, Optional, Dict, Any, Union, Set
-from uuid import UUID
+from typing import TYPE_CHECKING, Any, List, Optional
 from ...schemas.models.model import Model
 from ...schemas.models.model_search import ModelSearchRequest, ModelSearchResponse, HubModelFileSearch
 
 
 class ModelSearchMixin:
     """Mixin for model search functionality."""
+
+    # The host class supplies these; this mixin only uses them. Same
+    # declaration as ModelDownloadMixin in downloads.py, for the same reason:
+    # a mixin read on its own has no attributes, so without this every use of
+    # them is an error the moment this file is type-checked.
+    if TYPE_CHECKING:
+        client: Any
+        quant_manager: Any
+
+        def search_hub_model_files(self, *args: Any, **kwargs: Any) -> List[Any]: ...
     
     def search_models(self, query: str, exact: bool = False, limit: int = 100, 
                      hubs_to_search: Optional[List[str]] = None, 

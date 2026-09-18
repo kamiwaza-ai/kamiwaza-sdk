@@ -34,11 +34,13 @@ class ContextService(BaseService):
     # Health
 
     def health(self) -> dict[str, Any]:
+        """Report whether the context service is answering requests."""
         return self.client.get(f"{self._BASE_PATH}/health")
 
     # VectorDB lifecycle + operations
 
     def list_vectordbs(self, *, workroom_id: str | None = None) -> list[dict[str, Any]]:
+        """List the vector databases visible in a workroom."""
         return self.client.get(
             f"{self._BASE_PATH}/vectordbs",
             headers=self._merge_headers(workroom_id=workroom_id),
@@ -50,6 +52,7 @@ class ContextService(BaseService):
         *,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Fetch one vector database's configuration and status."""
         return self.client.get(
             f"{self._BASE_PATH}/vectordbs/{vectordb_id}",
             params=self._workroom_params(workroom_id),
@@ -65,6 +68,7 @@ class ContextService(BaseService):
         workroom_id: str | None = None,
         replicas: int = 1,
     ) -> dict[str, Any]:
+        """Provision a vector database inside a workroom."""
         payload: dict[str, Any] = {
             "name": name,
             "engine": engine,
@@ -88,6 +92,7 @@ class ContextService(BaseService):
         replicas: int | None = None,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Update a vector database's configuration or replica count."""
         payload: dict[str, Any] = {}
         if config is not None:
             payload["config"] = config
@@ -107,6 +112,7 @@ class ContextService(BaseService):
         replicas: int,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Change how many replicas serve a vector database."""
         return self.client.post(
             f"{self._BASE_PATH}/vectordbs/{vectordb_id}/scale",
             json={"replicas": replicas},
@@ -120,6 +126,7 @@ class ContextService(BaseService):
         *,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Delete a vector database and every vector stored in it."""
         return self.client.delete(
             f"{self._BASE_PATH}/vectordbs/{vectordb_id}",
             params=self._workroom_params(workroom_id),
@@ -137,6 +144,7 @@ class ContextService(BaseService):
         output_fields: Optional[list[str]] = None,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Search a collection for the nearest vectors to those given."""
         payload: dict[str, Any] = {
             "collection_name": collection_name,
             "vectors": vectors,
@@ -163,6 +171,7 @@ class ContextService(BaseService):
         output_fields: Optional[list[str]] = None,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Search a collection outside any workroom scope, naming the database."""
         payload: dict[str, Any] = {
             "vectordb_id": vectordb_id,
             "collection_name": collection_name,
@@ -190,6 +199,7 @@ class ContextService(BaseService):
         create_if_missing: bool = True,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Insert vectors and their metadata into a collection."""
         payload: dict[str, Any] = {
             "collection_name": collection_name,
             "vectors": vectors,
@@ -215,6 +225,7 @@ class ContextService(BaseService):
         create_if_missing: bool = True,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Insert vectors outside any workroom scope, naming the database."""
         payload: dict[str, Any] = {
             "vectordb_id": vectordb_id,
             "collection_name": collection_name,
@@ -232,7 +243,10 @@ class ContextService(BaseService):
 
     # Ontology lifecycle + operations
 
-    def list_ontologies(self, *, workroom_id: str | None = None) -> list[dict[str, Any]]:
+    def list_ontologies(
+        self, *, workroom_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List the knowledge ontologies defined in a workroom."""
         return self.client.get(
             f"{self._BASE_PATH}/ontologies",
             headers=self._merge_headers(workroom_id=workroom_id),
@@ -244,6 +258,7 @@ class ContextService(BaseService):
         *,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Fetch one ontology's definition and current state."""
         return self.client.get(
             f"{self._BASE_PATH}/ontologies/{ontology_id}",
             params=self._workroom_params(workroom_id),
@@ -258,6 +273,7 @@ class ContextService(BaseService):
         config: Optional[dict[str, Any]] = None,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Create a knowledge ontology to hold entities and episodes."""
         payload: dict[str, Any] = {"name": name, "backend": backend}
         if config is not None:
             payload["config"] = config
@@ -275,6 +291,7 @@ class ContextService(BaseService):
         *,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Delete an ontology and the knowledge recorded in it."""
         return self.client.delete(
             f"{self._BASE_PATH}/ontologies/{ontology_id}",
             params=self._workroom_params(workroom_id),
@@ -289,6 +306,7 @@ class ContextService(BaseService):
         messages: list[dict[str, Any]],
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Record a piece of knowledge as an episode in an ontology."""
         return self.client.post(
             f"{self._BASE_PATH}/ontologies/{ontology_id}/knowledge",
             json={"group_id": group_id, "messages": messages},
@@ -306,6 +324,7 @@ class ContextService(BaseService):
         properties: Optional[dict[str, Any]] = None,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Add an entity node to an ontology's knowledge graph."""
         payload: dict[str, Any] = {
             "group_id": group_id,
             "name": name,
@@ -330,6 +349,7 @@ class ContextService(BaseService):
         max_results: int = 10,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Search an ontology's knowledge for facts matching a query."""
         return self.client.post(
             f"{self._BASE_PATH}/ontologies/{ontology_id}/search",
             json={"query": query, "group_ids": group_ids, "max_results": max_results},
@@ -345,6 +365,7 @@ class ContextService(BaseService):
         max_facts: int = 10,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Retrieve the facts an ontology holds that are relevant to a query."""
         return self.client.post(
             f"{self._BASE_PATH}/ontologies/{ontology_id}/memory",
             json={"group_id": group_id, "query": query, "max_facts": max_facts},
@@ -359,6 +380,7 @@ class ContextService(BaseService):
         last_n: int = 10,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Fetch the most recent episodes recorded in one ontology group."""
         return self.client.get(
             f"{self._BASE_PATH}/ontologies/{ontology_id}/episodes/{group_id}",
             params={"last_n": last_n},
@@ -372,6 +394,7 @@ class ContextService(BaseService):
         group_id: str,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Delete one group from an ontology, with the knowledge it holds."""
         return self.client.delete(
             f"{self._BASE_PATH}/ontologies/{ontology_id}/groups/{group_id}",
             headers=self._merge_headers(workroom_id=workroom_id),
@@ -383,6 +406,7 @@ class ContextService(BaseService):
         *,
         workroom_id: str | None = None,
     ) -> dict[str, Any]:
+        """Report whether one ontology is queryable and healthy."""
         return self.client.get(
             f"{self._BASE_PATH}/ontologies/{ontology_id}/health",
             headers=self._merge_headers(workroom_id=workroom_id),
@@ -396,6 +420,7 @@ class ContextService(BaseService):
         workroom_id: str,
         vectordb_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        """List the vector collections available in a workroom."""
         params: dict[str, Any] | None = None
         if vectordb_id is not None:
             params = {"vectordb_id": vectordb_id}
@@ -414,6 +439,7 @@ class ContextService(BaseService):
         description: str | None = None,
         vectordb_id: str | None = None,
     ) -> dict[str, Any]:
+        """Create a vector collection to hold embeddings of one shape."""
         payload: dict[str, Any] = {"name": name, "dimension": dimension}
         if description is not None:
             payload["description"] = description
@@ -432,6 +458,7 @@ class ContextService(BaseService):
         collection_name: str,
         vectordb_id: str | None = None,
     ) -> dict[str, Any]:
+        """Fetch one vector collection's definition and statistics."""
         params: dict[str, Any] | None = None
         if vectordb_id is not None:
             params = {"vectordb_id": vectordb_id}
@@ -448,6 +475,7 @@ class ContextService(BaseService):
         collection_name: str,
         vectordb_id: str | None = None,
     ) -> dict[str, Any] | None:
+        """Delete a vector collection and the embeddings inside it."""
         params: dict[str, Any] | None = None
         if vectordb_id is not None:
             params = {"vectordb_id": vectordb_id}
@@ -464,6 +492,7 @@ class ContextService(BaseService):
         files: list[dict[str, Any]],
         config: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        """Start an ingestion pipeline job over a workroom's sources."""
         return self.client.post(
             f"{self._BASE_PATH}/pipelines/",
             json={"files": files, "config": config or {}},
@@ -478,6 +507,7 @@ class ContextService(BaseService):
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
+        """List a workroom's pipeline jobs, filtered by status."""
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if status is not None:
             params["status"] = status
@@ -488,6 +518,7 @@ class ContextService(BaseService):
         )
 
     def get_pipeline_job(self, *, workroom_id: str, job_id: str) -> dict[str, Any]:
+        """Fetch one pipeline job's status and progress."""
         return self.client.get(
             f"{self._BASE_PATH}/pipelines/{job_id}",
             headers=self._merge_headers(workroom_id=workroom_id),
@@ -580,7 +611,7 @@ class ContextService(BaseService):
         )
 
     def list_import_items(self, *, workroom_id: str) -> dict[str, Any]:
-        """List the workroom-wide source-import inventory/history.
+        """List a workroom's source-import inventory and its import history.
 
         Maps to ``GET /context/pipelines/items``.
         """
@@ -681,6 +712,7 @@ class ContextService(BaseService):
         )
 
     def get_supported_file_types(self) -> list[str]:
+        """List the file types the ingestion pipeline can parse."""
         return self.client.get(f"{self._BASE_PATH}/pipelines/supported-types")
 
     def search(
@@ -693,6 +725,7 @@ class ContextService(BaseService):
         score_threshold: float | None = None,
         vectordb_id: str | None = None,
     ) -> dict[str, Any]:
+        """Search a workroom's indexed content and return ranked matches."""
         payload: dict[str, Any] = {"query": query, "top_k": top_k}
         if collection_name is not None:
             payload["collection_name"] = collection_name
@@ -716,6 +749,7 @@ class ContextService(BaseService):
         score_threshold: float = 0.7,
         vectordb_id: str | None = None,
     ) -> dict[str, Any]:
+        """Retrieve passages from a workroom's collections for a query."""
         payload: dict[str, Any] = {
             "query": query,
             "top_k": top_k,
@@ -793,6 +827,7 @@ class ContextService(BaseService):
         collection_name: str | None = None,
         source_urn: str | None = None,
     ) -> dict[str, Any]:
+        """Upload a file into a workroom for the pipeline to ingest."""
         params: dict[str, Any] = {}
         if collection_name is not None:
             params["collection_name"] = collection_name
@@ -977,7 +1012,7 @@ class ContextService(BaseService):
         template_name: str = "tool-omniparse",
         config: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Provision an OmniParse runtime instance.
+        """Provision an OmniParse runtime for parsing uploaded documents.
 
         ``name`` is the instance name; ``template_name`` selects the App Garden
         tool template (defaults to ``tool-omniparse``); ``config`` carries
@@ -1018,7 +1053,7 @@ class ContextService(BaseService):
         *,
         workroom_id: str,
     ) -> dict[str, Any]:
-        """Delete an OmniParse runtime instance."""
+        """Delete an OmniParse runtime and stop its parsing capacity."""
         return self.client.delete(
             f"{self._BASE_PATH}/omniparses/{omniparse_id}",
             headers=self._merge_headers(workroom_id=workroom_id),

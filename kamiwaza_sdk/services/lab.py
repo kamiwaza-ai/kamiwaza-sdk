@@ -7,21 +7,21 @@ from .base_service import BaseService
 
 class LabService(BaseService):
     def list_labs(self) -> List[Lab]:
-        """List all labs."""
+        """List every lab workspace on the platform."""
         response = self.client.get("/lab/labs")
         return [Lab.model_validate(item) for item in response]
 
     def create_lab(self, username: str, resources: Optional[Dict[str, str]] = None) -> Lab:
-        """Create a new lab."""
+        """Create a lab workspace for experimentation."""
         request = CreateLabRequest(username=username, resources=resources)
         response = self.client.post("/lab/labs", json=request.model_dump())
         return LabResponse.model_validate(response).lab
 
     def get_lab(self, lab_id: UUID) -> Lab:
-        """Get a specific lab."""
+        """Fetch one lab workspace by its identifier."""
         response = self.client.get(f"/lab/labs/{lab_id}")
         return LabResponse.model_validate(response).lab
 
     def delete_lab(self, lab_id: UUID) -> None:
-        """Delete a specific lab."""
+        """Delete a lab workspace and the work held in it."""
         self.client.delete(f"/lab/labs/{lab_id}")

@@ -284,7 +284,7 @@ class ConnectorSurfaceMixin:
         *,
         timeout: float = DEFAULT_SURFACE_TIMEOUT_SECONDS,
     ) -> ConnectorNodePage:
-        """Full-text search one connector surface.
+        """Search one connector surface by free text and return a page of nodes.
 
         Only surfaces whose capability declares ``search_supported`` accept
         this; check

@@ -1,0 +1,885 @@
+{
+  "DELETE /apps/app_templates/{}": {
+    "description": "Delete an app template.",
+    "summary": "Delete App Template"
+  },
+  "DELETE /apps/deployment/{}": {
+    "description": "Stop an app deployment.\n\nArgs:\n    deployment_id (UUID): The ID of the deployment to stop.\n\nReturns:\n    bool: True if successfully stopped, False otherwise.",
+    "summary": "Stop Deployment"
+  },
+  "DELETE /auth/idp/{}": {
+    "summary": "Delete Idp"
+  },
+  "DELETE /auth/pats/{}": {
+    "summary": "Revoke My Pat"
+  },
+  "DELETE /auth/sessions/{}": {
+    "summary": "Revoke Session"
+  },
+  "DELETE /auth/tuples": {
+    "summary": "Delete Tuple"
+  },
+  "DELETE /auth/tuples/object": {
+    "summary": "Delete Object Tuples"
+  },
+  "DELETE /auth/users/{}": {
+    "summary": "Delete Local"
+  },
+  "DELETE /catalog/containers/by-urn": {
+    "description": "Delete container by URN using query parameter.",
+    "summary": "Delete Container By Urn"
+  },
+  "DELETE /catalog/containers/by-urn/datasets": {
+    "description": "Remove a dataset from a container by URN using query parameters.",
+    "summary": "Remove Dataset From Container By Urn"
+  },
+  "DELETE /catalog/containers/v2/{}": {
+    "description": "Delete container by URN using regex-based path converter (V2 - RECOMMENDED).\n\nExample: DELETE /catalog/containers/v2/urn:li:container:(urn:li:dataPlatform:s3,/my/bucket/path,PROD)",
+    "summary": "Delete Container V2"
+  },
+  "DELETE /catalog/containers/v2/{}/datasets/{}": {
+    "description": "Remove a dataset from a container using regex-based path converter (V2 - RECOMMENDED).\n\nThis endpoint properly handles both container and dataset URNs with forward slashes.\n\nExample: DELETE /catalog/containers/v2/urn:li:container:(urn:li:dataPlatform:s3,/my/bucket,PROD)/datasets/urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)",
+    "summary": "Remove Dataset From Container V2"
+  },
+  "DELETE /catalog/containers/{}": {
+    "description": "Deletes a container.",
+    "summary": "Delete Container"
+  },
+  "DELETE /catalog/containers/{}/datasets/{}": {
+    "description": "Remove a dataset from a container.",
+    "summary": "Remove Dataset From Container"
+  },
+  "DELETE /catalog/datasets/by-urn": {
+    "description": "Delete dataset by URN using query parameter.",
+    "summary": "Delete Dataset By Urn"
+  },
+  "DELETE /catalog/datasets/v2/{}": {
+    "description": "Delete dataset by URN using regex-based path converter (V2 - RECOMMENDED).\n\nExample: DELETE /catalog/datasets/v2/urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)",
+    "summary": "Delete Dataset V2"
+  },
+  "DELETE /catalog/datasets/{}": {
+    "description": "Delete dataset by URN in path (BACKWARD COMPATIBLE).",
+    "summary": "Delete Dataset"
+  },
+  "DELETE /catalog/secrets/by-urn": {
+    "description": "Delete a secret by URN using query parameter (requires permission).",
+    "summary": "Delete Secret By Urn"
+  },
+  "DELETE /catalog/secrets/v2/{}": {
+    "description": "Delete a secret by URN using regex-based path converter (V2 - RECOMMENDED).\n\nThis endpoint properly handles DataHub URNs with forward slashes.\n\nExample: DELETE /catalog/secrets/v2/urn:li:secret:(urn:li:dataPlatform:file,/var/tmp/secret.key,PROD)",
+    "summary": "Delete Secret V2"
+  },
+  "DELETE /catalog/secrets/{}": {
+    "description": "Delete a secret by URN (requires permission).",
+    "summary": "Delete Secret"
+  },
+  "DELETE /cluster/federations/{}": {
+    "description": "Soft delete a cluster federation (mark as DELETED).\n\nArgs:\n    federation_id: UUID of the federation\n    \nReturns:\n    Success message",
+    "summary": "Delete Federation"
+  },
+  "DELETE /logger/logger/cleanup": {
+    "description": "Clean up old log files.",
+    "summary": "Cleanup Old Logs"
+  },
+  "DELETE /logger/logger/deployments/{}/{}": {
+    "description": "Delete a specific deployment log file.",
+    "summary": "Delete Deployment Log"
+  },
+  "DELETE /model_configs/{}": {
+    "description": "Delete a model configuration by its ID.",
+    "summary": "Delete Model Configuration"
+  },
+  "DELETE /model_files/downloads/cancel_all": {
+    "description": "Cancel all currently downloading model files, optionally filtered by model\n\nArgs:\n    model_id: Optional model ID to filter downloads. If provided, only cancels downloads for that model\n\nReturns:\n    BulkDownloadCancelResponse: Status of the bulk cancellation operation",
+    "summary": "Cancel All Downloads"
+  },
+  "DELETE /model_files/{}": {
+    "description": "Delete a model file by its id.\n\nArgs:\n    model_file_id (UUID): The id of the model file to delete.\n\nReturns:\n    dict: A message indicating the model file was deleted successfully.\n\nRaises:\n    HTTPException: If the model file is not found.",
+    "summary": "Delete Model File"
+  },
+  "DELETE /model_files/{}/download": {
+    "description": "Cancel a currently downloading model file\n\nArgs:\n    model_file_id (UUID): The ID of the model file to cancel\n    \nReturns:\n    ModelDownloadCancelResponse: Status of the cancellation attempt",
+    "summary": "Cancel Model Download"
+  },
+  "DELETE /models/{}": {
+    "summary": "Delete Model Endpoint"
+  },
+  "DELETE /serving/deployment/{}": {
+    "description": "Stop a model deployment.\n\nArgs:\n    deployment_id (UUID): The ID of the deployment to stop.\n    force (Optional[bool]): Whether to force stop the deployment. Defaults to False.\n\nReturns:\n    bool: True if the deployment was successfully stopped, otherwise raises an HTTPException.",
+    "summary": "Stop Deployment"
+  },
+  "DELETE /tool/deployment/{}": {
+    "description": "Stop and remove a tool deployment.\n\nThis will terminate the tool server container(s) and clean up associated resources.\n\nArgs:\n    deployment_id: UUID of the deployment to stop\n    current_user: Authenticated user (injected)\n\nReturns:\n    dict: Success message\n\nRaises:\n    HTTPException: If deployment not found or stop fails",
+    "summary": "Stop Tool Deployment"
+  },
+  "DELETE /tool/tool_templates/{}": {
+    "description": "Delete a tool template (only if no active deployments exist).",
+    "summary": "Delete Tool Template"
+  },
+  "DELETE /vectordb/collections/{}": {
+    "description": "Drop a collection from the vector database.",
+    "summary": "Drop Collection"
+  },
+  "DELETE /vectordb/{}": {
+    "description": "Remove a specific VectorDB instance.",
+    "summary": "Remove Vectordb"
+  },
+  "GET /activity/activities": {
+    "description": "Endpoint to list all recent activities.\n\nReturns:\n    List[Activity]: A list of recent activities.",
+    "summary": "Get Recent Activity"
+  },
+  "GET /apps/app_templates": {
+    "summary": "List App Templates"
+  },
+  "GET /apps/app_templates/{}": {
+    "summary": "Get App Template"
+  },
+  "GET /apps/deployment/{}": {
+    "description": "Get details of a specific app deployment.\n\nArgs:\n    deployment_id (UUID): The ID of the deployment to retrieve.\n\nReturns:\n    AppDeployment: The deployment details.",
+    "summary": "Get Deployment"
+  },
+  "GET /apps/deployment/{}/status": {
+    "description": "Get the status of a specific app deployment.\n\nArgs:\n    deployment_id (UUID): The ID of the deployment.\n\nReturns:\n    str: The current status of the deployment.",
+    "summary": "Get Deployment Status"
+  },
+  "GET /apps/deployments": {
+    "description": "List all app deployments.\n\nReturns:\n    List[AppDeployment]: A list of all app deployments.",
+    "summary": "List Deployments"
+  },
+  "GET /apps/garden/status": {
+    "description": "Get status of garden apps - database vs remote catalog.",
+    "summary": "Get Garden Status"
+  },
+  "GET /apps/images/status/{}": {
+    "description": "Check if images for a template have been pulled.",
+    "summary": "Get Image Status"
+  },
+  "GET /apps/instance/{}": {
+    "description": "Get details of a specific app instance.\n\nArgs:\n    instance_id (UUID): The ID of the instance to retrieve.\n\nReturns:\n    AppInstance: The instance details.",
+    "summary": "Get Instance"
+  },
+  "GET /apps/instances": {
+    "description": "List all app instances, optionally filtered by deployment.\n\nArgs:\n    deployment_id (Optional[UUID]): Optional deployment ID to filter instances.\n\nReturns:\n    List[AppInstance]: List of app instances.",
+    "summary": "List Instances"
+  },
+  "GET /apps/kamiwaza_garden": {
+    "summary": "List Kamiwaza App Garden"
+  },
+  "GET /apps/remote/apps": {
+    "description": "List available remote app templates.",
+    "summary": "List Remote Apps"
+  },
+  "GET /apps/remote/status": {
+    "description": "Get status of remote templates - new available, updates available, etc.",
+    "summary": "Get Remote Template Status"
+  },
+  "GET /auth": {
+    "description": "Root endpoint for auth service.",
+    "summary": "Root"
+  },
+  "GET /auth/callback": {
+    "description": "OIDC callback handler. Exchanges authorization code for tokens,\nsets auth cookie, and redirects user to Kamiwaza UI.\n\nThis endpoint should be configured as a redirect URI in Keycloak.",
+    "summary": "Oidc Callback"
+  },
+  "GET /auth/health": {
+    "description": "Health check endpoint.",
+    "summary": "Health"
+  },
+  "GET /auth/idp/providers": {
+    "summary": "List Idps"
+  },
+  "GET /auth/idp/public/providers": {
+    "description": "Public listing of enabled IdPs (no secrets). Useful for login UI.\nReturns alias, providerId, enabled, displayName.",
+    "summary": "List Idps Public"
+  },
+  "GET /auth/jwks": {
+    "description": "Publish Kamiwaza public keys (Lite mode or for PAT/SA in Full).",
+    "summary": "Jwks"
+  },
+  "GET /auth/login": {
+    "description": "Initiate browser-based login by redirecting to Keycloak.\nUses the public URL for browser access.",
+    "summary": "Browser Login"
+  },
+  "GET /auth/logout/front-channel": {
+    "description": "Browser-facing logout redirect that clears Keycloak SSO session.",
+    "summary": "Front Channel Logout"
+  },
+  "GET /auth/mint": {
+    "description": "Mint a development token when dev endpoints are enabled.",
+    "summary": "Mint Dev Token"
+  },
+  "GET /auth/pats": {
+    "summary": "List My Pats"
+  },
+  "GET /auth/users": {
+    "summary": "List Users"
+  },
+  "GET /auth/users/me": {
+    "description": "Return the authenticated user resolved from the bearer token or ForwardAuth headers.",
+    "summary": "Get Current User"
+  },
+  "GET /auth/users/{}": {
+    "summary": "Get User Detail"
+  },
+  "GET /auth/validate": {
+    "description": "Ingress auth validation endpoint for ForwardAuth / ext_authz callers.\n\nCalled by the ingress gateway to authenticate and authorize incoming requests before they reach an upstream service.",
+    "summary": "Validate"
+  },
+  "GET /catalog": {
+    "description": "Provides basic information about the catalog service.",
+    "summary": "Catalog Service Root"
+  },
+  "GET /catalog/containers": {
+    "description": "List containers, optionally filtering by query.",
+    "summary": "List Containers"
+  },
+  "GET /catalog/containers/by-urn": {
+    "description": "Get container by URN using query parameter.",
+    "summary": "Get Container By Urn"
+  },
+  "GET /catalog/containers/v2/{}": {
+    "description": "Get container by URN using regex-based path converter (V2 - RECOMMENDED).\n\nExample: GET /catalog/containers/v2/urn:li:container:(urn:li:dataPlatform:s3,/my/bucket/path,PROD)",
+    "summary": "Get Container V2"
+  },
+  "GET /catalog/containers/{}": {
+    "description": "Get container by URN. Use :path converter for URNs with slashes.",
+    "summary": "Get Container"
+  },
+  "GET /catalog/datasets": {
+    "description": "List datasets, optionally filtering by query or other properties.",
+    "summary": "List Datasets"
+  },
+  "GET /catalog/datasets/by-urn": {
+    "description": "Get dataset by URN using query parameter. \n\nRECOMMENDED for complex URNs with forward slashes.\nExample: GET /catalog/datasets/by-urn?urn=urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)",
+    "summary": "Get Dataset By Urn"
+  },
+  "GET /catalog/datasets/by-urn/schema": {
+    "description": "Get schema by URN using query parameter.\n\nRECOMMENDED for complex URNs with forward slashes.\nExample: GET /catalog/datasets/by-urn/schema?urn=urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)",
+    "summary": "Get Schema By Urn"
+  },
+  "GET /catalog/datasets/v2/{}": {
+    "description": "Get dataset by URN using regex-based path converter (V2 - RECOMMENDED).\n\nThis endpoint properly handles DataHub URNs with forward slashes using custom regex matching.\nSupports all URN complexities while maintaining clean RESTful URLs.\n\nExample: GET /catalog/datasets/v2/urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)",
+    "summary": "Get Dataset V2"
+  },
+  "GET /catalog/datasets/v2/{}/schema": {
+    "description": "Get schema by URN using regex-based path converter (V2 - RECOMMENDED).\n\nThis endpoint properly handles DataHub URNs with forward slashes including sub-resources.\n\nExample: GET /catalog/datasets/v2/urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)/schema",
+    "summary": "Get Schema V2"
+  },
+  "GET /catalog/datasets/{}": {
+    "description": "Get dataset by URN in path (BACKWARD COMPATIBLE).\n\nNOTE: URNs with forward slashes should use /by-urn endpoint instead.\nFor path usage, ensure proper URL encoding:\n- Single encode: %2F for /\n- May require double encoding for complex URNs: %252F\n\nExample: GET /catalog/datasets/urn%3Ali%3Adataset%3A(urn%3Ali%3AdataPlatform%3Afile%2Csimple-name%2CPROD)",
+    "summary": "Get Dataset"
+  },
+  "GET /catalog/health": {
+    "description": "Simple health check endpoint.",
+    "summary": "Health Check"
+  },
+  "GET /catalog/secrets": {
+    "description": "List secrets the requester has permission to see.",
+    "summary": "List Secrets"
+  },
+  "GET /catalog/secrets/by-urn": {
+    "description": "Get secret metadata by URN using query parameter (requires permission).",
+    "summary": "Get Secret By Urn"
+  },
+  "GET /catalog/secrets/v2/{}": {
+    "description": "Get secret metadata by URN using regex-based path converter (V2 - RECOMMENDED).\n\nThis endpoint properly handles DataHub URNs with forward slashes.\n\nExample: GET /catalog/secrets/v2/urn:li:secret:(urn:li:dataPlatform:file,/var/tmp/secret.key,PROD)",
+    "summary": "Get Secret V2"
+  },
+  "GET /catalog/secrets/{}": {
+    "description": "Get secret metadata by URN (requires permission).",
+    "summary": "Get Secret"
+  },
+  "GET /cluster/cluster/{}": {
+    "summary": "Get Cluster"
+  },
+  "GET /cluster/cluster_capabilities": {
+    "description": "Endpoint to retrieve cluster capabilities for model deployment and platform selection.\n\nReturns hardware information, system type, available platforms, and tool availability\nincluding whether llamacpp is installed and what inference engines are supported.\n\nReturns:\n    Dict[str, Any]: A dictionary containing cluster capabilities information.",
+    "summary": "Get Cluster Capabilities"
+  },
+  "GET /cluster/clusters": {
+    "summary": "List Clusters"
+  },
+  "GET /cluster/federations": {
+    "description": "List all cluster federations with optional filtering.\n\nArgs:\n    skip: Number of records to skip\n    limit: Maximum number of records to return\n    status: Filter by status (PAIRING|PAIRED|DISCONNECTED|DELETED)\n    \nReturns:\n    List of ClusterFederation objects",
+    "summary": "List Federations"
+  },
+  "GET /cluster/federations/{}": {
+    "description": "Get a single cluster federation by ID.\n\nArgs:\n    federation_id: UUID of the federation\n    \nReturns:\n    ClusterFederation object",
+    "summary": "Get Federation"
+  },
+  "GET /cluster/get_hostname": {
+    "description": "Endpoint to provide the hostname to be tested by the client.",
+    "summary": "Cluster Get Hostname"
+  },
+  "GET /cluster/get_running_nodes": {
+    "summary": "Get Running Nodes"
+  },
+  "GET /cluster/hardware": {
+    "summary": "List Hardware"
+  },
+  "GET /cluster/hardware/{}": {
+    "summary": "Get Hardware"
+  },
+  "GET /cluster/location/{}": {
+    "summary": "Get Location"
+  },
+  "GET /cluster/locations": {
+    "summary": "List Locations"
+  },
+  "GET /cluster/node/{}": {
+    "summary": "Get Node By Id"
+  },
+  "GET /cluster/nodes": {
+    "summary": "List Nodes"
+  },
+  "GET /cluster/runtime_config": {
+    "description": "Endpoint to retrieve the runtime configuration of the cluster.\n\nReturns:\n    Dict[str, Any]: A dictionary containing the runtime configuration settings.",
+    "summary": "Get Runtime Config"
+  },
+  "GET /config/config/routing": {
+    "summary": "Get Routing Config"
+  },
+  "GET /embedding/generate/{}": {
+    "description": "Get embedding using specified model configuration",
+    "summary": "Get Embedding"
+  },
+  "GET /embedding/health": {
+    "description": "Health check for embedding service",
+    "summary": "Health Check"
+  },
+  "GET /embedding/providers": {
+    "description": "Get list of available embedding providers",
+    "summary": "Get Providers"
+  },
+  "GET /guide": {
+    "description": "Get all model guide entries.\n\nReturns:\n    List[ModelGuide]: List of all model guide entries.",
+    "summary": "Get Model Guides"
+  },
+  "GET /ingestion/health": {
+    "summary": "Health"
+  },
+  "GET /ingestion/ingest/status/{}": {
+    "summary": "Status"
+  },
+  "GET /logger/logger/deployment/{}/logs": {
+    "description": "Legacy endpoint for backward compatibility with existing UI.\nGet container logs for a specific deployment.",
+    "summary": "Get Deployment Logs Legacy"
+  },
+  "GET /logger/logger/deployment/{}/logs/patterns": {
+    "description": "Legacy endpoint for backward compatibility.\nAnalyze container logs for failure patterns.",
+    "summary": "Get Deployment Log Patterns Legacy"
+  },
+  "GET /logger/logger/deployments/all": {
+    "description": "List all deployment logs across all services.\nThis is the main endpoint for the unified logs viewer UI.",
+    "summary": "List All Deployment Logs"
+  },
+  "GET /logger/logger/deployments/orphaned": {
+    "description": "List all orphaned log files (deployments that no longer exist).",
+    "summary": "List Orphaned Logs"
+  },
+  "GET /logger/logger/deployments/type/{}": {
+    "description": "List all logs for a specific deployment type.\nUses filesystem directory structure for filtering.",
+    "summary": "List Logs By Type"
+  },
+  "GET /logger/logger/deployments/{}/{}": {
+    "description": "Get the content of a specific deployment log.",
+    "summary": "Get Deployment Log Content"
+  },
+  "GET /logger/logger/deployments/{}/{}/patterns": {
+    "description": "Analyze deployment logs for error patterns.",
+    "summary": "Analyze Deployment Patterns"
+  },
+  "GET /logger/logger/engine/{}": {
+    "description": "Legacy endpoint for backward compatibility.\nList available container logs for a specific engine type.",
+    "summary": "List Engine Logs Legacy"
+  },
+  "GET /logger/logger/stats": {
+    "description": "Get storage statistics for all logs.",
+    "summary": "Get Log Statistics"
+  },
+  "GET /model_configs": {
+    "description": "List all model configurations associated with a given model ID.",
+    "summary": "List Model Configurations"
+  },
+  "GET /model_configs/{}": {
+    "description": "Get a model configuration by its ID.",
+    "summary": "Get Model Configuration"
+  },
+  "GET /model_files": {
+    "description": "List all model files.\n\nReturns:\n    List[ModelFile]: A list of all model files.",
+    "summary": "List Model Files"
+  },
+  "GET /model_files/download_status": {
+    "description": "Get the download status of specified model files.",
+    "summary": "Get Model Files Download Status"
+  },
+  "GET /model_files/{}": {
+    "description": "Retrieve a specific model file by its ID.\n\nArgs:\n    model_file_id (UUID): The unique identifier of the model file.\n\nReturns:\n    ModelFile: The requested model file.\n\nRaises:\n    HTTPException: An error if the model file is not found.",
+    "summary": "Get Model File"
+  },
+  "GET /model_files/{}/memory_usage": {
+    "description": "Get the memory usage of a model file.",
+    "summary": "Get Model File Memory Usage"
+  },
+  "GET /models": {
+    "description": "Endpoint to list all models, with an option to include associated files.\n\nArgs:\n    load_files (bool, optional): Hint to the API to include associated files. Defaults to False.\n\nReturns:\n    List[Model]: A list of models, optionally including their files.",
+    "summary": "List Models"
+  },
+  "GET /models/pending_deployments": {
+    "description": "Get all models with pending deployment flags and active downloads for UI state recovery.\n\nThis endpoint is used by the frontend to recover state after page reloads when \ndownload/deploy operations were in progress.\n\nReturns:\n    dict: {\n        \"pending_deployments\": [model_repo_ids],  # Models waiting for deployment\n        \"downloading_models\": [model_repo_ids],   # Models currently downloading\n        \"deployment_flags\": {model_id: flag_value},  # Raw etcd flags\n        \"active_downloads\": [download_info],         # Detailed download info\n        \"total_pending\": int,\n        \"total_downloading\": int\n    }",
+    "summary": "Get Pending Deployments"
+  },
+  "GET /models/{}": {
+    "description": "Get a model by its id.\n\nArgs:\n    model_id (UUID): The id of the model to retrieve.\n\nReturns:\n    Model: The retrieved model.\n\nRaises:\n    HTTPException: If the model is not found.",
+    "summary": "Get Model"
+  },
+  "GET /models/{}/configs": {
+    "description": "Get a list of model configurations for a given model ID.",
+    "summary": "Get a List of Model Configurations for the Model"
+  },
+  "GET /models/{}/deployment_info": {
+    "description": "Get deployment information for a deployed model including engine type and port.\n\nArgs:\n    model_id (UUID): The ID of the model to get deployment info for\n    \nReturns:\n    dict: Deployment information if model is deployed, otherwise {\"deployed\": false}",
+    "summary": "Get Model Deployment Info"
+  },
+  "GET /models/{}/memory_usage": {
+    "description": "Get the memory usage of a model.",
+    "summary": "Get Model Memory Usage"
+  },
+  "GET /news/latest": {
+    "description": "Get the latest news content from the Kamiwaza news API.\nLegacy endpoint for backward compatibility.\n\nReturns:\n    NewsContent: Object containing news content or error message",
+    "summary": "Get Latest News"
+  },
+  "GET /news/quadrants": {
+    "description": "Get the structured news content in quadrant format.\n\nReturns:\n    NewsResponse: Object containing quadrant-structured news data",
+    "summary": "Get News Quadrants"
+  },
+  "GET /ping": {
+    "description": "Simple ping endpoint for liveness testing.",
+    "summary": "Ping"
+  },
+  "GET /prompts/elements/{}": {
+    "description": "Retrieve an element by its ID.\n\n:param element_id: Unique identifier of the element.\n:return: The requested PromptElement model.\n:raises HTTPException: 404 error if the element is not found.",
+    "summary": "Read Element"
+  },
+  "GET /prompts/roles/{}": {
+    "description": "Retrieve a role by its ID.\n\n:param role_id: Unique identifier of the role.\n:return: The requested PromptRole model.\n:raises HTTPException: 404 error if the role is not found.",
+    "summary": "Read Role"
+  },
+  "GET /prompts/systems/{}": {
+    "description": "Retrieve a system by its ID.\n\n:param system_id: Unique identifier of the system.\n:return: The requested PromptSystem model.\n:raises HTTPException: 404 error if the system is not found.",
+    "summary": "Read System"
+  },
+  "GET /prompts/templates/{}": {
+    "description": "Retrieve a template by its ID.\n\n:param template_id: Unique identifier of the template.\n:return: The requested PromptTemplate model.\n:raises HTTPException: 404 error if the template is not found.",
+    "summary": "Read Template"
+  },
+  "GET /retrieval/retrieval/jobs/{}": {
+    "summary": "Get Retrieval Job"
+  },
+  "GET /retrieval/retrieval/jobs/{}/stream": {
+    "summary": "Stream Retrieval Job"
+  },
+  "GET /serving/deployment/{}": {
+    "description": "Get the details of a specific model deployment.\n\nArgs:\n    deployment_id (UUID): The ID of the deployment.\n\nReturns:\n    UIModelDeployment: The details of the specified deployment.",
+    "summary": "Get Deployment"
+  },
+  "GET /serving/deployment/{}/logs": {
+    "description": "Get container logs for a specific deployment.\nReturns captured logs from the inference container with metadata.",
+    "summary": "Get Deployment Logs"
+  },
+  "GET /serving/deployment/{}/logs/patterns": {
+    "description": "Analyze container logs for failure patterns (OOM, CUDA errors, etc.).\n\nThis endpoint returns pattern analysis for informational purposes only.\nIt does NOT update deployment status - that should only be done based on\nactual container/service state, not log analysis.",
+    "summary": "Get Deployment Log Patterns"
+  },
+  "GET /serving/deployment/{}/status": {
+    "description": "Get the status of a specific model deployment.\n\nArgs:\n    deployment_id (UUID): The ID of the deployment.\n\nReturns:\n    ModelDeployment: The status of the specified deployment.",
+    "summary": "Get Deployment Status"
+  },
+  "GET /serving/deployments": {
+    "description": "List all model deployments or filter by model_id if provided.\n\nPerforms an opportunistic health check to ensure deployment statuses are up-to-date\nbefore returning the list, so users see current status without waiting for the\nbackground scheduler.\n\nArgs:\n    model_id (Optional[UUID]): The ID of the model to filter deployments by.\n\nReturns:\n    List[UIModelDeployment]: A list of model deployments with current status.",
+    "summary": "List Deployments"
+  },
+  "GET /serving/health": {
+    "description": "Get the health of all model deployments.",
+    "summary": "Health"
+  },
+  "GET /serving/logs/{}": {
+    "description": "List available container logs for a specific engine type (vllm, llamacpp, etc.).",
+    "summary": "List Engine Logs"
+  },
+  "GET /serving/model_instance/{}": {
+    "description": "Retrieve a specific model instance by its ID.\n\nArgs:\n    instance_id (UUID): The ID of the model instance to retrieve.\n\nReturns:\n    ModelInstance: The model instance if found, otherwise raises a 404 HTTPException.",
+    "summary": "Get Model Instance"
+  },
+  "GET /serving/model_instances": {
+    "description": "List all model instances, optionally filtered by deployment ID.\n\nArgs:\n    deployment_id (Optional[UUID]): The ID of the deployment to filter instances by. Defaults to None.\n\nReturns:\n    List[ModelInstance]: A list of all model instances currently active, optionally filtered by deployment ID.",
+    "summary": "List Model Instances"
+  },
+  "GET /serving/status": {
+    "description": "Get the status of Ray.\nReturns a dictionary with the status of Ray.",
+    "summary": "Get Status"
+  },
+  "GET /tool/deployment/{}": {
+    "description": "Get details of a specific Tool deployment.\n\nArgs:\n    deployment_id: UUID of the deployment\n    current_user: Authenticated user (injected)\n\nReturns:\n    ToolDeployment: Deployment details with URL\n\nRaises:\n    HTTPException: If deployment not found",
+    "summary": "Get Tool Deployment"
+  },
+  "GET /tool/deployment/{}/health": {
+    "description": "Check the health status of a tool deployment.\n\nThis endpoint performs a health check on the specified tool server\nto verify it's running and responding to the tool protocol.\n\nArgs:\n    deployment_id: UUID of the deployment to check\n    current_user: Authenticated user (injected)\n\nReturns:\n    ToolHealthCheck: Health status information",
+    "summary": "Check Tool Health"
+  },
+  "GET /tool/deployments": {
+    "description": "List all Tool deployments.\n\nReturns a list of all active Tool server deployments with their public URLs.\n\nReturns:\n    List[ToolDeployment]: List of Tool deployments",
+    "summary": "List Tool Deployments"
+  },
+  "GET /tool/discover": {
+    "description": "Discover available tool servers and their capabilities.\n\nThis endpoint returns information about all deployed tool servers,\nincluding their capabilities (when available).\n\nReturns:\n    ToolDiscovery: List of available tool servers",
+    "summary": "Discover Tool Servers"
+  },
+  "GET /tool/garden/status": {
+    "description": "Get status of tool templates - database vs remote catalog.",
+    "summary": "Get Tool Garden Status"
+  },
+  "GET /tool/remote/status": {
+    "description": "Get status of remote tool templates - new available, updates available, etc.",
+    "summary": "Get Tool Remote Status"
+  },
+  "GET /tool/remote/tools": {
+    "description": "List available remote tool templates.",
+    "summary": "List Remote Tools"
+  },
+  "GET /tool/templates": {
+    "description": "List tool templates from database (already imported).\n\nReturns only templates that have been imported into the database,\nfiltered to show only tool templates (names starting with \"tool-\").\nTransforms the data to include Tool-specific fields from env_defaults.\n\nReturns:\n    List[Dict]: Imported tool templates with Tool-specific fields",
+    "summary": "List Tool Templates"
+  },
+  "GET /tool/templates/available": {
+    "description": "List available pre-built Tool templates.\n\nReturns a list of templates that can be imported and deployed.\n\nReturns:\n    List[dict]: Available Tool templates",
+    "summary": "List Available Templates"
+  },
+  "GET /vectordb": {
+    "description": "Retrieve all VectorDB instances, optionally filtered by engine.\n\n:param engine: Optional engine type to filter the VectorDB instances.\n:return: List of VectorDB instances.",
+    "summary": "Get Vectordbs"
+  },
+  "GET /vectordb/collections": {
+    "description": "List all collections in the vector database.",
+    "summary": "List Collections"
+  },
+  "GET /vectordb/{}": {
+    "description": "Get a specific VectorDB instance.",
+    "summary": "Get Vectordb"
+  },
+  "GET /whoami": {
+    "description": "Return current user information from headers.",
+    "summary": "Whoami"
+  },
+  "PATCH /auth/idp/{}": {
+    "summary": "Toggle Idp"
+  },
+  "PATCH /catalog/containers/by-urn": {
+    "description": "Update container by URN using query parameter.",
+    "summary": "Update Container By Urn"
+  },
+  "PATCH /catalog/containers/v2/{}": {
+    "description": "Update container by URN using regex-based path converter (V2 - RECOMMENDED).\n\nExample: PATCH /catalog/containers/v2/urn:li:container:(urn:li:dataPlatform:s3,/my/bucket/path,PROD)",
+    "summary": "Update Container V2"
+  },
+  "PATCH /catalog/containers/{}": {
+    "description": "Update an existing container.",
+    "summary": "Update Container"
+  },
+  "PATCH /catalog/datasets/by-urn": {
+    "description": "Update dataset by URN using query parameter.",
+    "summary": "Update Dataset By Urn"
+  },
+  "PATCH /catalog/datasets/v2/{}": {
+    "description": "Update dataset by URN using regex-based path converter (V2 - RECOMMENDED).\n\nExample: PATCH /catalog/datasets/v2/urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)",
+    "summary": "Update Dataset V2"
+  },
+  "PATCH /catalog/datasets/{}": {
+    "description": "Update dataset by URN in path (BACKWARD COMPATIBLE).",
+    "summary": "Update Dataset"
+  },
+  "PATCH /config/config/routing": {
+    "summary": "Patch Routing Config"
+  },
+  "POST /apps/app_templates": {
+    "summary": "Create App Template"
+  },
+  "POST /apps/deploy_app": {
+    "description": "Deploy a new application.\n\nArgs:\n    create_app_request (CreateAppDeployment): The deployment request containing app configuration.\n\nReturns:\n    AppDeployment: The created app deployment details.",
+    "summary": "Deploy App"
+  },
+  "POST /apps/garden/import": {
+    "description": "Import missing garden apps as templates.",
+    "summary": "Import Garden Apps"
+  },
+  "POST /apps/images/pull/{}": {
+    "description": "Pull all images for a template.",
+    "summary": "Pull Template Images"
+  },
+  "POST /apps/remote/sync": {
+    "description": "Import new remote app templates from info.kamiwaza.ai.\n\nArgs:\n    current_user: Authenticated user (injected)\n    sync_request: Optional filter for specific template names\n    stage: Optional stage override (LOCAL/DEV/STAGE/PROD) for support use\n\nReturns:\n    Import results including counts and any errors\n\nRaises:\n    HTTPException: On validation errors or import failures",
+    "summary": "Import New Remote Apps"
+  },
+  "POST /auth/check": {
+    "summary": "Check Access"
+  },
+  "POST /auth/idp/register": {
+    "description": "Register or update an external IdP in Keycloak.",
+    "summary": "Register Idp"
+  },
+  "POST /auth/logout": {
+    "description": "Logout endpoint - revokes tokens with Keycloak, prepares front-channel logout, and clears cookies.",
+    "summary": "Logout"
+  },
+  "POST /auth/pats": {
+    "description": "Create a Personal Access Token for the current user. Returns the JWT once.",
+    "summary": "Create Pat"
+  },
+  "POST /auth/refresh": {
+    "description": "Refresh access token using refresh token.",
+    "summary": "Refresh Token"
+  },
+  "POST /auth/sessions/purge": {
+    "summary": "Purge Subject Sessions"
+  },
+  "POST /auth/token": {
+    "description": "Login endpoint - proxies to Keycloak for authentication.\nReturns Keycloak's RS256 tokens directly.",
+    "summary": "Login"
+  },
+  "POST /auth/tuples": {
+    "summary": "Upsert Tuple"
+  },
+  "POST /auth/users/local": {
+    "summary": "Create Local"
+  },
+  "POST /auth/users/me/password": {
+    "summary": "Change My Password"
+  },
+  "POST /auth/users/{}/password": {
+    "summary": "Reset Password"
+  },
+  "POST /auth/validate": {
+    "description": "Ingress auth validation endpoint for ForwardAuth / ext_authz callers.\n\nCalled by the ingress gateway to authenticate and authorize incoming requests before they reach an upstream service.",
+    "summary": "Validate"
+  },
+  "POST /catalog/containers": {
+    "description": "Create a new container.",
+    "summary": "Create Container"
+  },
+  "POST /catalog/containers/by-urn/datasets": {
+    "description": "Add a dataset to a container by URN using query parameters.",
+    "summary": "Add Dataset To Container By Urn"
+  },
+  "POST /catalog/containers/v2/{}/datasets": {
+    "description": "Add a dataset to a container using regex-based path converter (V2 - RECOMMENDED).\n\nExample: POST /catalog/containers/v2/urn:li:container:(urn:li:dataPlatform:s3,/my/bucket,PROD)/datasets",
+    "summary": "Add Dataset To Container V2"
+  },
+  "POST /catalog/containers/{}/datasets": {
+    "description": "Add a dataset to a container.",
+    "summary": "Add Dataset To Container"
+  },
+  "POST /catalog/datasets": {
+    "description": "Create a new dataset.",
+    "summary": "Create Dataset"
+  },
+  "POST /catalog/secrets": {
+    "description": "Create a new secret. Owner defaults if not provided.",
+    "summary": "Create Secret"
+  },
+  "POST /cluster/cluster": {
+    "summary": "Create Cluster"
+  },
+  "POST /cluster/cluster_federation_reciprocation": {
+    "description": "Handle incoming federation reciprocation from remote cluster.\nThis endpoint is called by remote clusters acknowledging pairing.\n\nArgs:\n    request: FederationReciprocateRequest from remote cluster\n    \nReturns:\n    Success status",
+    "summary": "Handle Reciprocation"
+  },
+  "POST /cluster/disconnect_federation": {
+    "description": "Handle incoming disconnect request from remote cluster.\nThis endpoint is called by remote clusters initiating disconnect.\n\nArgs:\n    request: FederationDisconnectRequest from remote cluster\n    \nReturns:\n    Success status",
+    "summary": "Handle Disconnect Request"
+  },
+  "POST /cluster/federations": {
+    "description": "Create a new cluster federation.\n\nArgs:\n    federation: Federation creation data\n    \nReturns:\n    Created ClusterFederation object",
+    "summary": "Create Federation"
+  },
+  "POST /cluster/federations/{}/disconnect": {
+    "description": "Disconnect a federation gracefully or forcefully.\n\nArgs:\n    federation_id: UUID of the federation to disconnect\n    force: If True, disconnect without waiting for acknowledgment\n    \nReturns:\n    Success message",
+    "summary": "Disconnect Federation"
+  },
+  "POST /cluster/federations/{}/pair": {
+    "description": "Initiate the pairing process for a federation.\n\nArgs:\n    federation_id: UUID of the federation to pair\n    \nReturns:\n    Updated ClusterFederation object",
+    "summary": "Pair Federation"
+  },
+  "POST /cluster/federations/{}/ping": {
+    "description": "Health check a federated cluster.\n\nArgs:\n    federation_id: UUID of the federation to ping\n    \nReturns:\n    Ping status",
+    "summary": "Ping Federation"
+  },
+  "POST /cluster/hardware": {
+    "summary": "Create Hardware"
+  },
+  "POST /cluster/location": {
+    "summary": "Create Location"
+  },
+  "POST /cluster/pair_federation": {
+    "description": "Handle incoming federation pairing request from remote cluster.\nThis endpoint is called by remote clusters initiating pairing.\n\nArgs:\n    request: FederationPairRequest from remote cluster\n    \nReturns:\n    Response with local cluster ID",
+    "summary": "Handle Pair Federation"
+  },
+  "POST /cluster/refresh_hardware": {
+    "description": "Manually refresh hardware information by re-detecting and storing it.\nThis will update the database with the latest hardware detection results.",
+    "summary": "Refresh Hardware"
+  },
+  "POST /embedding/batch": {
+    "description": "Embed chunks using specified model configuration",
+    "summary": "Embed Chunks"
+  },
+  "POST /embedding/chunk": {
+    "description": "Chunk text using specified model configuration",
+    "summary": "Chunk Text"
+  },
+  "POST /embedding/generate": {
+    "description": "Create embedding using specified model configuration",
+    "summary": "Create Embedding"
+  },
+  "POST /guide/import": {
+    "description": "Import model guide data from the default JSON file.\nThis endpoint will load guide/default/models.json and import all entries.\n\nArgs:\n    replace: If True, delete all existing guides before importing. Default is False.\n\nReturns:\n    dict: A message indicating the import status.",
+    "summary": "Import Model Guide"
+  },
+  "POST /guide/refresh": {
+    "description": "Refresh model guide data from external endpoint.\nThis endpoint will fetch the latest guide data from Kamiwaza infrastructure.\n\nReturns:\n    dict: A message indicating the refresh status.",
+    "summary": "Refresh Model Guide"
+  },
+  "POST /ingestion/ingest/emit": {
+    "summary": "Emit"
+  },
+  "POST /ingestion/ingest/jobs": {
+    "summary": "Add Job"
+  },
+  "POST /ingestion/ingest/run": {
+    "summary": "Run Active"
+  },
+  "POST /model_configs": {
+    "description": "Create a new model configuration.",
+    "summary": "Create Model Configuration"
+  },
+  "POST /model_files": {
+    "description": "Create a new model file.\n\nArgs:\n    model_file (CreateModelFile): The model file data to create.\n\nReturns:\n    ModelFile: The created model file.\n\nRaises:\n    HTTPException: An error if there is insufficient disk space to create the model file.",
+    "summary": "Create Model File"
+  },
+  "POST /model_files/search": {
+    "description": "Search for model files in a specific hub based on the given search request.\n\nArgs:\n    request (HubModelFileSearch): The search criteria for model files, including hub, model_id, and version.\n\nReturns:\n    List[ModelFile]: A list of model files that match the search criteria.",
+    "summary": "Search Hub Model Files"
+  },
+  "POST /models": {
+    "description": "Create a new model.\n\nArgs:\n    model (CreateModel): The model to create.\n\nReturns:\n    Model: The newly created model.\n\nRaises:\n    HTTPException: If there is insufficient disk space to create the model.",
+    "summary": "Create Model"
+  },
+  "POST /models/cleanup_stale_deployments": {
+    "description": "Manually clean up stale deployment flags in etcd.\n\nThis endpoint removes deployment flags for models that:\n- Have deployment requested (flag = \"true\")\n- But have no active downloads (is_downloading OR dl_requested_at)\n- And are not currently deployed\n\nReturns:\n    dict: {\n        \"cleaned_count\": int,\n        \"cleaned_flags\": [model_ids],\n        \"message\": str\n    }",
+    "summary": "Cleanup Stale Deployments"
+  },
+  "POST /models/deploy_after_download/{}": {
+    "description": "Check if model downloads are complete and deploy if ready.\n\nArgs:\n    model_key (Union[UUID, str]): The ID or repo_modelId of the model to check and deploy\n    request (Optional[dict]): Optional request body with novice_selected_context and files_to_deploy\n    \nReturns:\n    dict: Deployment status",
+    "summary": "Deploy After Download"
+  },
+  "POST /models/download": {
+    "description": "Download specified files associated with a model\n\nArgs:\n    request (ModelDownloadRequest): A payload specifying model_id, version, hub, and files_to_download\n\nReturns:\n    dict: A dictionary containing the download status of the model files. The dictionary has the following keys:\n        - 'result': A boolean indicating whether the download was successfully initiated or not.\n        - 'message': A string containing a message about the download status.\n        - 'files': A list of modelfile ids being downloaded",
+    "summary": "Download Model"
+  },
+  "POST /models/download_and_deploy": {
+    "description": "Download model files and set deployment flag for automatic deployment after completion.\n\nArgs:\n    request (ModelDownloadRequest): A payload specifying model_id, version, hub, and files_to_download\n    \nReturns:\n    dict: Download status with deployment flag set",
+    "summary": "Download And Deploy Model"
+  },
+  "POST /models/search": {
+    "description": "Search for models based on a given search request.\n\nArgs:\n    request (ModelSearchRequest): The search criteria for models.\n\nReturns:\n    List[Model]: A list of models that match the search criteria.",
+    "summary": "Search Models"
+  },
+  "POST /prompts/elements": {
+    "description": "Create a new element.\n\n:param element: PromptElementCreate schema.\n:return: The created PromptElement model.",
+    "summary": "Create Element"
+  },
+  "POST /prompts/roles": {
+    "description": "Create a new role.\n\n:param role: PromptRoleCreate schema.\n:return: The created PromptRole model.",
+    "summary": "Create Role"
+  },
+  "POST /prompts/systems": {
+    "description": "Create a new system.\n\n:param system: PromptSystemCreate schema.\n:return: The created PromptSystem model.",
+    "summary": "Create System"
+  },
+  "POST /prompts/templates": {
+    "description": "Create a new template.\n\n:param template: PromptTemplateCreate schema.\n:return: The created PromptTemplate model.",
+    "summary": "Create Template"
+  },
+  "POST /retrieval/retrieval/jobs": {
+    "summary": "Create Retrieval Job"
+  },
+  "POST /serving/deploy_model": {
+    "description": "Asynchronously deploy a model based on the provided deployment request.\n\nArgs:\n    create_model_request (CreateModelDeployment): The deployment request containing model configuration.\n\nReturns:\n    Union[UUID, bool]: The UUID of the deployed model or False if deployment failed.",
+    "summary": "Deploy Model"
+  },
+  "POST /serving/estimate_model_vram": {
+    "description": "Estimate the VRAM required for a model deployment. If Ray is initialized, runs estimation\non the node with the model files. Otherwise falls back to local estimation.\n\nLeverages globalizer to distribute to the correct node.\n\nArgs:\n    deployment_request (CreateModelDeployment): The deployment request containing model configuration.\n\nReturns:\n    Dict[str, float]: A dictionary containing the computed VRAM estimate and the highest node VRAM.\n\nRaises:\n    HTTPException: If the model is not found or estimation fails.",
+    "summary": "Estimate Model Vram"
+  },
+  "POST /serving/start": {
+    "description": "Start Ray with the given parameters.\nIf Ray is already running, a RayServiceException is raised.",
+    "summary": "Start Ray"
+  },
+  "POST /tool/deploy": {
+    "description": "Deploy a new Tool server from a Docker image.\n\nThis endpoint creates a new Tool deployment and returns a public HTTPS URL\nthat can be used with any Tool-compatible client.\n\nArgs:\n    request: Deployment configuration including Docker image and environment variables\n    current_user: Authenticated user (injected)\n\nReturns:\n    ToolDeployment: Deployment details including the generated public URL\n\nRaises:\n    HTTPException: If deployment fails",
+    "summary": "Deploy Tool Server"
+  },
+  "POST /tool/deploy-template/{}": {
+    "description": "Deploy a Tool server from a pre-built template.\n\nThis is a convenience endpoint that combines template lookup and deployment.\n\nArgs:\n    template_name: Name of the template (e.g., \"tool-websearch\")\n    name: Name for your deployment instance\n    env_vars: Optional environment variables (e.g., API keys)\n    current_user: Authenticated user (injected)\n\nReturns:\n    ToolDeployment: Deployment details including the generated public URL\n\nExample:\n    POST /tool/deploy-template/tool-websearch\n    {\n        \"name\": \"my-search-tool\",\n        \"env_vars\": {\n            \"TAVILY_API_KEY\": \"your-api-key\"\n        }\n    }",
+    "summary": "Deploy From Template"
+  },
+  "POST /tool/garden/import": {
+    "description": "Import tool templates from remote catalog (not from local file).",
+    "summary": "Import Tool Garden Servers"
+  },
+  "POST /tool/remote/sync": {
+    "description": "Import new remote tool templates from info.kamiwaza.ai.\n\nArgs:\n    sync_request: Optional filter for specific template names\n    current_user: Authenticated user (injected)\n    template_service: Template service (injected)\n    stage: Optional stage override (LOCAL/DEV/STAGE/PROD) for support use\n\nReturns:\n    Import results including counts and any errors\n\nRaises:\n    HTTPException: On validation errors or import failures",
+    "summary": "Import New Remote Tools"
+  },
+  "POST /vectordb": {
+    "summary": "Create Vectordb"
+  },
+  "POST /vectordb/insert_vectors": {
+    "summary": "Insert Vectors"
+  },
+  "POST /vectordb/search_vectors": {
+    "summary": "Search Vectors"
+  },
+  "PUT /apps/app_templates/{}": {
+    "description": "Update a template using API-provided payload data.",
+    "summary": "Update Template"
+  },
+  "PUT /auth/idp/{}": {
+    "summary": "Update Idp"
+  },
+  "PUT /auth/users/{}": {
+    "summary": "Update Local"
+  },
+  "PUT /catalog/datasets/by-urn/schema": {
+    "description": "Update schema by URN using query parameter.",
+    "summary": "Update Schema By Urn"
+  },
+  "PUT /catalog/datasets/v2/{}/schema": {
+    "description": "Update schema by URN using regex-based path converter (V2 - RECOMMENDED).\n\nExample: PUT /catalog/datasets/v2/urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)/schema",
+    "summary": "Update Schema V2"
+  },
+  "PUT /cluster/federations/{}": {
+    "description": "Update a cluster federation.\n\nArgs:\n    federation_id: UUID of the federation\n    updates: Dictionary of fields to update\n    \nReturns:\n    Updated ClusterFederation object",
+    "summary": "Update Federation"
+  },
+  "PUT /cluster/location/{}": {
+    "description": "Update an existing location by its ID.\n\nArgs:\n    location_id (UUID): The unique identifier of the location to update.\n    location (CreateLocation): The new data for the location.\n\nReturns:\n    Location: The updated location object.",
+    "summary": "Update Location"
+  },
+  "PUT /model_configs/{}": {
+    "description": "Update a model configuration by its ID.",
+    "summary": "Update Model Configuration"
+  },
+  "PUT /tool/tool_templates/{}": {
+    "description": "Update an existing tool template (local changes, no remote fetch).",
+    "summary": "Update Tool Template"
+  }
+}

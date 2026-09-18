@@ -126,8 +126,96 @@ include = [
 exclude = ["tests*", "examples*", "kamiwaza_extensions_lib*"]
 
 [tool.setuptools.package-data]
-kamiwaza_sdk = ["py.typed", "validation/schemas/*.schema.json"]
+kamiwaza_sdk = [
+    "py.typed",
+    # The generated description table, not the vendored platform document:
+    # the document is a development artifact the drift gate reads from the
+    # repository root, and only these fields are needed at runtime. See
+    # scripts/regenerate_interface_descriptions.py.
+    "agent_tools/INTERFACE_DESCRIPTIONS.json",
+    "validation/schemas/*.schema.json",
+]
 kamiwaza_extensions = ["templates/**/*", "templates/**/.*", "validators/*.json", "compatibility.json", "agent_guidance.md"]
+
+[tool.ruff.lint]
+# Ruff's own defaults plus pydocstyle. A published method's docstring is the
+# text an agent ranks on when choosing among hundreds of operations, and the
+# text a human reads when approving a destructive one, so its absence is a
+# lint error rather than a style preference. See AGENTS.md, "Agent tools
+# contract", and the MCP server's FR-006h and FR-006i.
+#
+# E4, E7 and E9 rather than all of E, because that IS ruff's default and this
+# section must add the docstring rules without widening anything else. Plain
+# "E" also selects E501 line-length, which the repository has never enforced:
+# selecting it turned several hundred pre-existing long lines into CI failures
+# on any file a change happened to touch, which is churn rather than a gate.
+select = ["E4", "E7", "E9", "F", "D"]
+
+[tool.ruff.lint.pydocstyle]
+# Matches .ai/rules/style.md, which already requires Google style.
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Two separate backlogs, kept apart because they retire differently.
+#
+# 1. D — packages whose published methods still owe a summary line. A tree,
+#    because the backlog is the package: removing an entry is how T116 lands,
+#    one service at a time.
+# 2. F/E — unused imports, f-strings without placeholders and notebook-local
+#    names that predate any lint config in this repository (`origin/main` has
+#    no `[tool.ruff]` section at all, so ruff's default E4/E7/E9/F set has
+#    always failed on them). Every one of these names a single file, so the
+#    ignore covers exactly the errors that were measured in it: a new unused
+#    import in an unlisted file under the same package still fails, and adding
+#    a file to this list is a visible line in a diff rather than a silent
+#    inheritance from a `**` glob. Measured on this branch with
+#    `ruff check --isolated --select F401,F841,F541`, these 11 files carry 69
+#    errors between them; `kamiwaza_sdk/services/**` used to be a tree here and
+#    was hiding 10 more, which are fixed rather than listed.
+#
+# An entry is deleted the moment its file is clean. See AGENTS.md: the gate is
+# not weakened to land a change.
+"kamiwaza_sdk/services/**" = ["D"]
+"kamiwaza_sdk/delegated_workloads/**" = ["D"]
+"kamiwaza_sdk/connectors/**" = ["D"]
+"kamiwaza_sdk/seeding/**" = ["D"]
+"kamiwaza_sdk/schemas/**" = ["D"]
+"kamiwaza_sdk/schemas/cluster.py" = ["D", "F401"]
+"kamiwaza_sdk/schemas/models/downloads.py" = ["D", "F401"]
+"kamiwaza_sdk/schemas/vectordb.py" = ["D", "F401"]
+"kamiwaza_sdk/artifacts/**" = ["D"]
+"kamiwaza_sdk/utils/**" = ["D"]
+"kamiwaza_sdk/utils/download_tracker.py" = ["D", "F401"]
+"kamiwaza_sdk/validation/**" = ["D"]
+"kamiwaza_sdk/client.py" = ["D"]
+"kamiwaza_sdk/authentication.py" = ["D"]
+"kamiwaza_sdk/shared_idp_authentication.py" = ["D"]
+"kamiwaza_sdk/config.py" = ["D"]
+"kamiwaza_sdk/exceptions.py" = ["D"]
+"kamiwaza_sdk/model_selector.py" = ["D"]
+"kamiwaza_sdk/token_store.py" = ["D"]
+"kamiwaza_sdk/cli.py" = ["D"]
+"kamiwaza_sdk/job_runtime.py" = ["D"]
+"kamiwaza_sdk/job_runtime_protocol.py" = ["D"]
+"kamiwaza_client/**" = ["D"]
+"kamiwaza_extensions/**" = ["D"]
+"kamiwaza_extensions/convert_agent/__init__.py" = ["D", "F401"]
+"kamiwaza_extensions/profile_manager.py" = ["D", "F401"]
+"kamiwaza_extensions_lib/**" = ["D"]
+"test_support/**" = ["D"]
+"tests/**" = ["D"]
+"tests/integration/catalog_stack/generate-parquet-data.py" = ["D", "F401", "F541"]
+"tests/unit/extensions/test_config_cmd.py" = ["D", "F401"]
+"tests/unit/extensions/test_connections.py" = ["D", "F401"]
+"tests/unit/extensions/test_profile_manager.py" = ["D", "F401"]
+# Notebooks: names defined in an earlier cell read as undefined, and imports
+# kept for the reader read as unused. Both are artifacts of linting a notebook
+# as one module, not defects in the example, so this one is a pattern over the
+# notebooks rather than a list of files that happen to fail today.
+"examples/**/*.ipynb" = ["D", "E401", "E402", "F401", "F541", "F811", "F821", "F841"]
+"examples/interactive_rag.py" = ["D", "F841"]
+"examples/**" = ["D"]
+"scripts/**" = ["D"]
 
 [tool.mypy]
 python_version = "3.10"
@@ -154,6 +242,10 @@ dev = [
     "cryptography>=50.0.1,<51.0.0",
     "isort>=5.12",
     "ruff>=0.1",
+    # Measures the agent-tools catalog's token cost. Dev-only: the descriptor
+    # layer takes a tokeniser as an argument rather than importing one, so no
+    # SDK consumer inherits this.
+    "tiktoken>=0.7",
     "mypy>=1.0",
     # `requests` ships no inline types, and the SDK type-checks modules that
     # import it directly; without the stubs mypy fails those files on

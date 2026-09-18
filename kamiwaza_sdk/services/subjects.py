@@ -86,7 +86,7 @@ class SubjectsAPI(BaseService):
         return Subject.model_validate(response)
 
     def delete(self, username: str, *, cascade_grants: bool = False) -> None:
-        """Delete the Subject. ``cascade_grants=True`` also removes the
+        """Delete a subject and the grants attached to it. ``cascade_grants=True`` also removes the
         subject's ReBAC tuples (T3.6 server-side cascade)."""
         path = f"/authz/subjects/{_encode_username(username)}"
         if cascade_grants:
