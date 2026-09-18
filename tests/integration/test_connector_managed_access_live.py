@@ -63,13 +63,36 @@ def _require_fields(data: dict, *fields: str) -> None:
         pytest.fail(f"ENG-12433 fixture missing required fields: {', '.join(missing)}")
 
 
+def test_catalog_cleanup_ignores_only_missing_type() -> None:
+    class FakeClient:
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+
+        def delete(self, _path: str) -> None:
+            raise APIError("catalog cleanup failed", status_code=self.status_code)
+
+    _delete_catalog_if_present(FakeClient(404), "sdkverify-test")
+    with pytest.raises(APIError) as failure:
+        _delete_catalog_if_present(FakeClient(500), "sdkverify-test")
+    assert failure.value.status_code == 500
+
+
+def _delete_catalog_if_present(client, connector_type: str) -> None:
+    try:
+        # No typed unregister_type method exists yet in the SDK.
+        client.delete(f"/connectors/catalog/{connector_type}")
+    except APIError as exc:
+        if exc.status_code != 404:
+            raise
+
+
 def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) -> None:
     fixture = _fixture("managed")
-    _require_fields(fixture, "manifest")
     if fixture.get("allow_deployment") is not True:
         pytest.skip(
             "ENG-12433: disposable connector deployment not explicitly approved"
         )
+    _require_fields(fixture, "manifest")
     if "config" not in fixture or not isinstance(fixture["config"], dict):
         pytest.fail("ENG-12433 managed fixture needs an explicit config object")
 
@@ -83,12 +106,11 @@ def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) 
 
     client = request.getfixturevalue("live_kamiwaza_client")
     connector_id = None
-    catalog_created = False
+    catalog_created = True
     try:
         entry = client.connectors.register_type(
             ConnectorCatalogRegister(manifest=manifest)
         )
-        catalog_created = True
         assert entry.connector_type == connector_type
         assert not entry.already_subscribed
 
@@ -148,8 +170,7 @@ def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) 
                 client.connectors.delete(cleanup_id)
         finally:
             if catalog_created:
-                # No typed unregister_type method exists yet in the SDK.
-                client.delete(f"/connectors/catalog/{connector_type}")
+                _delete_catalog_if_present(client, connector_type)
 
 
 def _fetch_digest(client, ref: ConnectorSurfaceRef, item: dict) -> str:
@@ -225,7 +246,7 @@ def test_m365_workroom_and_provider_access(request: pytest.FixtureRequest) -> No
         )
     )
     with pytest.raises(APIError) as denied_catalog:
-        a.connectors.list_surface_catalog(ref_b.workroom_id)
+        a.connectors.list_surface_catalog(ref_b.workroom_id, connected_only=True)
     assert denied_catalog.value.status_code in (403, 404)
 
     items = (
