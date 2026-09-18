@@ -42,8 +42,6 @@ from kamiwaza_sdk.schemas.connectors import (
     ConnectorUpdate,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
-
 
 class _PrivateFixture(dict):
     def __repr__(self) -> str:
@@ -69,6 +67,7 @@ def _require_fields(data: dict, *fields: str) -> None:
         pytest.fail(f"ENG-12433 fixture missing required fields: {', '.join(missing)}")
 
 
+@pytest.mark.unit
 def test_catalog_cleanup_ignores_only_missing_type() -> None:
     class FakeClient:
         def __init__(self, status_code: int) -> None:
@@ -109,6 +108,7 @@ def _verify_until_ready(client, connector_id, *, wait=sleep) -> None:
         wait(3)
 
 
+@pytest.mark.unit
 def test_verification_retries_startup_errors() -> None:
     class FakeConnectors:
         def __init__(self) -> None:
@@ -125,6 +125,7 @@ def test_verification_retries_startup_errors() -> None:
     assert client.connectors.calls == 2
 
 
+@pytest.mark.unit
 def test_verification_retries_unavailable_warmup() -> None:
     class FakeConnectors:
         def __init__(self) -> None:
@@ -156,6 +157,9 @@ def _cleanup_disposable_connector(client, connector_type: str, connector_id) -> 
         _delete_catalog_if_present(client, connector_type)
 
 
+@pytest.mark.integration
+@pytest.mark.live
+@pytest.mark.withoutresponses
 def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) -> None:
     fixture = _fixture("managed")
     if fixture.get("allow_deployment") is not True:
@@ -236,6 +240,7 @@ def _expect_denied(client, ref: ConnectorSurfaceRef, item: dict) -> None:
     assert denied.value.status_code in (403, 404)
 
 
+@pytest.mark.unit
 def test_denied_accepts_typed_authorization_error() -> None:
     from kamiwaza_sdk.exceptions import AuthorizationError
 
@@ -248,6 +253,9 @@ def test_denied_accepts_typed_authorization_error() -> None:
     _expect_denied(client, ref, {"node_id": "item", "request": {"surface": "files"}})
 
 
+@pytest.mark.integration
+@pytest.mark.live
+@pytest.mark.withoutresponses
 def test_m365_workroom_and_provider_access(request: pytest.FixtureRequest) -> None:
     fixture = _fixture("m365")
     _require_fields(
