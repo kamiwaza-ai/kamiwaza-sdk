@@ -13,6 +13,7 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_PASSWORD` | Password for password-auth fallback | unset (falls back to kz-login) |
 | `KAMIWAZA_ROOT` | Deploy checkout or its parent; locates `scripts/kz-login` or `deploy/scripts/kz-login` | sibling `../deploy` checkout |
 | `KAMIWAZA_VERIFY_SSL` | Set `false` for self-signed certs in dev | `true` |
+| `KAMIWAZA_TEST_DISPOSABLE_IDENTITIES` | Set `1` to run the auth evidence tests that create local accounts (`test_auth_admin_live.py`, `test_auth_sessions_live.py`). Accounts these tests create may persist after the run; each is reported as a warning. Run evidence captures with `--tb=short`, default log levels and no HTTP trace: the default `--tb=auto`, `--tb=long`, `--showlocals`, `--fulltrace`, DEBUG logging, and the HTTP tracer (`KAMIWAZA_HTTP_TRACE` or `KAMIWAZA_HTTP_TRACE_FILE`) can print or record credentials from any live test | unset (the tests skip) |
 | `KAMIWAZA_PEER_BASE_URL` | Federation peer cluster base URL (ENG-5784) | unset |
 | `KAMIWAZA_PEER_API_KEY` | API key on the peer cluster (ENG-5784) | unset |
 | `KAMIWAZA_TEST_LLM_REPO` | Explicit required live-test model; must be paired with `KAMIWAZA_TEST_LLM_ENGINE`, overrides inventory selection, and makes readiness/deployment failures fail rather than skip | unset |
