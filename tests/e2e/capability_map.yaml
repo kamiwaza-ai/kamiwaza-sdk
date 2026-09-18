@@ -79,6 +79,11 @@
 #     library skill and verifies it; the model-setting shape probes and the
 #     legacy-body rejection test stay unmapped regardless, since neither
 #     creates a supported custom agent.
+#     test_custom_agent_binds_published_library_skill exercises the missing
+#     create/bind/read-back path, but remains unmapped until it passes on a
+#     disposable canonical `kaizen` instance for the pinned build. The
+#     reachable 0.4.1 `kaizen-next` app is a different contract and cannot
+#     satisfy the SDK's canonical `/skill-bindings` test by name alone.
 #   * test_context_workroom_scope_clients_isolate_vectordb_views — NOT
 #     evidence for workrooms.session-scoping despite its name. Its own
 #     docstring is the accurate one ("Derived SDK clients can carry workroom
