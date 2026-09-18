@@ -53,7 +53,7 @@ class TestScaffolder:
             return_value=MissingBundle(),
         ):
             _runtime_lib_pins.cache_clear()
-            assert _runtime_lib_pins() == (">=0.5,<0.6", ">=0.5 <0.6")
+            assert _runtime_lib_pins() == (">=0.6,<0.7", ">=0.6 <0.7")
 
     def test_next_pin_matches_runtime_and_canary(self):
         """The scaffold pin cannot move without moving the validated gate."""

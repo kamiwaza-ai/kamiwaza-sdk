@@ -18,16 +18,16 @@ from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.registry import model_digest
 
 FEDERATION_PROVIDER_ID = "sdk.federation.shared-idp"
-FEDERATION_PROVIDER_REVISION = "sdk.federation.shared-idp@v1"
+FEDERATION_PROVIDER_REVISION = "sdk.federation.shared-idp@v2"
 FEDERATION_SCENARIO_ID = "sdk.federation.shared-idp/v1"
 
 # These are the stable public case IDs for the nine-case inventory currently
 # exercised by the legacy required_federation_edge suite.  The provider owns
 # these IDs; pytest node names remain an internal SDK implementation detail.
 FEDERATION_CASE_IDS = (
-    "retrieval-clearance-u",
-    "retrieval-clearance-s",
-    "retrieval-clearance-ts",
+    "retrieval-access_tier-public",
+    "retrieval-access_tier-private",
+    "retrieval-access_tier-confidential",
     "retrieval-invalid-tenant-missing-canonical",
     "retrieval-invalid-tenant-legacy-only",
     "retrieval-invalid-tenant-canonical-nondefault",
@@ -113,10 +113,10 @@ def _resolve_candidate(
         "issuer": shared_issuer,
         "realm": realm,
         "persona_usernames": [
-            "fed-clr-u",
-            "fed-clr-s",
-            "fed-clr-ts",
-            "fed-clr-unonboarded",
+            "fed-tier-public",
+            "fed-tier-private",
+            "fed-tier-confidential",
+            "fed-tier-unonboarded",
             "fed-tenant-missing",
             "fed-tenant-legacy-only",
             "fed-tenant-nondefault",

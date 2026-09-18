@@ -112,9 +112,7 @@ def _grant_subject_ids(
     passes whether or not a single relation ever landed. This endpoint reads the
     relationship store itself, so it can tell the difference.
     """
-    rows = _rows(
-        client, f"/authz/resources/{namespace}/grants?object_id={object_id}"
-    )
+    rows = _rows(client, f"/authz/resources/{namespace}/grants?object_id={object_id}")
     return {str((row.get("subject") or {}).get("id") or "") for row in rows}
 
 
@@ -307,18 +305,18 @@ def onboarded_pair(
             # authenticates and requests for themselves (see the loop below).
             "username": f"alice-{suffix}",
             "justification": "Conjunction review for the Q3 collision window.",
-            "attributes": {"clearance": "high", "country": "US"},
+            "attributes": {"access_tier": "high", "country": "US"},
             "grant_object_id": f"live-onboarding-{suffix}-conjunctions",
         },
         {
             "username": f"bob-{suffix}",
             "justification": "Sensor tasking follow-up.",
-            "attributes": {"clearance": "low", "country": "UK"},
+            "attributes": {"access_tier": "low", "country": "UK"},
             "grant_object_id": f"live-onboarding-{suffix}-tasking",
         },
     ]
 
-    from ._mini_clearance import authed_client
+    from ._mini_access_tier import authed_client
 
     for person in people:
         # Each requester drives their OWN session. ENG-9731 returns the claim
@@ -377,12 +375,10 @@ def onboarded_pair(
         # from the receiver. Claiming first returns `{"status": "REQUESTED",
         # "credential": null}` — a legitimate answer to a question asked too
         # early, and easy to misread as a broken mint.
-        mine = _obj(
-            person["client"], "GET", _onboarding_path(initiator_fed_id, "/me")
-        )
-        assert mine.get("status") == "APPROVED", (
-            f"the approval did not reach the requester's own cluster: {mine!r}"
-        )
+        mine = _obj(person["client"], "GET", _onboarding_path(initiator_fed_id, "/me"))
+        assert (
+            mine.get("status") == "APPROVED"
+        ), f"the approval did not reach the requester's own cluster: {mine!r}"
 
         # Claim from the REQUESTER's session, not the admin's. Claiming as
         # admin would be the impersonation ENG-9731 exists to prevent, so a
@@ -423,9 +419,9 @@ class TestPerUserOnboarding:
             for p in onboarded_pair["people"]
         ]
         assert all(subs), f"every credential must carry a subject: {subs!r}"
-        assert len(set(subs)) == len(subs), (
-            f"identity collapse: requesters share a guest subject {subs!r}"
-        )
+        assert len(set(subs)) == len(
+            subs
+        ), f"identity collapse: requesters share a guest subject {subs!r}"
 
     def test_credentials_are_not_shared(self, onboarded_pair: dict[str, Any]) -> None:
         """Distinct subjects would still collapse if the same bearer were handed
@@ -490,9 +486,9 @@ class TestPerUserOnboarding:
             r.get("linked_external_user") for r in rows if r.get("linked_external_user")
         }
         for person in onboarded_pair["people"]:
-            assert person["external_id"] in linked, (
-                f"{person['external_id']} not linked to a guest; allowlist={rows!r}"
-            )
+            assert (
+                person["external_id"] in linked
+            ), f"{person['external_id']} not linked to a guest; allowlist={rows!r}"
 
     def test_claim_token_is_single_use(self, onboarded_pair: dict[str, Any]) -> None:
         """The token is spent on first success, so a leaked token cannot re-fetch
@@ -529,9 +525,9 @@ class TestPerUserOnboarding:
         listed = {r.get("external_id") for r in rows}
         for person in onboarded_pair["people"]:
             assert person["external_id"] in listed, f"queue is missing {person!r}"
-        assert not any(r.get("claim_token") for r in rows), (
-            "the receiver's queue leaked a claim token"
-        )
+        assert not any(
+            r.get("claim_token") for r in rows
+        ), "the receiver's queue leaked a claim token"
 
     def test_denied_request_records_its_reason(
         self,
@@ -549,7 +545,7 @@ class TestPerUserOnboarding:
         `None` from a delegated response made the claim 404 on a token that had
         never existed — which looks like the denial working, and is not.
         """
-        from ._mini_clearance import authed_client
+        from ._mini_access_tier import authed_client
 
         receiver_fed_id = onboarding_federation["receiver_id"]
         initiator_fed_id = onboarding_federation["initiator_id"]
@@ -564,7 +560,7 @@ class TestPerUserOnboarding:
         assert claim_token, f"carol must hold her own claim token: {status!r}"
         external_id = status.get("external_id") or username
 
-        reason = "clearance not verified"
+        reason = "access_tier not verified"
         receiver_request_id = _receiver_request_id(
             receiver_client, receiver_fed_id, external_id
         )
@@ -578,9 +574,9 @@ class TestPerUserOnboarding:
         assert denied.get("denied_reason") == reason
 
         claimed = _claim(carol, initiator_fed_id, claim_token)
-        assert not claimed.get("credential"), (
-            f"a denied request yielded a credential: {claimed!r}"
-        )
+        assert not claimed.get(
+            "credential"
+        ), f"a denied request yielded a credential: {claimed!r}"
 
 
 @pytest.fixture(scope="module")
@@ -603,9 +599,9 @@ def mesh_request(
     )
     assert status.get("status") == "REQUESTED", f"unexpected status: {status!r}"
     external_id = status.get("external_id")
-    assert external_id, (
-        f"the initiator must stamp the caller's identity on the row: {status!r}"
-    )
+    assert (
+        external_id
+    ), f"the initiator must stamp the caller's identity on the row: {status!r}"
     return {
         "initiator_id": fed_id,
         "receiver_id": onboarding_federation["receiver_id"],
@@ -625,9 +621,7 @@ class TestOnboardingOverTheMesh:
         Nothing in this module ever posts this identity to the receiver. If it
         is on the receiver's queue, the signed forward carried it there.
         """
-        rows = _rows(
-            receiver_client, _onboarding_path(mesh_request["receiver_id"])
-        )
+        rows = _rows(receiver_client, _onboarding_path(mesh_request["receiver_id"]))
         arrived = [
             r for r in rows if r.get("external_id") == mesh_request["external_id"]
         ]
@@ -645,15 +639,13 @@ class TestOnboardingOverTheMesh:
         the receiver's queue would let a receiver operator claim the credential
         on that user's behalf.
         """
-        rows = _rows(
-            receiver_client, _onboarding_path(mesh_request["receiver_id"])
-        )
+        rows = _rows(receiver_client, _onboarding_path(mesh_request["receiver_id"]))
         arrived = next(
             r for r in rows if r.get("external_id") == mesh_request["external_id"]
         )
-        assert not arrived.get("claim_token"), (
-            f"receiver queue leaked a claim token: {arrived!r}"
-        )
+        assert not arrived.get(
+            "claim_token"
+        ), f"receiver queue leaked a claim token: {arrived!r}"
 
     def test_the_requester_polls_their_own_cluster(
         self, mesh_request: dict[str, Any], initiator_client: KamiwazaClient
@@ -664,11 +656,13 @@ class TestOnboardingOverTheMesh:
         cluster and nothing else.
         """
         mine = _obj(
-            initiator_client, "GET", _onboarding_path(mesh_request["initiator_id"], "/me")
+            initiator_client,
+            "GET",
+            _onboarding_path(mesh_request["initiator_id"], "/me"),
         )
-        assert mine.get("external_id") == mesh_request["external_id"], (
-            f"/me returned somebody else's request: {mine!r}"
-        )
+        assert (
+            mine.get("external_id") == mesh_request["external_id"]
+        ), f"/me returned somebody else's request: {mine!r}"
 
     def test_the_receivers_decision_reaches_the_requester(
         self,
@@ -682,25 +676,23 @@ class TestOnboardingOverTheMesh:
         direction that cannot be relied on (the receiver may have no route back),
         so ``/me`` refreshes from the receiver when asked.
         """
-        rows = _rows(
-            receiver_client, _onboarding_path(mesh_request["receiver_id"])
-        )
+        rows = _rows(receiver_client, _onboarding_path(mesh_request["receiver_id"]))
         arrived = next(
             r for r in rows if r.get("external_id") == mesh_request["external_id"]
         )
         approved = _obj(
             receiver_client,
             "POST",
-            _onboarding_path(
-                mesh_request["receiver_id"], f"/{arrived['id']}/approve"
-            ),
-            json={"attributes": {"clearance": "high"}, "relations": []},
+            _onboarding_path(mesh_request["receiver_id"], f"/{arrived['id']}/approve"),
+            json={"attributes": {"access_tier": "high"}, "relations": []},
         )
         assert approved.get("status") == "APPROVED", f"approve failed: {approved!r}"
 
         mine = _obj(
-            initiator_client, "GET", _onboarding_path(mesh_request["initiator_id"], "/me")
+            initiator_client,
+            "GET",
+            _onboarding_path(mesh_request["initiator_id"], "/me"),
         )
-        assert mine.get("status") == "APPROVED", (
-            f"the initiator never learned of the approval: {mine!r}"
-        )
+        assert (
+            mine.get("status") == "APPROVED"
+        ), f"the initiator never learned of the approval: {mine!r}"

@@ -1,0 +1,7 @@
+[
+  {"id": "r1", "tier": "PUBLIC", "payload": "public-alpha"},
+  {"id": "r2", "tier": "PUBLIC", "payload": "public-bravo"},
+  {"id": "r3", "tier": "PUBLIC", "payload": "public-charlie"},
+  {"id": "r4", "tier": "PRIVATE", "payload": "private-delta"},
+  {"id": "r5", "tier": "CONFIDENTIAL", "payload": "confidential-echo"}
+]

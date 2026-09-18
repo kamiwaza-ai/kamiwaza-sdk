@@ -1,5 +1,13 @@
 # Changelog — `@kamiwaza-ai/extensions-lib` (TypeScript runtime)
 
+## [0.6.0] — 2026-09-17
+
+Breaking change: identity exposes configured marking levels through
+`X-User-Marking-Level`; Python/JSON uses `marking_level` and TypeScript uses
+`markingLevel`. Deploy with SDK 1.2 and the matching generic platform.
+No default marking vocabulary is embedded in the runtime library.
+
+
 Versions follow semver. Published to npm as a standalone package
 (`@kamiwaza-ai/extensions-lib`) and versioned independently from
 `kamiwaza-sdk`.
@@ -127,7 +135,7 @@ Versions follow semver. Published to npm as a standalone package
 * When the gate is set, all forwarded-auth envelope headers on the
   inbound request are cleared on EVERY path before any synthesized
   values are injected — defends against client-supplied spoofs of
-  fields we don't bridge (e.g. `x-user-system-high`,
+  fields we don't bridge (e.g. `x-user-marking-level`,
   `x-user-workroom-role`). Round-13 review (codex P2): the prior
   implementation skipped sanitization when an inbound `Authorization`
   was set, leaving an envelope-spoof bypass; the fix sanitizes
@@ -165,7 +173,7 @@ Versions follow semver. Published to npm as a standalone package
   a static `className` matching `kamiwaza_extensions/exception_names.json`
   so cross-language error pipelines stay aligned.
 * `Identity` gains 3 missing fields to match the Python contract:
-  `systemHigh`, `workroomRole`, `requestId`. Existing callers reading the
+  `markingLevel`, `workroomRole`, `requestId`. Existing callers reading the
   6-field shape still type-check (TypeScript widens null-allowed fields
   without breaking).
 * Canonical test-vector parity. The TypeScript suite now consumes

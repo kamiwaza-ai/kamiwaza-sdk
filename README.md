@@ -10,7 +10,31 @@ pip install kamiwaza-sdk
 
 > **Naming note:** Install the package as `kamiwaza-sdk`, but import it as `kamiwaza_sdk`. A deprecated `kamiwaza_client` alias remains for older snippets, though new code should prefer `kamiwaza_sdk`.
 
-> **Version compatibility:** This SDK (version 0.5.1+) is incompatible with Kamiwaza versions before 0.5.1. Please ensure you're using the latest version of Kamiwaza.
+## Upgrading to SDK 1.2.0
+
+**Breaking API and identity changes:** deploy SDK **1.2.0**, Python and TypeScript
+extension runtimes **0.6.x**, and the matching generic-markings Core **1.3.0 or
+later** together. A version number alone does not replace qualification of the
+paired build. Existing applications must update removed marking arguments and
+trusted identity fields before upgrading; this is not a drop-in SDK update.
+
+Resource assignments now use a profile-qualified `marking` envelope; responses
+expose the derived `level_id`. Connectors use `level_boundary` and
+`default_marking`, and document indexing uses `marking_text`. Identity uses
+`marking_level` (Python/JSON), `markingLevel` (TypeScript), and the authenticated
+`X-User-Marking-Level` header. Rebuild both identity producers and consumers;
+old signed envelopes are not interchangeable with the new contract.
+
+Markings remain disabled unless explicitly configured on the server. The SDK
+supplies no default level or parser. Omitted update fields remain unchanged;
+explicit null requests removal subject to server validation and authorization.
+Do not translate a display label into an access grant. Offline installations must
+carry the selected provider and its dependencies in the platform delivery media.
+Existing marked databases require a supported conversion or backed-up reinstall;
+this release does not provide automatic historical data migration.
+
+See the [1.2.0 release notes](CHANGELOG.md) and
+[markings API guide](docs/services/markings/README.md) before upgrading.
 
 For deterministic engine validation against an existing cluster, see the
 [strict inference lifecycle provider](docs/validation/inference-lifecycle.md).
@@ -133,7 +157,7 @@ fail loudly at upsert time instead of returning success with empty
 attributes.
 
 ```python
-kz.cluster.declare_attribute("clearance", type="string")
+kz.cluster.declare_attribute("access_tier", type="string")
 kz.cluster.declare_attribute("country",   type="string")
 kz.cluster.declare_attribute("programs",  type="string[]")  # multivalued
 ```
@@ -163,16 +187,16 @@ round-trip, infers multivalued KC entries for list-shaped values, and
 rolls back attribute deltas on partial failure (T3.4).
 
 ```python
-cdr_baker = kz.subjects.upsert(
-    "cdr-baker",
+alex = kz.subjects.upsert(
+    "alex",
     attributes={
-        "clearance": "TS",
+        "access_tier": "CONFIDENTIAL",
         "country": "USA",
-        "programs": ["IRIS", "ARGOS"],   # list → multivalued KC attribute
+        "programs": ["engineering", "operations"],   # list → multivalued KC attribute
     },
-    password="cdr-baker",
+    password="alex",
 )
-print(cdr_baker.id, cdr_baker.attributes["clearance"])  # kc-uuid TS
+print(alex.id, alex.attributes["access_tier"])  # kc-uuid CONFIDENTIAL
 ```
 
 Audit emits `subject_upsert{outcome=success}` on the receiver. A
@@ -219,14 +243,19 @@ print(conjunctions.urn)  # urn:li:dataset:(postgres,conjunctions,PROD)
 
 ### Step 5 — Bind the dataset's attribute gate (M3)
 
+This example uses the unpublished SDK `acme-gates==1.2.0` test fixture. It is
+not included in the installed SDK or supplied as a production gate. Before
+binding, provision and install the exact SDK fixture wheel on the receiver,
+configure its required `access_tier` caller attribute, and provide dataset rows
+with `tier` values `PUBLIC`, `PRIVATE`, or `CONFIDENTIAL`. See the
+[fixture prerequisites and provisioning guide](tests/integration/fixtures/acme-gates/README.md).
+
 ```python
 ds_binding = kz.datasets.set_gate(
     conjunctions.urn,
-    type="kamiwaza_extensions.classified_conjunction_gate.ClassifiedConjunctionGate",
+    type="acme_gates.mini_access_tier_gate.MiniAccessTierGate",
     config={
-        "classification_field": "classification",
-        "releasable_to_field": "releasable_to",
-        "program_compartment_field": "program_compartment",
+        "tier_field": "tier",
     },
 )
 print(ds_binding.dataset_urn, ds_binding.gate_name)
@@ -242,10 +271,10 @@ that only the dataset's owner can rebind the gate (T2.5 follow-up).
 ```python
 # Receiver-side allowlist (same as WS-M1):
 kz.federations["ORION"].users.add(
-    external_id="cdr-baker@lyra-cluster-uuid",
+    external_id="alex@lyra-cluster-uuid",
     initial_tuples=[
         {
-            "subject": "user:cdr-baker@lyra-cluster-uuid",
+            "subject": "user:alex@lyra-cluster-uuid",
             "relation": "viewer",
             "object": "cluster:ORION",
         },
@@ -253,7 +282,7 @@ kz.federations["ORION"].users.add(
 )
 
 # Then attach a ReBAC viewer relation on the dataset (M3 subjects.grants):
-kz.subjects.grants("cdr-baker").create(
+kz.subjects.grants("alex").create(
     object_namespace="dataset",
     object_id=conjunctions.urn,
     relation="viewer",
@@ -277,7 +306,7 @@ result = kz.jobs.run(
     entrypoint="python /workdir/query.py --rows 1000",
 )
 print(result.status, result.audit_actor)
-# SUCCEEDED  cdr-baker@lyra-cluster-uuid
+# SUCCEEDED  alex@lyra-cluster-uuid
 ```
 
 For longer jobs, prefer the async + poll pattern — `submit_async`
@@ -341,7 +370,7 @@ not exceptional, that's data.
 ### Step 8 — Observe audit
 
 The receiver-side audit log shows the job completing as the
-originating user (`cdr-baker@lyra-cluster-uuid`), not as a
+originating user (`alex@lyra-cluster-uuid`), not as a
 system principal. M3 adds two more event types operators can grep for:
 
 - `gate_binding{action: set|clear, kind: execution|attribute}` — every

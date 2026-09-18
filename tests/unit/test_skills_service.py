@@ -54,7 +54,7 @@ def _detail_payload() -> dict:
         "category": "export",
         "trigger": None,
         "inputs": [],
-        "classification": None,
+        "marking": None,
         "status": "draft",
         "tags": ["pdf", "report"],
         "content_checksum": "abc123",
@@ -84,7 +84,7 @@ def _list_payload() -> dict:
                 "description": detail["description"],
                 "category": detail["category"],
                 "status": detail["status"],
-                "classification": detail["classification"],
+                "marking": detail["marking"],
                 "tags": detail["tags"],
                 "content_checksum": detail["content_checksum"],
                 "created_at": detail["created_at"],
@@ -322,12 +322,12 @@ def test_update_skill_metadata_preserves_explicit_none(dummy_client):
 
     service.update_skill_metadata(
         payload["id"],
-        SkillLibraryUpdateRequest(classification=None),
+        SkillLibraryUpdateRequest(marking=None),
     )
 
     method, path, kwargs = client.calls[0]
     assert (method, path) == ("put", f"/skills/{payload['id']}")
-    assert kwargs["json"] == {"classification": None}
+    assert kwargs["json"] == {"marking": None}
 
 
 def test_update_skill_metadata_maps_404(dummy_client):
@@ -466,3 +466,26 @@ def test_update_request_rejects_unknown_fields():
 def test_export_request_rejects_unknown_fields():
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         SkillLibraryExportRequest(skill_ids=[uuid4()], unknown_field="value")
+
+
+@pytest.mark.parametrize("marking", [None, {
+    "profile_id": "commercial", "profile_revision": "1", "level_id": "private",
+    "raw_text": "Company Private", "attributes": {"teams": ["design"]},
+}])
+def test_import_initial_marking_in_multipart_before_persistence(dummy_client, marking):
+    import json
+    from kamiwaza_sdk.schemas.markings import Marking
+    client = dummy_client({("post", "/skills/import"): _detail_payload()})
+    service = SkillsService(client)
+    value = Marking.model_validate(marking) if marking else None
+    service.import_skill_package(filename="skill.zip", file_content=b"source", marking=value)
+    kwargs = client.calls[0][2]
+    assert json.loads(kwargs["data"]["marking"]) == marking
+    assert kwargs["files"]["file"][1] == b"source"
+    assert len(client.calls) == 1
+
+
+def test_import_omitted_marking_does_not_send_null(dummy_client):
+    client = dummy_client({("post", "/skills/import"): _detail_payload()})
+    SkillsService(client).import_skill_package(filename="snapshot.zip", file_content=b"snapshot")
+    assert "data" not in client.calls[0][2]

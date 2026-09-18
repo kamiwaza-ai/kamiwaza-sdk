@@ -1,14 +1,15 @@
-"""Shared fixtures + helpers for the ENG-8325 MiniClearanceGate live tests.
+"""Shared fixtures + helpers for the ENG-8325 MiniAccessTierGate live tests.
 
 Layers 2 (single-cluster) and 3 (two-cluster federated) both prove the
 install -> file-source -> gate-bind -> retrieve-through-gate path end to end
 against a live cluster, using the trivial deterministic fixture:
 
-    5 records [U, U, U, S, TS]  ->  post-gate counts  U:3/2  S:4/1  TS:5/0
+    5 records at three tiers -> post-gate counts PUBLIC:3/2 PRIVATE:4/1 CONFIDENTIAL:5/0
 
-The gate *logic* is covered offline in the kamiwaza repo
-(tests/unit/services/authz/gates/test_mini_clearance_gate.py); these live layers
-exercise the wheel install, the ``platform="file"`` parquet/csv source, the
+The kamiwaza repo covers an analogous gate predicate offline in
+``tests/unit/services/authz/gates/test_mini_access_tier_gate.py``. Its core-local
+fixture has distinct semantics and is not the SDK live fixture artifact. These
+live layers exercise the SDK wheel install, the ``platform="file"`` parquet/csv source, the
 dataset gate-binding, and the server-side gate invocation at retrieval time.
 
 Every live prerequisite is a soft skip (never a hard fail on a contributor box):
@@ -34,15 +35,19 @@ from kamiwaza_sdk.validation.federation_fixture import (
     GATE_NAME,
     GATE_PACKAGE_NAME,
     GATE_PACKAGE_SPEC,
-    KNOWN as SDK_KNOWN,
-    records as sdk_records,
+)
+from kamiwaza_sdk.validation.federation_fixture import KNOWN as SDK_KNOWN
+from kamiwaza_sdk.validation.federation_fixture import records as sdk_records
+from kamiwaza_sdk.validation.federation_gate import (
+    expected_gate_package,
+    validate_gate_package,
 )
 from kamiwaza_sdk.validation.retrieval_diagnostics import (
     diagnostic_lines,
     log_missing_audit_job_state,
 )
 
-WHEEL_NAME = "acme_gates-1.1.0-py3-none-any.whl"
+WHEEL_NAME = "acme_gates-1.2.0-py3-none-any.whl"
 PACKAGE_SPEC = GATE_PACKAGE_SPEC
 
 # FastAPI auth denials are normally a few hundred bytes. Keep enough room for
@@ -61,12 +66,12 @@ class _MeshStreamAPIError(APIError):
     response_truncated: bool
 
 
-# persona clearance -> (included, redacted, allowed classifications)
+# persona access_tier -> (included, redacted, allowed tiers)
 KNOWN: dict[str, tuple[int, int, set[str]]] = {
-    clearance: (included, len(sdk_records()) - included, set(allowed))
-    for clearance, (included, allowed) in SDK_KNOWN.items()
+    access_tier: (included, len(sdk_records()) - included, set(allowed))
+    for access_tier, (included, allowed) in SDK_KNOWN.items()
 }
-_EXACT_FIXTURE_CLEARANCES = frozenset(KNOWN)
+_EXACT_FIXTURE_ACCESS_TIERS = frozenset(KNOWN)
 
 
 def records() -> list[dict[str, Any]]:
@@ -99,7 +104,7 @@ def write_dataset_file(path: Path) -> str:
 
 
 def wheel_and_index() -> Optional[tuple[str, str]]:
-    """(M5_TEST_WHEEL_DIR, M5_TEST_INDEX_URL) iff both set and the 1.1.0 wheel is present."""
+    """(M5_TEST_WHEEL_DIR, M5_TEST_INDEX_URL) iff both set and the 1.2.0 wheel is present."""
     wheel_dir = os.getenv("M5_TEST_WHEEL_DIR", "").strip()
     index_url = os.getenv("M5_TEST_INDEX_URL", "").strip()
     if not wheel_dir or not index_url:
@@ -114,65 +119,56 @@ def _wheel_sha256(wheel_dir: str) -> str:
     return f"sha256:{digest}"
 
 
-def _already_installed(kz: Any) -> bool:
-    """True iff acme-gates is installed with MiniClearanceGate's classpath present.
-
-    The desired end-state is idempotent: the gate package being present (with our
-    classpath) is what setup needs, regardless of how it got there. Checking this
-    first makes the fixture resilient to a package left behind by an interrupted
-    prior run — where an uninstall-first would 409 ``uninstall_blocked`` (an
-    orphaned dataset still binds the gate) and a bare install would 409
-    ``package_exists``.
-    """
-    try:
-        listing = kz.gates.packages.list()
-    except Exception:  # noqa: BLE001 — treat an unreadable listing as not-installed
-        return False
+def _already_installed(kz: Any, expected: dict[str, str]) -> bool:
+    """Reuse only the exact SDK artifact; unreadable inventories abort setup."""
+    listing = kz.gates.packages.list()
     for pkg in getattr(listing, "items", listing) or []:
-        if getattr(pkg, "name", None) == GATE_PACKAGE_NAME and GATE_CLASSPATH in (
-            getattr(pkg, "classpaths", None) or []
-        ):
-            return True
+        if getattr(pkg, "name", None) != GATE_PACKAGE_NAME:
+            continue
+        validate_gate_package(pkg, expected)
+        return True
     return False
 
 
 def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
-    """Ensure acme-gates==1.1.0 is installed and MiniClearanceGate is discoverable.
+    """Install or reuse the exact local fixture wheel before discovering its gate.
 
-    The dataset gate-bind endpoint enforces the classpath allowlist against
-    ``cluster_gate_packages.classpaths`` (populated by the install's discover
-    step), so the package MUST be present before ``set_gate`` — otherwise the
-    bind 403s ``classpath_not_allowed``. Idempotent: if a prior run already
-    installed it (with our classpath) we keep it, since uninstalling it can be
-    refused while an orphaned dataset still binds the gate.
+    Interrupted fixtures are retained only when their complete package identity
+    matches the requested artifact. Different bytes can expose the same classpath
+    with different behavior, so names alone never authorize reuse. Incompatible
+    retained fixtures need explicit isolated-fixture cleanup; this helper never
+    replaces packages or removes their bindings. If metadata or discovery fails
+    after a fresh install, the caller owns explicit isolated-fixture cleanup;
+    this helper has no persistent ownership journal.
     """
-    if not _already_installed(kz):
+    expected = expected_gate_package(PACKAGE_SPEC, _wheel_sha256(wheel_dir))
+    if not _already_installed(kz, expected):
         result = kz.gates.packages.install(
             PACKAGE_SPEC,
-            hash_digest=_wheel_sha256(wheel_dir),
+            hash_digest=expected["hash_digest"],
             index_url=index_url,
         )
-        assert GATE_CLASSPATH in result.package.classpaths, (
-            f"{GATE_CLASSPATH} not recorded in installed classpaths: {result.package.classpaths}"
-        )
+        validate_gate_package(getattr(result, "package", None), expected)
     gate = kz.gates.discover(GATE_CLASSPATH)
     assert gate.name == GATE_NAME
 
 
-# ── clearance personas ──────────────────────────────────────────────────────
+# ── access_tier personas ──────────────────────────────────────────────────────
 
 
-def declare_clearance_attribute(kz: Any) -> None:
-    """Declare the ``clearance`` attribute in the realm vocabulary (idempotent).
+def declare_access_tier_attribute(kz: Any) -> None:
+    """Declare the ``access_tier`` attribute in the realm vocabulary (idempotent).
 
     Required BEFORE binding a gate whose required_attributes() references it, and
     before seeding personas that carry it (ENG-4946)."""
-    kz.cluster.declare_attribute("clearance", type="string")
+    kz.cluster.declare_attribute("access_tier", type="string")
 
 
-def seed_local_persona(kz: Any, username: str, clearance: str) -> None:
-    """Upsert a local subject carrying ``clearance`` (password == username)."""
-    kz.subjects.upsert(username, attributes={"clearance": clearance}, password=username)
+def seed_local_persona(kz: Any, username: str, access_tier: str) -> None:
+    """Upsert a local subject carrying ``access_tier`` (password == username)."""
+    kz.subjects.upsert(
+        username, attributes={"access_tier": access_tier}, password=username
+    )
 
 
 def grant_dataset_viewer(kz: Any, username: str, dataset_urn: str) -> None:
@@ -185,7 +181,8 @@ def grant_dataset_viewer(kz: Any, username: str, dataset_urn: str) -> None:
 
 class _NoCacheTokenStore:
     """No-op token store so each persona authenticates fresh (no on-disk bleed
-    between the U/S/TS clients). Duck-types the SDK TokenStore contract."""
+    between the PUBLIC/PRIVATE/CONFIDENTIAL clients). Duck-types the SDK TokenStore contract.
+    """
 
     def load(self) -> None:
         return None
@@ -238,9 +235,9 @@ def shared_realm_token(
     (``issuer`` == the federation's shared_issuer_url): the mesh forwards the
     caller's bearer verbatim, and the receiver validates it against the shared
     realm's JWKS, so a local-realm token's kid is rejected (not in the shared
-    JWKS). The token also carries the fixture realm's projected ``clearance``
+    JWKS). The token also carries the fixture realm's projected ``access_tier``
     and explicit ``tenant_id=__default__`` claims; the initiator edge packs
-    ``clearance`` into X-User-Attributes for the gate.
+    ``access_tier`` into X-User-Attributes for the gate.
     """
     import requests  # noqa: PLC0415 — only needed on the persona-auth path
 
@@ -278,7 +275,7 @@ def jwt_sub(token: str) -> str:
 
 def create_file_dataset(kz: Any, name: str, file_path: str) -> str:
     """Create a ``platform="file"`` dataset pointing at ``file_path`` and bind
-    MiniClearanceGate. Returns the dataset URN. Install must have run first."""
+    MiniAccessTierGate. Returns the dataset URN. Install must have run first."""
     urn = kz.datasets.create(
         name=name,
         platform="file",
@@ -298,7 +295,7 @@ def retrieve_through_gate(
 
     ENG-8859 reduced that footer to a single ``filtered`` boolean. The counts it
     used to carry (``included`` / ``redacted`` / ``total``) are now always
-    ``null`` — in a classified setting the *volume* of withheld material is
+    ``null`` — in a restricted setting the *volume* of withheld material is
     itself a disclosure to the caller who was denied it — so summing them here
     raised ``TypeError: int() argument must be ... not 'NoneType'``.
 
@@ -475,29 +472,29 @@ def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]
 
 
 def _assert_exact_fixture_rows(
-    clearance: str,
+    access_tier: str,
     rows: list[dict],
     allowed: set[str],
 ) -> None:
-    if clearance not in _EXACT_FIXTURE_CLEARANCES:
+    if access_tier not in _EXACT_FIXTURE_ACCESS_TIERS:
         return
     expected_rows = sorted(
         (
             record
             for record in records()
-            if str(record.get("classification", "")).upper() in allowed
+            if str(record.get("tier", "")).upper() in allowed
         ),
         key=lambda record: str(record.get("id", "")),
     )
     actual_rows = sorted(rows, key=lambda record: str(record.get("id", "")))
     assert actual_rows == expected_rows, (
-        f"{clearance} caller received the wrong post-gate rows: "
+        f"{access_tier} caller received the wrong post-gate rows: "
         f"expected={expected_rows!r} actual={actual_rows!r}"
     )
 
 
 def assert_persona_result(
-    clearance: str, rows: list[dict], gate_audits: list[dict]
+    access_tier: str, rows: list[dict], gate_audits: list[dict]
 ) -> None:
     """Assert the exact post-gate rows, footer contract, and zero leakage.
 
@@ -507,12 +504,12 @@ def assert_persona_result(
     contributes one bit, ``filtered``, which must agree with whether this
     persona has anything withheld.
     """
-    included, redacted, allowed = KNOWN[clearance]
+    included, redacted, allowed = KNOWN[access_tier]
     assert gate_audits, "no gate_audit footer in retrieval stream — gate not invoked?"
-    assert len(rows) == included, (
-        f"expected {included} rows for {clearance}, got {len(rows)}"
-    )
-    _assert_exact_fixture_rows(clearance, rows, allowed)
+    assert (
+        len(rows) == included
+    ), f"expected {included} rows for {access_tier}, got {len(rows)}"
+    _assert_exact_fixture_rows(access_tier, rows, allowed)
     assert any(bool(audit.get("filtered")) for audit in gate_audits) is (
         redacted > 0
     ), gate_audits
@@ -522,8 +519,6 @@ def assert_persona_result(
             key in gate_audit and gate_audit[key] is None
             for key in ("included", "redacted", "total", "gate")
         ), f"deprecated gate_audit keys must be present and null: {gate_audit}"
-    # zero leakage: nothing above the caller's clearance survives
-    leaked = [
-        r for r in rows if str(r.get("classification", "")).upper() not in allowed
-    ]
-    assert not leaked, f"{clearance} caller leaked rows above clearance: {leaked}"
+    # zero leakage: nothing above the caller's access_tier survives
+    leaked = [r for r in rows if str(r.get("tier", "")).upper() not in allowed]
+    assert not leaked, f"{access_tier} caller leaked rows above access_tier: {leaked}"

@@ -39,6 +39,7 @@ from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.schemas.skills import SkillLibraryUpdateRequest
 from kamiwaza_sdk.services.skills import SkillsService
 
+from ._skills_snapshot import snapshot_metadata, validated_snapshot_source
 from ._skills_store import (
     fetch_skill_row,
     list_package_objects,
@@ -289,14 +290,12 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         exported = service.export_skill_package(created.id)
         assert exported.filename == f"{skill_name}.zip"
         assert exported.content_type == "application/zip"
-        assert exported.content == package_bytes
+        validated_snapshot_source(exported.content, package_bytes, published)
 
         bundle = service.export_skills_bundle([created.id])
         assert bundle.filename == "skills-export.zip"
         assert bundle.content_type == "application/zip"
-        with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
-            assert archive.namelist() == [f"{skill_name}.zip"]
-            assert archive.read(f"{skill_name}.zip") == package_bytes
+        validated_snapshot_source(bundle.content, package_bytes, published)
 
         # --- deletion is soft, which only the stores can show -------------
         assert service.delete_skill(created.id) is True
@@ -339,11 +338,13 @@ def test_skills_library_lifecycle_and_backing_store(live_kamiwaza_client) -> Non
         # exercises that interlock, so a regression making soft-deleted names
         # permanently unusable would pass every other assertion here.
         reimported = service.import_skill_package(
-            filename=f"{skill_name}.zip", file_content=package_bytes
+            filename=exported.filename, file_content=exported.content
         )
         try:
             assert reimported.name == skill_name
             assert reimported.id != created_id_for_reimport_check
+            assert reimported.status == "draft"
+            assert snapshot_metadata(reimported) == snapshot_metadata(published)
         finally:
             try:
                 service.delete_skill(reimported.id)
@@ -560,11 +561,8 @@ def test_exported_skill_package_executes_correctly(live_kamiwaza_client) -> None
 
     Deliberately unmapped - see the note above.
 
-    The script is extracted from the bytes the library returned. The assertion
-    above already pins those bytes equal to what was uploaded, so this run does
-    not add round-trip coverage - that ordering is the point: the package is
-    known-identical to a fixture this module built, which is what makes
-    extracting it and running it under ``sys.executable`` safe.
+    Validate the version-2 snapshot's metadata and checksum, then pin its inner
+    source ZIP equal to the uploaded fixture before extracting and running it.
     """
 
     service = live_kamiwaza_client.skills
@@ -587,14 +585,14 @@ def test_exported_skill_package_executes_correctly(live_kamiwaza_client) -> None
 
         exported = service.export_skill_package(created.id)
 
-        # The library must not rewrite what was vetted.
-        assert exported.content == package_bytes, (
-            "the exported package differs from the imported bytes"
+        # A snapshot carries current metadata around unchanged, vetted sources.
+        source_bytes = validated_snapshot_source(
+            exported.content, package_bytes, created
         )
 
         with tempfile.TemporaryDirectory() as workdir:
             root = Path(workdir)
-            with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+            with zipfile.ZipFile(io.BytesIO(source_bytes)) as archive:
                 archive.extractall(root)
 
             script = root / skill_name / "scripts" / "run_skill.py"

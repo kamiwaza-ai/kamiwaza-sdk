@@ -9,6 +9,9 @@ Extends T5.18-skeleton (WS-M1, federation-only) by adding the M3
 ergonomics layers: subject upsert via SDK, cluster execution-gate
 binding via SDK, dataset creation + attribute-gate binding via SDK.
 Mirrors the README's eight-step walkthrough exactly.
+The dataset's cluster must have the SDK fixture package acme-gates 1.2.0
+installed through the owned-fixture setup; this walkthrough does not adopt or
+replace an existing package.
 
 The test is marked ``@pytest.mark.live`` and gated on env vars — it
 no-ops in standard CI and only runs when the operator points the SDK
@@ -38,7 +41,6 @@ import uuid
 from typing import Iterator
 
 import pytest
-
 
 pytestmark = [
     pytest.mark.integration,
@@ -145,7 +147,9 @@ def test_m3_full_walkthrough_against_live_fleet(
             # with the new pair; setup.py's step_00 does the same dance.
             for client in (lyra, orion):
                 try:
-                    existing = client._request("GET", "/cluster/federations")  # noqa: SLF001
+                    existing = client._request(
+                        "GET", "/cluster/federations"
+                    )  # noqa: SLF001
                 except KamiwazaError:
                     existing = []
                 if isinstance(existing, list):
@@ -191,7 +195,7 @@ def test_m3_full_walkthrough_against_live_fleet(
             # back at this exact call. Idempotent on identical shape; safe
             # to re-run.
             for attr_name, attr_type in (
-                ("clearance", "string"),
+                ("access_tier", "string"),
                 ("country", "string"),
                 ("programs", "string[]"),
             ):
@@ -206,14 +210,14 @@ def test_m3_full_walkthrough_against_live_fleet(
             subject = lyra.subjects.upsert(
                 demo_username,
                 attributes={
-                    "clearance": "TS",
+                    "access_tier": "CONFIDENTIAL",
                     "country": "USA",
                     "programs": ["IRIS", "ARGOS"],
                 },
                 password="demo-pw",
             )
             assert subject.username == demo_username
-            assert subject.attributes["clearance"] == "TS"
+            assert subject.attributes["access_tier"] == "CONFIDENTIAL"
             assert subject.attributes["programs"] == ["IRIS", "ARGOS"]
 
             # Step 3 — Bind cluster execution gate (replaces kubectl-exec).
@@ -245,12 +249,11 @@ def test_m3_full_walkthrough_against_live_fleet(
                 ds_binding = lyra.datasets.set_gate(
                     dataset_urn,
                     type=(
-                        "kamiwaza_extensions.classified_conjunction_gate."
-                        "ClassifiedConjunctionGate"
+                        "acme_gates.mini_access_tier_gate."
+                        "MiniAccessTierGate"
                     ),
                     config={
-                        "classification_field": "classification",
-                        "releasable_to_field": "releasable_to",
+                        "tier_field": "tier",
                     },
                 )
                 assert ds_binding.kind == "attribute"
@@ -258,7 +261,7 @@ def test_m3_full_walkthrough_against_live_fleet(
                 if exc.status_code != 404:
                     raise
                 pytest.skip(
-                    "ClassifiedConjunctionGate extension not installed on the "
+                    "MiniAccessTierGate extension not installed on the "
                     "fleet; partial M3 walkthrough run. Install the gate "
                     "extension to exercise the full ship gate."
                 )
@@ -285,9 +288,10 @@ def test_m3_full_walkthrough_against_live_fleet(
 
             # Step 8 — Demo-gate assertion: audit_actor names the
             # originating user (no system principal).
-            assert result.status in {"SUCCEEDED", "FAILED"}, (
-                f"Job ended in unexpected state {result.status!r}"
-            )
+            assert result.status in {
+                "SUCCEEDED",
+                "FAILED",
+            }, f"Job ended in unexpected state {result.status!r}"
             assert result.audit_actor is not None, (
                 "audit_actor must round-trip on the receiver — this is "
                 "the demo gate's load-bearing signal."
@@ -334,7 +338,9 @@ def test_m3_full_walkthrough_against_live_fleet(
                 # the raw API (FederationsAPI doesn't expose list() today;
                 # see setup.py step_00 for the same pattern).
                 try:
-                    orion_feds = orion._request("GET", "/cluster/federations")  # noqa: SLF001
+                    orion_feds = orion._request(
+                        "GET", "/cluster/federations"
+                    )  # noqa: SLF001
                     if isinstance(orion_feds, list):
                         for fed in orion_feds:
                             if (

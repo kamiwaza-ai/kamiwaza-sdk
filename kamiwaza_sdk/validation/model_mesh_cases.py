@@ -57,12 +57,12 @@ def _run_one(context: RunContext, case_id: str) -> CaseResult:
 
 
 def _run_authorized_discovery(context: RunContext) -> None:
-    body = _remote_models(context, "fed-clr-u")
+    body = _remote_models(context, "fed-tier-public")
     _assert_model_visible(body, context, "authorized model grant did not expose model")
 
 
 def _run_stable_discovery(context: RunContext) -> None:
-    body = _remote_models(context, "fed-clr-u")
+    body = _remote_models(context, "fed-tier-public")
     _assert_model_visible(
         body, context, "remote model discovery omitted stable model identity"
     )
@@ -73,7 +73,7 @@ def _run_stable_discovery(context: RunContext) -> None:
 
 
 def _run_remote_chat(context: RunContext) -> None:
-    response = _remote_chat(context, "fed-clr-u")
+    response = _remote_chat(context, "fed-tier-public")
     if not _response_has_content(response):
         raise AssertionError("remote runtime returned no assistant content")
 
@@ -103,7 +103,7 @@ def _remote_chat(context: RunContext, username: str) -> Any:
 
 def _run_unauthorized(context: RunContext) -> None:
     try:
-        _remote_chat(context, "fed-clr-s")
+        _remote_chat(context, "fed-tier-private")
     except Exception as exc:
         if getattr(exc, "status_code", None) in {401, 403}:
             return
@@ -123,7 +123,7 @@ def _remote_models(context: RunContext, username: str) -> Any:
         # the status-bearing exception so the case can distinguish a correct
         # 401/403 from a transport or server failure; authorized personas
         # still propagate every exception as a failed case.
-        if username == "fed-clr-s" and getattr(exc, "status_code", None) in {
+        if username == "fed-tier-private" and getattr(exc, "status_code", None) in {
             401,
             403,
         }:

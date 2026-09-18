@@ -19,6 +19,7 @@ from .gates import GatesAPI
 from .ingestion import IngestionService
 from .jobs_federation import JobsAPI
 from .lab import LabService
+from .markings import MarkingsService
 from .models import ModelService
 from .prompts import PromptsService
 from .retrieval import RetrievalService
@@ -55,6 +56,7 @@ __all__ = [
     "IngestionService",
     "JobsAPI",
     "LabService",
+    "MarkingsService",
     "ModelService",
     "PromptsService",
     "RetrievalAPI",

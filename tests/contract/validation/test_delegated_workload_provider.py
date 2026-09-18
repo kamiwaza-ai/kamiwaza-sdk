@@ -12,6 +12,8 @@ from kamiwaza_sdk.validation.delegated_workload_cases import run_edge
 from kamiwaza_sdk.validation.delegated_workload_provider import (
     DelegatedWorkloadLifecycleProvider,
     delegated_package_config_from_selection,
+)
+from kamiwaza_sdk.validation.delegated_workload_provider import (
     main as delegated_provider_main,
 )
 from kamiwaza_sdk.validation.delegated_workload_spec import (
@@ -332,7 +334,7 @@ def test_case_runs_baseline_and_requires_exact_package_and_agent_inventory(
     baseline = {
         "data": [
             {
-                "classification": "U",
+                "tier": "PUBLIC",
                 "probe": "kz-delegated-base-baseline",
                 "package_versions": {"humanize": None, "kamiwaza-sdk": "0.9.0"},
             }
@@ -342,7 +344,7 @@ def test_case_runs_baseline_and_requires_exact_package_and_agent_inventory(
     delegated = {
         "data": [
             {
-                "classification": "U",
+                "tier": "PUBLIC",
                 "probe": "kz-delegated-delegated",
                 **agent_evidence,
                 "package_imports": ["humanize", "kamiwaza_sdk"],
@@ -397,7 +399,7 @@ def test_package_import_success_cannot_substitute_for_agent_evidence() -> None:
     result = SimpleNamespace(
         status="SUCCEEDED",
         result={
-            "data": [{"classification": "U", "granted_datasets": ["another-dataset"]}],
+            "data": [{"tier": "PUBLIC", "granted_datasets": ["another-dataset"]}],
             "metadata": {"gate_audit": [{}]},
         },
     )
@@ -406,10 +408,11 @@ def test_package_import_success_cannot_substitute_for_agent_evidence() -> None:
 
 
 def test_generated_job_executes_the_typed_agent_operation(monkeypatch, capsys) -> None:
-    from kamiwaza_sdk.job_runtime import JobRuntimeClient, JobDatasets
+    from unittest.mock import MagicMock
+
+    from kamiwaza_sdk.job_runtime import JobDatasets, JobRuntimeClient
     from kamiwaza_sdk.schemas.delegated_jobs import GrantedDataset
     from kamiwaza_sdk.validation.delegated_workload_cases import _delegated_script
-    from unittest.mock import MagicMock
 
     agent = MagicMock(spec_set=JobRuntimeClient.from_environment())
     agent.__enter__.return_value = agent

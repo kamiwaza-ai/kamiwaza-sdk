@@ -13,7 +13,7 @@ boundary, receiver-owned capability authority, and private package repository.
 |---|---|---|
 | Install prerequisites and supported topology | Kajiya install gate and the internal playbook preflight | Provisioning automation plus manual operator check |
 | Shared issuer trust and `shared_idp` pairing | `test_federation_identity_gate_live.py`, `test_federation_shared_idp_gated_retrieval_live.py` | Automated SDK live |
-| Receiver request, approval, onboarding, revoke, and distinct identities | `test_federation_request_approve_live.py`, `test_federation_user_onboarding_live.py`, `test_federation_onboarding_clearance_gate_live.py` | Automated SDK live |
+| Receiver request, approval, onboarding, revoke, and distinct identities | `test_federation_request_approve_live.py`, `test_federation_user_onboarding_live.py`, `test_federation_onboarding_access_tier_gate_live.py` | Automated SDK live |
 | Exact receiver dataset discovery and retrieval | `test_required_mesh_dataset_list_returns_only_authorized_fixture`; `test_required_mesh_retrieval_returns_exact_post_gate_rows` | Required SDK live edge |
 | Unonboarded-user denial | `test_unonboarded_shared_idp_user_rejected_by_receiver_allowlist` | Required SDK live edge |
 | Receiver execution and mesh provenance | `test_required_mesh_job_reaches_receiver_and_returns_marker` | Required SDK live edge |

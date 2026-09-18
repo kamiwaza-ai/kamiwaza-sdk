@@ -6,7 +6,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Any
 
-from tests.integration import _mini_clearance as mc
+from tests.integration import _mini_access_tier as mc
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ def _installed_gate_package(receiver: Any) -> Any | None:
 
 def _assert_desired_gate_package(package: Any, wheel_dir: str) -> None:
     assert getattr(package, "package_spec", None) == mc.PACKAGE_SPEC
-    assert getattr(package, "version", None) == "1.1.0"
+    assert getattr(package, "version", None) == mc.PACKAGE_SPEC.split("==", 1)[1]
     assert getattr(package, "hash_digest", None) == mc._wheel_sha256(wheel_dir)
     assert getattr(package, "status", None) == "active"
     assert mc.GATE_CLASSPATH in (getattr(package, "classpaths", None) or [])
@@ -79,7 +79,7 @@ def provision_gated_dataset(
     prerequisites: Any,
     name: str,
 ) -> str:
-    mc.declare_clearance_attribute(receiver)
+    mc.declare_access_tier_attribute(receiver)
     _ensure_gate_package(
         cleanup,
         receiver,
@@ -87,7 +87,7 @@ def provision_gated_dataset(
         prerequisites.index_url,
     )
     urn = receiver.datasets.create(
-        name=f"mini-clearance-{name}",
+        name=f"mini-access_tier-{name}",
         platform="file",
         properties={"path": prerequisites.dataset_path},
     )

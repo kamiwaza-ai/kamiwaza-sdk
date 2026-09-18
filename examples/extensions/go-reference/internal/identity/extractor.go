@@ -18,7 +18,7 @@ type Identity struct {
 	Email        *string  `json:"email"`
 	Name         *string  `json:"name"`
 	Roles        []string `json:"roles"`
-	SystemHigh   *string  `json:"system_high"`
+	MarkingLevel   *string  `json:"marking_level"`
 	WorkroomID   *string  `json:"workroom_id"`
 	WorkroomRole *string  `json:"workroom_role"`
 	RequestID    *string  `json:"request_id"`
@@ -49,7 +49,7 @@ func Extract(h http.Header) (*Identity, error) {
 		Email:        strip(h.Get("X-User-Email")),
 		Name:         strip(h.Get("X-User-Name")),
 		Roles:        parseRoles(h.Get("X-User-Roles")),
-		SystemHigh:   strip(h.Get("X-User-System-High")),
+		MarkingLevel:   strip(h.Get("X-User-Marking-Level")),
 		WorkroomID:   workroomID,
 		WorkroomRole: strip(h.Get("X-User-Workroom-Role")),
 		RequestID:    strip(h.Get("X-Request-Id")),

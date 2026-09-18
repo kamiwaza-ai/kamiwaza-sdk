@@ -1,12 +1,12 @@
-"""ENG-10096 — receiver-assigned onboarding clearance reaches a mesh gate.
+"""ENG-10096 — receiver-assigned onboarding access_tier reaches a mesh gate.
 
-The receiver approves one self-service guest with ``clearance=S`` and a viewer
-grant on a MiniClearanceGate dataset. The requester claims the receiver-realm
+The receiver approves one self-service guest with ``access_tier=PRIVATE`` and a viewer
+grant on a MiniAccessTierGate dataset. The requester claims the receiver-realm
 credential, presents it on the mesh retrieval, and must receive exactly the
-known-answer U/S rows plus the filtered audit footer.
+known-answer PUBLIC/PRIVATE rows plus the filtered audit footer.
 
-``MINI_CLEARANCE_DATASET_PATH`` is the receiver-visible CSV written from
-``mini_clearance_records.json`` by ``tests.integration._gate_fixture``. The test
+``MINI_ACCESS_TIER_DATASET_PATH`` is the receiver-visible CSV written from
+``mini_access_tier_records.json`` by ``tests.integration._gate_fixture``. The test
 creates its own dataset catalog row and gate binding; it never owns or removes
 that shared provisioner fixture.
 """
@@ -21,8 +21,8 @@ import pytest
 
 from kamiwaza_sdk import KamiwazaClient
 
-from . import _mini_clearance as mc
-from . import _onboarding_clearance_fixture as fixture_support
+from . import _mini_access_tier as mc
+from . import _onboarding_access_tier_fixture as fixture_support
 from .test_federation_user_onboarding_live import (
     _claim,
     _decode_jwt_payload,
@@ -44,7 +44,7 @@ pytestmark = [
 def _provision_pair(state: dict[str, Any], live_peer_base_url: str) -> None:
     initiator = state["initiator"]
     receiver = state["receiver"]
-    name = f"eng10096-clearance-{uuid.uuid4().hex[:10]}"
+    name = f"eng10096-access_tier-{uuid.uuid4().hex[:10]}"
     psk = uuid.uuid4().hex
     receiver_fed = receiver.federations.pair(
         name=name,
@@ -75,7 +75,7 @@ def _approve_and_claim(state: dict[str, Any], requester: KamiwazaClient) -> str:
     status = _self_request_onboarding(
         requester,
         state["initiator_id"],
-        "ENG-10096 receiver-assigned clearance gate proof.",
+        "ENG-10096 receiver-assigned access_tier gate proof.",
     )
     assert status.get("status") == "REQUESTED", f"unexpected status: {status!r}"
     claim_token = status.get("claim_token")
@@ -92,7 +92,7 @@ def _approve_and_claim(state: dict[str, Any], requester: KamiwazaClient) -> str:
         "POST",
         _onboarding_path(state["receiver_id"], f"/{request_id}/approve"),
         json={
-            "attributes": {"clearance": "S"},
+            "attributes": {"access_tier": "PRIVATE"},
             "relations": [
                 {
                     "relation": "viewer",
@@ -115,7 +115,7 @@ def _approve_and_claim(state: dict[str, Any], requester: KamiwazaClient) -> str:
 
 
 @pytest.fixture
-def receiver_assigned_clearance_path(
+def receiver_assigned_access_tier_path(
     live_kamiwaza_session_client: KamiwazaClient,
     live_kamiwaza_peer_client: KamiwazaClient,
     live_peer_base_url: str,
@@ -151,16 +151,16 @@ def receiver_assigned_clearance_path(
         fixture_support.cleanup(state)
 
 
-def test_receiver_assigned_clearance_claim_reaches_dataset_gate_over_mesh(
-    receiver_assigned_clearance_path: dict[str, Any],
+def test_receiver_assigned_access_tier_claim_reaches_dataset_gate_over_mesh(
+    receiver_assigned_access_tier_path: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = receiver_assigned_clearance_path
-    assert path["assigned_attributes"] == {"clearance": "S"}
+    path = receiver_assigned_access_tier_path
+    assert path["assigned_attributes"] == {"access_tier": "PRIVATE"}
 
     credential = path["credential"]
     claims = _decode_jwt_payload(credential)
-    assert claims.get("clearance") == "S", claims
+    assert claims.get("access_tier") == "PRIVATE", claims
 
     requester = path["requester"]
     local_token = requester.get_bearer_token()
@@ -178,6 +178,6 @@ def test_receiver_assigned_clearance_claim_reaches_dataset_gate_over_mesh(
         verify=False,
     )
 
-    expected = [row for row in mc.records() if row["classification"] in {"U", "S"}]
+    expected = [row for row in mc.records() if row["tier"] in {"PUBLIC", "PRIVATE"}]
     assert sorted(rows, key=lambda row: row["id"]) == expected
-    mc.assert_persona_result("S", rows, gate_audits)
+    mc.assert_persona_result("PRIVATE", rows, gate_audits)

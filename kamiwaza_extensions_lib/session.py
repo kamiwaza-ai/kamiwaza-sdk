@@ -20,7 +20,7 @@ from .identity import (
 logger = logging.getLogger(__name__)
 
 # Fields that are safe to expose in /session responses. Anything on
-# ``Identity`` not in this set — notably ``system_high`` (a classification
+# ``Identity`` not in this set — notably ``marking_level`` (a classification
 # string) and ``request_id`` — MUST NOT cross the HTTP boundary to the
 # browser. The bearer credential (``X-Auth-Token``) is deliberately *not*
 # on the Identity model at all; see kamiwaza_extensions_lib.identity for

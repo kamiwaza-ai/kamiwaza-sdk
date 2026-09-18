@@ -71,12 +71,12 @@ describe("_buildBridgedHeaders", () => {
         const incoming = new Headers({
             "x-existing": "yes",
             "x-user-id": "spoof",
-            "x-user-system-high": "1",
+            "x-user-marking-level": "1",
         });
         const out = _buildBridgedHeaders(incoming);
         expect(out.get("x-existing")).toBe("yes");
         expect(out.get("x-user-id")).toBeNull();
-        expect(out.get("x-user-system-high")).toBeNull();
+        expect(out.get("x-user-marking-level")).toBeNull();
         expect(out.get("authorization")).toBeNull();
         expect(warnSpy).toHaveBeenCalled();
         const msg = warnSpy.mock.calls[0]?.[0];
@@ -199,11 +199,11 @@ describe("_buildBridgedHeaders", () => {
 
         const incoming = new Headers({
             "x-user-id": "spoof",
-            "x-user-system-high": "1",
+            "x-user-marking-level": "1",
         });
         const out = _buildBridgedHeaders(incoming);
         expect(out.get("x-user-id")).toBeNull();
-        expect(out.get("x-user-system-high")).toBeNull();
+        expect(out.get("x-user-marking-level")).toBeNull();
         expect(warnSpy).toHaveBeenCalled();
     });
 
@@ -213,7 +213,7 @@ describe("_buildBridgedHeaders", () => {
         // inbound Authorization, preserving every spoofed envelope
         // field alongside it. An attacker on the dev server could send
         // ``Authorization: anything`` + ``x-user-id: admin`` +
-        // ``x-user-system-high: 1`` and reach the backend with
+        // ``x-user-marking-level: 1`` and reach the backend with
         // forged envelope-borne privileges. The fix: still honor the
         // inbound bearer (defense-in-depth for the "bridge accidentally
         // enabled in production" leak case) but clear envelope
@@ -225,7 +225,7 @@ describe("_buildBridgedHeaders", () => {
         const incoming = new Headers({
             authorization: "Bearer real-platform-token",
             "x-user-id": "spoof-admin",
-            "x-user-system-high": "1",
+            "x-user-marking-level": "1",
             "x-user-roles": "admin,owner",
             "x-user-workroom-role": "admin",
             "x-non-envelope": "preserved",
@@ -236,7 +236,7 @@ describe("_buildBridgedHeaders", () => {
         expect(out.get("authorization")).toBe("Bearer real-platform-token");
         // Spoofed envelope headers are cleared.
         expect(out.get("x-user-id")).toBeNull();
-        expect(out.get("x-user-system-high")).toBeNull();
+        expect(out.get("x-user-marking-level")).toBeNull();
         expect(out.get("x-user-roles")).toBeNull();
         expect(out.get("x-user-workroom-role")).toBeNull();
         // Non-envelope headers are passed through unchanged.
@@ -245,7 +245,7 @@ describe("_buildBridgedHeaders", () => {
 
     it("clears spoofed envelope headers before bridging (round-6 codex P2)", () => {
         // A request without `authorization` but with client-supplied
-        // envelope headers (e.g. `x-user-system-high: 1`,
+        // envelope headers (e.g. `x-user-marking-level: 1`,
         // `x-user-roles: admin,owner`, `x-user-workroom-role: admin`)
         // must not have those spoofed values forwarded to the backend.
         // Round-6 review: the bridge previously preserved them because
@@ -260,7 +260,7 @@ describe("_buildBridgedHeaders", () => {
             "x-user-email": "evil@example.com",
             "x-user-name": "Spoof",
             "x-user-roles": "admin,owner",
-            "x-user-system-high": "1",
+            "x-user-marking-level": "1",
             "x-user-workroom-role": "admin",
             "x-user-workroom-id": "wr-spoof",
             "x-workroom-id": "wr-spoof",
@@ -285,7 +285,7 @@ describe("_buildBridgedHeaders", () => {
         // Spoofed envelope fields the JWT didn't set must be CLEARED,
         // not preserved from the incoming request.
         expect(out.get("x-user-roles")).toBeNull();
-        expect(out.get("x-user-system-high")).toBeNull();
+        expect(out.get("x-user-marking-level")).toBeNull();
         expect(out.get("x-user-workroom-role")).toBeNull();
         expect(out.get("x-user-workroom-id")).toBeNull();
         expect(out.get("x-user-signature")).toBeNull();

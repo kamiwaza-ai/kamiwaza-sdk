@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from kamiwaza_sdk.validation.applicability import ApplicableTarget
-from kamiwaza_sdk.validation.inference_spec import _compatibility_error
 from kamiwaza_sdk.validation.federation_spec import (
     SHARED_REALM_CLIENT_ID,
     planned_shared_issuer,
 )
+from kamiwaza_sdk.validation.inference_spec import _compatibility_error
 from kamiwaza_sdk.validation.models import (
     FactMatcher,
     InferenceTarget,
@@ -22,7 +22,7 @@ from kamiwaza_sdk.validation.models import (
 from kamiwaza_sdk.validation.provider import ProviderContractError
 
 MODEL_MESH_PROVIDER_ID = "sdk.federation.model-mesh"
-MODEL_MESH_PROVIDER_REVISION = "sdk.federation.model-mesh@v1"
+MODEL_MESH_PROVIDER_REVISION = "sdk.federation.model-mesh@v2"
 MODEL_MESH_SCENARIO_ID = "sdk.federation.model-mesh/v1"
 
 # The inventory is deliberately small and exact.  Discovery proves the
@@ -154,10 +154,10 @@ def _resolved_candidate(
             "realm": realm,
             "client_id": SHARED_REALM_CLIENT_ID,
             "persona_usernames": [
-                "fed-clr-u",
-                "fed-clr-s",
-                "fed-clr-ts",
-                "fed-clr-unonboarded",
+                "fed-tier-public",
+                "fed-tier-private",
+                "fed-tier-confidential",
+                "fed-tier-unonboarded",
                 "fed-tenant-missing",
                 "fed-tenant-legacy-only",
                 "fed-tenant-nondefault",

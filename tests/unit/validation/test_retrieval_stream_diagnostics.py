@@ -12,7 +12,7 @@ import responses
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.validation import federation_cases as fc
-from tests.integration import _mini_clearance as mc
+from tests.integration import _mini_access_tier as mc
 
 _SECRET = "private-token-and-record-content"
 

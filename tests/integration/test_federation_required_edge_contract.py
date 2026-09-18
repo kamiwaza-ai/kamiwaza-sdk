@@ -1,11 +1,19 @@
 """ENG-10050: Offline contract for the required shared-IDP smoke edge."""
 
-from pathlib import Path
 import stat
+import subprocess
+import sys
+from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 from _kamiwaza_pytest_options import PROJECT_ROOT
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError
@@ -42,7 +50,10 @@ def _assert_live_retrieval_parametrization() -> None:
         if mark.name == "parametrize"
     ]
     assert len(retrieval_marks) == 1
-    assert retrieval_marks[0].args == ("clearance", ["U", "S", "TS"])
+    assert retrieval_marks[0].args == (
+        "access_tier",
+        ["PUBLIC", "PRIVATE", "CONFIDENTIAL"],
+    )
     assert retrieval_marks[0].kwargs == {}
 
 
@@ -78,11 +89,40 @@ def test_required_edge_plugin_is_registered_only_at_pytest_root() -> None:
     assert "pytest_plugins" not in integration_conftest
 
 
+def test_actual_required_edge_collection_matches_guard() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "tests/integration/" + required_edge.REQUIRED_EDGE_FILE,
+            "--require-federation-edge",
+            "--live-peer-base-url=https://collect-only.invalid/api",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    actual = {
+        line.split("::", 1)[1]
+        for line in result.stdout.splitlines()
+        if line.startswith(
+            "tests/integration/" + required_edge.REQUIRED_EDGE_FILE + "::"
+        )
+    }
+    assert actual == required_edge.REQUIRED_EDGE_CASES
+    assert len(actual) == 9
+
+
 def test_required_edge_collection_guard_requires_all_nine_cases() -> None:
     expected_cases = {
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[U]",
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
-        "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[PUBLIC]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[PRIVATE]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[CONFIDENTIAL]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[missing-canonical]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[legacy-only]",
         "test_required_mesh_retrieval_rejects_invalid_tenant[canonical-nondefault]",
@@ -319,7 +359,7 @@ def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) 
             "platform_verify": True,
             "allow_insecure_tls": False,
         },
-        "fed-clr-u",
+        "fed-tier-public",
     )
 
     assert calls == ["password", "refresh", "read"]
@@ -417,7 +457,7 @@ def test_required_dataset_list_uses_mesh_and_requires_exact_fixture() -> None:
         "name": "receiver cluster",
         "urn": "urn:dataset:only-authorized",
         "personas": {
-            "U": {"client": persona, "authenticator": authenticator},
+            "PUBLIC": {"client": persona, "authenticator": authenticator},
         },
     }
 
@@ -449,7 +489,7 @@ def test_required_job_case_runs_recoverably_on_named_peer(monkeypatch) -> None:
     wiring = {
         "name": "receiver-cluster",
         "personas": {
-            "U": {"client": persona, "authenticator": authenticator},
+            "PUBLIC": {"client": persona, "authenticator": authenticator},
         },
         "verify": True,
         "source_cluster_id": "initiator-uuid",
@@ -477,10 +517,14 @@ def _write_gate_wheel(tmp_path: Path) -> str:
 
 
 def _gate_package(wheel_dir: str, **overrides) -> SimpleNamespace:
+    fixture_project = (
+        PROJECT_ROOT / "tests/integration/fixtures/acme-gates/pyproject.toml"
+    )
+    version = tomllib.loads(fixture_project.read_text())["project"]["version"]
     state = {
         "name": "acme-gates",
         "package_spec": edge.mc.PACKAGE_SPEC,
-        "version": "1.1.0",
+        "version": version,
         "hash_digest": edge.mc._wheel_sha256(wheel_dir),
         "status": "active",
         "classpaths": [edge.mc.GATE_CLASSPATH],
@@ -502,19 +546,61 @@ def _gate_receiver(package: SimpleNamespace | None) -> SimpleNamespace:
     return SimpleNamespace(gates=gates)
 
 
+def test_fresh_gate_package_uses_fixture_metadata_and_owned_cleanup(tmp_path) -> None:
+    wheel_dir = _write_gate_wheel(tmp_path)
+    receiver = _gate_receiver(None)
+    receiver.gates.packages.install.return_value = SimpleNamespace(
+        package=_gate_package(wheel_dir)
+    )
+    with ExitStack() as cleanup:
+        required_setup._ensure_gate_package(cleanup, receiver, wheel_dir, "index")
+        receiver.gates.packages.install.assert_called_once_with(
+            edge.mc.PACKAGE_SPEC,
+            hash_digest=edge.mc._wheel_sha256(wheel_dir),
+            index_url="index",
+        )
+        receiver.gates.discover.assert_called_once_with(edge.mc.GATE_CLASSPATH)
+        receiver.gates.packages.replace.assert_not_called()
+        receiver.gates.packages.uninstall.assert_not_called()
+    receiver.gates.packages.uninstall.assert_called_once_with("acme-gates")
+
+
 def test_preexisting_gate_package_must_match_and_is_never_owned(tmp_path) -> None:
     wheel_dir = _write_gate_wheel(tmp_path)
     receiver = _gate_receiver(_gate_package(wheel_dir))
-    cleanup = Mock()
-
-    required_setup._ensure_gate_package(cleanup, receiver, wheel_dir, "index")
-    receiver.gates.packages.install.assert_not_called()
-    cleanup.callback.assert_not_called()
-
-    receiver = _gate_receiver(_gate_package(wheel_dir, version="9.9.9"))
-    with pytest.raises(AssertionError):
+    with ExitStack() as cleanup:
+        cleanup.callback = Mock(wraps=cleanup.callback)
         required_setup._ensure_gate_package(cleanup, receiver, wheel_dir, "index")
+        cleanup.callback.assert_not_called()
+        receiver.gates.discover.assert_called_once_with(edge.mc.GATE_CLASSPATH)
     receiver.gates.packages.install.assert_not_called()
+    receiver.gates.packages.replace.assert_not_called()
+    receiver.gates.packages.uninstall.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"package_spec": "acme-gates==1.1.0", "version": "1.1.0"},
+        {"version": "1.1.0"},
+        {"hash_digest": "sha256:wrong"},
+        {"status": "inactive"},
+        {"classpaths": []},
+    ],
+    ids=["stale", "contradictory", "wrong-hash", "inactive", "wrong-classpath"],
+)
+def test_incompatible_reused_gate_package_is_retained(tmp_path, overrides) -> None:
+    wheel_dir = _write_gate_wheel(tmp_path)
+    receiver = _gate_receiver(_gate_package(wheel_dir, **overrides))
+    with ExitStack() as cleanup:
+        cleanup.callback = Mock(wraps=cleanup.callback)
+        with pytest.raises(AssertionError):
+            required_setup._ensure_gate_package(cleanup, receiver, wheel_dir, "index")
+        cleanup.callback.assert_not_called()
+    receiver.gates.packages.install.assert_not_called()
+    receiver.gates.packages.replace.assert_not_called()
+    receiver.gates.packages.uninstall.assert_not_called()
+    receiver.gates.discover.assert_not_called()
 
 
 def test_gate_package_read_or_install_failure_never_registers_cleanup(
@@ -530,7 +616,7 @@ def test_gate_package_read_or_install_failure_never_registers_cleanup(
         index_url="index",
         dataset_path="/fixture.csv",
     )
-    monkeypatch.setattr(edge.mc, "declare_clearance_attribute", Mock())
+    monkeypatch.setattr(edge.mc, "declare_access_tier_attribute", Mock())
 
     with pytest.raises(RuntimeError, match="install failed"):
         required_setup.provision_gated_dataset(
@@ -564,20 +650,15 @@ def test_owned_gate_package_cleanup_is_registered_before_post_install_failure(
         package.hash_digest = "sha256:wrong"
     else:
         receiver.gates.discover.side_effect = RuntimeError("discover failed")
-    cleanup = Mock()
-
     with pytest.raises((AssertionError, RuntimeError)):
-        required_setup._ensure_gate_package(
-            cleanup,
-            receiver,
-            wheel_dir,
-            "index",
-        )
-
-    cleanup.callback.assert_called_once_with(
-        required_setup._uninstall_owned_gate_package,
-        receiver,
-    )
+        with ExitStack() as cleanup:
+            required_setup._ensure_gate_package(
+                cleanup,
+                receiver,
+                wheel_dir,
+                "index",
+            )
+    receiver.gates.packages.uninstall.assert_called_once_with("acme-gates")
 
 
 def test_pairing_requires_two_distinct_cluster_identities() -> None:
@@ -634,13 +715,13 @@ def test_required_retrieval_case_asserts_streamed_known_answer(monkeypatch) -> N
         "name": "receiver-cluster",
         "urn": "urn:kamiwaza:dataset:known",
         "personas": {
-            "U": {"client": persona, "authenticator": authenticator},
+            "PUBLIC": {"client": persona, "authenticator": authenticator},
         },
         "verify": True,
     }
 
     edge.test_required_mesh_retrieval_returns_exact_post_gate_rows(
-        "U",
+        "PUBLIC",
         wiring,
         SimpleNamespace(base_url="https://initiator.example/api"),
     )
@@ -765,7 +846,7 @@ def test_exact_retrieval_oracle_rejects_duplicate_allowed_rows() -> None:
     }
 
     with pytest.raises(AssertionError, match="wrong post-gate rows"):
-        edge.mc.assert_persona_result("U", duplicate_rows, [footer])
+        edge.mc.assert_persona_result("PUBLIC", duplicate_rows, [footer])
 
 
 def test_persona_cleanup_revokes_exact_allowlist_row() -> None:

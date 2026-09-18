@@ -45,7 +45,7 @@ CANONICAL_ENVELOPE = {
     "x-user-roles": "member,reader",
     "x-user-groups": "engineering,search",
     "x-user-attributes-hash": "sha256:attributes",
-    "x-user-system-high": "false",
+    "x-user-marking-level": "false",
     "x-user-workroom-role": "member",
     "x-workroom-id": "wr-9a3d",
     "x-user-workroom-id": "wr-9a3d",

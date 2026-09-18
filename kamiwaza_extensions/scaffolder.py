@@ -87,14 +87,14 @@ def _runtime_lib_pins() -> tuple[str, str]:
     M4: fallback ranges aligned to the current bundle so a corrupt-bundle
     fallback doesn't render stricter pins than ``kz-ext doctor`` enforces.
     """
-    # Runtime-path relocation is a 0.5 contract. Falling back to an older
+    # The generic identity envelope is a 0.6 contract. Falling back to an older
     # series would render a scaffold whose Dockerfile expects APIs and
     # packaged runtime scripts that the resolved library does not provide.
-    fallback_py = ">=0.5,<0.6"
+    fallback_py = ">=0.6,<0.7"
     # npm semver uses whitespace (not comma) for AND between bounds. Rendered
     # directly into a scaffolded ``frontend/package.json``; a comma here makes
     # ``npm install`` fail to parse the spec (round-5 ultrareview C1).
-    fallback_ts = ">=0.5 <0.6"
+    fallback_ts = ">=0.6 <0.7"
     try:
         bundle = json.loads(
             (

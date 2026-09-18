@@ -49,7 +49,9 @@ class ValidationHeaders(BaseModel):
     user_attributes_hash: Optional[str] = Field(
         default=None, alias="x-user-attributes-hash"
     )
-    user_system_high: Optional[str] = Field(default=None, alias="x-user-system-high")
+    user_marking_level: Optional[str] = Field(
+        default=None, alias="x-user-marking-level"
+    )
     workroom_id: Optional[str] = Field(default=None, alias="x-workroom-id")
     user_workroom_id: Optional[str] = Field(default=None, alias="x-user-workroom-id")
     user_workroom_role: Optional[str] = Field(
@@ -75,7 +77,7 @@ class ValidationHeaders(BaseModel):
             "x-user-roles": _split_header_list(lowered, "x-user-roles"),
             "x-user-groups": _split_header_list(lowered, "x-user-groups"),
             "x-user-attributes-hash": lowered.get("x-user-attributes-hash"),
-            "x-user-system-high": lowered.get("x-user-system-high"),
+            "x-user-marking-level": lowered.get("x-user-marking-level"),
             "x-workroom-id": lowered.get("x-workroom-id"),
             "x-user-workroom-id": lowered.get("x-user-workroom-id"),
             "x-user-workroom-role": lowered.get("x-user-workroom-role"),

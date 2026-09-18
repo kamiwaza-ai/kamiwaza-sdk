@@ -1,4 +1,5 @@
 include README.md
+include CHANGELOG.md
 include LICENSE
 recursive-include kamiwaza_sdk *.py
 recursive-include kamiwaza_sdk *.typed

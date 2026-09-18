@@ -25,7 +25,7 @@
 > (`kamiwaza_extensions/templates/app/frontend/Dockerfile`) is the source of
 > truth for the **dual-artifact Next.js runtime**: the exact
 > `next@15.5.24` pin, the `withKamiwazaAppGarden()` config wrapper, the boot
-> relocation entrypoint, and the `0.5.x` runtime libraries
+> relocation entrypoint, and the `0.6.x` runtime libraries
 > (`@kamiwaza-ai/extensions-lib` / `kamiwaza-extensions-lib`). Apps scaffolded
 > before this change ran `next build` **at every spawn** (minutes of startup,
 > GBs of memory); everything in this document assumes that rebuild is gone.
@@ -491,7 +491,7 @@ Next.js is pinned **exactly** (`15.5.24` — no `^`/`~`). The relocation contrac
 scripts/test-next-runtime-canary.sh
 
 # Or test an explicit tarball or registry version:
-scripts/test-next-runtime-canary.sh --extlib ./kamiwaza-ai-extensions-lib-0.5.0.tgz
+scripts/test-next-runtime-canary.sh --extlib ./kamiwaza-ai-extensions-lib-0.6.0.tgz
 ```
 
 The canary builds both variants of the fixture (`tests/next-runtime-canary/`),

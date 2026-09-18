@@ -6,7 +6,7 @@ phases, but a pair of existing clusters can be qualified directly with these
 JSON contracts.
 
 The provider executes the exact nine registered cases for each selected
-mesh-edge: three clearance retrievals, three tenant-negative retrievals,
+mesh-edge: three access_tier retrievals, three tenant-negative retrievals,
 authorized dataset listing, a receiver job marker, and an unonboarded-user
 denial. Required cases fail; they are never silently skipped.
 
@@ -89,8 +89,10 @@ provider artifacts:
 }
 ```
 
-Set the public Keycloak origin and, when a gate package is not already
-installed on the receiver, its immutable package index and digest:
+Set the public Keycloak origin and the expected SDK gate wheel digest, including
+when reusing an installed package. A package index is required for fresh
+installation. Reuse requires matching package spec, version, digest, active
+status, and classpath; a matching name or classpath alone is insufficient:
 
 ```bash
 export KAMIWAZA_SHARED_IDP_PUBLIC_URL=https://idp.example
@@ -198,3 +200,27 @@ for up to 30 seconds: Core emits it before recording or dispatching a job.
 Once a job ID is accepted, polling occurs outside that retry boundary. Denials,
 other 503 reasons and ambiguous transport failures propagate without resubmission.
 Run both paths when qualifying a provisioned federation smoke.
+
+## Provider revision 2 cutover
+
+SDK 1.2.0 emits revision 2 plans and fixture state for these providers:
+
+- `sdk.federation.shared-idp@v2`
+- `sdk.federation.model-mesh@v2`
+- `sdk.federation.delegated-workload@v2`
+
+All three consume the neutral access-tier fixture and updated persona names.
+Shared-IdP case IDs changed; model-mesh and delegated-workload case IDs remain
+unchanged. These implementation revisions are distinct from the unchanged
+scenario IDs ending in `/v1`, protocol version `v1`, ownership scheme, delegated
+feature ID, and JSON schema versions. Existing profile `include` entries
+continue to select the same scenarios. Inference and golden providers remain
+at revision 1.
+
+Before upgrading an owned fixture, clean it with the matching previous provider
+and retain its evidence. Generate fresh plans and state with the new provider;
+prepare/run refuse previous-revision plans, and run/teardown refuse old fixture
+state before opening clients or mutating resources. Do not edit revision strings
+in saved state to bypass ownership checks. This release has no automatic
+state conversion or takeover of old/foreign fixtures. Externally managed identity
+fixtures remain externally owned and are never deleted as part of this cutover.

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from . import _mini_clearance as mc
+from . import _mini_access_tier as mc
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +21,10 @@ def provision_gated_dataset(state: dict[str, Any]) -> None:
     if wheel is None:
         pytest.skip("gate-packages wheel/index not configured on the receiver")
     assert wheel is not None
-    dataset_path = os.getenv("MINI_CLEARANCE_DATASET_PATH", "").strip()
+    dataset_path = os.getenv("MINI_ACCESS_TIER_DATASET_PATH", "").strip()
     if not dataset_path:
         pytest.skip(
-            "MINI_CLEARANCE_DATASET_PATH not set — set M5_TEST_KUBECTL for "
+            "MINI_ACCESS_TIER_DATASET_PATH not set — set M5_TEST_KUBECTL for "
             "automatic provisioning or run tests.integration._gate_fixture provision"
         )
 
@@ -33,13 +33,13 @@ def provision_gated_dataset(state: dict[str, Any]) -> None:
         (
             item
             for item in receiver.cluster.list_attributes()
-            if item.name == "clearance"
+            if item.name == "access_tier"
         ),
         None,
     )
-    state["clearance_prior_state"] = existing.state if existing else None
+    state["access_tier_prior_state"] = existing.state if existing else None
     state["installed_gate_package"] = not mc._already_installed(receiver)
-    mc.declare_clearance_attribute(receiver)
+    mc.declare_access_tier_attribute(receiver)
     mc.install_gate_package(receiver, wheel[0], wheel[1])
     urn = receiver.datasets.create(
         name=f"eng10096-dataset-{uuid.uuid4().hex[:10]}",
@@ -89,19 +89,19 @@ def _remove_federation(client: Any, federation_id: str, side: str) -> None:
     )
 
 
-def _restore_clearance_schema(state: dict[str, Any], receiver: Any) -> None:
-    if "clearance_prior_state" not in state:
+def _restore_access_tier_schema(state: dict[str, Any], receiver: Any) -> None:
+    if "access_tier_prior_state" not in state:
         return
-    prior_state = state.get("clearance_prior_state")
+    prior_state = state.get("access_tier_prior_state")
     if prior_state != "declared":
         _best_effort(
-            "clearance deprecate",
-            lambda: receiver.cluster.deprecate_attribute("clearance"),
+            "access_tier deprecate",
+            lambda: receiver.cluster.deprecate_attribute("access_tier"),
         )
     if prior_state not in {"declared", "deprecated"}:
         _best_effort(
-            "clearance withdraw",
-            lambda: receiver.cluster.withdraw_attribute("clearance"),
+            "access_tier withdraw",
+            lambda: receiver.cluster.withdraw_attribute("access_tier"),
         )
 
 
@@ -145,5 +145,5 @@ def cleanup(state: dict[str, Any]) -> None:
         _best_effort(
             "gate package", lambda: receiver.gates.packages.uninstall("acme-gates")
         )
-    _restore_clearance_schema(state, receiver)
+    _restore_access_tier_schema(state, receiver)
     _remove_federations(state, initiator, receiver)

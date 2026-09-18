@@ -1,7 +1,7 @@
 """Minimal Keycloak admin client for shared_idp dev seeding.
 
 The platform API cannot create the shared *realm* / ROPC client / persona users /
-clearance mapper — that is Keycloak-admin territory. This module is a small,
+access_tier mapper — that is Keycloak-admin territory. This module is a small,
 idempotent wrapper over the Keycloak Admin REST API covering exactly what the
 ``idp`` command group needs to stand up a shared_idp realm the way the L3 fixture
 did by hand. It is intentionally dependency-light (``requests`` only) and
@@ -17,8 +17,8 @@ from urllib.parse import quote
 
 import requests  # type: ignore[import-untyped]
 
+from .owned_realm import OWNED_REALM_ATTRIBUTE as OWNED_REALM_ATTRIBUTE
 from .owned_realm import (
-    OWNED_REALM_ATTRIBUTE as OWNED_REALM_ATTRIBUTE,
     OwnedRealmLifecycle,
 )
 
@@ -151,7 +151,7 @@ class KeycloakAdmin:
 
     def set_unmanaged_attributes(self, realm: str, *, policy: str = "ENABLED") -> None:
         """Set the realm user-profile ``unmanagedAttributePolicy`` so persona
-        custom attributes (e.g. ``clearance``) are accepted (ENG-4946).
+        custom attributes (e.g. ``access_tier``) are accepted (ENG-4946).
 
         NOTE: this lives on the user-profile config endpoint, NOT the realm
         representation (setting it on the realm rep 400s "Unrecognized field").
@@ -204,7 +204,7 @@ class KeycloakAdmin:
         self, realm: str, client_uuid: str, *, attribute: str
     ) -> None:
         """Ensure a user-attribute -> access-token claim mapper on the client so a
-        persona's ``clearance`` (etc.) is projected as a top-level token claim.
+        persona's ``access_tier`` (etc.) is projected as a top-level token claim.
         """
         base = f"/realms/{quote(realm)}/clients/{client_uuid}/protocol-mappers/models"
         existing = self._ok_json(self._req("GET", base), "list protocol mappers") or []

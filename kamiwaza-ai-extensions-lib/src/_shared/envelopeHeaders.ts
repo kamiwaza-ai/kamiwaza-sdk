@@ -26,7 +26,7 @@ export const ENVELOPE_AUTH_HEADERS = [
     "x-user-roles",
     "x-user-groups",
     "x-user-attributes-hash",
-    "x-user-system-high",
+    "x-user-marking-level",
     "x-workroom-id",
     "x-user-workroom-id",
     "x-user-workroom-role",

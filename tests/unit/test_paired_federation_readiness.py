@@ -17,7 +17,7 @@ def _wiring(persona):
     return {
         "name": "receiver",
         "urn": "urn:fixture",
-        "personas": {"U": {"client": persona, "authenticator": Mock()}},
+        "personas": {"PUBLIC": {"client": persona, "authenticator": Mock()}},
     }
 
 
@@ -34,7 +34,7 @@ def test_unready_authority_prevents_remote_mutations(monkeypatch, case):
     with pytest.raises(APIError) as caught:
         if case == "retrieval":
             shared.test_required_mesh_retrieval_returns_exact_post_gate_rows(
-                "U", wiring, SimpleNamespace(base_url="https://source/api")
+                "PUBLIC", wiring, SimpleNamespace(base_url="https://source/api")
             )
         elif case == "job":
             shared.test_required_mesh_job_reaches_receiver_and_returns_marker(wiring)

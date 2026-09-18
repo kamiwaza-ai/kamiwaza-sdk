@@ -806,7 +806,7 @@ class TestRunnerAuthExtensionTypeGate:
             ({"template_type": "tool"}, "tool"),
             # Name-prefix heuristic catches extensions whose metadata
             # has neither field set (also via infer_extension_type).
-            ({"name": "tool-icism-parser"}, "tool"),
+            ({"name": "tool-confidentiality-parser"}, "tool"),
             ({"name": "service-milvus"}, "service"),
         ],
     )
@@ -1305,6 +1305,7 @@ class TestPollAndPrintUrls:
         get TWO URLs printed, not one — and the loop must terminate as
         soon as both are resolved, not spin to the 60s deadline."""
         import threading
+
         from kamiwaza_extensions import dev_local
 
         runner = self._runner()
@@ -1346,6 +1347,7 @@ class TestPollAndPrintUrls:
         the moment the single URL is resolved (PR #91 round-3 / Claude
         review)."""
         import threading
+
         from kamiwaza_extensions import dev_local
 
         runner = self._runner()

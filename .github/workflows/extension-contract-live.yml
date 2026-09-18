@@ -33,7 +33,7 @@ on:
       - 'tests/e2e/extension_contract/**'
       - 'tests/integration/gate_packages/**'
       - 'tests/integration/_gate_fixture.py'
-      - 'tests/integration/_mini_clearance.py'
+      - 'tests/integration/_mini_access_tier.py'
       - 'kamiwaza_sdk/validation/federation_fixture.py'
       - 'kamiwaza_sdk/**'
       - 'pyproject.toml'

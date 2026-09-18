@@ -18,13 +18,9 @@ from kamiwaza_sdk.validation.inference_state import runtime_ownership_key
 from kamiwaza_sdk.validation.models import FixtureMutation
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.testkit import RecordingFixtureStateWriter
-from tests.contract.validation.test_federation_provider import (
-    _Admin,
-    _AdminFactory,
-    _ClusterFactory,
-    _profile,
-    _runtime,
-)
+from tests.contract.validation.federation_cluster_fakes import _ClusterFactory
+from tests.contract.validation.federation_idp_fakes import _Admin, _AdminFactory
+from tests.contract.validation.federation_test_support import _profile, _runtime
 
 pytestmark = pytest.mark.contract
 
@@ -68,10 +64,10 @@ def test_external_resolution_uses_customer_issuer_and_advertises_external_mode(
         "realm": "shared",
         "client_id_ref": SHARED_REALM_EXTERNAL_CLIENT_ID_REF,
         "persona_usernames": [
-            "fed-clr-u",
-            "fed-clr-s",
-            "fed-clr-ts",
-            "fed-clr-unonboarded",
+            "fed-tier-public",
+            "fed-tier-private",
+            "fed-tier-confidential",
+            "fed-tier-unonboarded",
             "fed-tenant-missing",
             "fed-tenant-legacy-only",
             "fed-tenant-nondefault",
@@ -87,6 +83,7 @@ def test_external_prepare_never_mutates_idp_and_uses_external_client_reference(
         "KAMIWAZA_SHARED_IDP_EXTERNAL_ISSUER",
         "https://customer-idp.test/realms/shared",
     )
+    monkeypatch.setenv("KAMIWAZA_FEDERATION_GATE_HASH", "sha256:" + "0" * 64)
     factory = _ClusterFactory()
     admin = _Admin()
     provider = FederationLifecycleProvider(
@@ -113,6 +110,7 @@ def test_teardown_is_idempotent_after_resources_are_already_absent(
 ) -> None:
     monkeypatch.setenv("KAMIWAZA_SHARED_IDP_PUBLIC_URL", "https://idp.test")
     monkeypatch.setenv("KAMIWAZA_VALIDATION_RUN_ID", "run-federation-1")
+    monkeypatch.setenv("KAMIWAZA_FEDERATION_GATE_HASH", "sha256:" + "0" * 64)
     factory = _ClusterFactory()
     admin = _Admin()
     provider = FederationLifecycleProvider(
@@ -138,6 +136,7 @@ def test_legacy_owned_state_without_provider_tag_remains_reconcilable(
 ) -> None:
     monkeypatch.setenv("KAMIWAZA_SHARED_IDP_PUBLIC_URL", "https://idp.test")
     monkeypatch.setenv("KAMIWAZA_VALIDATION_RUN_ID", "run-federation-1")
+    monkeypatch.setenv("KAMIWAZA_FEDERATION_GATE_HASH", "sha256:" + "0" * 64)
     factory = _ClusterFactory()
     admin = _Admin()
     provider = FederationLifecycleProvider(
@@ -216,7 +215,7 @@ def test_external_token_client_uses_issuer_without_admin_credentials(
 
     token = KeycloakTokenClient(
         "https://customer-idp.test/realms/shared", verify=False
-    ).ropc_token("ignored", "customer-cli", "fed-clr-u", "persona-secret")
+    ).ropc_token("ignored", "customer-cli", "fed-tier-public", "persona-secret")
 
     assert token == "jwt-token"
     assert captured["url"] == (
