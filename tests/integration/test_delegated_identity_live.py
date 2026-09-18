@@ -93,11 +93,12 @@ def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
             verify=session.verify,
             allow_redirects=False,
         )
+        request_headers = {name.lower() for name in anonymous.request.headers}
         assert not {
-            "Authorization",
-            "X-Kamiwaza-Workload-Assertion",
-            "DPoP",
-        }.intersection(anonymous.request.headers), "negative control sent credentials"
+            "authorization",
+            "x-kamiwaza-workload-assertion",
+            "dpop",
+        }.intersection(request_headers), "negative control sent credentials"
         assert anonymous.status_code in {400, 401, 403}, (
             "untrusted caller was not explicitly rejected by the enabled "
             f"delegated-workload route: HTTP {anonymous.status_code}"
