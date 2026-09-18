@@ -443,3 +443,26 @@
   scenario_name: "Application generation path: scaffold, validate, and local loop"
   evidence_provenance: cycle-authored
   unverified_operations: [kz_ext_dev_deploy]
+
+# ENG-12432. The capability document defines this arm precisely: "resolve a
+# template, deploy, poll status, and stop", plus a direct assertion of the
+# reserved-environment-key boundary because that one is a security claim. The
+# mapped test is exactly that run and nothing wider.
+#
+# Pinned to the single node-id, NOT the module. The sibling
+# test_app_garden_catalog_and_image_readiness in the same file is deliberately
+# unmapped: a catalog listing establishes nothing about deploying, and the
+# ticket rules out a catalog-only pass. A module glob would have let that test
+# alone emit a record for this capability.
+#
+# Scope a reader should know, since the kit marks a capability characterized on
+# one passing record: this run establishes resolve/deploy/monitor/retire and
+# the env-key boundary. It does NOT exercise install_by_name, the stable-HTTPS
+# routing guarantee, or ephemeral session purging. Those are guarantees of the
+# document that no evidence covers yet -- they are candidates for a second
+# mapped test, not a reason to withhold this one, which is the arm the document
+# asks for.
+- pattern: "tests/integration/test_app_garden_lifecycle_live.py::test_app_garden_deploy_lifecycle_and_reserved_env_keys"
+  capability_ids: [apps.app-garden]
+  scenario_name: "App Garden deploy lifecycle and reserved environment-key boundary"
+  evidence_provenance: cycle-authored
