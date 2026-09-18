@@ -55,10 +55,14 @@ SETTLED_STATUSES = frozenset(
     {"DEPLOYED", "RUNNING", "FAILED", "STOP_REQUESTED", "STOPPED"}
 )
 RUNNING_STATUSES = frozenset({"DEPLOYED", "RUNNING"})
-# What a successful stop must reach. STOP_REQUESTED is accepted here because the
-# platform may reap the row before a later poll observes STOPPED; the finalizer
-# then proves the row is gone.
-STOPPED_STATUSES = frozenset({"STOPPED", "STOP_REQUESTED"})
+# What a successful stop must reach. STOP_REQUESTED is deliberately NOT accepted:
+# it records that the request was received, not that the workload stopped, so a
+# platform that acknowledges a stop and never performs it would satisfy the
+# station while the workload kept running on a shared host. The reaping race the
+# earlier spelling reached for is handled where it belongs, by checking the row's
+# absence in _assert_retirement_station. test_tool_shed_lifecycle_live takes the
+# same line for the same reason.
+STOPPED_STATUSES = frozenset({"STOPPED"})
 
 # Images served from a developer's local registry cannot be pulled by the
 # cluster, so a template referencing one would fail the deploy for reasons that
@@ -116,6 +120,17 @@ def _deployable_template(client) -> AppTemplate:
     )
 
 
+def _is_listed(client, name: str) -> bool:
+    """Whether the platform still carries a deployment row under this name.
+
+    One predicate with two callers that read it in opposite directions: the
+    retirement station treats absence as a completed stop, and the teardown
+    finalizer treats presence as a leak. Spelling "still listed" out twice would
+    leave the two free to drift apart.
+    """
+    return any(d.name == name for d in client.apps.list_deployments())
+
+
 def _purge(client, deployment_id: UUID) -> None:
     """Remove the deployment row, not merely stop it.
 
@@ -159,7 +174,7 @@ def retired_app_deployments(live_kamiwaza_client) -> Iterator[list[str]]:
         # leak on a perfectly healthy run. The extensions finalizer already
         # polls; this keeps the three consistent.
         for _ in range(30):
-            if not any(d.name == name for d in client.apps.list_deployments()):
+            if not _is_listed(client, name):
                 break
             time.sleep(1)
         else:
@@ -320,15 +335,33 @@ def _assert_retirement_station(client, deployment_id: UUID, name: str) -> None:
         f"stop_deployment({deployment_id}) did not report success for {name}"
     )
     deadline = time.monotonic() + 300
-    status = client.apps.get_deployment_status(deployment_id)
-    while time.monotonic() < deadline:
+    status: str | None = None
+    while True:
+        try:
+            status = client.apps.get_deployment_status(deployment_id)
+        except APIError:
+            # The platform may reap a stopped deployment's row, and then answers
+            # a status lookup for it with an error. That is a completed stop --
+            # but only when the row really is gone: an error raised while the row
+            # is still listed is a genuine fault, and is re-raised rather than
+            # read as a stop.
+            if _is_listed(client, name):
+                raise
+            return
         if status in STOPPED_STATUSES:
             return
+        # The other way a stop completes: the row was reaped between polls.
+        # Checked after the status poll, so a deployment sitting in
+        # STOP_REQUESTED keeps waiting here rather than passing the station.
+        if not _is_listed(client, name):
+            return
+        if time.monotonic() >= deadline:
+            break
         time.sleep(5)
-        status = client.apps.get_deployment_status(deployment_id)
     pytest.fail(
-        f"deployment {name} did not reach a stopped state within 300s of "
-        f"stop_deployment (last status {status!r}); the stop station is unproven"
+        f"deployment {name} did not stop within 300s of stop_deployment: its row "
+        f"is still listed with status {status!r}. STOP_REQUESTED records only "
+        "that the request was accepted, so the stop station is unproven"
     )
 
 

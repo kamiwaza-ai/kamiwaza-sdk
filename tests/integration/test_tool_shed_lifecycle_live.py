@@ -27,9 +27,10 @@ live deployment rather than assumed:
 
 from __future__ import annotations
 
+import json
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import suppress
 from typing import NoReturn
 from uuid import UUID, uuid4
@@ -56,6 +57,11 @@ MCP_INITIALIZE = {
         "clientInfo": {"name": "eng12432-evidence", "version": "0"},
     },
 }
+
+# Tools serve the streamable-HTTP protocol under this path; see the probe
+# heuristics in ``kamiwaza_extensions/payload_builder.py``, which name ``/mcp``
+# as the streamable-HTTP location and ``/sse`` as FastMCP's.
+MCP_PATH = "/mcp"
 
 DEPLOYED_STATUSES = frozenset({"DEPLOYED", "RUNNING"})
 # Retirement is asserted positively, and only STOPPED counts. "not in
@@ -249,6 +255,69 @@ def test_tool_shed_deploy_health_discovery_and_stop(
     # workload on a shared host matters most.
 
 
+def _mcp_endpoint(advertised_url: str) -> str:
+    """The MCP endpoint for a tool, derived from the URL the platform advertises.
+
+    On the build this was captured against, ``ToolDeployment.url`` is the tool's
+    service root and the path has to be appended -- inferred, not read off the
+    wire: the handshake succeeds with ``/mcp`` appended, which it could not if
+    the advertised URL were already the protocol path, since the gateway answers
+    ``/mcp/mcp`` with its HTML catch-all.
+
+    The schema, though, describes the field as "Public URL for the Tool server
+    (MCP endpoint)", so a build that takes that literally is entitled to
+    advertise the protocol path itself. Appending unconditionally would probe
+    ``/mcp/mcp`` there and fail a healthy tool, so the suffix is added only when
+    it is not already present.
+    """
+    base = advertised_url.rstrip("/")
+    if base.endswith(MCP_PATH):
+        return base
+    return f"{base}{MCP_PATH}"
+
+
+def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -> dict:
+    """The JSON-RPC envelope from an MCP streamable-HTTP reply.
+
+    The transport lets the server answer either as ``application/json`` or as a
+    ``text/event-stream`` frame, and this client's ``Accept`` header invites
+    both, so rejecting the stream form would fail a compliant server.
+
+    What must still be rejected is the gateway's HTML catch-all: it answers an
+    unknown path under a tool's route with 200 and the dashboard page rather than
+    a 404, so an HTTP 200 alone proves nothing about what is serving the path.
+
+    Takes the decoded lines rather than the response so the parsing is testable
+    without a cluster; ``tests/unit/test_tool_shed_mcp_helpers.py`` exercises
+    both transports and the catch-all.
+    """
+    transport = content_type.lower()
+    if "json" in transport:
+        return json.loads("\n".join(body_lines))
+    if "text/event-stream" in transport:
+        for line in body_lines:
+            if not line.startswith("data:"):
+                # Comment lines (":") and the event/id fields carry no payload,
+                # and a keepalive frame is not the reply. Only `data:` can be.
+                continue
+            payload = line[len("data:") :].strip()
+            try:
+                frame = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(frame, dict):
+                return frame
+        raise AssertionError(
+            f"the event-stream reply from {name} carried no JSON object in any "
+            "data: frame, so no JSON-RPC envelope was returned"
+        )
+    raise AssertionError(
+        f"MCP initialize against {name} returned content-type {content_type!r}; "
+        "the gateway fell through to its HTML catch-all, so nothing is serving "
+        f"{MCP_PATH} at the advertised URL"
+    )
+
+
 def _assert_mcp_handshake(client, deployment, name: str) -> None:
     """Prove the tool answers MCP at the URL the platform advertises.
 
@@ -264,29 +333,29 @@ def _assert_mcp_handshake(client, deployment, name: str) -> None:
     exercises the document's actual guarantee: a stable HTTPS URL usable by any
     MCP-compatible client.
     """
-    url = f"{deployment.url.rstrip('/')}/mcp"
+    url = _mcp_endpoint(deployment.url)
     if client.authenticator is not None:
         client.authenticator.authenticate(client.session)
-    response = client.session.post(
+    # Streamed so an event-stream reply can be read frame by frame: the envelope
+    # is taken from the first data: frame instead of waiting for a stream the
+    # server is entitled to hold open, which would otherwise stall until the
+    # read timeout.
+    with client.session.post(
         url,
         json=MCP_INITIALIZE,
         headers={"Accept": "application/json, text/event-stream"},
         timeout=60,
-    )
-    assert response.status_code == 200, (
-        f"MCP initialize against {name} returned HTTP {response.status_code}"
-    )
-
-    # The gateway answers an unknown path under a tool's route with 200 and the
-    # dashboard HTML rather than a 404, so a 200 alone proves nothing.
-    content_type = response.headers.get("content-type", "")
-    assert "json" in content_type.lower(), (
-        f"MCP initialize against {name} returned content-type "
-        f"{content_type!r}; the gateway fell through to its HTML catch-all, "
-        "so nothing is serving /mcp at the advertised URL"
-    )
-
-    body = response.json()
+        stream=True,
+    ) as response:
+        assert response.status_code == 200, (
+            f"MCP initialize against {name} at {url} returned HTTP "
+            f"{response.status_code}"
+        )
+        body = _jsonrpc_envelope(
+            response.headers.get("content-type", ""),
+            response.iter_lines(decode_unicode=True),
+            name,
+        )
     # Without these two, an uncorrelated body carrying the right-looking keys
     # would pass as a handshake.
     assert body.get("jsonrpc") == "2.0", (

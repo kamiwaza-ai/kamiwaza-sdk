@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import NoReturn
 from urllib.error import URLError
@@ -80,9 +81,53 @@ def _run(
     return result
 
 
-def _run_cleanup(command: list[str], *, cwd: Path) -> None:
-    subprocess.run(
-        command, cwd=cwd, text=True, capture_output=True, timeout=300, check=False
+def _down_compose_stacks(stacks: list[Path]) -> list[str]:
+    """Take each compose stack down, describing every teardown that failed.
+
+    A named seam rather than inline fixture code so the return-code check is
+    itself testable: the whole point of this function is that a nonzero exit is
+    reported instead of discarded, and that property is pinned in
+    ``tests/unit/test_app_generation_compose_teardown.py`` without needing Docker.
+    """
+    failures: list[str] = []
+    for stack in stacks:
+        result = subprocess.run(
+            ["docker", "compose", "down", "-v"],
+            cwd=stack,
+            text=True,
+            capture_output=True,
+            timeout=300,
+            check=False,
+        )
+        if result.returncode != 0:
+            failures.append(
+                f"{stack} exited {result.returncode}: {result.stderr.strip()}"
+            )
+    return failures
+
+
+@pytest.fixture
+def composed_down() -> Iterator[list[Path]]:
+    """Take down every compose stack a test starts, and check that it worked.
+
+    A fixture finalizer rather than a ``finally`` block, for the two reasons the
+    live modules in this suite give: the directory is registered *before* the
+    command that starts the stack, so a run that started containers and then
+    failed while reporting them is still torn down; and a teardown failure
+    surfaces as its own ERROR rather than replacing the body's exception, which
+    is what a raising ``finally`` does.
+
+    The return code is the point. Discarding it -- an earlier spelling of this
+    cleanup did -- let ``docker compose down`` fail while the test stayed green,
+    leaving detached containers and named volumes on a shared Docker host.
+    """
+    stacks: list[Path] = []
+    yield stacks
+
+    leaked = _down_compose_stacks(stacks)
+    assert not leaked, (
+        "docker compose down failed, so containers or volumes are leaked on this "
+        f"host: {'; '.join(leaked)}"
     )
 
 
@@ -217,7 +262,9 @@ def _parse_service_urls(output: str) -> dict[str, str]:
     return urls
 
 
-def test_kz_ext_dev_local_serves_the_scaffolded_app(scaffold: Path) -> None:
+def test_kz_ext_dev_local_serves_the_scaffolded_app(
+    scaffold: Path, composed_down: list[Path]
+) -> None:
     """The local loop builds and serves both services against this checkout.
 
     This is the station that proves ``--sdk-repo`` does its job: the scaffold
@@ -228,43 +275,44 @@ def test_kz_ext_dev_local_serves_the_scaffolded_app(scaffold: Path) -> None:
     if shutil.which("docker") is None:
         _skip_or_fail("kz-ext dev local requires docker on PATH")
 
-    try:
-        result = _run(
-            [
-                str(_kz_ext()),
-                "dev",
-                "local",
-                "--detach",
-                "--sdk-repo",
-                str(REPO_ROOT),
-            ],
-            cwd=scaffold,
-            timeout=1800,
-        )
-        urls = _parse_service_urls(f"{result.stdout}\n{result.stderr}")
-        assert {"backend", "frontend"} <= urls.keys(), (
-            f"kz-ext dev local did not report both service URLs; parsed {urls!r}"
-        )
+    # Registered before the command that starts the stack: a run that brought
+    # containers up and then failed is still torn down.
+    composed_down.append(scaffold)
 
-        health = json.loads(_wait_for_url(f"{urls['backend']}/health"))
-        assert health["status"] == "ok"
-        assert health["app"] == "eng12432app"
+    result = _run(
+        [
+            str(_kz_ext()),
+            "dev",
+            "local",
+            "--detach",
+            "--sdk-repo",
+            str(REPO_ROOT),
+        ],
+        cwd=scaffold,
+        timeout=1800,
+    )
+    urls = _parse_service_urls(f"{result.stdout}\n{result.stderr}")
+    assert {"backend", "frontend"} <= urls.keys(), (
+        f"kz-ext dev local did not report both service URLs; parsed {urls!r}"
+    )
 
-        info = _get_json(f"{urls['backend']}/api/info")
-        assert info["app_name"] == "eng12432app"
-        # Without --auth the document specifies an anonymous session.
-        assert info["use_auth"] is False, (
-            "a dev-local run without --auth should report an anonymous session"
-        )
+    health = json.loads(_wait_for_url(f"{urls['backend']}/health"))
+    assert health["status"] == "ok"
+    assert health["app"] == "eng12432app"
 
-        frontend_body = _wait_for_url(urls["frontend"])
-        assert b"eng12432app" in frontend_body, (
-            "the frontend did not render the scaffolded app name"
-        )
+    info = _get_json(f"{urls['backend']}/api/info")
+    assert info["app_name"] == "eng12432app"
+    # Without --auth the document specifies an anonymous session.
+    assert info["use_auth"] is False, (
+        "a dev-local run without --auth should report an anonymous session"
+    )
 
-        _assert_backend_image_carries_the_local_runtime_lib(scaffold)
-    finally:
-        _run_cleanup(["docker", "compose", "down", "-v"], cwd=scaffold)
+    frontend_body = _wait_for_url(urls["frontend"])
+    assert b"eng12432app" in frontend_body, (
+        "the frontend did not render the scaffolded app name"
+    )
+
+    _assert_backend_image_carries_the_local_runtime_lib(scaffold)
 
 
 def _assert_backend_image_carries_the_local_runtime_lib(scaffold: Path) -> None:
