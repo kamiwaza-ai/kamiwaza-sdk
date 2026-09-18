@@ -500,3 +500,31 @@
   capability_ids: [tools.mcp-tool-shed]
   scenario_name: "Tool Shed deploy, MCP protocol handshake, discovery and stop"
   evidence_provenance: cycle-authored
+
+# ENG-12432. extensions.developer-path asks whether a customer's own developers
+# can extend the platform. Its guarantees are toolchain scaffolding, a real
+# iterate loop that builds and pushes, a published extension becoming a platform
+# resource, and a documented guide.
+#
+# `kz_ext_dev_deploy` is declared unverified, so every record this entry can emit
+# derives failed with a named skipped step. The deploy stage was exercised by
+# hand on the evidence host and did not complete; the reason is recorded with the
+# staged evidence, which is internal. It is declared here rather than silently
+# omitted so the record states which station is missing instead of implying the
+# whole path was walked.
+#
+# This is a module glob for the same reason as the app-generation entry: the two
+# matched tests are stations of one path measured together, and while
+# kz_ext_dev_deploy is declared no subset of them can emit a passing record. Both
+# tests are needed for the claim -- the scaffold alone says nothing about the
+# platform resource, and the platform resource alone says nothing about kz-ext.
+#
+# Deliberately NOT mapped here: tests/integration/test_extensions_live.py. It
+# exercises the extension API's CRUD and error paths without invoking the
+# toolchain at all, and a capability about kz-ext cannot be established by calls
+# that never run it.
+- pattern: "tests/integration/test_extension_developer_path_live.py::*"
+  capability_ids: [extensions.developer-path]
+  scenario_name: "Extension developer path: toolchain scaffold and platform resource"
+  evidence_provenance: cycle-authored
+  unverified_operations: [kz_ext_dev_deploy]
