@@ -49,18 +49,20 @@ def _stored_file(client, repo_id: str, filename: str):
     )
 
 
+def _is_stored(file) -> bool:
+    return file is not None and model_file_download_satisfied(file)
+
+
+def _is_pending(file) -> bool:
+    return file is not None and bool(file.is_downloading or file.dl_requested_at)
+
+
 def _require_cold_target(repo_id: str, hub_file, stored_file) -> None:
-    if model_file_download_satisfied(hub_file) or (
-        stored_file and model_file_download_satisfied(stored_file)
-    ):
+    if _is_stored(hub_file) or _is_stored(stored_file):
         pytest.skip(
             f"{repo_id} {hub_file.name} is already stored; no cold run possible"
         )
-    if (
-        hub_file.is_downloading
-        or hub_file.dl_requested_at
-        or (stored_file and (stored_file.is_downloading or stored_file.dl_requested_at))
-    ):
+    if _is_pending(hub_file) or _is_pending(stored_file):
         pytest.skip(f"{repo_id} {hub_file.name} already has a download in progress")
 
 
