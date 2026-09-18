@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Iterator
 from contextlib import suppress
 from typing import NoReturn
 from uuid import UUID, uuid4
@@ -116,6 +117,42 @@ def _purge(client, deployment_id: UUID) -> None:
         client.delete(f"/apps/deployment/{deployment_id}/purge")
 
 
+@pytest.fixture
+def retired_app_deployments(live_kamiwaza_client) -> Iterator[list[str]]:
+    """Retire every deployment this test names, and prove each one is gone.
+
+    A fixture finalizer rather than a ``finally`` block, for two reasons the
+    inline form cannot cover on a shared host:
+
+    * **Reconciliation by name.** The test registers its run-unique name
+      *before* deploying, so a deploy whose server side committed but whose
+      response then raised is still found and removed. An id captured after the
+      call is unreachable on that path.
+    * **Teardown failure stays visible.** pytest reports a finalizer error as
+      its own ERROR, so a failed retirement neither masks the test's failure nor
+      is masked by it. A `finally` block that raises would replace the original
+      exception, and one that suppresses would hide the leak.
+    """
+    client = live_kamiwaza_client
+    names: list[str] = []
+    yield names
+
+    leaked: list[str] = []
+    for name in names:
+        for deployment in client.apps.list_deployments():
+            if deployment.name != name:
+                continue
+            with suppress(APIError):
+                client.apps.stop_deployment(deployment.id)
+            _purge(client, deployment.id)
+        survivors = [d.name for d in client.apps.list_deployments() if d.name == name]
+        if survivors:
+            leaked.append(name)
+    assert not leaked, (
+        f"deployments survived stop + purge and are leaked on a shared host: {leaked}"
+    )
+
+
 def test_app_garden_catalog_and_image_readiness(live_kamiwaza_client) -> None:
     """Catalog and image-readiness stations, read-only.
 
@@ -142,7 +179,7 @@ def test_app_garden_catalog_and_image_readiness(live_kamiwaza_client) -> None:
 
 @pytest.mark.usefixtures("live_server_available")
 def test_app_garden_deploy_lifecycle_and_reserved_env_keys(
-    live_kamiwaza_client,
+    live_kamiwaza_client, retired_app_deployments
 ) -> None:
     """The documented arm: resolve, deploy, assert the key boundary, poll, retire."""
     client = live_kamiwaza_client
@@ -151,6 +188,10 @@ def test_app_garden_deploy_lifecycle_and_reserved_env_keys(
     pre_existing = {str(d.id) for d in client.apps.list_deployments()}
     sentinel = uuid4().hex
     name = _unique("eng12432-garden")
+
+    # Registered before the call that creates it: a deploy whose server side
+    # committed and whose response then raised is still reconciled by name.
+    retired_app_deployments.append(name)
 
     deployment = client.apps.deploy(
         template_id=template.id,
@@ -164,24 +205,14 @@ def test_app_garden_deploy_lifecycle_and_reserved_env_keys(
         starting_copies=1,
     )
     deployment_id = deployment.id
-    try:
-        # A pre-existing row must never be mistaken for a successful deploy.
-        assert str(deployment_id) not in pre_existing, (
-            "deploy returned a deployment that already existed before the call"
-        )
 
-        _assert_reserved_key_boundary(client, deployment_id, sentinel)
-        _assert_monitoring_stations(client, deployment_id, name)
-    finally:
-        with suppress(APIError):
-            client.apps.stop_deployment(deployment_id)
-        _purge(client, deployment_id)
-
-    # Retire is proven, not assumed: the row is gone from the listing.
-    remaining = {str(d.id) for d in client.apps.list_deployments()}
-    assert str(deployment_id) not in remaining, (
-        f"deployment {deployment_id} survived stop + purge"
+    # A pre-existing row must never be mistaken for a successful deploy.
+    assert str(deployment_id) not in pre_existing, (
+        "deploy returned a deployment that already existed before the call"
     )
+
+    _assert_reserved_key_boundary(client, deployment_id, sentinel)
+    _assert_monitoring_stations(client, deployment_id, name)
 
 
 def _assert_reserved_key_boundary(client, deployment_id: UUID, sentinel: str) -> None:
@@ -194,9 +225,17 @@ def _assert_reserved_key_boundary(client, deployment_id: UUID, sentinel: str) ->
         f"{RESERVED_PROBE_KEY} should be present in the read-back with a "
         f"platform-supplied value; got keys {sorted(env)[:12]}"
     )
-    assert env[RESERVED_PROBE_KEY] != f"reserved-{sentinel}", (
+    supplied = env[RESERVED_PROBE_KEY]
+    assert supplied != f"reserved-{sentinel}", (
         f"the caller-supplied value for {RESERVED_PROBE_KEY} survived into "
         "the deployment environment"
+    )
+    # Differing from the sentinel is not enough: None or "" would also differ,
+    # and the claim is that the platform supplies its OWN value for the key.
+    assert isinstance(supplied, str) and supplied.strip(), (
+        f"{RESERVED_PROBE_KEY} is present but carries no usable "
+        f"platform-supplied value ({supplied!r}); the caller's value being "
+        "discarded is only half the guarantee"
     )
 
     assert env.get(UNRESERVED_LOOKALIKE_KEY) == f"lookalike-{sentinel}", (
@@ -211,8 +250,13 @@ def _assert_reserved_key_boundary(client, deployment_id: UUID, sentinel: str) ->
 def _assert_monitoring_stations(client, deployment_id: UUID, name: str) -> None:
     """Status is observable and the deployment is reachable by its own id."""
     status = _wait_for_settled_status(client, deployment_id)
-    assert status not in {"FAILED"}, (
-        f"deployment {name} reached FAILED; the deploy station did not succeed"
+    # SETTLED_STATUSES deliberately includes the terminal non-running states so
+    # the poll stops; the deploy station is only satisfied by a running one.
+    # Excluding FAILED alone would let a deployment that settled STOPPED or
+    # STOP_REQUESTED pass as a successful deploy.
+    assert status in RUNNING_STATUSES, (
+        f"deployment {name} settled in {status!r}; the deploy station is "
+        f"satisfied only by {sorted(RUNNING_STATUSES)}"
     )
 
     fetched = client.apps.get_deployment(deployment_id)
@@ -224,11 +268,15 @@ def _assert_monitoring_stations(client, deployment_id: UUID, name: str) -> None:
         "a live deployment did not appear in list_deployments"
     )
 
-    # Instances are the platform's own account of what is running. A status
-    # string alone is not proof the deploy did anything.
-    if status in RUNNING_STATUSES:
-        instances = client.apps.list_instances(deployment_id)
-        assert isinstance(instances, list)
+    # Instances are the platform's own account of what is running, and a status
+    # string alone is not proof the deploy did anything — so this asserts there
+    # is at least one. A type check would pass on an empty list, which is
+    # exactly the state this station exists to rule out.
+    instances = client.apps.list_instances(deployment_id)
+    assert instances, (
+        f"deployment {name} reports {status!r} but the platform lists no "
+        "instances for it; a status field is not proof the deploy ran"
+    )
 
 
 def _wait_for_settled_status(
@@ -242,7 +290,11 @@ def _wait_for_settled_status(
             return status
         time.sleep(10)
         status = client.apps.get_deployment_status(deployment_id)
-    _skip_or_fail(
+    # NOT _skip_or_fail: the deployment request was accepted, so failure to
+    # settle is a failure of the mapped deploy/poll lifecycle rather than an
+    # absent prerequisite. Skipping here would let a real capability failure
+    # pass as an under-provisioned host whenever KZ_REQUIRE_* is unset.
+    pytest.fail(
         f"deployment {deployment_id} never settled within {timeout}s "
-        f"(last status {status!r}); the deploy station is unproven on this host"
+        f"(last status {status!r}); the deploy station did not complete"
     )

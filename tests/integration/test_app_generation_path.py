@@ -289,6 +289,42 @@ def _assert_backend_image_carries_the_local_runtime_lib(scaffold: Path) -> None:
         f"{probe.stdout.strip()!r}, but this checkout ships "
         f"{runtime_lib_version!r} — --sdk-repo did not take effect"
     )
+    _assert_runtime_lib_came_from_the_local_checkout(container)
+
+
+def _assert_runtime_lib_came_from_the_local_checkout(container: str) -> None:
+    """Version equality alone does not establish provenance.
+
+    An index install of the same version would satisfy it, so the claim that
+    ``--sdk-repo`` took effect needs evidence of *where* the module came from.
+    The override works by putting the checkout on ``PYTHONPATH`` rather than
+    installing a distribution, so the signal is the resolved module path: a
+    module served from the mounted source does not live under ``site-packages``.
+    """
+    probe = subprocess.run(
+        [
+            "docker",
+            "exec",
+            container,
+            "python",
+            "-c",
+            "import kamiwaza_extensions_lib as k; print(k.__file__)",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert probe.returncode == 0, (
+        f"could not resolve the runtime lib's module path: {probe.stderr.strip()}"
+    )
+    module_path = probe.stdout.strip()
+    assert module_path, "the runtime lib reported no module path"
+    assert "site-packages" not in module_path, (
+        f"the runtime library resolves from {module_path!r}, which is an "
+        "installed distribution rather than the mounted checkout — --sdk-repo "
+        "did not take effect, and the matching version only coincided"
+    )
 
 
 def _compose_container_id(scaffold: Path, service: str) -> str:

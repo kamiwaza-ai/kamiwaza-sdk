@@ -31,12 +31,14 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from contextlib import suppress
 from pathlib import Path
 from typing import NoReturn
 from uuid import uuid4
 
 import pytest
+import yaml
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.extensions import (
     CreateExtension,
@@ -111,14 +113,61 @@ def test_kz_ext_scaffolds_an_extension_the_deploy_stage_can_consume(
     manifest = json.loads(manifest_path.read_text())
     for key in MANIFEST_KEYS_THE_DEPLOY_CONSUMES:
         assert key in manifest, f"the manifest lacks {key!r}, which the deploy reads"
+        # Presence is not consumability: a null or blank value satisfies `in`
+        # while giving the deploy stage nothing to read.
+        value = manifest[key]
+        assert value is not None and value != "", (
+            f"the manifest's {key!r} is {value!r}; the deploy stage cannot "
+            "consume an empty value"
+        )
     assert manifest["name"] == "eng12432extpath"
+    assert manifest["type"] == "app"
+    assert isinstance(manifest["risk_tier"], int), (
+        f"risk_tier must be numeric for the deploy stage; got {manifest['risk_tier']!r}"
+    )
 
     compose = tmp_path / "docker-compose.yml"
     assert compose.is_file(), "the deploy stage derives services from the compose file"
+    services = (yaml.safe_load(compose.read_text()) or {}).get("services") or {}
+    assert services, (
+        "the generated compose file declares no services, so the deploy stage "
+        "would have nothing to build"
+    )
+
+
+@pytest.fixture
+def deleted_extensions(live_kamiwaza_client) -> Iterator[list[str]]:
+    """Delete every extension this test names, and prove each one is gone.
+
+    A fixture finalizer rather than a ``finally`` block: the name is registered
+    before the creating call, so a create whose server side committed and whose
+    response then raised is still reconciled; and a teardown failure surfaces as
+    its own ERROR rather than masking the test's failure or being masked by it.
+    """
+    service = live_kamiwaza_client.extensions
+    names: list[str] = []
+    yield names
+
+    survivors: list[str] = []
+    for name in names:
+        with suppress(APIError):
+            service.delete_extension(name)
+        for _ in range(30):
+            if name not in {ext.name for ext in service.list_extensions()}:
+                break
+            time.sleep(1)
+        else:
+            survivors.append(name)
+    assert not survivors, (
+        f"extensions remained listed after deletion and are leaked on a "
+        f"shared host: {survivors}"
+    )
 
 
 @pytest.mark.usefixtures("live_server_available")
-def test_a_published_extension_is_a_platform_resource(live_kamiwaza_client) -> None:
+def test_a_published_extension_is_a_platform_resource(
+    live_kamiwaza_client, deleted_extensions
+) -> None:
     """Created through the SDK, listable, status-reporting, and removable.
 
     This is the capability document's "a published extension is a platform
@@ -130,6 +179,10 @@ def test_a_published_extension_is_a_platform_resource(live_kamiwaza_client) -> N
 
     pre_existing = {ext.name for ext in service.list_extensions()}
     assert name not in pre_existing
+
+    # Registered before the creating call, so a create whose server side
+    # committed and whose response then raised is still reconciled by name.
+    deleted_extensions.append(name)
 
     created = service.create_extension(
         CreateExtension(
@@ -151,28 +204,19 @@ def test_a_published_extension_is_a_platform_resource(live_kamiwaza_client) -> N
             ],
         )
     )
-    try:
-        assert created.name == name
+    assert created.name == name
 
-        listed = {ext.name for ext in service.list_extensions()}
-        assert name in listed, "a created extension did not appear in the listing"
+    listed = {ext.name for ext in service.list_extensions()}
+    assert name in listed, "a created extension did not appear in the listing"
 
-        status = service.get_extension_status(name)
-        assert status.services, (
-            "get_extension_status reported no services for the created extension"
-        )
-        assert any(item.name == "echo" for item in status.services), (
-            f"the declared service is absent from status: "
-            f"{[item.name for item in status.services]}"
-        )
-    finally:
-        with suppress(APIError):
-            service.delete_extension(name)
-
-    # Removal is proven, not assumed.
-    for _ in range(30):
-        if name not in {ext.name for ext in service.list_extensions()}:
-            break
-        time.sleep(1)
-    else:
-        pytest.fail(f"extension {name} remained listed after deletion")
+    status = service.get_extension_status(name)
+    assert status.services, (
+        "get_extension_status reported no services for the created extension"
+    )
+    assert any(item.name == "echo" for item in status.services), (
+        f"the declared service is absent from status: "
+        f"{[item.name for item in status.services]}"
+    )
+    # Removal is asserted by the `deleted_extensions` finalizer, which
+    # reconciles by name and polls for absence. Asserting it inline would not
+    # run when the body fails, which is exactly when a leak matters.

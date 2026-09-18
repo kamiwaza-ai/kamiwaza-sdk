@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Iterator
 from contextlib import suppress
 from typing import NoReturn
 from uuid import UUID, uuid4
@@ -57,6 +58,10 @@ MCP_INITIALIZE = {
 }
 
 DEPLOYED_STATUSES = frozenset({"DEPLOYED", "RUNNING"})
+# Retirement is asserted positively. "not in DEPLOYED_STATUSES" would accept
+# FAILED or PENDING as a successful stop, which claims a clean retirement for a
+# deployment that may have broken instead.
+RETIRED_STATUSES = frozenset({"STOPPED", "STOP_REQUESTED"})
 SETTLED_STATUSES = frozenset({"DEPLOYED", "RUNNING", "FAILED", "STOPPED"})
 
 
@@ -114,9 +119,44 @@ def _wait_for_settled(client, deployment_id: UUID, *, timeout: float = 600) -> s
             return status
         time.sleep(10)
         status = client.tools.get_deployment(deployment_id).status
-    _skip_or_fail(
+    # NOT _skip_or_fail: the deploy request was accepted, so failing to settle
+    # is a failure of the mapped lifecycle, not an absent prerequisite.
+    pytest.fail(
         f"tool deployment {deployment_id} never settled within {timeout}s "
         f"(last status {status!r})"
+    )
+
+
+@pytest.fixture
+def stopped_tool_deployments(live_kamiwaza_client) -> Iterator[list[str]]:
+    """Stop every tool deployment this test names, and prove each one settled.
+
+    A fixture finalizer rather than a ``finally`` block: the name is registered
+    before the creating call, so a deploy whose server side committed and whose
+    response then raised is still reconciled; and a teardown failure is reported
+    as its own ERROR instead of masking the test's failure or being masked by it.
+
+    1.2.1 offers no purge for tool deployments, so retirement is proven by the
+    status transition rather than by the row disappearing. The platform prefixes
+    the caller's name with ``tool-``, so matching is on suffix.
+    """
+    client = live_kamiwaza_client
+    names: list[str] = []
+    yield names
+
+    unretired: list[str] = []
+    for name in names:
+        for deployment in client.tools.list_deployments():
+            if not str(deployment.name).endswith(name):
+                continue
+            with suppress(APIError):
+                client.tools.stop_deployment(deployment.id)
+            final = client.tools.get_deployment(deployment.id)
+            if final.status not in RETIRED_STATUSES:
+                unretired.append(f"{deployment.name}={final.status}")
+    assert not unretired, (
+        f"tool deployments did not reach a retired state and may still be "
+        f"running on a shared host: {unretired}"
     )
 
 
@@ -139,7 +179,9 @@ def test_tool_shed_template_catalog_is_listed(live_kamiwaza_client) -> None:
 
 
 @pytest.mark.usefixtures("live_server_available")
-def test_tool_shed_deploy_health_discovery_and_stop(live_kamiwaza_client) -> None:
+def test_tool_shed_deploy_health_discovery_and_stop(
+    live_kamiwaza_client, stopped_tool_deployments
+) -> None:
     """The documented arm: deploy a template, prove MCP health, discover it, stop."""
     client = live_kamiwaza_client
     template = _deployable_template(client)
@@ -147,39 +189,37 @@ def test_tool_shed_deploy_health_discovery_and_stop(live_kamiwaza_client) -> Non
     pre_existing = {str(d.id) for d in client.tools.list_deployments()}
     name = _unique("eng12432-tool")
 
+    # Registered before the creating call, so a deploy whose server side
+    # committed and whose response then raised is still reconciled by name.
+    stopped_tool_deployments.append(name)
+
     deployment = client.tools.deploy_from_template(
         template_name=template.name,
         name=name,
     )
     deployment_id = deployment.id
-    try:
-        assert str(deployment_id) not in pre_existing, (
-            "deploy_from_template returned a deployment that already existed"
-        )
-        assert deployment.url, (
-            "the deployment carries no public URL; the document promises a "
-            "generated MCP endpoint"
-        )
 
-        status = _wait_for_settled(client, deployment_id)
-        if status not in DEPLOYED_STATUSES:
-            pytest.fail(
-                f"tool deployment {name} settled in {status!r}; the deploy "
-                "station did not succeed on this host"
-            )
-
-        _assert_mcp_handshake(client, deployment, name)
-        _assert_appears_in_discovery(client, deployment_id, name)
-    finally:
-        with suppress(APIError):
-            client.tools.stop_deployment(deployment_id)
-
-    # 1.2.1 offers no purge for tool deployments, so retirement is proven by
-    # the status transition rather than by the row disappearing.
-    final = client.tools.get_deployment(deployment_id)
-    assert final.status not in DEPLOYED_STATUSES, (
-        f"tool deployment {name} still reports {final.status!r} after stop"
+    assert str(deployment_id) not in pre_existing, (
+        "deploy_from_template returned a deployment that already existed"
     )
+    assert deployment.url, (
+        "the deployment carries no public URL; the document promises a "
+        "generated MCP endpoint"
+    )
+
+    status = _wait_for_settled(client, deployment_id)
+    assert status in DEPLOYED_STATUSES, (
+        f"tool deployment {name} settled in {status!r}; the deploy station is "
+        f"satisfied only by {sorted(DEPLOYED_STATUSES)}"
+    )
+
+    _assert_mcp_handshake(client, deployment, name)
+    _assert_appears_in_discovery(client, deployment_id, name)
+
+    # Retirement is asserted by the `stopped_tool_deployments` finalizer, which
+    # reconciles by name and requires a status in RETIRED_STATUSES. Asserting it
+    # inline would not run when the body fails, which is exactly when a leaked
+    # workload on a shared host matters most.
 
 
 def _assert_mcp_handshake(client, deployment, name: str) -> None:
@@ -220,6 +260,15 @@ def _assert_mcp_handshake(client, deployment, name: str) -> None:
     )
 
     body = response.json()
+    # Without these two, an uncorrelated body carrying the right-looking keys
+    # would pass as a handshake.
+    assert body.get("jsonrpc") == "2.0", (
+        f"the reply from {name} is not a JSON-RPC 2.0 envelope: {body}"
+    )
+    assert body.get("id") == MCP_INITIALIZE["id"], (
+        f"the reply from {name} does not correlate with the request id "
+        f"{MCP_INITIALIZE['id']!r}: {body}"
+    )
     assert body.get("error") is None, (
         f"MCP initialize against {name} returned a JSON-RPC error: {body.get('error')}"
     )
