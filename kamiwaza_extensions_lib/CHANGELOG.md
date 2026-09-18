@@ -6,6 +6,17 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
+## Unreleased
+
+### Added
+
+* Optional `platform_request(max_response_bytes=...)` bounds streamed response
+  bodies, including error bodies, while preserving canonical-origin and auth
+  envelope validation. Bounded mode requests identity encoding, rejects compressed
+  responses before reading their bodies, closes streams on overflow/cancellation,
+  and raises `PlatformResponseTooLargeError` for overflow. Calls without a limit
+  retain their existing behavior.
+
 ## [0.5.0] — 2026-07-28
 
 ### Added

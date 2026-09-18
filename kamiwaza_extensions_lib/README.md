@@ -56,14 +56,24 @@ User-bound clients ignore `HTTP_PROXY`, `HTTPS_PROXY`, `SSL_CERT_FILE`, and
 and set `KAMIWAZA_CA_BUNDLE` to that file path. Do not disable certificate
 verification in production.
 
+For untrusted content, set `max_response_bytes=` to a positive integer to limit
+the returned body, including error responses. This option is unreleased; it
+requires a runtime-library release containing the bounded-response change.
+Bounded calls request identity encoding and reject compressed responses before
+reading the body. They close the stream on overflow or cancellation. The limit
+bounds the retained body, rather than total process memory or network buffers.
+Calls without a limit keep their existing behavior.
+
 The helper raises:
 
 - `ValueError` for invalid paths, methods, headers, or caller overrides
 - `MisboundAuthError` when the platform-provided ForwardAuth envelope is
   malformed or contains an ambiguous duplicate field
-- `UnexpectedContextError` when `KAMIWAZA_API_URL` is missing or invalid
+- `UnexpectedContextError` when `KAMIWAZA_API_URL` is missing or invalid, or a
+  bounded response uses compressed encoding despite requesting identity encoding
 - `PlatformRedirectError` (a specialized `UnexpectedContextError`) when the
   canonical route redirects
 - `PlatformOutageError` for network, timeout, or upstream protocol failures
+- `PlatformResponseTooLargeError` when a bounded response exceeds its byte limit
 
 See `CHANGELOG.md` in this directory for release notes.

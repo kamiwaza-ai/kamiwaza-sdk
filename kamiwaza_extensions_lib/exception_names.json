@@ -29,6 +29,11 @@
       "name": "platform_redirect",
       "exit_code": 15,
       "doctor_hint": "A request-bound platform call used a non-canonical route. Use the exact route, including its required trailing slash; authenticated redirects are disabled."
+    },
+    {
+      "name": "platform_response_too_large",
+      "exit_code": 16,
+      "doctor_hint": "The response exceeded max_response_bytes. Choose a smaller source or an explicitly bounded source export; do not disable the limit for untrusted content."
     }
   ]
 }
