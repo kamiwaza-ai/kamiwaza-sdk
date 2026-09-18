@@ -6,16 +6,17 @@ import base64
 import logging
 import os
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Final
+from typing import Any, Final
 from uuid import uuid4
 
 import pytest
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
-from kamiwaza_sdk.exceptions import APIError, NotFoundError
+from kamiwaza_sdk.exceptions import APIError, KamiwazaError, NotFoundError
 from kamiwaza_sdk.services.context import ContextService
 
 logger = logging.getLogger(__name__)
@@ -256,7 +257,7 @@ def _create_vectordb_with_retry(
             if attempt == _VECTORDB_CREATE_ATTEMPTS:
                 raise
             logger.warning(
-                "VectorDB create failed with HTTP %s for %s; retrying " "attempt %s/%s",
+                "VectorDB create failed with HTTP %s for %s; retrying attempt %s/%s",
                 status_code,
                 name,
                 attempt + 1,
@@ -1201,6 +1202,197 @@ def test_context_workroom_collection_lifecycle(
                 collection_name=collection_name,
                 vectordb_id=shared_workroom_vectordb,
             )
+
+
+def _wait_for_document_job(
+    service: ContextService, *, workroom_id: str, job_id: str
+) -> dict[str, object]:
+    deadline = time.monotonic() + 180
+    last: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        last = service.get_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+        if last["status"] == "completed":
+            return last
+        if last["status"] in {"failed", "cancelled"}:
+            pytest.fail(
+                f"Document pipeline ended in {last['status']}: {last.get('error')}"
+            )
+        time.sleep(2)
+    pytest.fail(f"Document pipeline did not complete: {last}")
+
+
+@dataclass(frozen=True)
+class _IndexedDocument:
+    """A uniquely identifiable document indexed into one workroom."""
+
+    service: ContextService
+    workroom_id: str
+    vectordb_id: str
+    collection_name: str
+    filename: str
+    needle: str
+    source_urn: str
+
+
+def _assert_owner_can_find(doc: _IndexedDocument) -> None:
+    service = doc.service
+    owner_results = service.search(
+        workroom_id=doc.workroom_id,
+        query=doc.needle,
+        collection_name=doc.collection_name,
+        vectordb_id=doc.vectordb_id,
+    )["results"]
+    assert any(
+        doc.needle in result["content"]
+        and result["metadata"]["source_file"] == doc.filename
+        for result in owner_results
+    )
+    retrieved = service.retrieve(
+        workroom_id=doc.workroom_id,
+        query=doc.needle,
+        collection_names=[doc.collection_name],
+        score_threshold=0.0,
+        vectordb_id=doc.vectordb_id,
+    )
+    assert any(
+        source["filename"] == doc.filename and doc.needle in source["snippet"]
+        for source in retrieved["sources"]
+    )
+    document = service.get_document_download_url(
+        doc.source_urn, workroom_id=doc.workroom_id
+    )
+    assert document["filename"] == doc.filename
+
+
+def _assert_foreign_search_misses(
+    search: Callable[[], dict[str, Any]], needle: str
+) -> None:
+    """A foreign workroom is denied outright or sees none of the document."""
+    try:
+        results = search()["results"]
+    except KamiwazaError as error:
+        assert error.status_code in {403, 404}
+    else:
+        assert all(needle not in item["content"] for item in results)
+
+
+def _assert_foreign_workroom_denied(doc: _IndexedDocument, foreign_id: str) -> None:
+    """Probe the foreign room's default scope and the owner's vector DB by ID.
+
+    Naming the owner's ``vectordb_id`` explicitly is the realistic IDOR path; a
+    probe that omits it can miss merely because the new room has no such DB.
+    """
+    service = doc.service
+    _assert_foreign_search_misses(
+        lambda: service.search(
+            workroom_id=foreign_id,
+            query=doc.needle,
+            collection_name=doc.collection_name,
+        ),
+        doc.needle,
+    )
+    _assert_foreign_search_misses(
+        lambda: service.search(
+            workroom_id=foreign_id,
+            query=doc.needle,
+            collection_name=doc.collection_name,
+            vectordb_id=doc.vectordb_id,
+        ),
+        doc.needle,
+    )
+    with pytest.raises(KamiwazaError) as denied:
+        service.get_document_download_url(doc.source_urn, workroom_id=foreign_id)
+    assert denied.value.status_code in {403, 404}
+
+
+def _create_foreign_workroom(
+    service: ContextService, cleanups: list[tuple[str, Callable[[], object]]]
+) -> str:
+    workrooms = service.client.workrooms
+    foreign_id = str(
+        workrooms.create(f"sdk-t14-other-{uuid4().hex[:8]}", "ephemeral").id
+    )
+    cleanups.append(("foreign workroom", lambda: workrooms.delete(foreign_id)))
+    return foreign_id
+
+
+def _run_cleanups(cleanups: list[tuple[str, Callable[[], object]]]) -> None:
+    """Undo in reverse; a teardown error never masks the test outcome."""
+    for label, action in reversed(cleanups):
+        try:
+            action()
+        except Exception:  # noqa: BLE001 - teardown must continue; failure is logged
+            logger.warning("Live test cleanup failed: %s", label, exc_info=True)
+
+
+@pytest.mark.requires_embedding_model
+def test_context_uploaded_document_is_searchable_only_in_its_workroom(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
+) -> None:
+    """Index a unique document and reject cross-workroom search and fetch."""
+    service = shared_context_service
+    doc = _IndexedDocument(
+        service=service,
+        workroom_id=session_workroom,
+        vectordb_id=shared_workroom_vectordb,
+        collection_name=_sdk_collection_name(),
+        filename=f"sdk-t14-{uuid4().hex[:8]}.txt",
+        needle=f"t14probe{uuid4().hex}",
+        source_urn=f"urn:sdk:t14:{uuid4()}",
+    )
+    cleanups: list[tuple[str, Callable[[], object]]] = []
+
+    try:
+        created = service.create_collection(
+            workroom_id=doc.workroom_id,
+            name=doc.collection_name,
+            dimension=384,
+            vectordb_id=doc.vectordb_id,
+        )
+        assert created["display_name"] == doc.collection_name
+        cleanups.append(
+            (
+                "collection",
+                lambda: service.delete_collection(
+                    workroom_id=doc.workroom_id,
+                    collection_name=doc.collection_name,
+                    vectordb_id=doc.vectordb_id,
+                ),
+            )
+        )
+
+        uploaded = service.upload_file(
+            workroom_id=doc.workroom_id,
+            filename=doc.filename,
+            file_content=f"The verification phrase is {doc.needle}.".encode(),
+            content_type="text/plain",
+            collection_name=doc.collection_name,
+            source_urn=doc.source_urn,
+        )
+        job_id = str(uploaded["id"])
+        cleanups.append(
+            (
+                "pipeline job",
+                lambda: service.delete_pipeline_job(
+                    workroom_id=doc.workroom_id, job_id=job_id
+                ),
+            )
+        )
+        job = _wait_for_document_job(service, workroom_id=doc.workroom_id, job_id=job_id)
+        assert job["collection_name"] == doc.collection_name
+        items = service.list_pipeline_job_items(
+            workroom_id=doc.workroom_id, job_id=job_id
+        )
+        assert isinstance(items.get("items"), list)
+
+        _assert_owner_can_find(doc)
+
+        foreign_id = _create_foreign_workroom(service, cleanups)
+        _assert_foreign_workroom_denied(doc, foreign_id)
+    finally:
+        _run_cleanups(cleanups)
 
 
 @pytest.mark.requires_embedding_model
