@@ -28,7 +28,7 @@ require_parquet_fixtures() {
     for fixture in sales_data_10k.parquet inline-small.parquet inline-large.parquet inline-large-sse.parquet; do
         if [[ ! -s "$STATE_DIR/test-data/$fixture" ]]; then
             echo "Missing required parquet fixture: $STATE_DIR/test-data/$fixture" >&2
-            echo "Install pandas, numpy, and pyarrow for $PYTHON_BIN or provide parquet fixtures in DATA_DIR." >&2
+            echo "Install pandas, numpy, and pyarrow for $PYTHON_BIN or provide parquet fixtures in DATA_DIR; rerun with FORCE_SEED=1 to reseed." >&2
             return 1
         fi
     done

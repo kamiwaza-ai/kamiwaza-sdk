@@ -43,6 +43,7 @@ def test_seed_marker_rejects_missing_parquet_fixture(
             **os.environ,
             "STATE_DIR": str(state_dir),
             "DATA_DIR": str(source_data.parent),
+            "FORCE_SEED": "0",
         },
         capture_output=True,
         text=True,
@@ -51,6 +52,7 @@ def test_seed_marker_rejects_missing_parquet_fixture(
 
     assert result.returncode != 0
     assert missing_fixture in result.stderr
+    assert "FORCE_SEED=1" in result.stderr
 
 
 def test_missing_parquet_dependencies_fail_before_stack_setup(tmp_path: Path) -> None:
@@ -95,6 +97,7 @@ def test_seed_marker_accepts_complete_parquet_fixtures(tmp_path: Path) -> None:
             **os.environ,
             "STATE_DIR": str(state_dir),
             "DATA_DIR": str(data_dir.parent),
+            "FORCE_SEED": "0",
         },
         capture_output=True,
         text=True,
