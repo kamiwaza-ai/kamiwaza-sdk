@@ -45,12 +45,27 @@ def _assert_admin_removal(admin, open_pair, purge) -> None:
 def _assert_logout_identity(admin, open_pair, purge, logout) -> None:
     # If logout always removed the oldest record, the newest-target case fails.
     for target_index in (0, 1):
+        count_pair = open_pair()
+        logout(count_pair[target_index])
+        # Read before refresh can recreate a mistakenly removed control record.
+        assert admin.auth.purge_sessions(purge).revoked == 1
         pair = open_pair()
         target, kept = pair[target_index], pair[1 - target_index]
         logout(target)
         admin.auth.delete_session(kept.claims["sid"])
         assert admin.auth.purge_sessions(purge).revoked == 0, (
             "logout removed the wrong session record"
+        )
+
+
+def _assert_admin_identity(admin, open_pair, purge, logout) -> None:
+    for target_index in (0, 1):
+        pair = open_pair()
+        target, kept = pair[target_index], pair[1 - target_index]
+        admin.auth.delete_session(target.claims["sid"])
+        logout(kept)
+        assert admin.auth.purge_sessions(purge).revoked == 0, (
+            "administrator removed the wrong session record"
         )
 
 
@@ -78,6 +93,7 @@ def test_session_record_lifecycle_with_fresh_control(
     assert admin.auth.purge_sessions(purge).revoked == 2
     _assert_admin_removal(admin, open_pair, purge)
     _assert_logout_identity(admin, open_pair, purge, logout)
+    _assert_admin_identity(admin, open_pair, purge, logout)
 
     kept, target = open_pair()
     logout(target)
