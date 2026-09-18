@@ -135,6 +135,7 @@ def _wait_for_ontology_ready(
     service: ContextService,
     ontology_id: str,
     *,
+    workroom_id: str | None = None,
     timeout_seconds: float | None = None,
     poll_seconds: float = 2.0,
 ) -> None:
@@ -147,7 +148,7 @@ def _wait_for_ontology_ready(
 
     while True:
         try:
-            instance = service.get_ontology(ontology_id)
+            instance = service.get_ontology(ontology_id, workroom_id=workroom_id)
         except APIError:
             if time.monotonic() >= deadline:
                 raise
@@ -379,9 +380,11 @@ def _create_temp_ontology(service: ContextService, *, prefix: str) -> str:
     return ontology_id
 
 
-def _safe_delete_ontology(service: ContextService, ontology_id: str) -> None:
+def _safe_delete_ontology(
+    service: ContextService, ontology_id: str, *, workroom_id: str | None = None
+) -> None:
     try:
-        service.delete_ontology(ontology_id)
+        service.delete_ontology(ontology_id, workroom_id=workroom_id)
     except APIError:
         pass
 
@@ -970,6 +973,80 @@ def test_context_ontology_search_knowledge(
 
 
 @pytest.mark.requires_embedding_model
+def test_context_ontology_known_answer_isolated_by_workroom(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    context_required_llm: str,
+) -> None:
+    """Require a retrievable answer and prove another workroom cannot read it."""
+    assert context_required_llm
+    service = shared_context_service
+    marker = f"sdkprobe{uuid4().hex}"
+    group_id = f"sdk-group-{uuid4().hex[:8]}"
+    created = service.create_ontology(
+        name=f"sdk-known-answer-{uuid4().hex[:8]}",
+        backend="graphiti",
+        workroom_id=session_workroom,
+    )
+    ontology_id = str(created["id"])
+    try:
+        _wait_for_ontology_ready(service, ontology_id, workroom_id=session_workroom)
+        added = service.add_knowledge(
+            ontology_id,
+            group_id=group_id,
+            messages=[
+                {"role": "user", "content": f"The answer to {marker} is cobalt."}
+            ],
+            workroom_id=session_workroom,
+        )
+        assert added["group_id"] == group_id
+
+        deadline = time.monotonic() + 90
+        while True:
+            found = service.search_knowledge(
+                ontology_id,
+                query=f"What is the answer to {marker}?",
+                group_ids=[group_id],
+                workroom_id=session_workroom,
+            )
+            facts = found["facts"]
+            assert isinstance(facts, list)
+            if "cobalt" in str(facts).lower():
+                break
+            if time.monotonic() >= deadline:
+                pytest.fail(f"Known answer for {marker} was not retrieved: {facts}")
+            time.sleep(3)
+
+        foreign = service.client.workrooms.create(
+            f"sdk-foreign-{uuid4().hex[:8]}",
+            "ephemeral",
+            description="Ephemeral workroom for ontology isolation check",
+        )
+        foreign_id = str(foreign.id)
+        try:
+            try:
+                foreign_result = service.search_knowledge(
+                    ontology_id,
+                    query=f"What is the answer to {marker}?",
+                    group_ids=[group_id],
+                    workroom_id=foreign_id,
+                )
+            except APIError as exc:
+                assert exc.status_code in {
+                    403,
+                    404,
+                }, f"Unexpected cross-workroom error: {exc}"
+            else:
+                assert not foreign_result.get(
+                    "facts"
+                ), "Ontology facts leaked into another workroom"
+        finally:
+            service.client.workrooms.delete(foreign_id)
+    finally:
+        _safe_delete_ontology(service, ontology_id, workroom_id=session_workroom)
+
+
+@pytest.mark.requires_embedding_model
 def test_context_ontology_get_memory(
     live_kamiwaza_client,
     shared_ontology: str,
@@ -1380,7 +1457,9 @@ def test_context_uploaded_document_is_searchable_only_in_its_workroom(
                 ),
             )
         )
-        job = _wait_for_document_job(service, workroom_id=doc.workroom_id, job_id=job_id)
+        job = _wait_for_document_job(
+            service, workroom_id=doc.workroom_id, job_id=job_id
+        )
         assert job["collection_name"] == doc.collection_name
         items = service.list_pipeline_job_items(
             workroom_id=doc.workroom_id, job_id=job_id
