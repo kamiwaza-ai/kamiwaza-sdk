@@ -23,6 +23,17 @@ SEED_MARKER="$STATE_DIR/.seed-complete"
 
 mkdir -p "$STATE_DIR" "$STATE_DIR/test-data"
 
+require_parquet_fixtures() {
+    local fixture
+    for fixture in inline-small.parquet inline-large.parquet inline-large-sse.parquet; do
+        if [[ ! -s "$STATE_DIR/test-data/$fixture" ]]; then
+            echo "Missing required parquet fixture: $STATE_DIR/test-data/$fixture" >&2
+            echo "Install pandas, numpy, and pyarrow for $PYTHON_BIN or provide parquet fixtures in DATA_DIR." >&2
+            return 1
+        fi
+    done
+}
+
 if [[ ! -d "$DATA_DIR/test-data" ]]; then
     echo "Catalog test data not found at $DATA_DIR/test-data; generating defaults..."
     mkdir -p "$DATA_DIR/test-data/objects"
@@ -40,6 +51,7 @@ JSON
 fi
 
 if [[ "${FORCE_SEED:-0}" != "1" && -f "$SEED_MARKER" ]]; then
+    require_parquet_fixtures
     echo "Ingestion stack already seeded (set FORCE_SEED=1 to reseed)."
     exit 0
 fi
@@ -128,6 +140,8 @@ if [[ -f "$INLINE_LARGE" ]]; then
     cp "$INLINE_LARGE" "$INLINE_LARGE_SSE"
     echo "Copied inline-large.parquet to the SSE retrieval fixture."
 fi
+
+require_parquet_fixtures
 
 wait_for_port() {
     local name="$1"
