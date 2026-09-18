@@ -31,6 +31,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .descriptors import resolve_service
 from .spec_index import OperationEntry, OperationIndex
 
 __all__ = [
@@ -373,6 +374,13 @@ def schemas_for(entry: OperationEntry, service: Any) -> OperationSchemas:
 def underivable(index: OperationIndex, client: Any) -> tuple[str, ...]:
     """Return the selectors whose schemas could not be fully derived.
 
+    The service object is resolved with :func:`~.descriptors.resolve_service`,
+    which walks a dotted service path. A single ``getattr`` for the whole
+    dotted name never matches, so it reported ``None`` for every nested
+    operation and the filter below then skipped them: 35 of the 335 published
+    operations at this revision, each silently exempt from the gate. All 35
+    derive cleanly, so the reported set is unchanged by the fix.
+
     Args:
         index: The operation index.
         client: The client the index was built from.
@@ -380,11 +388,16 @@ def underivable(index: OperationIndex, client: Any) -> tuple[str, ...]:
     Returns:
         Selectors of published operations with at least one unresolved or
         missing annotation, in index order. A gate reports these rather than a
-        caller discovering an unconstrained schema at call time.
+        caller discovering an unconstrained schema at call time. An operation
+        whose service is absent from this client is skipped, because nothing
+        can be read from a service that is not there.
     """
+    resolved = (
+        (entry, resolve_service(client, entry.service)) for entry in index.published
+    )
     return tuple(
         entry.selector
-        for entry in index.published
-        if not schemas_for(entry, getattr(client, entry.service, None)).derived
-        if getattr(client, entry.service, None) is not None
+        for entry, service in resolved
+        if service is not None
+        if not schemas_for(entry, service).derived
     )

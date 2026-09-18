@@ -74,7 +74,7 @@ def test_primitives_map_to_json_types() -> None:
     assert props["ident"] == {"type": "string", "format": "uuid"}
 
 
-def test_input_rejects_unknown_fields(): 
+def test_input_rejects_unknown_fields():
     """FR-007: an agent that invents an argument must be told, not ignored."""
     schema, _ = input_schema(Sample.primitives)
     assert schema["additionalProperties"] is False

@@ -6,19 +6,19 @@
     "data": 105,
     "extensions": 38,
     "infrastructure": 40,
-    "models": 63
+    "models": 62
   },
   "counts": {
-    "documented": 357,
+    "documented": 361,
     "operations": 362,
-    "published": 336,
+    "published": 335,
     "services": 34,
-    "unpublished": 26
+    "unpublished": 27
   },
   "descriptions": {
     "absent": 0,
-    "docstring": 332,
-    "interface_description": 4,
+    "docstring": 335,
+    "interface_description": 0,
     "interface_summary": 0,
     "thin": 0
   },
@@ -407,6 +407,7 @@
     "embedding.get_embedder",
     "federations.by_id",
     "models.auto_selector",
+    "openai.get_client",
     "subjects.grants",
     "tools.check_health",
     "tools.deploy",

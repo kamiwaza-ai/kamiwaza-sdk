@@ -3,4 +3,12 @@ include LICENSE
 recursive-include kamiwaza_sdk *.py
 recursive-include kamiwaza_sdk *.typed
 recursive-include kamiwaza_sdk py.typed
-recursive-include kamiwaza_sdk *.json
+# JSON is named file by file, not by recursive glob: `include-package-data`
+# ships whatever MANIFEST.in matches inside a package, and a bare
+# `recursive-include kamiwaza_sdk *.json` also shipped
+# agent_tools/SURFACE.json. That file is a development artifact — the drift
+# gate regenerates it and compares, nothing imports it at runtime — so it
+# stays out of the wheel. These two entries match
+# [tool.setuptools.package-data] in pyproject.toml; change both together.
+include kamiwaza_sdk/agent_tools/INTERFACE_DESCRIPTIONS.json
+recursive-include kamiwaza_sdk/validation/schemas *.schema.json

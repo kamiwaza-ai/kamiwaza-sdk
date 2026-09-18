@@ -1,8 +1,9 @@
 """Federation, subject, and gate-package workflows.
 
-Every workflow here reads back what it wrote. Access control that reports
-success without confirming the resulting grant is the failure mode these exist
-to catch: an agent told "granted" moves on, and the member still cannot reach
+Every workflow here reads back what it wrote, and carries the read as JSON
+data rather than as an SDK object. Access control that reports success
+without confirming the resulting grant is the failure mode these exist to
+catch: an agent told "granted" moves on, and the member still cannot reach
 anything.
 """
 
@@ -22,6 +23,47 @@ __all__ = [
     "pair_federation_and_allow_user",
     "replace_gate_package",
 ]
+
+
+def _as_data(value: Any) -> Any:
+    """Return a read-back value as JSON data.
+
+    The platform's read methods return pydantic models, and a workflow payload
+    crosses a JSON transport to reach the agent. Dumping here keeps the
+    published payload serialisable without asking every caller to know which
+    fields are models.
+
+    Args:
+        value: A model, a list of models, or plain data.
+
+    Returns:
+        The same value as dicts, lists, and scalars.
+    """
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        dumped: Any = dump(mode="json")
+        return dumped
+    if isinstance(value, list):
+        return [_as_data(item) for item in value]
+    return value
+
+
+def _grants_of(client: Any, username: str) -> Any:
+    """Read a subject's grants back as JSON data.
+
+    ``client.subjects.grants(username)`` only builds a subject-scoped grants
+    accessor; ``.list()`` is the call that performs the GET. Returning the
+    accessor put a local object where the agent expects grants, so no workflow
+    using it actually confirmed the write.
+
+    Args:
+        client: The platform client.
+        username: Subject whose grants to read.
+
+    Returns:
+        The subject's grants, as a list of dicts.
+    """
+    return _as_data(client.subjects.grants(username).list())
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,16 +109,18 @@ def install_and_bind_gate_package(
         package: The pinned package to install.
 
     Returns:
-        Mapping with the ``install`` result and the ``binding`` read back.
-        Installing without confirming leaves an agent believing an unverified
-        package is bound.
+        Mapping with the ``install`` result as data and the ``binding`` read
+        back. Installing without confirming leaves an agent believing an
+        unverified package is bound. ``install`` carries the whole
+        ``GatePackageInstallResult``, since that model has no single status
+        field and stringifying it published a model repr instead of data.
     """
     installed = client.gates.packages.install(
         package.spec, package.hash_digest, index_url=package.index_url
     )
     return {
-        "install": getattr(installed, "status", None) or str(installed),
-        "binding": client.gates.packages.get(package.name),
+        "install": _as_data(installed),
+        "binding": _as_data(client.gates.packages.get(package.name)),
     }
 
 
@@ -105,8 +149,9 @@ def replace_gate_package(client: Any, package: GatePackageRef) -> dict[str, Any]
         package: The pinned replacement package.
 
     Returns:
-        Mapping with ``replaced``, the new ``hash``, the ``result``, and a
-        ``bindings`` report covering every package the platform now holds.
+        Mapping with ``replaced``, the new ``hash``, the ``result`` as data,
+        and a ``bindings`` report covering every package the platform now
+        holds.
     """
     replaced = client.gates.packages.replace(
         package.name,
@@ -117,8 +162,8 @@ def replace_gate_package(client: Any, package: GatePackageRef) -> dict[str, Any]
     return {
         "replaced": package.name,
         "hash": package.hash_digest,
-        "result": getattr(replaced, "status", None) or str(replaced),
-        "bindings": client.gates.packages.list(),
+        "result": _as_data(replaced),
+        "bindings": _as_data(client.gates.packages.list()),
     }
 
 
@@ -163,7 +208,8 @@ def pair_federation_and_allow_user(
         enrolment: The pairing and the user to enrol.
 
     Returns:
-        Mapping with ``federation``, ``subject`` and the ``grants`` read back.
+        Mapping with ``federation``, ``subject`` and the ``grants`` list read
+        back after the enrolment.
     """
     federation = client.federations.pair(
         name=enrolment.name,
@@ -176,7 +222,7 @@ def pair_federation_and_allow_user(
     return {
         "federation": str(getattr(federation, "id", federation)),
         "subject": getattr(subject, "username", enrolment.username),
-        "grants": client.subjects.grants(enrolment.username),
+        "grants": _grants_of(client, enrolment.username),
     }
 
 
@@ -218,7 +264,8 @@ def grant_subject_access(
         attributes: Attributes to set on the subject.
 
     Returns:
-        Mapping with ``subject`` and its ``grants`` read back after the write.
+        Mapping with ``subject`` and its ``grants`` list, read back after the
+        write.
     """
     subject = client.subjects.upsert(username, attributes=attributes or {})
     client.authz.upsert_tuple(
@@ -230,5 +277,5 @@ def grant_subject_access(
     )
     return {
         "subject": getattr(subject, "username", username),
-        "grants": client.subjects.grants(username),
+        "grants": _grants_of(client, username),
     }

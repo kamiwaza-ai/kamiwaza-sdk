@@ -197,12 +197,35 @@ class AuthService(BaseService):
         return IdentityProviderListResponse.model_validate(response)
 
     def list_public_identity_providers(self) -> IdentityProviderListResponse:
+        """List the enabled identity providers a login page may offer.
+
+        The public view of the provider list: enabled providers only, and no
+        client secrets. Use :meth:`list_identity_providers` for the
+        administrative view, which also reports disabled providers.
+
+        Returns:
+            IdentityProviderListResponse: Alias, provider id, enabled flag and
+            display name for each provider a user can sign in with.
+        """
         response = self.client.get("/auth/idp/public/providers")
         return IdentityProviderListResponse.model_validate(response)
 
     def register_identity_provider(
         self, payload: RegisterIdPRequest
     ) -> IdentityProviderOperationResponse:
+        """Register an external identity provider, or update it if the alias exists.
+
+        Writes the provider into Keycloak, so it changes who can sign in to
+        the platform. Registering an alias that is already present replaces
+        its stored configuration.
+
+        Args:
+            payload: Provider configuration — alias, provider id, endpoints
+                and client credentials.
+
+        Returns:
+            IdentityProviderOperationResponse: The result of the registration.
+        """
         response = self.client.post(
             "/auth/idp/register",
             json=payload.model_dump(exclude_none=True),

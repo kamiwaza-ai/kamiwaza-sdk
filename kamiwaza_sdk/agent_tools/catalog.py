@@ -14,8 +14,8 @@ onto whatever its protocol revision calls a tool definition.
 **An entry comes at three levels of detail**, because the whole catalog is not
 the only thing a host might want from it. ``names`` is the identifiers alone,
 ``brief`` adds the category and the description, and ``full`` is every field.
-Measured over 336 published operations with ``cl100k_base``: 2,306 tokens,
-8,338, and 22,535 — the cheapest level costs a tenth of the whole catalog. The tiers are Anthropic's documented pattern for a large
+Measured over 335 published operations with ``cl100k_base``: 2,299 tokens,
+8,315, and 22,481 — the cheapest level costs a tenth of the whole catalog. The tiers are Anthropic's documented pattern for a large
 tool surface — a detail level that returns "name only, name and description,
 or the full definition with schemas" — and the shape Stripe's MCP server
 ships, where ``api_search`` finds an endpoint, ``api_details`` returns one
@@ -150,8 +150,8 @@ class CatalogEntry:
 
         Every level is a mapping carrying ``id``, so a host parses one element
         type whichever level it asked for. A bare list of identifiers would be
-        1,632 tokens against this level's 2,306, and changing what an element
-        *is* with a query parameter is a worse contract than 674 tokens buys.
+        1,627 tokens against this level's 2,299, and changing what an element
+        *is* with a query parameter is a worse contract than 672 tokens buys.
 
         Args:
             detail: How much of the entry to return. ``names`` is the
@@ -288,7 +288,7 @@ def measure_cost(
     measured in the compact encoding a JSON transport sends — no spaces, which
     is what ``starlette.responses.JSONResponse`` emits and what this counts —
     so a server's own envelope of counts and filters is outside the number. On
-    the 336-operation surface that envelope is 80 tokens against 22,535, and a
+    the 335-operation surface that envelope is 85 tokens against 22,481, and a
     caller budgeting a context window wants the part that scales with the
     surface.
 

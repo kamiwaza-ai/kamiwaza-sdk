@@ -127,9 +127,9 @@ class AppRequest:
 @register(
     WorkflowSpec(
         name="deploy_app_from_garden",
-        summary="Install an app from the garden and deploy it, returning its status.",
-        terminal_artifact="The app deployment id and its status.",
-        polling_step="Waiting for the app deployment to report a terminal status.",
+        summary="Install an app from the garden and deploy it, returning its starting status.",
+        terminal_artifact="The app deployment id and the status it started in.",
+        polling_step=None,
         approval_step="Deploying the app.",
         idempotent=False,
         reads_only=False,
@@ -138,7 +138,6 @@ class AppRequest:
             "Each call creates another deployment. Call list_deployments_apps "
             "first to find an existing one."
         ),
-        resume_hint="get_deployment_status_apps",
     )
 )
 def deploy_app_from_garden(
@@ -146,14 +145,21 @@ def deploy_app_from_garden(
 ) -> dict[str, Any] | Refusal:
     """Install an app by name from the garden and deploy it.
 
+    Nothing here waits. ``get_deployment_status`` is read once, immediately
+    after the install, so the status it returns is the one the deployment
+    starts in — ``PENDING`` or ``STARTING`` on a deployment that has not
+    settled yet — and is published as that rather than as a settled state.
+    Follow it with get_deployment_status_apps to see where it ends up.
+
     Args:
         client: The platform client.
         request: Which app to deploy and where.
 
     Returns:
-        Mapping with ``deployment`` and ``status``, or a :class:`Refusal` when
-        the garden has no app by that name — which is not a deployment failure
-        and must not be reported as one.
+        Mapping with ``deployment`` and the ``status`` the deployment reported
+        immediately after install, or a :class:`Refusal` when the garden has
+        no app by that name — which is not a deployment failure and must not
+        be reported as one.
     """
     template = client.apps.find_template(request.name, request.version)
     if template is None:

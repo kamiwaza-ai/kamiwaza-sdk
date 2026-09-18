@@ -110,14 +110,30 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          status=$(curl --max-time 10 -s -o /dev/null -w "%{http_code}" "${KAMIWAZA_BASE_URL}/ping" || echo "000")
-          if [ "$status" != "000" ]; then
-            echo "Cluster reachable (HTTP $status)"
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::Live cluster not reachable; skipping interface document check."
+          # `curl -w "%{http_code}"` prints 000 and exits non-zero when it
+          # never got an answer, so `|| echo 000` used to append a second one
+          # and produce status=000000 — which is not "000", so an unreachable
+          # host read as reachable and the next step hard-failed the job.
+          # Branch on curl's exit status for reachability, and on the status
+          # line for whether the answer is usable: a 404 or a 502 is a reply,
+          # but not from a platform that can serve /openapi.json.
+          curl_rc=0
+          status=$(curl --max-time 10 -s -o /dev/null -w "%{http_code}" "${KAMIWAZA_BASE_URL}/ping") || curl_rc=$?
+          if [ "$curl_rc" -ne 0 ]; then
+            echo "::warning::Live cluster not reachable (curl exit $curl_rc); skipping interface document check."
             echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          case "$status" in
+            2??)
+              echo "Cluster reachable (HTTP $status)"
+              echo "available=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::warning::Live cluster answered HTTP $status, not 2xx; skipping interface document check."
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
       - name: Fetch the platform's own interface document
         if: steps.probe.outputs.available == 'true'

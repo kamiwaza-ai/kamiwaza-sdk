@@ -177,13 +177,17 @@ def published_id(op_selector: str) -> str:
 #: goes further, because a credential that reaches an agent can be replayed
 #: outside any recorded call. Each was confirmed against its response model.
 #:
-#: The third group makes no platform call at all. Each one is a local helper
-#: that happens to live on a service object: it encodes a string, builds a
-#: local object, or checks a header the caller already holds. An agent asking
-#: for platform operations cannot use one, yet each costs catalog tokens and
-#: competes in keyword search, where ``auth.require_admin`` ranks for "admin"
-#: ahead of the operations that administer anything. Each method body was read
-#: to confirm it never touches ``self.client``.
+#: The third group hands back a local object instead of a platform result.
+#: Most are helpers that happen to live on a service object: they encode a
+#: string or check a header the caller already holds, and each body was read
+#: to confirm it never touches ``self.client``. The factories in this group —
+#: ``models.auto_selector``, ``subjects.grants``, ``federations.by_id``,
+#: ``openai.get_client`` — are withheld for what they return rather than for
+#: making no call: ``openai.get_client`` does read the deployment list while
+#: it assembles the client. An agent asking for platform operations cannot
+#: use any of them, yet each costs catalog tokens and competes in keyword
+#: search, where ``auth.require_admin`` ranks for "admin" ahead of the
+#: operations that administer anything.
 #:
 #: The last group never returns a result. ``embedding.call`` is the whole of
 #: it: its body is one ``raise``, so a published call hands an agent an
@@ -302,6 +306,15 @@ UNPUBLISHED: dict[str, UnpublishedReason] = {
             "guide operations it wraps are published in their own right."
         ),
         superseded_by="models.list_guides",
+    ),
+    "openai.get_client": UnpublishedReason(
+        reason=(
+            "Builds a local OpenAI client pointed at a deployment's endpoint "
+            "and returns it. The object cannot cross a tool boundary, and an "
+            "agent that wants the endpoint reads it from the deployment "
+            "itself."
+        ),
+        superseded_by="serving.list_active_deployments",
     ),
     # The create, list and delete calls on the returned SubjectGrantsAPI are
     # absent from the index, because the walk follows sub-clients held as

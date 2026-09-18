@@ -262,8 +262,29 @@ class ModelService(BaseService,
         return [ModelGuide.model_validate(item) for item in response]
 
     def import_guides(self, *, replace: bool = False) -> dict:
+        """Import model guides from the platform's bundled guide file.
+
+        Loads the entries the platform ships in ``guide/default/models.json``
+        and writes them into the guide table.
+
+        Args:
+            replace: When True, every existing guide is deleted before the
+                import runs. Leave it False to add to what is already there.
+
+        Returns:
+            dict: The platform's import report.
+        """
         params = {"replace": replace} if replace else None
         return self.client.post("/guide/import", params=params)
 
     def refresh_guides(self) -> dict:
+        """Refresh the stored model guides from Kamiwaza's published guide data.
+
+        Fetches the current guide data from Kamiwaza infrastructure and
+        updates the platform's copy, so recommendations reflect the latest
+        published models.
+
+        Returns:
+            dict: The platform's refresh report.
+        """
         return self.client.post("/guide/refresh")

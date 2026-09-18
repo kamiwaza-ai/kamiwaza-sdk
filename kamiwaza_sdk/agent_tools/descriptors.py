@@ -30,7 +30,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from functools import lru_cache
 from importlib import resources
@@ -69,7 +69,6 @@ _READ_VERBS = frozenset(
         "metadata",
         "query",
         "retrieve",
-        "discover",
         "estimate",
         "diagnose",
         "capabilities",
@@ -91,13 +90,16 @@ _READ_VERBS = frozenset(
         "slack",
         # The connector-surface reads that arrived with the surface browsing
         # API. Each one reads and returns: `browse_surface` lists a surface's
-        # items, `fetch_surface_content` reads one node by its opaque id, and
-        # `verify_connection` probes the provider under the caller's own stored
-        # credential and reports per-capability results. The probe counts as a
-        # read because nothing it touches survives the call.
+        # items and `fetch_surface_content` reads one node by its opaque id.
+        #
+        # `verify` and `discover` were here once and are not verbs any more.
+        # Each led exactly one published operation, and in both cases that one
+        # operation writes: `connectors.verify_connection` persists connection
+        # health and `gates.discover` imports a caller-supplied classpath
+        # server-side. Both are stated in `HINT_OVERRIDES` instead, so no new
+        # operation can inherit a read from either word.
         "browse",
         "fetch",
-        "verify",
     }
 )
 
@@ -202,10 +204,23 @@ OPEN_WORLD_OPERATIONS: frozenset[str] = frozenset(
         # Container image status and pulls reach an external registry.
         "apps.check_image_status",
         "apps.pull_images",
-        # Garden discovery and import reach the external garden registry.
+        # Garden discovery and import reach the external garden registry. The
+        # `tools.*` three are withheld with the rest of that deprecated
+        # service; the `apps.*` three are published and reach the same
+        # registry, so the flag has to be on both or a host sees the published
+        # path as closed-world.
         "tools.discover_servers",
         "tools.import_garden_servers",
         "tools.get_garden_status",
+        "apps.list_garden_apps",
+        "apps.import_garden_apps",
+        # `install_by_name` imports the garden catalog itself when the named
+        # template is missing locally and `sync_if_missing` is left on.
+        "apps.install_by_name",
+        # Probes the third-party provider live, under the member's stored
+        # credential, so the result depends on a system this platform does
+        # not own.
+        "connectors.verify_connection",
     }
 )
 
@@ -224,6 +239,16 @@ APPROVAL_REQUIRED_READS: frozenset[str] = frozenset(
         "auth.get_user",
         # Enumerates active personal access tokens.
         "auth.list_pats",
+        # Reads one secret's metadata by URN. The value is absent here too,
+        # but the rationale above is about disclosure rather than volume: an
+        # agent that can name a secret learns it exists, who holds it, and
+        # when it was last rotated. Leaving the single-record read free made
+        # the listing gate avoidable by anyone who could guess a URN.
+        "catalog.secrets.get",
+        # Returns a presigned download URL for an original document. The URL
+        # carries its own authority and works outside this call, so the
+        # result is closer to a handed-out credential than to a read.
+        "context.get_document_download_url",
     }
 )
 
@@ -255,7 +280,29 @@ class BehaviourHints:
 #: Follows `@neon/tools`'s `spec.annotations ?? generated.annotations`: a wrong
 #: derivation for one operation is corrected here rather than by weakening the
 #: rule for everything.
+#:
+#: An entry replaces every derived hint except `open_world`, which
+#: :func:`describe` re-applies from :data:`OPEN_WORLD_OPERATIONS` afterwards.
+#: Without that an override written for the other three hints would quietly
+#: close the open-world flag on an allowlisted operation.
 HINT_OVERRIDES: dict[str, BehaviourHints] = {
+    # `verify` is not a read verb here. The platform probes the provider and
+    # persists the resulting connection health, so one call can move a
+    # member's stored connection into degraded or reauth-required. The probe
+    # reaches the third-party provider, so it is open-world as well, and the
+    # health it writes is a state the same call would write again, so a repeat
+    # is not a second thing.
+    "connectors.verify_connection": BehaviourHints(
+        read_only=False, destructive=False, idempotent=True, open_world=True
+    ),
+    # `POST /authz/gates/discover` imports a caller-supplied dotted classpath
+    # server-side, which runs that module's top-level code inside the
+    # authorization surface. Nothing is stored, but an import is an execution,
+    # so it cannot publish as a free read. Re-importing the same classpath
+    # reaches the same loaded module, so it stays idempotent.
+    "gates.discover": BehaviourHints(
+        read_only=False, destructive=False, idempotent=True, open_world=False
+    ),
     # Returns the new key once and only once, so a retry is not equivalent to
     # the first call: the caller loses the key it did not read.
     "cluster.rotate_preshared_key": BehaviourHints(
@@ -421,14 +468,19 @@ def describe(entry: OperationEntry) -> OperationDescriptor:
         entry: An operation from the index.
 
     Returns:
-        The descriptor. An override replaces derived hints wholesale; an unknown
-        verb falls back to :data:`_UNKNOWN_VERB_HINTS`, which gates everything.
+        The descriptor. An override replaces the derived hints wholesale except
+        for ``open_world``, which is re-applied from
+        :data:`OPEN_WORLD_OPERATIONS` so an override cannot close it by
+        omission. An unknown verb falls back to :data:`_UNKNOWN_VERB_HINTS`,
+        which gates everything.
     """
     hints = (
         HINT_OVERRIDES.get(entry.selector)
         or derive_hints(entry.selector, entry.method)
         or _UNKNOWN_VERB_HINTS
     )
+    if entry.selector in OPEN_WORLD_OPERATIONS and not hints.open_world:
+        hints = replace(hints, open_world=True)
     requires_approval = not hints.read_only or entry.selector in APPROVAL_REQUIRED_READS
     return OperationDescriptor(
         entry=entry,

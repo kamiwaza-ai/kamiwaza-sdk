@@ -121,7 +121,7 @@ def find_and_deploy_model(
             shortfall=f"a model matching {query!r}",
         )
     model = matches[0]
-    deployment = client.serving.deploy_model(model_id=model.id)
+    deployment = client.serving.deploy_model(model_id=model.id, wait=False)
     return _await_deployment(client, deployment, str(model.id), timeout_seconds)
 
 
@@ -155,28 +155,112 @@ def deploy_and_connect_model(
     Returns:
         The ready deployment and its endpoint.
     """
-    deployment = client.serving.deploy_model(model_id=model_id)
+    deployment = client.serving.deploy_model(model_id=model_id, wait=False)
     return _await_deployment(client, deployment, model_id, timeout_seconds)
 
 
-def _required_bytes(estimate: Any) -> int | None:
-    """Return the memory an estimate says a deployment needs.
+#: What the platform names the requirement in a VRAM estimate. The estimator
+#: builds ``computed_vram_estimate`` as a float of bytes
+#: (``kamiwaza/serving/vram_estimator.py``, ``_build_result``), and that is the
+#: key the live endpoint test asserts. The rest are earlier names, kept so an
+#: older platform still gates instead of skipping the check.
+_REQUIRED_KEYS = (
+    "computed_vram_estimate",
+    "required_bytes",
+    "vram_bytes",
+    "total_bytes",
+    "estimated_bytes",
+)
+
+#: The capacity figure the same estimate carries: accelerator memory on the
+#: largest node the platform can see. The platform gates its own deployment on
+#: exactly this comparison — ``vram_exceeds_total`` in
+#: ``kamiwaza/serving/resource_allocation.py`` is
+#: ``computed_vram_estimate > highest_node_vram > 0``.
+_CAPACITY_KEYS = ("highest_node_vram",)
+
+
+def _estimate_bytes(estimate: Any, keys: tuple[str, ...]) -> int | None:
+    """Return the first byte figure an estimate reports under ``keys``.
 
     Args:
         estimate: The platform's estimate, whose key naming is not fixed by a
             model this package owns.
+        keys: Candidate keys, most current first.
 
     Returns:
-        The requirement in bytes, or ``None`` when the estimate carries none.
+        The figure in bytes, or ``None`` when the estimate carries none.
         ``None`` means "unknown", never "zero" — treating an absent estimate as
-        no requirement would deploy into a cluster that cannot hold it.
+        no requirement would deploy into a cluster that cannot hold it. A float
+        counts: the platform reports both figures as floats, and reading ints
+        only left every real estimate unknown and the capacity gate dead.
     """
     if not isinstance(estimate, dict):
         return None
-    for key in ("required_bytes", "vram_bytes", "total_bytes", "estimated_bytes"):
+    for key in keys:
         value = estimate.get(key)
-        if isinstance(value, int):
-            return value
+        # bool is an int in Python, and a flag under one of these keys is not a
+        # byte count.
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return int(value)
+    return None
+
+
+def _capacity_refusal(
+    *,
+    required: int | None,
+    largest_node: int | None,
+    nodes: Any,
+) -> Refusal | None:
+    """Whether the cluster can hold this deployment, and why not when it cannot.
+
+    Held apart from the workflow because it is the whole decision the workflow
+    exists to make, and reading it inline put two multi-term conditions in the
+    middle of a function that otherwise reads as estimate, check, deploy.
+
+    Args:
+        required: Bytes of accelerator memory the estimate asks for, or
+            ``None`` when the estimate reported none.
+        largest_node: The largest per-node total the estimate reports, or
+            ``None``.
+        nodes: The running nodes the cluster reports.
+
+    Returns:
+        The refusal to answer with, or ``None`` when the deployment may go
+        ahead.
+
+        Three cases, and the order matters. An unknown requirement never
+        refuses: the estimator is the only thing that knows, and refusing on
+        its silence would block every deployment it cannot price. A known
+        requirement with no running node refuses, because nothing can hold it.
+        A known requirement larger than the largest node's total refuses — the
+        same rule the platform applies in ``resource_allocation.py``, which
+        skips the comparison when the capacity figure is zero, as it is for a
+        CPU-only cluster and for the estimator's all-zero default.
+
+        What this cannot see is how much of a node another deployment already
+        holds: the figure is a node total, and nothing in the estimate or the
+        node list reports free memory. So this catches a requirement no node
+        could ever hold, and the platform can still refuse later on memory that
+        is already in use.
+    """
+    if required is None:
+        return None
+    if not nodes:
+        return Refusal(
+            reason="No running node can host this deployment.",
+            shortfall=f"{required} bytes of accelerator memory, 0 running nodes",
+        )
+    if largest_node and required > largest_node:
+        return Refusal(
+            reason="No running node has enough accelerator memory for this deployment.",
+            shortfall=(
+                f"{required} bytes of accelerator memory; the largest node "
+                f"reports {largest_node} bytes in total"
+            ),
+        )
     return None
 
 
@@ -211,6 +295,16 @@ def preflight_and_deploy_model(
     on capacity after the fact leaves a half-built thing an agent must find and
     clean up.
 
+    The comparison is the platform's own. The estimate carries both the
+    requirement and ``highest_node_vram``, the accelerator memory on the
+    largest node the platform can see, and the platform refuses a deployment
+    whose requirement passes that figure. It is a node total rather than free
+    memory: neither the estimate nor ``get_running_nodes`` reports what other
+    deployments already hold, and ``NodeListNode`` carries no memory field at
+    all. So this gate catches the requirement no cluster node could ever hold —
+    the case no retry fixes — and a deployment can still be refused later on
+    memory another deployment is using.
+
     Takes the three identifiers it uses rather than a ``CreateModelDeployment``.
     The request model has sixteen fields and this workflow reads three of them,
     so accepting the whole thing published 720 tokens of schema on every
@@ -234,7 +328,7 @@ def preflight_and_deploy_model(
 
     Returns:
         The ready deployment, or a :class:`Refusal` naming the estimated
-        requirement and what the cluster has.
+        requirement and the largest node figure the estimate reports.
     """
     deployment_request = CreateModelDeployment(
         m_id=UUID(str(model_id)),
@@ -242,15 +336,18 @@ def preflight_and_deploy_model(
         m_file_id=UUID(str(model_file_id)) if model_file_id else None,
     )
     estimate = client.serving.estimate_model_vram(deployment_request)
-    required = _required_bytes(estimate)
-    nodes = client.cluster.get_running_nodes()
-    if required and not nodes:
-        return Refusal(
-            reason="No running node can host this deployment.",
-            shortfall=f"{required} bytes of accelerator memory, 0 running nodes",
-        )
+    refusal = _capacity_refusal(
+        required=_estimate_bytes(estimate, _REQUIRED_KEYS),
+        largest_node=_estimate_bytes(estimate, _CAPACITY_KEYS),
+        nodes=client.cluster.get_running_nodes(),
+    )
+    if refusal is not None:
+        return refusal
     deployment = client.serving.deploy_model(
-        model_id=model_id, m_config_id=model_config_id, m_file_id=model_file_id
+        model_id=model_id,
+        m_config_id=model_config_id,
+        m_file_id=model_file_id,
+        wait=False,
     )
     return _await_deployment(client, deployment, str(model_id), timeout_seconds)
 
