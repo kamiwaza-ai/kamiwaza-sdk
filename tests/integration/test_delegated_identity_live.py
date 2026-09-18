@@ -26,6 +26,15 @@ pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresp
 _PROJECTED_ASSERTION = Path(
     "/var/run/secrets/kamiwaza.ai/workload-identity/token"
 )
+_REQUEST_TIMEOUT_SECONDS = 15
+
+
+class _BoundedSession(requests.Session):
+    """Bound both anonymous and SDK-issued live requests."""
+
+    def request(self, method: str, url: str, **kwargs: object) -> requests.Response:
+        kwargs.setdefault("timeout", _REQUEST_TIMEOUT_SECONDS)
+        return super().request(method, url, **kwargs)
 
 
 def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
@@ -38,17 +47,24 @@ def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
             "requires enabled delegated-workload policy, a registered disposable "
             "workload identity, and KAMIWAZA_DELEGATED_ATTESTATION_PROFILE"
         )
+    if os.getenv("KAMIWAZA_HTTP_TRACE_FILE", "").strip() or os.getenv(
+        "KAMIWAZA_HTTP_TRACE", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}:
+        pytest.skip(
+            "integration HTTP tracing records raw headers; disable it before "
+            "sending a projected workload assertion or DPoP proof"
+        )
     api_root = live_base_url.rstrip("/")
     assert api_root.endswith("/api"), "live base URL must point at Core's /api"
     base_url = api_root + "/v1/delegated-workloads"
-    with requests.Session() as session:
+    with _BoundedSession() as session:
         session.verify = os.getenv("KAMIWAZA_VERIFY_SSL", "true").strip().lower() not in {
             "0",
             "false",
             "no",
             "off",
         }
-        anonymous = session.get(base_url + "/capabilities", timeout=15)
+        anonymous = session.get(base_url + "/capabilities", auth=())
         assert anonymous.status_code in {400, 401, 403}, (
             "untrusted caller was not explicitly rejected by the enabled "
             f"delegated-workload route: HTTP {anonymous.status_code}"
@@ -71,4 +87,7 @@ def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
 
     assert profile in discovery.attestation_profiles
     assert discovery.attestation_profile_status[profile].status is ComponentStatus.READY
+    assert discovery.role_resolution == "observed", (
+        "Core must resolve the registered workload role, not merely parse its proof"
+    )
     assert discovery.contract_versions
