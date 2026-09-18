@@ -35,6 +35,44 @@ def _target_file(client, repo_id: str, quantization: str):
     return files[0]
 
 
+def _stored_file(client, repo_id: str, filename: str):
+    model = client.models.get_model_by_repo_id(repo_id)
+    if not model or not model.id:
+        return None
+    return next(
+        (
+            file
+            for file in client.models.get_model_files_by_model_id(model.id)
+            if file.name == filename
+        ),
+        None,
+    )
+
+
+def _require_cold_target(repo_id: str, hub_file, stored_file) -> None:
+    if model_file_download_satisfied(hub_file) or (
+        stored_file and model_file_download_satisfied(stored_file)
+    ):
+        pytest.skip(
+            f"{repo_id} {hub_file.name} is already stored; no cold run possible"
+        )
+    if (
+        hub_file.is_downloading
+        or hub_file.dl_requested_at
+        or (stored_file and (stored_file.is_downloading or stored_file.dl_requested_at))
+    ):
+        pytest.skip(f"{repo_id} {hub_file.name} already has a download in progress")
+
+
+def _assert_acquired_file(client, file) -> None:
+    assert file.id is not None
+    assert file.size and file.size > 0
+    assert file.storage_location
+    fetched = client.models.get_model_file(file.id)
+    assert model_file_download_satisfied(fetched)
+    assert fetched.size == file.size
+
+
 def test_cold_model_search_download_and_acquired_file(live_kamiwaza_client) -> None:
     """Prove a chosen quantized weight moves from absent to stored, not warm reuse."""
     repo_id = os.getenv("KAMIWAZA_COLD_MODEL_REPO", "Qwen/Qwen3-0.6B-GGUF")
@@ -43,32 +81,7 @@ def test_cold_model_search_download_and_acquired_file(live_kamiwaza_client) -> N
     client = live_kamiwaza_client
 
     before = _target_file(client, repo_id, quantization)
-    stored_model = client.models.get_model_by_repo_id(repo_id)
-    stored_before = next(
-        (
-            file
-            for file in (
-                client.models.get_model_files_by_model_id(stored_model.id)
-                if stored_model and stored_model.id
-                else []
-            )
-            if file.name == before.name
-        ),
-        None,
-    )
-    if model_file_download_satisfied(before) or (
-        stored_before and model_file_download_satisfied(stored_before)
-    ):
-        pytest.skip(f"{repo_id} {before.name} is already stored; no cold run possible")
-    if (
-        before.is_downloading
-        or before.dl_requested_at
-        or (
-            stored_before
-            and (stored_before.is_downloading or stored_before.dl_requested_at)
-        )
-    ):
-        pytest.skip(f"{repo_id} {before.name} already has a download in progress")
+    _require_cold_target(repo_id, before, _stored_file(client, repo_id, before.name))
 
     started = client.models.initiate_model_download(repo_id, quantization=quantization)
     request = started["download_request"]
@@ -78,26 +91,9 @@ def test_cold_model_search_download_and_acquired_file(live_kamiwaza_client) -> N
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        stored_model = client.models.get_model_by_repo_id(repo_id)
-        after = next(
-            (
-                file
-                for file in (
-                    client.models.get_model_files_by_model_id(stored_model.id)
-                    if stored_model and stored_model.id
-                    else []
-                )
-                if file.name == before.name
-            ),
-            None,
-        )
+        after = _stored_file(client, repo_id, before.name)
         if after and model_file_download_satisfied(after):
-            assert after.id is not None
-            assert after.size and after.size > 0
-            assert after.storage_location
-            fetched = client.models.get_model_file(after.id)
-            assert model_file_download_satisfied(fetched)
-            assert fetched.size == after.size
+            _assert_acquired_file(client, after)
             return
         time.sleep(5)
 
