@@ -20,6 +20,9 @@ live deployment rather than assumed:
   does NOT assert that discovery lists only running servers — see the module's
   entry in ``tests/e2e/capability_map.yaml`` for why that is left unclaimed
   rather than asserted either way.
+* **The platform's health endpoint is not evidence.** It answers from the
+  deployment's status field without contacting the tool, so MCP responsiveness
+  is established here by a real ``initialize`` handshake instead.
 """
 
 from __future__ import annotations
@@ -39,6 +42,19 @@ pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresp
 # Images served from a developer's local registry are not pullable by the
 # cluster; a deploy failing on one says nothing about this capability.
 LOCAL_DEV_REGISTRY_MARKERS = ("host.docker.internal", "localhost:", "127.0.0.1:")
+
+# A protocol-level handshake. The server may negotiate a newer protocol
+# version in its reply; the assertion is that it answers, not which version.
+MCP_INITIALIZE = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "eng12432-evidence", "version": "0"},
+    },
+}
 
 DEPLOYED_STATUSES = frozenset({"DEPLOYED", "RUNNING"})
 SETTLED_STATUSES = frozenset({"DEPLOYED", "RUNNING", "FAILED", "STOPPED"})
@@ -152,7 +168,7 @@ def test_tool_shed_deploy_health_discovery_and_stop(live_kamiwaza_client) -> Non
                 "station did not succeed on this host"
             )
 
-        _assert_mcp_health(client, deployment_id, name)
+        _assert_mcp_handshake(client, deployment, name)
         _assert_appears_in_discovery(client, deployment_id, name)
     finally:
         with suppress(APIError):
@@ -166,12 +182,54 @@ def test_tool_shed_deploy_health_discovery_and_stop(live_kamiwaza_client) -> Non
     )
 
 
-def _assert_mcp_health(client, deployment_id: UUID, name: str) -> None:
-    """Health is an MCP-protocol check, not a container liveness probe."""
-    health = client.tools.check_health(deployment_id)
-    assert health.status == "healthy", (
-        f"tool deployment {name} reported health {health.status!r}"
-        + (f" ({health.error})" if health.error else "")
+def _assert_mcp_handshake(client, deployment, name: str) -> None:
+    """Prove the tool answers MCP at the URL the platform advertises.
+
+    Deliberately NOT via ``GET /tool/deployment/{id}/health``. That endpoint
+    returns ``healthy`` whenever the deployment row reads ``DEPLOYED`` and
+    reports a hardcoded ``protocol_version``; it never contacts the tool. Since
+    this test has already polled until the deployment reached ``DEPLOYED``,
+    asserting on it would be bounded by construction and could not fail.
+
+    ``protocolVersion`` and ``serverInfo`` cannot be derived from a status
+    field, so a handshake that returns them is evidence the endpoint is a live
+    MCP server. Going through the advertised URL rather than a pod address also
+    exercises the document's actual guarantee: a stable HTTPS URL usable by any
+    MCP-compatible client.
+    """
+    url = f"{deployment.url.rstrip('/')}/mcp"
+    if client.authenticator is not None:
+        client.authenticator.authenticate(client.session)
+    response = client.session.post(
+        url,
+        json=MCP_INITIALIZE,
+        headers={"Accept": "application/json, text/event-stream"},
+        timeout=60,
+    )
+    assert response.status_code == 200, (
+        f"MCP initialize against {name} returned HTTP {response.status_code}"
+    )
+
+    # The gateway answers an unknown path under a tool's route with 200 and the
+    # dashboard HTML rather than a 404, so a 200 alone proves nothing.
+    content_type = response.headers.get("content-type", "")
+    assert "json" in content_type.lower(), (
+        f"MCP initialize against {name} returned content-type "
+        f"{content_type!r}; the gateway fell through to its HTML catch-all, "
+        "so nothing is serving /mcp at the advertised URL"
+    )
+
+    body = response.json()
+    assert body.get("error") is None, (
+        f"MCP initialize against {name} returned a JSON-RPC error: {body.get('error')}"
+    )
+    result = body.get("result") or {}
+    assert result.get("protocolVersion"), (
+        f"the MCP result for {name} carries no protocolVersion: {body}"
+    )
+    server_info = result.get("serverInfo") or {}
+    assert server_info.get("name"), (
+        f"the MCP result for {name} carries no serverInfo.name: {body}"
     )
 
 
