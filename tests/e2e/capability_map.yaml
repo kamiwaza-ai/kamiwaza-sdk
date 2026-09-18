@@ -418,3 +418,28 @@
   capability_ids: [skills.skills-library]
   scenario_name: "Skills Library import, curation, export and soft delete"
   evidence_provenance: cycle-authored
+
+# ENG-12432. platform.app-generation-path names four stations: scaffold
+# (`kz-ext create`), the local loop (`kz-ext dev local`), `kz-ext validate`,
+# and the deploy (`kz-ext dev`). The three cluster-free stations are covered by
+# tests/integration/test_app_generation_path.py; the deploy needs a reachable
+# instance AND an image registry the cluster can pull from, and is not
+# evidenced. It is declared here as an unverified operation, which appends a
+# skipped `required_operation:` step and derives `failed` — a reasoned partial
+# record rather than silence, per ENG-12269.
+#
+# THIS IS THE ONE MODULE-GLOB ENTRY IN THE FILE AND IT IS DELIBERATE, so read
+# the PER-TEST RULE against it carefully. The rule exists so that running a
+# single matched test can never emit a PASSING record for the capability. Here
+# that outcome is structurally impossible: `kz_ext_dev_deploy` is always a
+# required-and-skipped step, so every record this entry can produce is
+# `failed`, whichever subset of the three tests ran. The three are stations of
+# one path measured in one run, and splitting them into three node-id entries
+# would emit three records each claiming the whole capability from one station
+# — strictly weaker. Revisit this shape when the deploy station lands: at that
+# point the entry should name the single test that walks the full path.
+- pattern: "tests/integration/test_app_generation_path.py::*"
+  capability_ids: [platform.app-generation-path]
+  scenario_name: "Application generation path: scaffold, validate, and local loop"
+  evidence_provenance: cycle-authored
+  unverified_operations: [kz_ext_dev_deploy]
