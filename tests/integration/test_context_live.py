@@ -36,8 +36,8 @@ DEFAULT_WORKROOM_ID = os.getenv(
 )
 TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
 
-# core's VectorDBNotProvisionedError payload code (ENG-12477).
-_NO_VECTORDB_CODE = "vectordb_instance_not_found"
+# Poll interval while waiting for a workroom's auto-provisioned VectorDB.
+_VECTORDB_PROVISION_POLL_SECONDS = 2.0
 
 
 def _sample_vector() -> list[float]:
@@ -1267,37 +1267,24 @@ def _assert_owner_can_find(doc: _IndexedDocument) -> None:
     assert document["filename"] == doc.filename
 
 
-def _is_unprovisioned_vectordb(error: KamiwazaError) -> bool:
-    """True for core's "this workroom has no VectorDB bound" refusal.
-
-    Core raises ``VectorDBNotProvisionedError`` as a deliberate retryable 503
-    rather than a 404, so an ephemeral room that never had a backend answers a
-    search this way. The probe resolved no backend at all, so it cannot have
-    returned anyone's document.
-
-    A parsed mapping body is authoritative: its ``code`` alone decides, so a
-    different structured code stays a failure even when the diagnostic text
-    quotes this one (``str(APIError)`` embeds the raw response). The text
-    fallback covers only a 503 whose body did not parse into a mapping — in
-    practice a non-JSON payload, which the client surfaces as ``None``.
-    """
-    if error.status_code != 503:
-        return False
-    if isinstance(error.body, dict):
-        return error.body.get("code") == _NO_VECTORDB_CODE
-    return _NO_VECTORDB_CODE in str(error)
-
-
 def _assert_foreign_search_misses(
     search: Callable[[], dict[str, Any]], needle: str
 ) -> None:
-    """A foreign workroom is denied, has no backend at all, or sees nothing."""
+    """A foreign workroom is denied outright or sees none of the document.
+
+    The probe runs against a room whose VectorDB is already provisioned (see
+    ``_create_foreign_workroom``), so it reaches backend resolution and this
+    stays a real isolation assertion. A ``503 vectordb_instance_not_found``
+    here means the room lost its backend after we waited for it — a
+    provisioning regression, not a pass.
+    """
     try:
         results = search()["results"]
     except KamiwazaError as error:
-        if _is_unprovisioned_vectordb(error):
-            return
-        assert error.status_code in {403, 404}
+        assert error.status_code in {403, 404}, (
+            f"foreign-workroom search answered {error.status_code}; expected a "
+            f"denial or a miss against its provisioned backend: {error}"
+        )
     else:
         assert all(needle not in item["content"] for item in results)
 
@@ -1331,6 +1318,42 @@ def _assert_foreign_workroom_denied(doc: _IndexedDocument, foreign_id: str) -> N
     assert denied.value.status_code in {403, 404}
 
 
+def _wait_for_workroom_vectordb(
+    service: ContextService,
+    workroom_id: str,
+    *,
+    timeout_seconds: float = 300.0,
+) -> str:
+    """Wait for core's eager per-workroom VectorDB to finish provisioning.
+
+    ``POST /workrooms`` provisions a per-room Milvus in a best-effort background
+    thread, and the context read paths deliberately never provision, so a search
+    issued before that lands answers ``503 vectordb_instance_not_found`` with
+    ``Retry-After: 30``. That state is designed to clear on its own.
+
+    Waiting here is what keeps the isolation probes meaningful: they run against
+    a room that really has a backend, so a miss is evidence of isolation rather
+    than of an empty room. A backend that never arrives is a provisioning
+    failure (ENG-10092 class: workroom Milvus never starting on a Tenant
+    install), and this raises so the smoke reports it instead of passing.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        instances = service.list_vectordbs(workroom_id=workroom_id)
+        if instances:
+            vectordb_id = str(instances[0]["id"])
+            _wait_for_vectordb_ready(service, vectordb_id, workroom_id=workroom_id)
+            return vectordb_id
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"workroom {workroom_id} never had a VectorDB provisioned within "
+                f"{timeout_seconds:.0f}s. Core auto-provisions one when the room "
+                "is created, so this is a provisioning failure, not a test "
+                "precondition."
+            )
+        time.sleep(_VECTORDB_PROVISION_POLL_SECONDS)
+
+
 def _create_foreign_workroom(
     service: ContextService, cleanups: list[tuple[str, Callable[[], object]]]
 ) -> str:
@@ -1339,6 +1362,7 @@ def _create_foreign_workroom(
         workrooms.create(f"sdk-t14-other-{uuid4().hex[:8]}", "ephemeral").id
     )
     cleanups.append(("foreign workroom", lambda: workrooms.delete(foreign_id)))
+    _wait_for_workroom_vectordb(service, foreign_id)
     return foreign_id
 
 
