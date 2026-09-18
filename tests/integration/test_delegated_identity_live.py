@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import requests
@@ -23,9 +24,7 @@ from kamiwaza_sdk.delegated_workloads.transport import DelegatedWorkloadTranspor
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
-_PROJECTED_ASSERTION = Path(
-    "/var/run/secrets/kamiwaza.ai/workload-identity/token"
-)
+_PROJECTED_ASSERTION = Path("/var/run/secrets/kamiwaza.ai/workload-identity/token")
 _REQUEST_TIMEOUT_SECONDS = 15
 
 
@@ -34,8 +33,8 @@ class _BoundedSession(requests.Session):
 
     def request(self, method: str, url: str, **kwargs: object) -> requests.Response:
         kwargs.setdefault("timeout", _REQUEST_TIMEOUT_SECONDS)
-        if self.verify is False:
-            kwargs.setdefault("verify", False)
+        kwargs.setdefault("verify", self.verify)
+        kwargs.setdefault("allow_redirects", False)
         return super().request(method, url, **kwargs)
 
 
@@ -58,15 +57,31 @@ def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
         )
     api_root = live_base_url.rstrip("/")
     assert api_root.endswith("/api"), "live base URL must point at Core's /api"
+    assert (
+        urlsplit(api_root).username is None
+    ), "live base URL must not embed credentials"
     base_url = api_root + "/v1/delegated-workloads"
     with _BoundedSession() as session:
-        session.verify = os.getenv("KAMIWAZA_VERIFY_SSL", "true").strip().lower() not in {
+        # No netrc credentials or proxy for this identity probe.
+        session.trust_env = False
+        verify_ssl = os.getenv("KAMIWAZA_VERIFY_SSL", "true").strip().lower() not in {
             "0",
             "false",
             "no",
             "off",
         }
-        anonymous = session.get(base_url + "/capabilities", auth=())
+        if verify_ssl:
+            session.verify = (
+                os.getenv("REQUESTS_CA_BUNDLE") or os.getenv("CURL_CA_BUNDLE") or True
+            )
+        else:
+            session.verify = False
+        anonymous = session.get(base_url + "/capabilities")
+        assert not {
+            "Authorization",
+            "X-Kamiwaza-Workload-Assertion",
+            "DPoP",
+        }.intersection(anonymous.request.headers), "negative control sent credentials"
         assert anonymous.status_code in {400, 401, 403}, (
             "untrusted caller was not explicitly rejected by the enabled "
             f"delegated-workload route: HTTP {anonymous.status_code}"
@@ -89,7 +104,7 @@ def test_projected_workload_identity_discovers_and_rejects_anonymous_caller(
 
     assert profile in discovery.attestation_profiles
     assert discovery.attestation_profile_status[profile].status is ComponentStatus.READY
-    assert discovery.role_resolution == "observed", (
-        "Core must resolve the registered workload role, not merely parse its proof"
-    )
+    assert (
+        discovery.role_resolution == "observed"
+    ), "Core must resolve the registered workload role, not merely parse its proof"
     assert discovery.contract_versions
