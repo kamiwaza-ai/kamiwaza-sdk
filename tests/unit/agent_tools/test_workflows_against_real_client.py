@@ -429,6 +429,35 @@ def client() -> Iterator[KamiwazaClient]:
     built.close()
 
 
+#: Returned by :func:`_plain_model` for a value it does not handle, so that a
+#: model which legitimately dumps to ``None`` is not read as "not a model".
+_UNREDUCED = object()
+
+
+def _plain_model(value: Any) -> Any:
+    """Return a model or dataclass as plain data, or :data:`_UNREDUCED`.
+
+    Split from :func:`_host_payload` because the two together ran to a
+    cyclomatic complexity of 9 against this project's threshold of 9: this half
+    knows how a host dumps an object, and that half walks containers.
+
+    Args:
+        value: A workflow's return value, or part of one.
+
+    Returns:
+        Plain data for a model or a dataclass instance, and
+        :data:`_UNREDUCED` for anything else.
+    """
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: _host_payload(getattr(value, field.name))
+            for field in dataclasses.fields(value)
+        }
+    return _UNREDUCED
+
+
 def _host_payload(value: Any) -> Any:
     """Return a workflow's return value as the host would serialise it.
 
@@ -443,13 +472,9 @@ def _host_payload(value: Any) -> Any:
     Returns:
         The same value with models and dataclasses reduced to plain data.
     """
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {
-            field.name: _host_payload(getattr(value, field.name))
-            for field in dataclasses.fields(value)
-        }
+    reduced = _plain_model(value)
+    if reduced is not _UNREDUCED:
+        return reduced
     if isinstance(value, dict):
         return {key: _host_payload(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

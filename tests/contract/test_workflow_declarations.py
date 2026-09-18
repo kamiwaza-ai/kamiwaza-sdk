@@ -27,6 +27,8 @@ import ast
 import inspect
 import textwrap
 import warnings
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -163,53 +165,74 @@ def test_workflow_calls_at_least_one_operation(index: OperationIndex, name: str)
     assert descriptors, f"{name} resolved no client operation, so nothing was compared"
 
 
+@dataclass(frozen=True, slots=True)
+class _Rule:
+    """One comparison between a workflow's declaration and its operations.
+
+    A rule object rather than six parameters on a shared assertion: the two
+    rules differ only in which field they read and which hint contradicts it,
+    and that difference is the abstraction the arguments were missing.
+
+    Attributes:
+        subject: Which declaration this rule reads, naming the test case.
+        exempt: Whether the workflow already declares the stronger thing, in
+            which case there is nothing to compare.
+        weaker: Whether one operation contradicts the workflow's claim.
+        claim: What the workflow declared, for the message.
+        derives: What the offending operations derive, for the message.
+    """
+
+    subject: str
+    exempt: Callable[[WorkflowSpec], bool]
+    weaker: Callable[[Any], bool]
+    claim: str
+    derives: str
+
+
+#: FR-016 and FR-018 in the only form a test can check: a workflow may declare
+#: something stronger than the operations it calls, never weaker. Declaring
+#: idempotence over a write that is not idempotent tells a host a retry is
+#: safe, and omitting an approval over an operation that requires one means a
+#: host never asks.
+_RULES = (
+    _Rule(
+        subject="idempotence",
+        exempt=lambda spec: not spec.idempotent,
+        weaker=lambda entry: not entry.hints.idempotent,
+        claim="declares idempotent=True",
+        derives="derive idempotent=False",
+    ),
+    _Rule(
+        subject="approval",
+        exempt=lambda spec: bool(spec.approval_step),
+        weaker=lambda entry: entry.requires_approval,
+        claim="declares no approval_step",
+        derives="derive requires_approval=True",
+    ),
+)
+
+
+@pytest.mark.parametrize("rule", _RULES, ids=lambda rule: rule.subject)
 @pytest.mark.parametrize("name", sorted(WORKFLOWS))
-def test_workflow_idempotence_is_not_weaker_than_its_operations(
-    index: OperationIndex, name: str
+def test_a_workflow_declaration_is_not_weaker_than_its_operations(
+    index: OperationIndex, name: str, rule: _Rule
 ) -> None:
-    """A workflow calling a non-idempotent operation may not declare idempotence.
+    """Every operation a workflow calls must agree with what it declared.
 
     Args:
         index: The operation index.
         name: Workflow under comparison.
+        rule: Which declaration is being compared.
     """
     spec, descriptors = _comparison(index, name)
-    if not spec.idempotent:
+    if rule.exempt(spec):
         return
 
     offenders = [
-        selector
-        for selector, descriptor in descriptors.items()
-        if not descriptor.hints.idempotent
+        selector for selector, entry in descriptors.items() if rule.weaker(entry)
     ]
 
     assert not offenders, (
-        f"{name} declares idempotent=True; compared against "
-        f"{sorted(descriptors)}, these derive idempotent=False: {offenders}"
-    )
-
-
-@pytest.mark.parametrize("name", sorted(WORKFLOWS))
-def test_workflow_approval_is_not_weaker_than_its_operations(
-    index: OperationIndex, name: str
-) -> None:
-    """A workflow calling an approval-bearing operation must name an approval step.
-
-    Args:
-        index: The operation index.
-        name: Workflow under comparison.
-    """
-    spec, descriptors = _comparison(index, name)
-    if spec.approval_step:
-        return
-
-    offenders = [
-        selector
-        for selector, descriptor in descriptors.items()
-        if descriptor.requires_approval
-    ]
-
-    assert not offenders, (
-        f"{name} declares no approval_step; compared against "
-        f"{sorted(descriptors)}, these derive requires_approval=True: {offenders}"
+        f"{name} {rule.claim}; compared against {sorted(descriptors)}, "
+        f"these {rule.derives}: {offenders}"
     )
