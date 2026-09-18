@@ -1,7 +1,8 @@
 """Cold model acquisition verification against a live platform.
 
-Set KAMIWAZA_COLD_MODEL_REPO to an uncached, single-file GGUF repository.
-Warm files cannot prove that a new download works, so this test skips them.
+Set KAMIWAZA_COLD_MODEL_REPO to a fresh, uncached single-file GGUF repository
+for each run. Warm files cannot prove a new download, so this test skips them.
+The acquired file is retained because shared model weights may serve other users.
 """
 
 from __future__ import annotations
@@ -31,7 +32,8 @@ def _target_file(client, repo_id: str, quantization: str):
         f"Expected one {quantization} GGUF file for {repo_id}; "
         f"found {[file.name for file in files]}"
     )
-    return files[0]
+    assert model.id is not None
+    return model.id, files[0]
 
 
 def test_cold_model_search_download_and_acquired_file(live_kamiwaza_client) -> None:
@@ -41,10 +43,27 @@ def test_cold_model_search_download_and_acquired_file(live_kamiwaza_client) -> N
     timeout = int(os.getenv("KAMIWAZA_COLD_MODEL_TIMEOUT_SECONDS", "900"))
     client = live_kamiwaza_client
 
-    before = _target_file(client, repo_id, quantization)
-    if model_file_download_satisfied(before):
+    model_id, before = _target_file(client, repo_id, quantization)
+    stored_before = next(
+        (
+            file
+            for file in client.models.get_model_files_by_model_id(model_id)
+            if file.name == before.name
+        ),
+        None,
+    )
+    if model_file_download_satisfied(before) or (
+        stored_before and model_file_download_satisfied(stored_before)
+    ):
         pytest.skip(f"{repo_id} {before.name} is already stored; no cold run possible")
-    if before.is_downloading or before.dl_requested_at:
+    if (
+        before.is_downloading
+        or before.dl_requested_at
+        or (
+            stored_before
+            and (stored_before.is_downloading or stored_before.dl_requested_at)
+        )
+    ):
         pytest.skip(f"{repo_id} {before.name} already has a download in progress")
 
     started = client.models.initiate_model_download(repo_id, quantization=quantization)
@@ -55,9 +74,16 @@ def test_cold_model_search_download_and_acquired_file(live_kamiwaza_client) -> N
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        after = _target_file(client, repo_id, quantization)
-        if model_file_download_satisfied(after):
-            assert after.id == before.id
+        after = next(
+            (
+                file
+                for file in client.models.get_model_files_by_model_id(model_id)
+                if file.name == before.name
+            ),
+            None,
+        )
+        if after and model_file_download_satisfied(after):
+            assert after.id is not None
             assert after.size and after.size > 0
             assert after.storage_location
             fetched = client.models.get_model_file(after.id)

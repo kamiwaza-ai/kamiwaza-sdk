@@ -1017,6 +1017,24 @@ def test_context_ontology_known_answer_isolated_by_workroom(
                 pytest.fail(f"Known answer for {marker} was not retrieved: {facts}")
             time.sleep(3)
 
+        health = service.ontology_health(ontology_id, workroom_id=session_workroom)
+        assert health["ontology_id"] == ontology_id
+        assert health["healthy"] is True
+        memory = service.get_memory(
+            ontology_id,
+            group_id=group_id,
+            query=f"What is the answer to {marker}?",
+            workroom_id=session_workroom,
+        )
+        assert "cobalt" in str(memory["facts"]).lower()
+        episodes = service.get_episodes(
+            ontology_id,
+            group_id=group_id,
+            workroom_id=session_workroom,
+        )
+        assert episodes["episodes"]
+        assert marker in str(episodes["episodes"])
+
         foreign = service.client.workrooms.create(
             f"sdk-foreign-{uuid4().hex[:8]}",
             "ephemeral",
