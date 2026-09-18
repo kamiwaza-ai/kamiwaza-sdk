@@ -1272,7 +1272,7 @@ def _assert_foreign_search_misses(
     The probe runs against a room whose VectorDB is already provisioned (see
     ``_create_foreign_workroom``), so it reaches backend resolution and this
     stays a real isolation assertion. A ``503 vectordb_instance_not_found``
-    here means the room lost its backend after we waited for it — a
+    here means the room lost the backend we provisioned for it — a
     provisioning regression, not a pass.
     """
     try:

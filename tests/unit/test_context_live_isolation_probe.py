@@ -74,11 +74,12 @@ def test_foreign_search_accepts_results_without_the_needle() -> None:
 # --- the foreign room is provisioned before it is probed --------------------
 
 
-def _fake_service(created: list[dict[str, Any]]) -> SimpleNamespace:
+def _fake_service(events: list[str]) -> SimpleNamespace:
+    """A workrooms client that records its deletes into a shared event log."""
     workroom_id = uuid4()
     workrooms = SimpleNamespace(
         create=lambda _name, _type: SimpleNamespace(id=workroom_id),
-        delete=lambda room_id: created.append({"deleted_workroom": room_id}),
+        delete=events.append,
     )
     return SimpleNamespace(client=SimpleNamespace(workrooms=workrooms))
 
@@ -87,21 +88,20 @@ def test_create_foreign_workroom_provisions_its_own_vectordb(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Explicit provisioning holds on eager, lazy and disabled deployments."""
-    calls: list[dict[str, Any]] = []
-    service = _fake_service(calls)
+    created: list[dict[str, Any]] = []
     monkeypatch.setattr(
         context_live,
         "_create_temp_vectordb",
-        lambda _service, *, prefix, workroom_id: calls.append(
+        lambda _service, *, prefix, workroom_id: created.append(
             {"created_vectordb_for": workroom_id, "prefix": prefix}
         )
         or "vdb-foreign",
     )
 
     cleanups: list[tuple[str, Callable[[], object]]] = []
-    foreign_id = _create_foreign_workroom(service, cleanups)
+    foreign_id = _create_foreign_workroom(_fake_service([]), cleanups)
 
-    assert calls == [
+    assert created == [
         {"created_vectordb_for": foreign_id, "prefix": "sdk-t14-other-vdb"}
     ]
 
@@ -115,19 +115,17 @@ def test_create_foreign_workroom_cleans_up_the_backend_before_the_room(
         "_create_temp_vectordb",
         lambda _service, *, prefix, workroom_id: "vdb-foreign",
     )
-    deleted: list[str] = []
+    # One shared log, so the assertion pins the ORDER the two teardowns ran in
+    # and not merely that each of them ran.
+    events: list[str] = []
     monkeypatch.setattr(
         context_live,
         "_safe_delete_vectordb",
-        lambda _service, vectordb_id, *, workroom_id: deleted.append(vectordb_id),
+        lambda _service, vectordb_id, *, workroom_id: events.append(vectordb_id),
     )
 
     cleanups: list[tuple[str, Callable[[], object]]] = []
-    _create_foreign_workroom(_fake_service([]), cleanups)
-
-    assert [label for label, _action in cleanups] == [
-        "foreign workroom",
-        "foreign workroom vectordb",
-    ]
+    foreign_id = _create_foreign_workroom(_fake_service(events), cleanups)
     context_live._run_cleanups(cleanups)
-    assert deleted == ["vdb-foreign"]
+
+    assert events == ["vdb-foreign", foreign_id]
