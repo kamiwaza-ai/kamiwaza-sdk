@@ -86,6 +86,54 @@ def _delete_catalog_if_present(client, connector_type: str) -> None:
             raise
 
 
+def _verify_until_ready(client, connector_id, *, wait=sleep) -> None:
+    deadline = monotonic() + 90
+    while True:
+        try:
+            verification = client.connectors.verify_connection(connector_id)
+            assert verification.available, (
+                "Disposable connector verification did not pass"
+            )
+            return
+        except APIError as exc:
+            if exc.status_code not in (502, 503, 504) or monotonic() >= deadline:
+                raise
+            wait(3)
+
+
+def test_verification_retries_startup_errors() -> None:
+    class FakeConnectors:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def verify_connection(self, _connector_id):
+            self.calls += 1
+            if self.calls == 1:
+                raise APIError("starting", status_code=502)
+            return type("Verdict", (), {"available": True})()
+
+    client = type("Client", (), {"connectors": FakeConnectors()})()
+    _verify_until_ready(client, "disposable", wait=lambda _: None)
+    assert client.connectors.calls == 2
+
+
+def _cleanup_disposable_connector(client, connector_type: str, connector_id) -> None:
+    try:
+        cleanup_ids = (
+            [connector_id]
+            if connector_id is not None
+            else [
+                item.id
+                for item in client.connectors.list()
+                if item.connector_type == connector_type
+            ]
+        )
+        for cleanup_id in cleanup_ids:
+            client.connectors.delete(cleanup_id)
+    finally:
+        _delete_catalog_if_present(client, connector_type)
+
+
 def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) -> None:
     fixture = _fixture("managed")
     if fixture.get("allow_deployment") is not True:
@@ -106,7 +154,6 @@ def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) 
 
     client = request.getfixturevalue("live_kamiwaza_client")
     connector_id = None
-    catalog_created = True
     try:
         entry = client.connectors.register_type(
             ConnectorCatalogRegister(manifest=manifest)
@@ -132,16 +179,7 @@ def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) 
         )
         assert renamed.name == f"SDK verified {suffix}"
 
-        deadline = monotonic() + 90
-        while True:
-            try:
-                verification = client.connectors.verify_connection(connector_id)
-                break
-            except APIError as exc:
-                if exc.status_code not in (502, 503, 504) or monotonic() >= deadline:
-                    raise
-                sleep(3)
-        assert verification.available, "Disposable connector verification did not pass"
+        _verify_until_ready(client, connector_id)
 
         assert any(
             str(item.id) == str(connector_id)
@@ -156,21 +194,7 @@ def test_disposable_managed_connector_lifecycle(request: pytest.FixtureRequest) 
             for item in client.connectors.list_available()
         )
     finally:
-        try:
-            cleanup_ids = (
-                [connector_id]
-                if connector_id is not None
-                else [
-                    item.id
-                    for item in client.connectors.list()
-                    if item.connector_type == connector_type
-                ]
-            )
-            for cleanup_id in cleanup_ids:
-                client.connectors.delete(cleanup_id)
-        finally:
-            if catalog_created:
-                _delete_catalog_if_present(client, connector_type)
+        _cleanup_disposable_connector(client, connector_type, connector_id)
 
 
 def _fetch_digest(client, ref: ConnectorSurfaceRef, item: dict) -> str:
