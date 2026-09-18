@@ -26,11 +26,13 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from uuid import uuid4
 from typing import NoReturn
 from urllib.error import URLError
 from urllib.request import urlopen
 
 import pytest
+from kamiwaza_extensions.dev_local import detect_compose_command
 from kamiwaza_extensions_lib import __version__ as runtime_lib_version
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -45,6 +47,16 @@ RUNTIME_LIB_DISTRIBUTION = "kamiwaza-extensions-lib"
 # Where `kz-ext dev local --sdk-repo` mounts the checkout inside the backend
 # image; the CLI reports it as `PYTHONPATH: /sdk`.
 SDK_OVERLAY_MOUNT = "/sdk"
+
+# Compose derives a project name from the project directory's basename when none
+# is given, and ``tmp_path_factory.mktemp`` reuses basenames across runs -- every
+# run gets ``app-generation0``. Two runs on this shared host would then share one
+# Compose project, and ``down -v`` in either would destroy the other's containers
+# and volumes. A run-unique project name is passed instead: through the
+# environment for the ``up``, since kz-ext builds that command itself and copies
+# ``os.environ`` into it (``kamiwaza_extensions/dev_local.py``), and explicitly
+# with ``-p`` for the teardown.
+COMPOSE_PROJECT_ENV = "COMPOSE_PROJECT_NAME"
 
 # `kz-ext dev local` reports each service on its own line, e.g.
 #   backend: http://localhost:55012
@@ -63,6 +75,7 @@ def _run(
     *,
     cwd: Path,
     timeout: int = 900,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         command,
@@ -71,6 +84,7 @@ def _run(
         capture_output=True,
         timeout=timeout,
         check=False,
+        env=env,
     )
     if result.returncode != 0:
         raise AssertionError(
@@ -81,18 +95,22 @@ def _run(
     return result
 
 
-def _down_compose_stacks(stacks: list[Path]) -> list[str]:
-    """Take each compose stack down, describing every teardown that failed.
+def _down_compose_stacks(stacks: list[tuple[Path, str]]) -> list[str]:
+    """Take each compose project down, describing every teardown that failed.
 
-    A named seam rather than inline fixture code so the return-code check is
-    itself testable: the whole point of this function is that a nonzero exit is
-    reported instead of discarded, and that property is pinned in
-    ``tests/unit/test_app_generation_compose_teardown.py`` without needing Docker.
+    A named seam rather than inline fixture code so its two properties are
+    testable without Docker, in
+    ``tests/unit/test_app_generation_compose_teardown.py``: a nonzero exit is
+    reported rather than discarded, and the stack is addressed the way it was
+    started -- the Compose binary comes from the same ``detect_compose_command``
+    kz-ext itself uses, which falls back to standalone ``docker-compose``, and
+    the project is named explicitly so teardown cannot reach another run's.
     """
+    compose = detect_compose_command()
     failures: list[str] = []
-    for stack in stacks:
+    for stack, project in stacks:
         result = subprocess.run(
-            ["docker", "compose", "down", "-v"],
+            [*compose, "-p", project, "down", "-v"],
             cwd=stack,
             text=True,
             capture_output=True,
@@ -101,13 +119,14 @@ def _down_compose_stacks(stacks: list[Path]) -> list[str]:
         )
         if result.returncode != 0:
             failures.append(
-                f"{stack} exited {result.returncode}: {result.stderr.strip()}"
+                f"{stack} (project {project}) exited {result.returncode}: "
+                f"{result.stderr.strip()}"
             )
     return failures
 
 
 @pytest.fixture
-def composed_down() -> Iterator[list[Path]]:
+def composed_down() -> Iterator[list[tuple[Path, str]]]:
     """Take down every compose stack a test starts, and check that it worked.
 
     A fixture finalizer rather than a ``finally`` block, for the two reasons the
@@ -121,7 +140,7 @@ def composed_down() -> Iterator[list[Path]]:
     cleanup did -- let ``docker compose down`` fail while the test stayed green,
     leaving detached containers and named volumes on a shared Docker host.
     """
-    stacks: list[Path] = []
+    stacks: list[tuple[Path, str]] = []
     yield stacks
 
     leaked = _down_compose_stacks(stacks)
@@ -263,7 +282,7 @@ def _parse_service_urls(output: str) -> dict[str, str]:
 
 
 def test_kz_ext_dev_local_serves_the_scaffolded_app(
-    scaffold: Path, composed_down: list[Path]
+    scaffold: Path, composed_down: list[tuple[Path, str]]
 ) -> None:
     """The local loop builds and serves both services against this checkout.
 
@@ -277,7 +296,8 @@ def test_kz_ext_dev_local_serves_the_scaffolded_app(
 
     # Registered before the command that starts the stack: a run that brought
     # containers up and then failed is still torn down.
-    composed_down.append(scaffold)
+    project = f"eng12432-appgen-{uuid4().hex[:8]}"
+    composed_down.append((scaffold, project))
 
     result = _run(
         [
@@ -290,6 +310,7 @@ def test_kz_ext_dev_local_serves_the_scaffolded_app(
         ],
         cwd=scaffold,
         timeout=1800,
+        env={**os.environ, COMPOSE_PROJECT_ENV: project},
     )
     urls = _parse_service_urls(f"{result.stdout}\n{result.stderr}")
     assert {"backend", "frontend"} <= urls.keys(), (

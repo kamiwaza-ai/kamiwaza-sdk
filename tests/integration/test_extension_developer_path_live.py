@@ -213,6 +213,19 @@ def test_a_published_extension_is_a_platform_resource(
     assert name in listed, "a created extension did not appear in the listing"
 
     status = service.get_extension_status(name)
+    # Correlated first: this suite deploys a service called "echo" on every run,
+    # so an endpoint answering with a different extension's status -- another
+    # run's, or a stale cached one -- would otherwise satisfy every assertion
+    # below. ExtensionStatus.name carries the CR name, so the correlation is
+    # available rather than assumed.
+    assert status.name == name, (
+        f"get_extension_status({name!r}) answered for {status.name!r}; the "
+        "status station cannot be attributed to the extension under test"
+    )
+    assert status.phase, (
+        f"get_extension_status({name!r}) reported an empty phase, so it reports "
+        "no state at all"
+    )
     assert status.services, (
         "get_extension_status reported no services for the created extension"
     )

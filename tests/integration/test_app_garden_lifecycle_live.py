@@ -321,6 +321,21 @@ def _assert_monitoring_stations(client, deployment_id: UUID, name: str) -> None:
         f"deployments {foreign}; the filter cannot be relied on, so an unrelated "
         "instance would have satisfied this station"
     )
+    # A row is not a running workload. AppInstance.status defaults to
+    # UNINITIALIZED, so correctly correlated rows that are all FAILED or STOPPED
+    # would otherwise satisfy this station while nothing runs.
+    #
+    # Not bounded by the deployment status this test already polled: the platform
+    # keeps the two independent and checks both itself before treating a
+    # deployment as usable -- `dep.status == "DEPLOYED" and any(inst.status ==
+    # "DEPLOYED" for inst in dep.instances)` in the platform's own readiness
+    # filter (kamiwaza/serving/garden/apps/apps.py).
+    live = [i for i in instances if i.status in RUNNING_STATUSES]
+    assert live, (
+        f"deployment {name} reports a running deployment status, but none of its "
+        f"{len(instances)} instance(s) is in {sorted(RUNNING_STATUSES)}: "
+        f"{[i.status for i in instances]}"
+    )
 
 
 def _assert_retirement_station(client, deployment_id: UUID, name: str) -> None:

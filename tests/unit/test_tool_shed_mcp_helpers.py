@@ -17,7 +17,7 @@ import pytest
 
 from kamiwaza_sdk.exceptions import APIError
 from tests.integration.test_tool_shed_lifecycle_live import (
-    _is_instance_version_refusal,
+    _is_pre_deploy_refusal,
     _jsonrpc_envelope,
     _mcp_endpoint,
 )
@@ -82,7 +82,7 @@ def test_jsonrpc_envelope_rejects_the_gateways_html_catch_all() -> None:
 
 
 def test_jsonrpc_envelope_rejects_an_event_stream_carrying_no_envelope() -> None:
-    with pytest.raises(AssertionError, match="no JSON object"):
+    with pytest.raises(AssertionError, match="no JSON-RPC response"):
         _jsonrpc_envelope(
             "text/event-stream", [": keepalive", "data: ping", ""], "tool-abc"
         )
@@ -99,9 +99,9 @@ VERSION_REFUSAL = (
 )
 
 
-def test_a_version_gated_deploy_is_recognised_as_a_refusal() -> None:
+def test_a_version_gated_deploy_is_recognised_as_a_pre_deploy_refusal() -> None:
     """The refusal the candidate walk has to tell apart from a real failure."""
-    assert _is_instance_version_refusal(APIError(VERSION_REFUSAL, status_code=400))
+    assert _is_pre_deploy_refusal(APIError(VERSION_REFUSAL, status_code=400))
 
 
 def test_another_bad_request_is_not_a_version_refusal() -> None:
@@ -110,16 +110,16 @@ def test_another_bad_request_is_not_a_version_refusal() -> None:
         'API request failed with status 400: {"detail":"name already in use"}',
         status_code=400,
     )
-    assert not _is_instance_version_refusal(error)
+    assert not _is_pre_deploy_refusal(error)
 
 
 def test_a_server_error_quoting_the_sentence_is_not_a_version_refusal() -> None:
     """The status code is checked, so the message alone cannot excuse a 500."""
-    assert not _is_instance_version_refusal(APIError(VERSION_REFUSAL, status_code=500))
+    assert not _is_pre_deploy_refusal(APIError(VERSION_REFUSAL, status_code=500))
 
 
 def test_a_local_error_carrying_no_status_is_not_a_version_refusal() -> None:
-    assert not _is_instance_version_refusal(APIError(VERSION_REFUSAL))
+    assert not _is_pre_deploy_refusal(APIError(VERSION_REFUSAL))
 
 
 def test_a_bad_request_merely_mentioning_kamiwaza_is_not_a_version_refusal() -> None:
@@ -135,4 +135,63 @@ def test_a_bad_request_merely_mentioning_kamiwaza_is_not_a_version_refusal() -> 
         'API request failed with status 400: {"detail":"' + detail + '"}',
         status_code=400,
     )
-    assert not _is_instance_version_refusal(error)
+    assert not _is_pre_deploy_refusal(error)
+
+
+# Verbatim from the evidence host on 2026-09-18: the other template that passes
+# the pullable-image and no-secrets filters is refused for a different reason.
+SHADOW_REFUSAL = (
+    'API request failed with status 409: {"detail":"Managed extension has a '
+    'local shadow; an administrator must remove it"}'
+)
+
+
+def test_a_shadowed_managed_extension_is_recognised_as_a_pre_deploy_refusal() -> None:
+    assert _is_pre_deploy_refusal(APIError(SHADOW_REFUSAL, status_code=409))
+
+
+def test_a_conflict_for_another_reason_is_not_a_pre_deploy_refusal() -> None:
+    """A 409 the arm must raise on rather than walk past."""
+    error = APIError(
+        'API request failed with status 409: {"detail":"a deployment with that '
+        'name already exists"}',
+        status_code=409,
+    )
+    assert not _is_pre_deploy_refusal(error)
+
+
+def test_the_shadow_phrase_at_another_status_is_not_a_pre_deploy_refusal() -> None:
+    """Each refusal is recognised by status and phrase together, not either."""
+    assert not _is_pre_deploy_refusal(APIError(SHADOW_REFUSAL, status_code=400))
+
+
+def test_jsonrpc_envelope_skips_a_notification_sent_before_the_response() -> None:
+    """A compliant server may send notifications on the stream first.
+
+    Returning the first JSON object would hand back the notification, whose id
+    does not correlate, and fail a healthy server. The response is the frame
+    carrying result or error and no method.
+    """
+    body = [
+        'data: {"jsonrpc": "2.0", "method": "notifications/message", '
+        '"params": {"level": "info"}}',
+        'data: {"jsonrpc": "2.0", "id": 99, "method": "roots/list"}',
+        'data: {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-03-26"}}',
+    ]
+    assert _jsonrpc_envelope("text/event-stream", body, "tool-abc") == ENVELOPE
+
+
+def test_jsonrpc_envelope_returns_an_error_response() -> None:
+    """A JSON-RPC error is an answer; the caller asserts on it, not the parser."""
+    body = ['data: {"jsonrpc": "2.0", "id": 1, "error": {"code": -32601}}']
+    envelope = _jsonrpc_envelope("text/event-stream", body, "tool-abc")
+    assert envelope["error"] == {"code": -32601}
+
+
+def test_jsonrpc_envelope_rejects_a_stream_of_notifications_only() -> None:
+    with pytest.raises(AssertionError, match="no JSON-RPC response"):
+        _jsonrpc_envelope(
+            "text/event-stream",
+            ['data: {"jsonrpc": "2.0", "method": "notifications/message"}'],
+            "tool-abc",
+        )

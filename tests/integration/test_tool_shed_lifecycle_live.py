@@ -63,10 +63,22 @@ MCP_INITIALIZE = {
 # as the streamable-HTTP location and ``/sse`` as FastMCP's.
 MCP_PATH = "/mcp"
 
-# How the platform words a deploy refused because the template's release pins a
-# Kamiwaza range this instance is outside of, e.g. "Extension 'tool-kamiwaza-dde'
-# requires Kamiwaza '>=1.0.0,<1.2.0'; this instance runs 1.2.1."
-INSTANCE_VERSION_REFUSAL = "requires Kamiwaza"
+# Refusals the platform returns *before* starting a deploy, because of the
+# template's administrative state on this instance rather than anything about the
+# Tool Shed path. Both were observed on the evidence host on 2026-09-18, and each
+# is matched on its status *and* a phrase from its message: matching a status
+# class alone would walk past genuine deploy failures, which is the direction
+# that turns a broken capability into a skipped one.
+PRE_DEPLOY_REFUSALS = (
+    # The selected release pins a Kamiwaza range excluding this instance:
+    # "Extension 'tool-kamiwaza-dde' requires Kamiwaza '>=1.0.0,<1.2.0'; this
+    # instance runs 1.2.1. Restore a compatible Kamiwaza version or ask an
+    # administrator to choose a compatible extension release."
+    (400, "requires Kamiwaza"),
+    # An imported template shadowing a managed extension:
+    # "Managed extension has a local shadow; an administrator must remove it"
+    (409, "local shadow"),
+)
 
 DEPLOYED_STATUSES = frozenset({"DEPLOYED", "RUNNING"})
 # Retirement is asserted positively, and only STOPPED counts. "not in
@@ -88,20 +100,26 @@ def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex[:8]}"
 
 
-def _is_instance_version_refusal(error: APIError) -> bool:
-    """Whether the platform refused the deploy over the template's version pin.
+def _is_pre_deploy_refusal(error: APIError) -> bool:
+    """Whether the platform declined to start the deploy over the template.
 
-    An extension release declares the Kamiwaza range it supports, and the
-    platform rejects a deploy outside that range with a 400 before creating
-    anything. ``ToolTemplate`` carries no field for the constraint -- verified
-    against ``kamiwaza_sdk/schemas/tools.py`` -- so the catalogue gives the SDK
-    nothing to pre-filter on and the refusal can only be recognised from the
-    message. That gap is recorded with the staged evidence.
+    Both recognised conditions -- a release whose Kamiwaza range excludes this
+    instance, and an imported template shadowing a managed extension -- are
+    properties of the template's administrative state, and the platform reports
+    them before creating anything. So there is nothing to clean up and the next
+    candidate can be tried, whereas any other error means the deploy itself
+    failed and must surface.
 
-    Narrow on purpose: the status code is checked too, so a 500 whose body
-    happens to quote the same sentence is not read as a version refusal.
+    ``ToolTemplate`` carries no field for either condition -- verified against
+    ``kamiwaza_sdk/schemas/tools.py``, which has no version-constraint or
+    shadowed-managed-extension field -- so the catalogue gives the SDK nothing to
+    pre-filter on and a refusal can only be recognised from the reply. That gap
+    is recorded with the staged evidence.
     """
-    return error.status_code == 400 and INSTANCE_VERSION_REFUSAL in str(error)
+    return any(
+        error.status_code == status and phrase in str(error)
+        for status, phrase in PRE_DEPLOY_REFUSALS
+    )
 
 
 def _deployable_templates(client) -> list[ToolTemplate]:
@@ -113,8 +131,8 @@ def _deployable_templates(client) -> list[ToolTemplate]:
     suite has no credentials to supply for one that does.
 
     A list rather than the first match: a template can also be refused at deploy
-    time by the platform's own version gate, which the SDK's catalogue does not
-    expose (see ``_is_instance_version_refusal``). Returning one candidate made
+    time over its administrative state on the instance, which the SDK's catalogue
+    does not expose (see ``_is_pre_deploy_refusal``). Returning one candidate made
     the whole capability unevidenceable the moment the first listed template
     pinned an incompatible Kamiwaza range -- which is a property of that
     template, not of the Tool Shed.
@@ -270,7 +288,7 @@ def test_tool_shed_deploy_health_discovery_and_stop(
                 name=name,
             )
         except APIError as error:
-            if not _is_instance_version_refusal(error):
+            if not _is_pre_deploy_refusal(error):
                 raise
             # Refused before anything was created, so there is nothing to clean
             # up and the next candidate is tried. Only a run where every
@@ -280,9 +298,9 @@ def test_tool_shed_deploy_health_discovery_and_stop(
         break
     if deployment is None:
         _skip_or_fail(
-            "every deployable tool template was refused by this instance's "
-            "version gate, so the Tool Shed capability has no fixture here: "
-            + "; ".join(refused)
+            "every deployable tool template was refused before deploy over its "
+            "administrative state on this instance, so the Tool Shed capability "
+            "has no fixture here: " + "; ".join(refused)
         )
     deployment_id = deployment.id
 
@@ -300,7 +318,7 @@ def test_tool_shed_deploy_health_discovery_and_stop(
         f"satisfied only by {sorted(DEPLOYED_STATUSES)}"
     )
 
-    _assert_mcp_handshake(client, deployment, name)
+    _assert_mcp_handshake(client, deployment.url, name)
     _assert_appears_in_discovery(client, deployment_id, name)
 
     # Stop is a station of this capability, so it is asserted here rather than
@@ -337,6 +355,25 @@ def _mcp_endpoint(advertised_url: str) -> str:
     return f"{base}{MCP_PATH}"
 
 
+def _is_jsonrpc_response(frame: object) -> bool:
+    """Whether a decoded stream frame is the answer to a call.
+
+    The stream a POST is answered on may carry server-to-client notifications
+    and requests before the response, so returning the first JSON object would
+    hand back a notification and fail the caller's id correlation against a
+    perfectly healthy server. A response is the frame that answers: it carries
+    ``result`` or ``error`` and, unlike a server request, no ``method``.
+
+    Deliberately does not look at the request id. Selecting the frame by the id
+    the caller is about to assert on would make that assertion tautological.
+    """
+    return (
+        isinstance(frame, dict)
+        and "method" not in frame
+        and ("result" in frame or "error" in frame)
+    )
+
+
 def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -> dict:
     """The JSON-RPC envelope from an MCP streamable-HTTP reply.
 
@@ -366,11 +403,11 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
                 frame = json.loads(payload)
             except json.JSONDecodeError:
                 continue
-            if isinstance(frame, dict):
+            if _is_jsonrpc_response(frame):
                 return frame
         raise AssertionError(
-            f"the event-stream reply from {name} carried no JSON object in any "
-            "data: frame, so no JSON-RPC envelope was returned"
+            f"the event-stream reply from {name} carried no JSON-RPC response in "
+            "any data: frame, so the initialize call was never answered"
         )
     raise AssertionError(
         f"MCP initialize against {name} returned content-type {content_type!r}; "
@@ -379,7 +416,7 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
     )
 
 
-def _assert_mcp_handshake(client, deployment, name: str) -> None:
+def _assert_mcp_handshake(client, advertised_url: str, name: str) -> None:
     """Prove the tool answers MCP at the URL the platform advertises.
 
     Deliberately NOT via ``GET /tool/deployment/{id}/health``. That endpoint
@@ -394,7 +431,7 @@ def _assert_mcp_handshake(client, deployment, name: str) -> None:
     exercises the document's actual guarantee: a stable HTTPS URL usable by any
     MCP-compatible client.
     """
-    url = _mcp_endpoint(deployment.url)
+    url = _mcp_endpoint(advertised_url)
     if client.authenticator is not None:
         client.authenticator.authenticate(client.session)
     # Streamed so an event-stream reply can be read frame by frame: the envelope
@@ -452,6 +489,11 @@ def _assert_appears_in_discovery(client, deployment_id: UUID, name: str) -> None
         "expected exactly once"
     )
     assert mine[0].url, "the discovered server carries no URL for a client to call"
+    # Non-empty is not usable. Discovery is the route a third-party MCP client
+    # takes, so the endpoint it publishes is handshaken in its own right: a stale
+    # or wrong URL here passes every other assertion while no client can reach
+    # the tool.
+    _assert_mcp_handshake(client, mine[0].url, f"{name} (as published by discovery)")
 
 
 @pytest.mark.usefixtures("live_server_available")
