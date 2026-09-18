@@ -36,14 +36,6 @@ DEFAULT_WORKROOM_ID = os.getenv(
 )
 TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
 
-# Poll interval while waiting for a workroom's auto-provisioned VectorDB.
-_VECTORDB_PROVISION_POLL_SECONDS = 2.0
-# Core treats a Milvus instance as legitimately still starting for this long
-# after creation (DEFAULT_VECTORDB_MILVUS_STARTUP_GRACE_SECONDS in
-# kamiwaza/services/context/config.py). Waiting any less would fail a slow but
-# supported provision — the false red this test exists to stop reporting.
-_VECTORDB_STARTUP_GRACE_SECONDS = 600.0
-
 
 def _sample_vector() -> list[float]:
     return list(TEST_VECTOR)
@@ -1323,92 +1315,34 @@ def _assert_foreign_workroom_denied(doc: _IndexedDocument, foreign_id: str) -> N
     assert denied.value.status_code in {403, 404}
 
 
-def _find_workroom_vectordb(
-    service: ContextService, workroom_id: str, *, deadline: float
-) -> dict[str, Any] | None:
-    """One poll for a VectorDB instance bound to this workroom.
-
-    Matches on ``workroom_id`` rather than taking the first row: a scoped
-    listing is not guaranteed to exclude Global or shared backends, and
-    accepting one of those would declare the room ready while its own Milvus
-    is still absent — reviving the 503 this wait exists to remove.
-
-    A transient API error mid-provision is tolerated the same way
-    ``_wait_for_vectordb_ready`` tolerates one, and re-raised once the
-    deadline passes so the failure is never silent.
-    """
-    try:
-        instances = service.list_vectordbs(workroom_id=workroom_id)
-    except APIError:
-        if time.monotonic() >= deadline:
-            raise
-        return None
-    return next(
-        (
-            instance
-            for instance in instances
-            if str(instance.get("workroom_id")) == str(workroom_id)
-        ),
-        None,
-    )
-
-
-def _wait_for_workroom_vectordb(
-    service: ContextService,
-    workroom_id: str,
-    *,
-    timeout_seconds: float = _VECTORDB_STARTUP_GRACE_SECONDS,
-) -> str:
-    """Wait for core's eager per-workroom VectorDB to finish provisioning.
-
-    ``POST /workrooms`` provisions a per-room Milvus in a best-effort background
-    thread, and the context read paths deliberately never provision, so a search
-    issued before that lands answers ``503 vectordb_instance_not_found`` with
-    ``Retry-After: 30``. That state is designed to clear on its own.
-
-    Waiting here is what keeps the isolation probes meaningful: they run against
-    a room that really has a backend, so a miss is evidence of isolation rather
-    than of an empty room. A backend that never arrives is a provisioning
-    failure (ENG-10092 class: workroom Milvus never starting on a Tenant
-    install), and this raises so the smoke reports it instead of passing.
-
-    ``timeout_seconds`` bounds the whole wait: the readiness leg inherits what
-    is left of it, so an instance that appears late cannot restart the clock.
-    """
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        instance = _find_workroom_vectordb(service, workroom_id, deadline=deadline)
-        if instance is not None:
-            vectordb_id = str(instance["id"])
-            _wait_for_vectordb_ready(
-                service,
-                vectordb_id,
-                workroom_id=workroom_id,
-                timeout_seconds=max(deadline - time.monotonic(), 0.0),
-            )
-            return vectordb_id
-        if time.monotonic() >= deadline:
-            raise AssertionError(
-                f"workroom {workroom_id} never had a VectorDB provisioned within "
-                f"{timeout_seconds:.0f}s. Core auto-provisions one when the room "
-                "is created, so this is a provisioning failure, not a test "
-                "precondition."
-            )
-        time.sleep(_VECTORDB_PROVISION_POLL_SECONDS)
-
-
 def _create_foreign_workroom(
     service: ContextService, cleanups: list[tuple[str, Callable[[], object]]]
 ) -> str:
+    """Create an ephemeral room that already has a VectorDB, ready to probe.
+
+    The room needs a backend for the probes to mean anything: a search against
+    a room with no VectorDB answers ``503 vectordb_instance_not_found`` before
+    resolving anything, which proves nothing about isolation.
+
+    Provision it explicitly rather than waiting on core's auto-provisioner.
+    That provisioner is eager only by default: with
+    ``WORKROOM_CONTEXT_AUTO_PROVISION_MODE=lazy`` a new room is provisioned on
+    first *write* (never by a search), and ``disabled`` leaves it to an
+    operator, so waiting would hang and fail on two supported deployments.
+    This mirrors how the owner's room gets its backend (``_create_temp_vectordb``
+    via the ``shared_workroom_vectordb`` fixture), which keeps both sides of the
+    isolation comparison set up the same way.
+    """
     workrooms = service.client.workrooms
     foreign_id = str(
         workrooms.create(f"sdk-t14-other-{uuid4().hex[:8]}", "ephemeral").id
     )
     cleanups.append(("foreign workroom", lambda: workrooms.delete(foreign_id)))
-    vectordb_id = _wait_for_workroom_vectordb(service, foreign_id)
-    # Best-effort: if deleting the room does not cascade its auto-provisioned
-    # Milvus, every nightly run would leak one deployment. Registered after the
-    # room so cleanups (reverse order) drop the backend first.
+    vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-t14-other-vdb",
+        workroom_id=foreign_id,
+    )
     cleanups.append(
         (
             "foreign workroom vectordb",
