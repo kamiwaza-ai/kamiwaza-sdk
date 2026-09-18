@@ -78,9 +78,8 @@ def test_disposable_managed_connector_lifecycle(live_kamiwaza_client) -> None:
     manifest["connector_type"] = connector_type
     manifest["provider_id"] = connector_type
     manifest["provider_label"] = f"SDK verification {suffix}"
-    assert manifest.get("deployment", {}).get("image_repository"), (
-        "Fixture needs an approved image"
-    )
+    if not manifest.get("deployment", {}).get("image_repository"):
+        pytest.fail("ENG-12433 managed fixture needs an approved image repository")
 
     client = live_kamiwaza_client
     connector_id = None
@@ -127,7 +126,8 @@ def test_disposable_managed_connector_lifecycle(live_kamiwaza_client) -> None:
         )
         assert not disabled.enabled
         assert all(
-            item.id != connector_id for item in client.connectors.list_available()
+            str(item.id) != str(connector_id)
+            for item in client.connectors.list_available()
         )
     finally:
         try:
@@ -170,14 +170,16 @@ def test_m365_workroom_and_provider_access(live_server_available: str) -> None:
         "b_item_in_a",
         "b_item_in_b",
     )
-    assert fixture["user_a_api_key"] != fixture["user_b_api_key"]
+    key_a = hashlib.sha256(fixture["user_a_api_key"].encode()).digest()
+    key_b = hashlib.sha256(fixture["user_b_api_key"].encode()).digest()
+    assert key_a != key_b, "Fixture PATs must belong to distinct users"
     assert fixture["workroom_a_id"] != fixture["workroom_b_id"]
 
     a = KamiwazaClient(live_server_available, api_key=fixture["user_a_api_key"])
     b = KamiwazaClient(live_server_available, api_key=fixture["user_b_api_key"])
-    identity_a = a.get("/auth/users/me")
-    identity_b = b.get("/auth/users/me")
-    assert identity_a["id"] != identity_b["id"], (
+    identity_a = a.auth.get_current_user()
+    identity_b = b.auth.get_current_user()
+    assert identity_a.sub != identity_b.sub, (
         "Fixture PATs must belong to different users"
     )
 
@@ -205,12 +207,12 @@ def test_m365_workroom_and_provider_access(live_server_available: str) -> None:
             ref_b.workroom_id, connected_only=True
         )
     )
-    assert all(str(room.id) != ref_b.workroom_id for room in a.workrooms.list()), (
-        "User A must not belong to workroom B"
-    )
+    with pytest.raises(APIError) as denied_catalog:
+        a.connectors.list_surface_catalog(ref_b.workroom_id)
+    assert denied_catalog.value.status_code in (403, 404)
 
     items = (fixture["a_item"], fixture["b_item_in_a"], fixture["b_item_in_b"])
-    expected = [item["sha256"] for item in items]
+    expected = [item["sha256"].lower() for item in items]
     assert len(set(expected)) == 3, "Fixture files need distinct approved content"
     for client, ref, item in (
         (a, ref_a, items[0]),
