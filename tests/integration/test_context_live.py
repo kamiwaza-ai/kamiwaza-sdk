@@ -38,6 +38,11 @@ TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
 
 # Poll interval while waiting for a workroom's auto-provisioned VectorDB.
 _VECTORDB_PROVISION_POLL_SECONDS = 2.0
+# Core treats a Milvus instance as legitimately still starting for this long
+# after creation (DEFAULT_VECTORDB_MILVUS_STARTUP_GRACE_SECONDS in
+# kamiwaza/services/context/config.py). Waiting any less would fail a slow but
+# supported provision — the false red this test exists to stop reporting.
+_VECTORDB_STARTUP_GRACE_SECONDS = 600.0
 
 
 def _sample_vector() -> list[float]:
@@ -1318,11 +1323,41 @@ def _assert_foreign_workroom_denied(doc: _IndexedDocument, foreign_id: str) -> N
     assert denied.value.status_code in {403, 404}
 
 
+def _find_workroom_vectordb(
+    service: ContextService, workroom_id: str, *, deadline: float
+) -> dict[str, Any] | None:
+    """One poll for a VectorDB instance bound to this workroom.
+
+    Matches on ``workroom_id`` rather than taking the first row: a scoped
+    listing is not guaranteed to exclude Global or shared backends, and
+    accepting one of those would declare the room ready while its own Milvus
+    is still absent — reviving the 503 this wait exists to remove.
+
+    A transient API error mid-provision is tolerated the same way
+    ``_wait_for_vectordb_ready`` tolerates one, and re-raised once the
+    deadline passes so the failure is never silent.
+    """
+    try:
+        instances = service.list_vectordbs(workroom_id=workroom_id)
+    except APIError:
+        if time.monotonic() >= deadline:
+            raise
+        return None
+    return next(
+        (
+            instance
+            for instance in instances
+            if str(instance.get("workroom_id")) == str(workroom_id)
+        ),
+        None,
+    )
+
+
 def _wait_for_workroom_vectordb(
     service: ContextService,
     workroom_id: str,
     *,
-    timeout_seconds: float = 300.0,
+    timeout_seconds: float = _VECTORDB_STARTUP_GRACE_SECONDS,
 ) -> str:
     """Wait for core's eager per-workroom VectorDB to finish provisioning.
 
@@ -1336,13 +1371,21 @@ def _wait_for_workroom_vectordb(
     than of an empty room. A backend that never arrives is a provisioning
     failure (ENG-10092 class: workroom Milvus never starting on a Tenant
     install), and this raises so the smoke reports it instead of passing.
+
+    ``timeout_seconds`` bounds the whole wait: the readiness leg inherits what
+    is left of it, so an instance that appears late cannot restart the clock.
     """
     deadline = time.monotonic() + timeout_seconds
     while True:
-        instances = service.list_vectordbs(workroom_id=workroom_id)
-        if instances:
-            vectordb_id = str(instances[0]["id"])
-            _wait_for_vectordb_ready(service, vectordb_id, workroom_id=workroom_id)
+        instance = _find_workroom_vectordb(service, workroom_id, deadline=deadline)
+        if instance is not None:
+            vectordb_id = str(instance["id"])
+            _wait_for_vectordb_ready(
+                service,
+                vectordb_id,
+                workroom_id=workroom_id,
+                timeout_seconds=max(deadline - time.monotonic(), 0.0),
+            )
             return vectordb_id
         if time.monotonic() >= deadline:
             raise AssertionError(
@@ -1362,7 +1405,18 @@ def _create_foreign_workroom(
         workrooms.create(f"sdk-t14-other-{uuid4().hex[:8]}", "ephemeral").id
     )
     cleanups.append(("foreign workroom", lambda: workrooms.delete(foreign_id)))
-    _wait_for_workroom_vectordb(service, foreign_id)
+    vectordb_id = _wait_for_workroom_vectordb(service, foreign_id)
+    # Best-effort: if deleting the room does not cascade its auto-provisioned
+    # Milvus, every nightly run would leak one deployment. Registered after the
+    # room so cleanups (reverse order) drop the backend first.
+    cleanups.append(
+        (
+            "foreign workroom vectordb",
+            lambda: _safe_delete_vectordb(
+                service, vectordb_id, workroom_id=foreign_id
+            ),
+        )
+    )
     return foreign_id
 
 
