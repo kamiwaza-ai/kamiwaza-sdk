@@ -11,11 +11,12 @@ connector image must be approved for this cluster before enabling it.
 
 The optional ``m365`` object needs ``connector_id``, two distinct user PATs
 (``user_a_api_key``, ``user_b_api_key``), ``workroom_a_id``, ``workroom_b_id``,
-and ``a_item``, ``b_item_in_a``, ``b_item_in_b``. Each item must have
+and ``a_item``, ``b_item_in_a``, ``b_item_in_b``, ``shared_item``. Each item must have
 ``node_id``, ``request`` (ConnectorContentRequest fields), and ``sha256`` of
 approved synthetic content. User B must belong to both rooms, user A only to
 A. A and B must have independent provider identities and fixture files with
-distinct bytes; the tests never create or alter those tenant objects.
+distinct bytes; ``shared_item`` must be provider-readable by both users. The
+tests never create or alter those tenant objects.
 """
 
 from __future__ import annotations
@@ -65,12 +66,12 @@ def _require_fields(data: dict, *fields: str) -> None:
 def test_disposable_managed_connector_lifecycle(live_kamiwaza_client) -> None:
     fixture = _fixture("managed")
     _require_fields(fixture, "manifest")
-    if "config" not in fixture or not isinstance(fixture["config"], dict):
-        pytest.fail("ENG-12433 managed fixture needs an explicit config object")
     if fixture.get("allow_deployment") is not True:
         pytest.skip(
             "ENG-12433: disposable connector deployment not explicitly approved"
         )
+    if "config" not in fixture or not isinstance(fixture["config"], dict):
+        pytest.fail("ENG-12433 managed fixture needs an explicit config object")
 
     manifest = dict(fixture["manifest"])
     suffix = uuid4().hex[:12]
@@ -121,6 +122,10 @@ def test_disposable_managed_connector_lifecycle(live_kamiwaza_client) -> None:
                 sleep(3)
         assert verification.available, "Disposable connector verification did not pass"
 
+        assert any(
+            str(item.id) == str(connector_id)
+            for item in client.connectors.list_available()
+        )
         disabled = client.connectors.update(
             connector_id, ConnectorUpdate(enabled=False)
         )
@@ -157,7 +162,9 @@ def _expect_denied(client, ref: ConnectorSurfaceRef, item: dict) -> None:
     assert denied.value.status_code in (403, 404)
 
 
-def test_m365_workroom_and_provider_access(live_server_available: str) -> None:
+def test_m365_workroom_and_provider_access(
+    live_server_available: str, live_kamiwaza_client
+) -> None:
     fixture = _fixture("m365")
     _require_fields(
         fixture,
@@ -169,14 +176,17 @@ def test_m365_workroom_and_provider_access(live_server_available: str) -> None:
         "a_item",
         "b_item_in_a",
         "b_item_in_b",
+        "shared_item",
     )
-    key_a = hashlib.sha256(fixture["user_a_api_key"].encode()).digest()
-    key_b = hashlib.sha256(fixture["user_b_api_key"].encode()).digest()
-    assert key_a != key_b, "Fixture PATs must belong to distinct users"
     assert fixture["workroom_a_id"] != fixture["workroom_b_id"]
 
-    a = KamiwazaClient(live_server_available, api_key=fixture["user_a_api_key"])
-    b = KamiwazaClient(live_server_available, api_key=fixture["user_b_api_key"])
+    verify_tls = live_kamiwaza_client.session.verify
+    a = KamiwazaClient(
+        live_server_available, api_key=fixture.pop("user_a_api_key"), verify=verify_tls
+    )
+    b = KamiwazaClient(
+        live_server_available, api_key=fixture.pop("user_b_api_key"), verify=verify_tls
+    )
     identity_a = a.auth.get_current_user()
     identity_b = b.auth.get_current_user()
     assert identity_a.sub != identity_b.sub, (
@@ -190,19 +200,19 @@ def test_m365_workroom_and_provider_access(live_server_available: str) -> None:
         workroom_id=fixture["workroom_b_id"], connector_id=fixture["connector_id"]
     )
     assert any(
-        str(item.id) == ref_a.connector_id
+        str(item.id) == str(ref_a.connector_id)
         for item in a.connectors.list_surface_catalog(
             ref_a.workroom_id, connected_only=True
         )
     )
     assert any(
-        str(item.id) == ref_a.connector_id
+        str(item.id) == str(ref_a.connector_id)
         for item in b.connectors.list_surface_catalog(
             ref_a.workroom_id, connected_only=True
         )
     )
     assert any(
-        str(item.id) == ref_b.connector_id
+        str(item.id) == str(ref_b.connector_id)
         for item in b.connectors.list_surface_catalog(
             ref_b.workroom_id, connected_only=True
         )
@@ -211,17 +221,28 @@ def test_m365_workroom_and_provider_access(live_server_available: str) -> None:
         a.connectors.list_surface_catalog(ref_b.workroom_id)
     assert denied_catalog.value.status_code in (403, 404)
 
-    items = (fixture["a_item"], fixture["b_item_in_a"], fixture["b_item_in_b"])
+    items = (
+        fixture["a_item"],
+        fixture["b_item_in_a"],
+        fixture["b_item_in_b"],
+        fixture["shared_item"],
+    )
+    for item in items:
+        _require_fields(item, "node_id", "request", "sha256")
     expected = [item["sha256"].lower() for item in items]
-    assert len(set(expected)) == 3, "Fixture files need distinct approved content"
+    assert len(set(expected)) == len(items), (
+        "Fixture files need distinct approved content"
+    )
     for client, ref, item in (
         (a, ref_a, items[0]),
         (b, ref_a, items[1]),
         (b, ref_b, items[2]),
+        (a, ref_a, items[3]),
+        (b, ref_b, items[3]),
     ):
         assert _fetch_digest(client, ref, item) == item["sha256"].lower()
 
     # B is a member of A's room but provider ACL must reject A's item.
     _expect_denied(b, ref_a, items[0])
-    # A is not a member of B's room; workroom policy must reject B's item.
-    _expect_denied(a, ref_b, items[2])
+    # A can provider-read this shared item in A, but cannot use room B.
+    _expect_denied(a, ref_b, items[3])
