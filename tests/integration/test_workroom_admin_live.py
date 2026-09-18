@@ -217,7 +217,11 @@ def test_owner_archives_restores_previews_and_deletes_a_workroom(
     impact = {item["type"]: item["count"] for item in preview["impact_items"]}
     assert (impact["members"], impact["catalog_entries"]) == (1, 1)
 
-    workrooms.enter(workroom_id)
+    # Asserted like every other enter here: the delete below depends on this
+    # binding, so a re-enter that silently bound elsewhere would make the
+    # deletion prove nothing about this workroom.
+    rebound_id = str(workrooms.enter(workroom_id).workroom_id)
+    assert rebound_id == workroom_id
     owner.catalog.datasets.delete(urn)
     ledger.proven_gone(lambda: owner.catalog.datasets.get(urn), name)
     left_again = str(workrooms.leave().workroom_id)

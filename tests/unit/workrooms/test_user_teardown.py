@@ -222,7 +222,7 @@ def test_a_local_user_no_listing_shows_is_named_as_unconfirmed() -> None:
     # concurrent runs' leftovers apart.
     message = str(reported.value)
     assert re.search(
-        rf"{re.escape(disposable.USERNAME_PREFIX)}[0-9a-f]{{12}}", message
+        rf"{re.escape(disposable.USERNAME_PREFIX)}[0-9a-f]{{16}}", message
     ), f"the report does not name a unique account: {message}"
     assert isinstance(reported.value.__cause__, disposable.CredentialRequestError), (
         "the setup failure is not the cleanup report's cause"

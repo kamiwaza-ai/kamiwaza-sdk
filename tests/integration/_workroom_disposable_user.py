@@ -87,6 +87,7 @@ from ._workroom_support import (
     CleanupError,
     Step,
     attempt_all,
+    NAME_SUFFIX_HEX,
     declined_by_the_server,
     expect_not_found,
     refuse_unconfirmed,
@@ -362,10 +363,11 @@ def _remove_failed_setup(
             # not prove nothing was stored: a server that persisted the account
             # and then refused the response is exactly the case above, and
             # leaving that account behind is the failure this module exists to
-            # prevent. The name is the ownership proof -- it carries this run's
-            # own 64-bit suffix (NAME_SUFFIX_HEX) -- so a match is this run's
-            # account rather than a stranger's. That bounds, without erasing,
-            # the converse risk: were a create declined *because* the name were
+            # prevent. The name is the ownership proof: its suffix is
+            # NAME_SUFFIX_HEX hex digits from uuid4, the same width every other
+            # name this ticket generates uses, so a match is this run's account
+            # rather than a stranger's. That bounds, without erasing, the
+            # converse risk: were a create declined *because* the name were
             # already taken, this would delete the holder's account. Reaching
             # that needs a suffix collision or an actor acting on the name
             # _announce_account prints before the create.
@@ -408,7 +410,7 @@ def create_workroom_user(
     error propagates. If that cleanup fails too, its error is raised from the
     setup error, so both are reported.
     """
-    username = f"{USERNAME_PREFIX}{uuid.uuid4().hex[:12]}"
+    username = f"{USERNAME_PREFIX}{uuid.uuid4().hex[:NAME_SUFFIX_HEX]}"
     password = _password()
     _announce_account(username)
     request = LocalUserCreateRequest(

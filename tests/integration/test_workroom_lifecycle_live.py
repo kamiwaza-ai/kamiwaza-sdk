@@ -32,7 +32,10 @@ binding, so datasets are deleted while bound.
 This evidences session scoping on a deployment that holds the binding server
 side, which is what the 1.2.1 evidence deployment does. ``enter`` also answers
 with an ``access_token``, and on a deployment that carries the binding in that
-token instead this test would not hold: ``WorkroomService.enter``
+token instead this test would not hold. The capability document names the two
+postures: the token is re-minted with a ``workroom_id`` claim (Lite/SAML) or
+session metadata is updated (Keycloak), and only the second is what this
+evidences. ``WorkroomService.enter``
 documents that the SDK never installs a returned token, so the client would
 keep its password-grant token and the headerless reads below would run
 unbound. The test does not install it either -- doing so would evidence
@@ -218,7 +221,13 @@ def test_entered_workroom_scopes_datasets_and_leave_clears_the_scope(
     expect_not_found(
         lambda: first_scoped.catalog.datasets.get(refused_urn), "the refused dataset"
     )
-    ledger.forget_dataset(refused_name)
+    # Deliberately still recorded. Proving it absent where it was addressed is
+    # not proving it absent everywhere, and the note above says why this test
+    # cannot check the unscoped view. Forgetting it here would discard the only
+    # record of a name that a refused-but-persisted write could have left in
+    # Global -- exactly what the ledger's unscoped sweep exists to find. Marked
+    # declined, that sweep removes a copy if one is there and says nothing if
+    # none is, so keeping the record costs nothing and closes the leak.
 
     for workroom_id, name, urn in (
         (first, first_name, first_urn),

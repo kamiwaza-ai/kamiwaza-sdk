@@ -281,7 +281,7 @@ def test_the_decline_predicate_says_nothing_without_a_status() -> None:
 
 
 def test_a_non_int_status_does_not_mask_a_4xx_status_code() -> None:
-    """Each spelling is judged on its own, not the first one that is set.
+    """A spelling holding a non-int is passed over, not treated as the answer.
 
     Taking the first non-``None`` attribute would answer False here and the
     ledger would report a workroom the server had already refused to create.

@@ -33,6 +33,18 @@ def test_a_stop_signal_with_no_message_is_named_by_its_type() -> None:
     assert rendered == f"KeyboardInterrupt ({carried})"
 
 
+def test_a_failure_carrying_no_cleanup_summary_is_rendered_alone() -> None:
+    """Only a ``CleanupError`` cause is folded in; anything else is left out.
+
+    Without that guard the text would gain a ``(None)`` for the ordinary case
+    of a failure with no nested cleanup, which reads like a named resource and
+    is worse than saying nothing.
+    """
+    assert support.rendered_with_summary(RuntimeError("setup broke"), None) == (
+        "RuntimeError: setup broke"
+    )
+
+
 def test_an_exception_with_a_message_is_rendered_with_it() -> None:
     """The other half of the same branch, so neither side can be dropped."""
     carried = support.CleanupError("cleanup failed: delete refused")

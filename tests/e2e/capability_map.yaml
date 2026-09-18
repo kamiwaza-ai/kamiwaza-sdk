@@ -307,9 +307,9 @@
 # delete removes it from the listing,
 # include_deleted still shows it as deleted, and the owner can no longer read
 # it. The listing is paged by offset while other runs change it, which bounds
-# what the absent result proves once it spans pages. 1.2.1 has no admin
-# preview route; the owner's preview is in the next entry. Opt-in:
-# KAMIWAZA_TEST_DISPOSABLE_IDENTITIES=1.
+# what the absent result proves once it spans pages. The capability covers the
+# admin listing and admin delete; it names no preview route, so nothing here
+# defers to one. Opt-in: KAMIWAZA_TEST_DISPOSABLE_IDENTITIES=1.
 - pattern: "tests/integration/test_workroom_admin_live.py::test_admin_finds_and_deletes_another_users_archived_workroom"
   capability_ids: [workrooms.admin-oversight]
   scenario_name: "Administrator finds and deletes another user's archived workroom"
@@ -325,8 +325,12 @@
 # reads active with one catalog entry and one active member and the preview
 # names the owner as the one member losing access and reports one catalog entry
 # (restore, summary and preview over the raw API: the SDK has no methods for
-# them). App deployment and extension counts are not evidenced:
-# they depend on the deployment's own provisioning and read 0 in one run. The
+# them). The capability also has the preview report the families a delete will
+# purge, app deployments and extensions among them; those read 0 here because
+# the deployment provisions them on its own schedule, and a 0 is
+# indistinguishable from the silent 0 an unreachable subsystem returns, so this
+# run evidences nothing about them -- declared below as
+# preview_app_and_extension_counts. The
 # dataset is deleted by URN and proven gone before the workroom. Delete
 # succeeds, the workroom is unreadable, a retried delete is 404, and the record
 # is retained as deleted in the administrator listing. The capability also
@@ -339,7 +343,7 @@
 - pattern: "tests/integration/test_workroom_admin_live.py::test_owner_archives_restores_previews_and_deletes_a_workroom"
   capability_ids: [workrooms.archive-and-delete]
   scenario_name: "Owner archives, restores, previews, and deletes a workroom"
-  unverified_operations: [cascading_purge]
+  unverified_operations: [cascading_purge, preview_app_and_extension_counts]
   evidence_provenance: cycle-authored
 
 # Justification: test_federated_job_audit_actor_round_trip runs a job on the

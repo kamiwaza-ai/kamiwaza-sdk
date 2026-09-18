@@ -57,7 +57,10 @@ PROJECTION_RETRIES_PER_RUN = 4
 LISTING_POLLS_PER_RUN = 8
 """Session scoping polls four times before its deletion loop and twice per pass."""
 # Both counts are derived from the live tests' own source by a unit test, which
-# multiplies the calls inside a loop, so a new wait cannot go uncounted here.
+# multiplies the calls inside a loop, so no wait written directly in a live test
+# body can go uncounted. A wait added inside a helper the tests call, or inside
+# a fixture, is not seen: it has to be registered in that unit test's
+# _HELPER_WAITS to be counted.
 # The disposable user's token cannot be refreshed, so its lifetime must cover
 # every bounded wait a run can make; a unit test pins this budget at or below
 # the lifetime the helper requires. Each poll sleeps between attempts but not
@@ -184,14 +187,17 @@ def declined_by_the_server(error: BaseException) -> bool:
     ``status_code``, and others carry ``status``. One predicate reading both
     keeps a caller from being fixed without its sibling.
 
-    The first spelling carrying an ``int`` decides, and a spelling holding
-    anything else is passed over rather than ending the search: a present but
-    unusable attribute would otherwise mask a usable one, and a 4xx this run
-    did decline would read as an unknown outcome. Two disagreeing ints are not
-    reconciled -- the first still decides -- which leaves an ambiguous pair out
-    of the decline set, the safe direction here: a resource wrongly called
-    declined is never reported, while one wrongly called undecided is only
-    reported twice.
+    ``status`` is read first and ``status_code`` second; the first of them
+    holding an ``int`` decides on its own value, and a spelling holding
+    anything else is passed over rather than ending the search. Passing over
+    matters: a present but unusable attribute would otherwise mask a usable
+    one, and a 4xx this run did decline would read as an unknown outcome.
+
+    Two spellings holding *different* ints are not reconciled -- position
+    alone decides, so which one wins depends on the order above rather than on
+    the severity. No exception the SDK raises carries both, so that case is
+    unreached; it is called out because the ordering, not a rule, is what
+    settles it.
     """
     for name in ("status", "status_code"):
         status = getattr(error, name, None)
