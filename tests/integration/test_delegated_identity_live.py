@@ -34,6 +34,8 @@ class _BoundedSession(requests.Session):
 
     def request(self, method: str, url: str, **kwargs: object) -> requests.Response:
         kwargs.setdefault("timeout", _REQUEST_TIMEOUT_SECONDS)
+        if self.verify is False:
+            kwargs.setdefault("verify", False)
         return super().request(method, url, **kwargs)
 
 
