@@ -60,6 +60,9 @@ def _assert_logout_identity(admin, open_pair, purge, logout) -> None:
 
 def _assert_admin_identity(admin, open_pair, purge, logout) -> None:
     for target_index in (0, 1):
+        count_pair = open_pair()
+        admin.auth.delete_session(count_pair[target_index].claims["sid"])
+        assert admin.auth.purge_sessions(purge).revoked == 1
         pair = open_pair()
         target, kept = pair[target_index], pair[1 - target_index]
         admin.auth.delete_session(target.claims["sid"])
