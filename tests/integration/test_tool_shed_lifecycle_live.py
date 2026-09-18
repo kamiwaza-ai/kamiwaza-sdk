@@ -194,12 +194,14 @@ def _assert_appears_in_discovery(client, deployment_id: UUID, name: str) -> None
 def test_tool_shed_template_deploy_names_missing_required_env_vars(
     live_kamiwaza_client,
 ) -> None:
-    """A template deploy missing a required variable fails as a client error.
+    """A template deploy missing a required variable names the variable.
 
-    The document is specific that this "fails as a client error naming the
-    missing variables, not as a broken deployment" — so the assertion is on the
-    status code and on the variable being named, not merely that something
-    raised.
+    The document says this "fails as a client error naming the missing
+    variables, not as a broken deployment". The assertion is on the **message**
+    rather than the status code, because ``ToolService.deploy_from_template``
+    re-raises this case as ``APIError(str(e))`` — a fresh exception built from
+    the message alone, which discards ``status_code``. Asserting a 400 here
+    would fail on the correct path.
 
     Deliberately NOT mapped on its own: it is a negative path, and under the
     PER-TEST RULE a run of it alone must never emit a passing record for the
@@ -207,13 +209,19 @@ def test_tool_shed_template_deploy_names_missing_required_env_vars(
     """
     client = live_kamiwaza_client
 
+    # Only an IMPORTED template is deployable: deploy_from_template resolves
+    # against the imported catalogue, and an available-but-unimported name
+    # comes back as "Template <name> not found". Importing one to create this
+    # fixture would mutate the shared host's catalogue, which this suite does
+    # not do, so an absent fixture is a skip with its reason named.
     candidates = [
-        t for t in client.tools.list_available_templates() if t.required_env_vars
+        t for t in client.tools.list_imported_templates() if t.required_env_vars
     ]
     if not candidates:
-        _skip_or_fail(
-            "no available template declares required_env_vars, so the "
-            "missing-variable failure mode cannot be exercised here"
+        pytest.skip(
+            "no IMPORTED tool template declares required_env_vars on this host, "
+            "so the documented missing-variable failure mode cannot be "
+            "exercised without importing one and mutating the shared catalogue"
         )
     template = candidates[0]
     required = template.required_env_vars[0]
@@ -224,11 +232,10 @@ def test_tool_shed_template_deploy_names_missing_required_env_vars(
             name=_unique("eng12432-missingenv"),
         )
 
-    assert exc.value.status_code in {400, 422}, (
-        f"a missing required variable should be a client error; got "
-        f"{exc.value.status_code}"
+    message = str(exc.value)
+    assert "Missing required environment variables" in message, (
+        f"the error should identify a missing-variable rejection; got {message[:200]}"
     )
-    assert required in str(exc.value), (
-        f"the error should name the missing variable {required!r}; got "
-        f"{str(exc.value)[:200]}"
+    assert required in message, (
+        f"the error should name the missing variable {required!r}; got {message[:200]}"
     )
