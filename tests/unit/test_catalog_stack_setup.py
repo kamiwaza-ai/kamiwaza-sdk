@@ -13,6 +13,7 @@ SETUP_SCRIPT = (
     / "setup-test-data.sh"
 )
 PARQUET_FIXTURES = (
+    "sales_data_10k.parquet",
     "inline-small.parquet",
     "inline-large.parquet",
     "inline-large-sse.parquet",

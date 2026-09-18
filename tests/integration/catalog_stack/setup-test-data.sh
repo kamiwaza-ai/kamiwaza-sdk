@@ -25,7 +25,7 @@ mkdir -p "$STATE_DIR" "$STATE_DIR/test-data"
 
 require_parquet_fixtures() {
     local fixture
-    for fixture in inline-small.parquet inline-large.parquet inline-large-sse.parquet; do
+    for fixture in sales_data_10k.parquet inline-small.parquet inline-large.parquet inline-large-sse.parquet; do
         if [[ ! -s "$STATE_DIR/test-data/$fixture" ]]; then
             echo "Missing required parquet fixture: $STATE_DIR/test-data/$fixture" >&2
             echo "Install pandas, numpy, and pyarrow for $PYTHON_BIN or provide parquet fixtures in DATA_DIR." >&2
