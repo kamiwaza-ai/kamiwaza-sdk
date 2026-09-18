@@ -87,6 +87,7 @@ from ._workroom_support import (
     CleanupError,
     Step,
     attempt_all,
+    declined_by_the_server,
     expect_not_found,
     refuse_unconfirmed,
 )
@@ -100,6 +101,9 @@ HTTP_TRACE_FILE_ENV = "KAMIWAZA_HTTP_TRACE_FILE"
 # derived from the live tests' own wait counts) plus the HTTP time around them.
 # The user's client holds a fixed token, so a shorter lifetime expires mid-run.
 MIN_TOKEN_LIFETIME_SECONDS = 300
+# What CPython exits with when SystemExit carries a non-int code: it prints the
+# code and exits 1. Replacing such a code keeps that status and drops the text.
+NON_INT_EXIT_STATUS = 1
 
 ClientFactory = Callable[..., KamiwazaClient]
 T = TypeVar("T")
@@ -215,6 +219,23 @@ def _unauthenticated(client: KamiwazaClient) -> KamiwazaClient:
     return client
 
 
+def _status_without_payload(stop: SystemExit) -> int | None:
+    """``stop``'s exit status, dropping a payload that could carry a credential.
+
+    ``SystemExit.code`` is whatever was raised with it, and ``sys.exit("msg")``
+    is an ordinary idiom, so the code can be a string. pytest renders it as
+    ``E  SystemExit: <code>``, which would put a credential-bearing message
+    into the output this module exists to keep it out of. An ``int`` or
+    ``None`` is a status and carries nothing, so it passes through; anything
+    else is replaced by the status CPython itself exits with for a non-int
+    code, so the run still stops the same way with the payload dropped.
+    """
+    code = stop.code
+    if code is None or isinstance(code, int):
+        return code
+    return NON_INT_EXIT_STATUS
+
+
 def _withheld(operation: str, call: Callable[[], T]) -> T:
     """Run a call that sends a credential, withholding how it failed.
 
@@ -223,9 +244,10 @@ def _withheld(operation: str, call: Callable[[], T]) -> T:
     The failure is re-raised, never swallowed. A ``KeyboardInterrupt`` or a
     ``SystemExit`` is re-raised as a fresh stop signal of the same kind, so the
     run still stops but the frames of the call it stopped, which take the
-    credential as an argument, go with it; a ``SystemExit``'s code is an int or
-    ``None``, never a credential. No other ``BaseException`` is raised by these
-    calls, and one would keep its frames.
+    credential as an argument, go with it; the replacement ``SystemExit``
+    carries only a status, because ``SystemExit.code`` is an arbitrary object
+    and pytest prints it. No other ``BaseException`` is raised by these calls,
+    and one would keep its frames.
     """
     __tracebackhide__ = True  # keep `call` out of long tracebacks
     client_logger = logging.getLogger(SDK_CLIENT_LOGGER)
@@ -235,7 +257,7 @@ def _withheld(operation: str, call: Callable[[], T]) -> T:
         return call()
     except (KeyboardInterrupt, SystemExit) as stop:
         failure: BaseException = (
-            SystemExit(stop.code)
+            SystemExit(_status_without_payload(stop))
             if isinstance(stop, SystemExit)
             else KeyboardInterrupt()
         )
@@ -289,16 +311,20 @@ def _logout_step(client: KamiwazaClient, refresh_token: str | None) -> Step:
     )
 
 
-def _server_declined(error: BaseException) -> bool:
-    """True when the server answered 4xx: it acted on the request and refused.
+def _with_setup_failure(
+    carried: BaseException | None, setup_error: BaseException
+) -> BaseException:
+    """The cause to attach, keeping any cleanup summary the stop already carried.
 
-    Nothing was created, so cleanup has nothing to look for and must not send
-    an operator after a resource that cannot exist.
+    ``attempt_all`` re-raises an interrupt with a ``CleanupError`` naming every
+    step that failed in the same pass. Re-raising that interrupt ``from`` the
+    setup failure replaces its cause, so those names would be dropped -- the
+    one thing the summary exists to prevent, and what ``_describe`` already
+    guards against one level down. Both are kept instead.
     """
-    status = getattr(error, "status", None)
-    if status is None:
-        status = getattr(error, "status_code", None)
-    return isinstance(status, int) and 400 <= status < 500
+    if not isinstance(carried, CleanupError):
+        return setup_error
+    return CleanupError(f"{type(setup_error).__name__}: {setup_error} ({carried})")
 
 
 def _remove_failed_setup(
@@ -437,13 +463,15 @@ def create_workroom_user(
                 created_id,
                 logout,
                 open_clients,
-                declined=_server_declined(setup_error),
+                declined=declined_by_the_server(setup_error),
             )
         except BaseException as cleanup_error:
             if not isinstance(cleanup_error, CleanupError):
                 # An interrupt inside cleanup: it still stops the run, but the
                 # setup failure that brought us here has to stay visible.
-                raise cleanup_error from setup_error
+                raise cleanup_error from _with_setup_failure(
+                    cleanup_error.__cause__, setup_error
+                )
             if not isinstance(setup_error, Exception):
                 # A Ctrl-C must still stop the run. ``from`` is what makes the
                 # cleanup failure visible: _withheld raises the interrupt with

@@ -42,7 +42,7 @@ from functools import partial
 from typing import TypeVar
 
 from kamiwaza_sdk import KamiwazaClient
-from kamiwaza_sdk.exceptions import APIError, NotFoundError
+from kamiwaza_sdk.exceptions import APIError, KamiwazaError, NotFoundError
 from kamiwaza_sdk.schemas.catalog import DatasetCreate
 from kamiwaza_sdk.schemas.workrooms import Workroom
 
@@ -126,6 +126,35 @@ def dataset_payload(name: str) -> DatasetCreate:
     )
 
 
+def _admin_pages(
+    admin: KamiwazaClient,
+    *,
+    include_deleted: bool,
+    page_size: int,
+    max_pages: int,
+) -> Iterator[list[Workroom]]:
+    """Yield each page of the platform-wide listing until the listing ends.
+
+    A page shorter than ``page_size`` ends the listing. Offset paging over a
+    listing other runs are changing can skip a row once it spans more than one
+    page; that bounds how much an absent result proves.
+
+    Both callers traverse through this. A lookup and the control it is read
+    against have to agree about what one traversal saw, and two copies of the
+    loop could be fixed one at a time and stop agreeing.
+    """
+    for page_number in range(max_pages):
+        page = admin.workrooms.admin_list(
+            include_deleted=include_deleted,
+            skip=page_number * page_size,
+            limit=page_size,
+        )
+        yield page
+        if len(page) < page_size:
+            return
+    raise AssertionError(f"the admin listing did not end within {max_pages} pages")
+
+
 def find_admin_workroom(
     admin: KamiwazaClient,
     workroom_id: str,
@@ -134,29 +163,31 @@ def find_admin_workroom(
     page_size: int = ADMIN_PAGE_SIZE,
     max_pages: int = ADMIN_MAX_PAGES,
 ) -> Workroom | None:
-    """Page the platform-wide listing until the workroom or the listing's end.
-
-    A page shorter than ``page_size`` ends the listing. Offset paging over a
-    listing other runs are changing can skip a row once it spans more than one
-    page; that bounds how much an absent result proves.
-    """
-    for page_number in range(max_pages):
-        page = admin.workrooms.admin_list(
-            include_deleted=include_deleted,
-            skip=page_number * page_size,
-            limit=page_size,
-        )
+    """Page the platform-wide listing until the workroom or the listing's end."""
+    for page in _admin_pages(
+        admin,
+        include_deleted=include_deleted,
+        page_size=page_size,
+        max_pages=max_pages,
+    ):
         for workroom in page:
             if str(workroom.id) == workroom_id:
                 return workroom
-        if len(page) < page_size:
-            return None
-    raise AssertionError(f"the admin listing did not end within {max_pages} pages")
+    return None
 
 
-def _declined_by_the_server(error: APIError) -> bool:
-    """A 4xx: the server acted on the request and refused it, creating nothing."""
-    return error.status_code is not None and 400 <= error.status_code < 500
+def declined_by_the_server(error: BaseException) -> bool:
+    """A 4xx: the server acted on the request and refused it, creating nothing.
+
+    Both attribute spellings are read because more than one exception family
+    reaches this predicate: ``KamiwazaError`` and its subclasses carry
+    ``status_code``, and others carry ``status``. One predicate reading both
+    keeps a caller from being fixed without its sibling.
+    """
+    status = getattr(error, "status", None)
+    if status is None:
+        status = getattr(error, "status_code", None)
+    return isinstance(status, int) and 400 <= status < 500
 
 
 def admin_workroom_ids(
@@ -173,16 +204,14 @@ def admin_workroom_ids(
     ``items`` key with an empty list.
     """
     seen: set[str] = set()
-    for page_number in range(max_pages):
-        page = admin.workrooms.admin_list(
-            include_deleted=include_deleted,
-            skip=page_number * page_size,
-            limit=page_size,
-        )
+    for page in _admin_pages(
+        admin,
+        include_deleted=include_deleted,
+        page_size=page_size,
+        max_pages=max_pages,
+    ):
         seen.update(str(workroom.id) for workroom in page)
-        if len(page) < page_size:
-            return seen
-    raise AssertionError(f"the admin listing did not end within {max_pages} pages")
+    return seen
 
 
 def refusal(error: APIError) -> tuple[int | None, object]:
@@ -340,10 +369,13 @@ class WorkroomLedger:
         self._workrooms[name] = None
         try:
             workroom_id = str(self.owner.workrooms.create(name, "persistent").id)
-        except APIError as error:
+        except KamiwazaError as error:
             # The server acted on the request and declined it, so nothing was
-            # created and cleanup has nothing to look for.
-            if _declined_by_the_server(error):
+            # created and cleanup has nothing to look for. The catch is the base
+            # class: a refusal whose body carries a known ``detail.reason``
+            # raises a typed subclass that is not an ``APIError``, and narrowing
+            # here would report a workroom the server never created.
+            if declined_by_the_server(error):
                 self._declined.add(name)
             raise
         self._workrooms[name] = workroom_id
@@ -391,10 +423,11 @@ class WorkroomLedger:
             # POST if only its follow-up read answered 503.
             try:
                 urn = when_authority_projected(lambda: datasets.create(payload))
-            except APIError as error:
+            except KamiwazaError as error:
                 # Declined, so nothing was written and the sweep has nothing
-                # to report about this name.
-                if _declined_by_the_server(error):
+                # to report about this name. Base class for the same reason as
+                # create_workroom: a typed refusal is not an ``APIError``.
+                if declined_by_the_server(error):
                     self._declined.add(name)
                 raise
         expected = self.dataset_urn(name)
