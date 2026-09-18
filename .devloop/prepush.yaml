@@ -1,0 +1,8 @@
+# Local pre-push quality-gate policy for the tenant-mode-inference MVP.
+#
+# Keep CodeScene as a remote CI/merge-readiness signal; the local MCP analyzer
+# is intentionally skipped because it is not part of the deterministic SDK
+# pre-push checks.
+hooks:
+  - name: codescene
+    enabled: false

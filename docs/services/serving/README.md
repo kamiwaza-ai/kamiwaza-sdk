@@ -33,9 +33,9 @@ ray_status = client.serving.get_status()
 - `wait_deployment_ready(deployment_id, timeout_seconds=3600, poll_interval_seconds=5.0) -> UIModelDeployment`: Poll an existing deployment until it reaches `DEPLOYED`; raises `DeploymentFailedError` on a FAILED/ERROR/MUST_REDOWNLOAD terminal status and `TimeoutError` past the deadline
 - `list_deployments() -> List[ModelDeployment]`: List all deployments
 - `list_active_deployments() -> List[UIModelDeployment]`: List only active deployments with running instances
-- `get_deployment(deployment_id: UUID) -> ModelDeployment`: Get deployment details
+- `get_deployment(deployment_id: UUID, *, timeout_seconds: float | None = None) -> ModelDeployment`: Get deployment details. Each request is bounded to 30 seconds by default; pass a shorter remaining budget when polling under a deadline.
 - `stop_deployment(deployment_id: UUID)`: Stop a deployment
-- `get_deployment_status(deployment_id: UUID) -> DeploymentStatus`: Get deployment status
+- `get_deployment_status(deployment_id: UUID, *, timeout_seconds: float | None = None) -> DeploymentStatus`: Get deployment status with the same 30-second default per-request bound; pass a shorter remaining budget when polling under a deadline.
 
 ```python
 # Estimate VRAM requirements
