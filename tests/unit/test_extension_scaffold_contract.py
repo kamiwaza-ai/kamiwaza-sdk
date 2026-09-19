@@ -62,3 +62,15 @@ def test_a_services_string_is_refused() -> None:
 def test_an_empty_services_mapping_is_refused() -> None:
     with pytest.raises(AssertionError, match="iterates it as a mapping"):
         _assert_scaffold_is_consumable(dict(GOOD_MANIFEST), {"services": {}})
+
+
+def test_a_service_whose_value_is_not_a_mapping_is_refused() -> None:
+    """`{"backend": null}` satisfies the outer mapping and crashes the deploy.
+
+    The deploy stage reads `svc.get("image")` and `svc.get("environment")` off
+    every service, and `check_cli_contract` does not look at service values.
+    """
+    with pytest.raises(AssertionError, match="cannot read as mappings"):
+        _assert_scaffold_is_consumable(
+            dict(GOOD_MANIFEST), {"services": {"backend": None, "frontend": {}}}
+        )

@@ -20,6 +20,7 @@ from requests.utils import get_encoding_from_headers
 from kamiwaza_sdk.exceptions import APIError
 from tests.integration.test_tool_shed_lifecycle_live import (
     _assert_initialize_result,
+    _assert_public_https_url,
     _decoded_lines,
     _is_pre_deploy_refusal,
     _jsonrpc_envelope,
@@ -366,3 +367,30 @@ def test_an_unversioned_protocol_string_is_refused() -> None:
     result = dict(LIVE_RESULT, protocolVersion="garbage")
     with pytest.raises(AssertionError, match="not a dated protocol revision"):
         _assert_initialize_result(result, "tool-abc")
+
+
+def test_a_non_json_constant_is_refused() -> None:
+    """RFC 8259 defines no NaN; Python's decoder would parse it to a float."""
+    body = [
+        'data: {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-11-25",',
+        'data:  "capabilities": {"tools": {"listChanged": NaN}},',
+        'data:  "serverInfo": {"name": "x", "version": "1"}}}',
+        "",
+    ]
+    with pytest.raises(AssertionError, match="non-JSON constant"):
+        _jsonrpc_envelope("text/event-stream", body, "tool-abc")
+
+
+def test_a_non_json_constant_is_refused_over_json_too() -> None:
+    body = ['{"jsonrpc": "2.0", "id": 1, "result": {"x": Infinity}}']
+    with pytest.raises(AssertionError, match="non-JSON constant"):
+        _jsonrpc_envelope("application/json", body, "tool-abc")
+
+
+def test_a_public_https_url_is_required() -> None:
+    """The document promises a stable HTTPS URL, not any reachable address."""
+    _assert_public_https_url("https://host/tool-abc", "tool-abc", "the test")
+    with pytest.raises(AssertionError, match="promises a stable HTTPS URL"):
+        _assert_public_https_url(
+            "http://10.0.0.5:8080/tool-abc", "tool-abc", "the test"
+        )

@@ -121,6 +121,17 @@ def _assert_scaffold_is_consumable(manifest: dict, compose_data: dict) -> None:
         f"the generated compose file's `services` is {type(services).__name__} "
         f"({services!r}); the deploy stage iterates it as a mapping"
     )
+    # Each value too: the deploy stage reads `svc.get("image")` and
+    # `svc.get("environment")` off every service
+    # (kamiwaza_extensions/registry_builder.py), so `{"backend": null}` satisfies
+    # the outer mapping and crashes it. check_cli_contract does not look here.
+    unusable = sorted(
+        svc_name for svc_name, svc in services.items() if not isinstance(svc, dict)
+    )
+    assert not unusable, (
+        f"the generated compose file declares services the deploy stage cannot "
+        f"read as mappings: {unusable}"
+    )
 
     contract_errors = check_cli_contract(manifest, compose_data)
     assert not contract_errors, (

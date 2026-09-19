@@ -281,6 +281,22 @@ def test_tool_shed_deploy_health_discovery_and_stop(
 ) -> None:
     """The documented arm: deploy a template, prove MCP health, discover it, stop."""
     client = live_kamiwaza_client
+
+    # The document's own flow for this capability is "list available templates,
+    # deploy one", and names `list_available_templates` in the SDK surface it
+    # claims. Exercised inside the *mapped* arm, not only in the unmapped
+    # catalogue test, or the mapped record would stand while
+    # `GET /tool/templates/available` was broken.
+    available = client.tools.list_available_templates()
+    assert isinstance(available, list), (
+        f"list_available_templates returned {type(available).__name__}, not a list"
+    )
+    garden = client.tools.get_garden_status()
+    assert isinstance(garden, dict), (
+        "the document claims a garden status showing available versus imported; "
+        f"get_garden_status returned {type(garden).__name__}"
+    )
+
     candidates = _deployable_templates(client)
 
     pre_existing = {str(d.id) for d in client.tools.list_deployments()}
@@ -320,6 +336,7 @@ def test_tool_shed_deploy_health_discovery_and_stop(
         "the deployment carries no public URL; the document promises a "
         "generated MCP endpoint"
     )
+    _assert_public_https_url(deployment.url, name, "the deployment advertises")
 
     status = _wait_for_settled(client, deployment_id)
     assert status in DEPLOYED_STATUSES, (
@@ -327,8 +344,8 @@ def test_tool_shed_deploy_health_discovery_and_stop(
         f"satisfied only by {sorted(DEPLOYED_STATUSES)}"
     )
 
-    _assert_mcp_handshake(client, deployment.url, name)
-    _assert_appears_in_discovery(client, deployment_id, name)
+    advertised_info = _assert_mcp_handshake(client, deployment.url, name)
+    _assert_appears_in_discovery(client, deployment_id, name, advertised_info)
 
     # Stop is a station of this capability, so it is asserted here rather than
     # left to the finalizer, which suppresses errors by design so that it can
@@ -341,6 +358,20 @@ def test_tool_shed_deploy_health_discovery_and_stop(
     # reconciles by name and requires a status in RETIRED_STATUSES. Asserting it
     # inline would not run when the body fails, which is exactly when a leaked
     # workload on a shared host matters most.
+
+
+def _assert_public_https_url(advertised_url: str, name: str, source: str) -> None:
+    """The document's promise is a *stable HTTPS URL*, not any reachable address.
+
+    "Each deployed tool server gets a stable HTTPS URL usable by any
+    MCP-compatible client", and "Tool deployments receive stable HTTPS URLs behind
+    the standard API gateway". A runner-reachable `http://` or pod-local address
+    would satisfy a handshake while that promise was broken.
+    """
+    assert advertised_url.startswith("https://"), (
+        f"the URL {source} for {name} is {advertised_url!r}; the capability "
+        "promises a stable HTTPS URL usable by any MCP-compatible client"
+    )
 
 
 def _mcp_endpoint(advertised_url: str) -> str:
@@ -367,6 +398,25 @@ def _mcp_endpoint(advertised_url: str) -> str:
 def _decoded_lines(response) -> Iterable[str]:
     """The reply's lines, decoded as UTF-8.
 
+    Three conformance gaps are accepted here rather than parsed around, and named
+    so nobody has to rediscover them:
+
+    * ``iter_lines`` splits on ``str.splitlines()`` boundaries, which include
+      U+2028, U+2029 and U+0085; SSE recognises only CR, LF and CRLF. A result
+      carrying a raw U+2028 inside a string would be split mid-JSON and read as no
+      response.
+    * the streaming decoder replaces invalid UTF-8 rather than raising, so a
+      broken byte inside ``serverInfo.name`` becomes U+FFFD and still parses.
+    * a server that sends a priming event id and closes, expecting a GET
+      reconnection with ``Last-Event-ID``, is reported as unanswered rather than
+      resumed.
+
+    Each would need this reader to become a full event-stream implementation, and
+    every round of hardening in this area has introduced its own defect. The
+    shortfall is the honest trade: an endpoint doing any of the three fails this
+    handshake and the failure is legible, rather than a passing record resting on a
+    parser nobody has exercised against a real server.
+
     Both media types MCP defines are UTF-8, but ``requests`` derives the encoding
     from the headers, and for ``text/event-stream`` without a charset parameter
     that yields ISO-8859-1 (verified against requests 2.34.2:
@@ -380,6 +430,18 @@ def _decoded_lines(response) -> Iterable[str]:
     return response.iter_lines(decode_unicode=True)
 
 
+def _reject_non_json_constant(token: str) -> object:
+    """RFC 8259 has no NaN or Infinity; Python's decoder accepts both.
+
+    A reply carrying one is not JSON, and a conforming client rejects it, so the
+    handshake must too rather than parsing it into a float.
+    """
+    raise AssertionError(
+        f"the reply carries the non-JSON constant {token!r}; RFC 8259 defines no "
+        "such literal, so this is not a JSON-RPC message a client can read"
+    )
+
+
 def _decode_event(fields: list[str]) -> object | None:
     """One server-sent event's data fields, decoded, or None if not JSON.
 
@@ -389,7 +451,7 @@ def _decode_event(fields: list[str]) -> object | None:
     if not fields:
         return None
     try:
-        return json.loads("\n".join(fields))
+        return json.loads("\n".join(fields), parse_constant=_reject_non_json_constant)
     except json.JSONDecodeError:
         return None
 
@@ -430,7 +492,9 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
     """
     transport = content_type.split(";", 1)[0].strip().lower()
     if transport == JSON_MEDIA_TYPE:
-        return json.loads("\n".join(body_lines))
+        return json.loads(
+            "\n".join(body_lines), parse_constant=_reject_non_json_constant
+        )
     if transport == EVENT_STREAM_MEDIA_TYPE:
         # An event's consecutive ``data:`` fields are one payload joined by
         # newlines, and the blank line dispatches the event (HTML standard,
@@ -489,8 +553,11 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
     )
 
 
-def _assert_mcp_handshake(client, advertised_url: str, name: str) -> None:
+def _assert_mcp_handshake(client, advertised_url: str, name: str) -> dict:
     """Prove the tool answers MCP at the URL the platform advertises.
+
+    Returns the ``serverInfo`` it proved, so a caller can establish that a second
+    URL belongs to the same tool rather than to another healthy one.
 
     Deliberately NOT via ``GET /tool/deployment/{id}/health``. That endpoint
     returns ``healthy`` whenever the deployment row reads ``DEPLOYED`` and
@@ -532,14 +599,30 @@ def _assert_mcp_handshake(client, advertised_url: str, name: str) -> None:
     assert body.get("jsonrpc") == "2.0", (
         f"the reply from {name} is not a JSON-RPC 2.0 envelope: {body}"
     )
-    assert body.get("id") == MCP_INITIALIZE["id"], (
+    # `True == 1` in Python, and JSON `true` decodes to `True`, so an equality
+    # test alone accepts `"id": true` -- which is not a JSON-RPC id at all.
+    reply_id = body.get("id")
+    assert isinstance(reply_id, int) and not isinstance(reply_id, bool), (
+        f"the reply from {name} carries id {reply_id!r} ({type(reply_id).__name__}); "
+        "a JSON-RPC id answering this request is a number"
+    )
+    assert reply_id == MCP_INITIALIZE["id"], (
         f"the reply from {name} does not correlate with the request id "
         f"{MCP_INITIALIZE['id']!r}: {body}"
     )
+    # Deliberately `is None` rather than "error must be absent". JSON-RPC 2.0 does
+    # forbid a response carrying both members, but the Kamiwaza tool this arm
+    # deployed on 2026-09-18 answered
+    #   {"jsonrpc":"2.0","id":1,"result":{...},"error":null}
+    # -- result plus an explicit null error. Enforcing the letter of the spec here
+    # would fail a server that works, which is the one thing an evidence test must
+    # not do. The platform's spelling is noted with the staged evidence instead.
     assert body.get("error") is None, (
         f"MCP initialize against {name} returned a JSON-RPC error: {body.get('error')}"
     )
-    _assert_initialize_result(body.get("result") or {}, name)
+    result = body.get("result") or {}
+    _assert_initialize_result(result, name)
+    return result["serverInfo"]
 
 
 # An MCP protocol version is a dated revision, e.g. "2024-11-05". The live
@@ -583,7 +666,9 @@ def _assert_initialize_result(result: dict, name: str) -> None:
         )
 
 
-def _assert_appears_in_discovery(client, deployment_id: UUID, name: str) -> None:
+def _assert_appears_in_discovery(
+    client, deployment_id: UUID, name: str, advertised_info: dict
+) -> None:
     """The deployment under test is discoverable by any MCP-capable client."""
     discovery = client.tools.discover_servers()
     assert discovery.total == len(discovery.servers), (
@@ -596,11 +681,22 @@ def _assert_appears_in_discovery(client, deployment_id: UUID, name: str) -> None
         "expected exactly once"
     )
     assert mine[0].url, "the discovered server carries no URL for a client to call"
+    _assert_public_https_url(mine[0].url, name, "discovery publishes")
     # Non-empty is not usable. Discovery is the route a third-party MCP client
     # takes, so the endpoint it publishes is handshaken in its own right: a stale
     # or wrong URL here passes every other assertion while no client can reach
     # the tool.
-    _assert_mcp_handshake(client, mine[0].url, f"{name} (as published by discovery)")
+    discovered_info = _assert_mcp_handshake(
+        client, mine[0].url, f"{name} (as published by discovery)"
+    )
+    # ...and it must be the SAME tool. A row carrying the right deployment id and
+    # another healthy tool's URL would otherwise pass, while discovery routed
+    # clients to the wrong deployment.
+    assert discovered_info == advertised_info, (
+        f"discovery publishes a URL whose server identifies as {discovered_info}, "
+        f"while the deployment's own URL answers as {advertised_info}; discovery "
+        "routes clients to a different tool"
+    )
 
 
 @pytest.mark.usefixtures("live_server_available")
