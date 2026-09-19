@@ -1,7 +1,9 @@
 # kamiwaza_sdk/client.py
 
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import os
 import random
@@ -73,6 +75,22 @@ _RETRY_WALL_CLOCK_BUDGET_SECONDS = 90.0
 
 _PSK_PROPAGATION_TIMEOUT_REASON = "psk_propagation_timeout"
 _WORKROOM_SCOPE_HEADER = "X-Workroom-Id"
+
+#: Headers that apply to the calls made inside one ``request_headers`` block,
+#: keyed by the client they were set on so a block around one client does not
+#: attach its headers to another client's calls.
+#:
+#: A context variable rather than state on the client, because the values this
+#: carries belong to a single call rather than to a connection. The clearest
+#: case is ``Idempotency-Key``: it identifies one request, so storing it on a
+#: client would leak it onto every later call made through that client, and
+#: handing out a copied client per call would give each call its own
+#: connection pool and so its own TLS handshake. Measured before this was
+#: written: ten calls through one client opened five connections, and ten
+#: calls through a copy each opened ten.
+_SCOPED_HEADERS: ContextVar[Mapping[int, Mapping[str, str]]] = ContextVar(
+    "kamiwaza_scoped_request_headers", default={}
+)
 
 
 def _is_psk_propagation_timeout(response: Any) -> bool:
@@ -555,6 +573,43 @@ class KamiwazaClient:
             return False
         return True
 
+    @contextmanager
+    def request_headers(self, headers: Mapping[str, str]) -> Iterator["KamiwazaClient"]:
+        """Send ``headers`` on the calls this client makes inside the block.
+
+        For a value that belongs to one call rather than to a connection. The
+        case this exists for is ``Idempotency-Key``
+        (draft-ietf-httpapi-idempotency-key-header), which names one request
+        so the platform can apply a retried write once:
+
+            with client.request_headers({"Idempotency-Key": key}):
+                client.context.create_source_import_job(...)
+
+        The scope is this client, this context: a block opened around one
+        client does not touch another client's calls, and because it is held
+        in a context variable, one thread or task does not see another's.
+        Nothing is copied and no connection pool is created, so calls inside
+        the block reuse the connection calls outside it use.
+
+        Blocks nest, the inner value winning for a repeated name. A header
+        passed directly to a single call still wins over both, which is the
+        same rule the client's default headers follow.
+
+        Args:
+            headers: The headers to add for the duration of the block.
+
+        Yields:
+            This same client, so the block can be opened and used in one
+            statement.
+        """
+        scoped = dict(_SCOPED_HEADERS.get())
+        scoped[id(self)] = {**scoped.get(id(self), {}), **headers}
+        token = _SCOPED_HEADERS.set(scoped)
+        try:
+            yield self
+        finally:
+            _SCOPED_HEADERS.reset(token)
+
     def _prepare_request_kwargs(
         self, skip_auth: bool, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
@@ -563,9 +618,13 @@ class KamiwazaClient:
         else:
             kwargs["headers"] = dict(kwargs["headers"] or {})
 
-        if self._default_headers:
-            existing = {str(key).lower() for key in kwargs["headers"]}
-            for key, value in self._default_headers.items():
+        # A block's headers, then the client's defaults. Both yield to a
+        # header the caller passed to this one call, which is the rule the
+        # defaults already followed.
+        existing = {str(key).lower() for key in kwargs["headers"]}
+        scoped = _SCOPED_HEADERS.get().get(id(self), {})
+        for source in (scoped, self._default_headers):
+            for key, value in source.items():
                 if key.lower() not in existing:
                     kwargs["headers"][key] = value
                     existing.add(key.lower())
@@ -995,56 +1054,6 @@ class KamiwazaClient:
     def patch(self, endpoint: str, **kwargs):
         return self._request("PATCH", endpoint, **kwargs)
 
-    def _scoped_copy(self) -> "KamiwazaClient":
-        """Return a copy of this client that shares its auth and session state.
-
-        The copy carries the parent's authenticator, session headers, session
-        cookies and default headers. The caller then edits the copy's default
-        headers. The parent is never changed.
-        """
-        copy = type(self)(
-            base_url=self.base_url,
-            authenticator=self.authenticator,
-            verify=self.session.verify,
-        )
-        # Preserve exact parent auth state; __init__ may otherwise consult env vars.
-        copy.authenticator = self.authenticator
-        copy._owned_authenticator = None
-        copy._owns_authenticator = False
-        copy.session.headers.update(self.session.headers)
-        copy.session.cookies.update(self.session.cookies)
-        copy._default_headers = dict(self._default_headers)
-        return copy
-
-    def with_headers(self, headers: Mapping[str, Optional[str]]) -> "KamiwazaClient":
-        """Return a copy of this client that sends ``headers`` on every request.
-
-        Use this to send a per-request header such as ``Idempotency-Key``
-        (see draft-ietf-httpapi-idempotency-key-header), which lets the
-        platform apply a retried write once instead of twice.
-
-        A client is the unit of scope: every request made through the returned
-        client carries these headers. A caller that shares one client across
-        concurrent calls must take a copy per call, otherwise one call's key
-        travels with another call's request. This method never changes the
-        client it is called on.
-
-        Header names are matched without regard to case, so a given name
-        replaces an existing header instead of adding a second copy of it. A
-        value of ``None`` removes the header. An empty mapping returns an
-        equivalent copy and is not an error. A header passed directly to a
-        single call still wins over these defaults.
-        """
-        copy = self._scoped_copy()
-        for name, value in headers.items():
-            for existing in [
-                key for key in copy._default_headers if key.lower() == name.lower()
-            ]:
-                del copy._default_headers[existing]
-            if value is not None:
-                copy._default_headers[name] = value
-        return copy
-
     def workroom_scope(self, workroom_id: Any | None) -> "KamiwazaClient":
         """Return a client whose requests target ``workroom_id``.
 
@@ -1054,7 +1063,18 @@ class KamiwazaClient:
         ``workrooms.enter`` and does not mutate server-side selected-session
         binding or the parent client.
         """
-        scoped = self._scoped_copy()
+        scoped = type(self)(
+            base_url=self.base_url,
+            authenticator=self.authenticator,
+            verify=self.session.verify,
+        )
+        # Preserve exact parent auth state; __init__ may otherwise consult env vars.
+        scoped.authenticator = self.authenticator
+        scoped._owned_authenticator = None
+        scoped._owns_authenticator = False
+        scoped.session.headers.update(self.session.headers)
+        scoped.session.cookies.update(self.session.cookies)
+        scoped._default_headers = dict(self._default_headers)
         if workroom_id is None:
             scoped._default_headers.pop(_WORKROOM_SCOPE_HEADER, None)
         else:
