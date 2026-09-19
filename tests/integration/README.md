@@ -16,6 +16,7 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_TEST_DISPOSABLE_IDENTITIES` | Set `1` to run the auth evidence tests that create local accounts (`test_auth_admin_live.py`, `test_auth_sessions_live.py`). Accounts these tests create may persist after the run; each is reported as a warning. Run evidence captures with `--tb=short`, default log levels and no HTTP trace: the default `--tb=auto`, `--tb=long`, `--showlocals`, `--fulltrace`, DEBUG logging, and the HTTP tracer (`KAMIWAZA_HTTP_TRACE` or `KAMIWAZA_HTTP_TRACE_FILE`) can print or record credentials from any live test | unset (the tests skip) |
 | `KAMIWAZA_PEER_BASE_URL` | Federation peer cluster base URL (ENG-5784) | unset |
 | `KAMIWAZA_PEER_API_KEY` | API key on the peer cluster (ENG-5784) | unset |
+| `KAMIWAZA_TEST_DISPOSABLE_IDENTITIES` | Set `1` to run the workroom evidence tests that create a throwaway local user account (ENG-12325); each account's username is reported as a `DisposableAccountWarning` | unset (those tests skip) |
 | `KAMIWAZA_TEST_LLM_REPO` | Explicit required live-test model; must be paired with `KAMIWAZA_TEST_LLM_ENGINE`, overrides inventory selection, and makes readiness/deployment failures fail rather than skip | unset |
 | `KAMIWAZA_TEST_LLM_ENGINE` | Explicit required engine (`llamacpp`, `mlx`, or `vllm`); must be paired with `KAMIWAZA_TEST_LLM_REPO` | unset |
 | `KAMIWAZA_TEST_LLM_QUANT` | Quantization for the explicit shared target | selected engine's default |
