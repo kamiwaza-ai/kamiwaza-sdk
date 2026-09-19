@@ -119,6 +119,31 @@
 #     connectors.managed-data-sources. register_from_spec creates a catalog
 #     dataset URN under /catalog and does not exercise the documented
 #     /connectors type/config lifecycle, availability, or verification.
+#   * authz.rebac-access-control's dataset attribute-gate leg (ENG-12434) — the
+#     capability document's exercise contract asks for set_gate on a registered
+#     dataset plus a gated retrieval read filter. That test already EXISTS:
+#     test_mini_clearance_gate_retrieval_live.py (ENG-8325 Layer 2) installs the
+#     acme-gates 1.1.0 wheel, binds MiniClearanceGate to a file-backed dataset,
+#     retrieves as U/S/TS personas, and asserts the exact post-gate rows, the
+#     gate_audit footer's filtered bit, and zero leakage above each clearance.
+#     It is unmapped because it cannot RUN on the evidence deployment, NOT
+#     because it would over-claim. Gate-package provisioning was completed during
+#     ENG-12434 and install and binding now succeed; the remaining blocker is that
+#     the rig stages its dataset fixture where the retrieval executor cannot read
+#     it, so the job is created and then fails at execution with no rows. The test
+#     also soft-skips without M5_TEST_WHEEL_DIR + M5_TEST_INDEX_URL and a
+#     MINI_CLEARANCE_DATASET_PATH under the cluster's permitted retrieval roots.
+#     Prerequisite: stage the fixture where the executor can read it; tracked
+#     under ENG-12296 with the deployment detail. Map it once it runs green on an
+#     exact build.
+#     Note gate-package install and discovery belong to the
+#     federation.execution-gates capability document, which NO entry in this map
+#     claims either (verified by enumerating capability_ids across all entries);
+#     the gated-retrieval read filter is this capability's own guarantee. The
+#     decision half IS mapped below. No entry in this map emits a record for the
+#     gate leg or the audit leg, so this capability's evidence is the decision
+#     leg alone - see the mapped entry's justification for why each boundary is
+#     drawn, and read its passing record as scoped accordingly.
 
 # ENG-12269: these warm-cluster tests can return before a download starts.
 # Restore a models.discover-and-download mapping only for a cold-cluster test
@@ -586,4 +611,68 @@
 - pattern: "tests/integration/test_skills_live.py::test_skills_library_lifecycle_and_backing_store"
   capability_ids: [skills.skills-library]
   scenario_name: "Skills Library import, curation, export and soft delete"
+  evidence_provenance: cycle-authored
+
+# Justification: this test upserts two real attribute-bearing subjects against a
+# freshly declared attribute, proves the object denies before any grant
+# (deny-by-default, asserted as a POLICY deny via the response detail rather than a
+# bare 403, so a session or gateway refusal cannot satisfy it), grants one a viewer
+# tuple, and asserts the allow carries a
+# NON-EMPTY decision_id and reason (CheckResponse types both as required str, so
+# pydantic already rejects absent or null; emptiness is what is left to
+# assert). It then obtains a SECOND, separately attributable decision
+# id for an identical check - a decision id identifies a decision, not a policy state -
+# denies the second principal under that same policy state, and revokes to prove the
+# grant was load-bearing for the allow. Cleanup is part of the test rather than a
+# suppressed afterthought, because a record reflects the whole test including its
+# cleanup: the tuple revocation is ASSERTED (observed as a deny), both subject deletions
+# are ASSERTED (polled to 404), and the object delete is issued unsuppressed so a failure
+# to delete surfaces - though nothing reads the object back, so that one leg is "the
+# delete succeeded", not "the object is provably gone".
+#
+# The second decision id is obtained by polling within a bounded window rather than by
+# asserting the immediately next call differs: the server holds a short-lived decision
+# cache that may legitimately serve a repeat, so the claim is that a distinct id is
+# OBTAINABLE, not that every adjacent pair of calls differs.
+#
+# Scope of the claim. Each boundary was settled against the platform rather than taken
+# from the capability document. Recorded here as what this test DOES and DOES NOT claim;
+# the underlying analysis is tracked internally under ENG-12296 with the capability
+# owner, deliberately not restated here because this repository is public:
+#   * It makes NO decision-audit claim. The decision history behind the audit export
+#     is populated elsewhere in the platform, not by this endpoint, so asserting the
+#     export here would pin behaviour this endpoint does not have.
+#   * It makes NO attribute-gate or clearance claim. The deny is RELATIONSHIP-shaped
+#     (no tuple), never an attribute deny; the attributes exercise subject
+#     administration only. The gated-retrieval leg is a separate test with its own
+#     prerequisite of an installed gate package and a readable fixture.
+#   * It makes NO non-admin subject-restriction claim. A test asserting that refusal
+#     would pass for a reason unrelated to the restriction, because a fresh object
+#     denies every subject by default. Such a test was written, found vacuous against
+#     the handler, and removed rather than mapped.
+#   * It declares NO unverified_operations, deliberately. Declaring any would add it as
+#     a required-but-skipped step, which derive_status resolves to "failed" - so the two
+#     precedent entries above that omit them (the T01 inline and multi-source retrieval
+#     entries) record that choice explicitly, and this entry does the same so nobody
+#     pattern-matches the neighbours and inverts the record. The reasoning here: the
+#     legs below are not unexercised OPERATIONS of this capability that this test
+#     skipped; they are a separate test's leg (gated retrieval), behaviour the endpoint
+#     does not have (the audit export), a documented restriction the platform does not
+#     implement (non-admin), and an SDK limitation (deny attribution). Failing the record
+#     would file all four under "test coverage", which is where they would stop being
+#     looked at. The scenario_name scopes the claim instead.
+#   * It claims ATTRIBUTION on allows only, which is why the scenario is named
+#     "attributable allow decisions and policy-shaped denies" rather than claiming
+#     attributable denies. An allow returns decision_id in the response body and the
+#     test asserts it is non-empty. A deny returns its decision id in a RESPONSE
+#     HEADER, and this SDK's error classes carry no headers at all - verified: neither
+#     KamiwazaError nor APIError has a header field, and the client never attaches one
+#     to a raised error - so a deny's decision id is unreachable from the SDK and
+#     cannot be asserted here without an SDK change. The deny is therefore asserted as
+#     policy-SHAPED (its refusal detail is compared exactly, so a session, proxy or
+#     gateway 403 cannot satisfy it) but not as attributable. Closing that gap is an
+#     SDK change filed separately, not something this test can assert around.
+- pattern: "tests/integration/test_authz_decisions_live.py::test_rebac_decisions_are_explicit_and_attributable"
+  capability_ids: [authz.rebac-access-control]
+  scenario_name: "ReBAC attributable allow decisions and policy-shaped denies"
   evidence_provenance: cycle-authored
