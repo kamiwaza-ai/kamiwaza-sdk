@@ -1,6 +1,7 @@
 # kamiwaza_sdk/client.py
 
 from collections import OrderedDict
+from collections.abc import Mapping
 import logging
 import os
 import random
@@ -994,6 +995,56 @@ class KamiwazaClient:
     def patch(self, endpoint: str, **kwargs):
         return self._request("PATCH", endpoint, **kwargs)
 
+    def _scoped_copy(self) -> "KamiwazaClient":
+        """Return a copy of this client that shares its auth and session state.
+
+        The copy carries the parent's authenticator, session headers, session
+        cookies and default headers. The caller then edits the copy's default
+        headers. The parent is never changed.
+        """
+        copy = type(self)(
+            base_url=self.base_url,
+            authenticator=self.authenticator,
+            verify=self.session.verify,
+        )
+        # Preserve exact parent auth state; __init__ may otherwise consult env vars.
+        copy.authenticator = self.authenticator
+        copy._owned_authenticator = None
+        copy._owns_authenticator = False
+        copy.session.headers.update(self.session.headers)
+        copy.session.cookies.update(self.session.cookies)
+        copy._default_headers = dict(self._default_headers)
+        return copy
+
+    def with_headers(self, headers: Mapping[str, Optional[str]]) -> "KamiwazaClient":
+        """Return a copy of this client that sends ``headers`` on every request.
+
+        Use this to send a per-request header such as ``Idempotency-Key``
+        (see draft-ietf-httpapi-idempotency-key-header), which lets the
+        platform apply a retried write once instead of twice.
+
+        A client is the unit of scope: every request made through the returned
+        client carries these headers. A caller that shares one client across
+        concurrent calls must take a copy per call, otherwise one call's key
+        travels with another call's request. This method never changes the
+        client it is called on.
+
+        Header names are matched without regard to case, so a given name
+        replaces an existing header instead of adding a second copy of it. A
+        value of ``None`` removes the header. An empty mapping returns an
+        equivalent copy and is not an error. A header passed directly to a
+        single call still wins over these defaults.
+        """
+        copy = self._scoped_copy()
+        for name, value in headers.items():
+            for existing in [
+                key for key in copy._default_headers if key.lower() == name.lower()
+            ]:
+                del copy._default_headers[existing]
+            if value is not None:
+                copy._default_headers[name] = value
+        return copy
+
     def workroom_scope(self, workroom_id: Any | None) -> "KamiwazaClient":
         """Return a client whose requests target ``workroom_id``.
 
@@ -1003,18 +1054,7 @@ class KamiwazaClient:
         ``workrooms.enter`` and does not mutate server-side selected-session
         binding or the parent client.
         """
-        scoped = type(self)(
-            base_url=self.base_url,
-            authenticator=self.authenticator,
-            verify=self.session.verify,
-        )
-        # Preserve exact parent auth state; __init__ may otherwise consult env vars.
-        scoped.authenticator = self.authenticator
-        scoped._owned_authenticator = None
-        scoped._owns_authenticator = False
-        scoped.session.headers.update(self.session.headers)
-        scoped.session.cookies.update(self.session.cookies)
-        scoped._default_headers = dict(self._default_headers)
+        scoped = self._scoped_copy()
         if workroom_id is None:
             scoped._default_headers.pop(_WORKROOM_SCOPE_HEADER, None)
         else:
