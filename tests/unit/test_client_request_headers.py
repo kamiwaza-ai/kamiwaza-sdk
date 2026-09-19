@@ -11,13 +11,15 @@ refactor back to copying would pass every other test in this file.
 
 from __future__ import annotations
 
+import gc
 import threading
+import weakref
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
 
-from kamiwaza_sdk.client import KamiwazaClient
+from kamiwaza_sdk.client import _SCOPED_HEADERS, KamiwazaClient
 
 BASE_URL = "http://platform.invalid/api"
 KEY = "8e03978e40d543e8bc936894a57f9324"
@@ -160,6 +162,48 @@ def test_the_workroom_header_still_travels(client: KamiwazaClient) -> None:
     headers = _sent(client)[0]
     assert headers["X-Workroom-Id"] == "wr-7"
     assert headers["Idempotency-Key"] == KEY
+
+
+def test_the_scope_does_not_grow_with_calls(client: KamiwazaClient) -> None:
+    """Sequential blocks leave nothing behind.
+
+    The scope is copied on entry and restored on exit, so its size is the
+    number of blocks open at once rather than the number of calls made. A
+    change that set the variable without restoring it would pass every other
+    test here and leak a key onto every later call.
+    """
+    for index in range(1000):
+        with client.request_headers({"Idempotency-Key": f"key-{index}"}):
+            pass
+
+    assert _SCOPED_HEADERS.get() == {}
+
+
+def test_the_scope_is_restored_when_the_call_raises(client: KamiwazaClient) -> None:
+    """An endpoint that blows up must not leave its key behind."""
+    with pytest.raises(RuntimeError):
+        with client.request_headers({"Idempotency-Key": KEY}):
+            raise RuntimeError("the call failed")
+
+    assert _SCOPED_HEADERS.get() == {}
+
+
+def test_the_scope_holds_no_client_after_the_block() -> None:
+    """The mapping keys on the client, so it must release it on exit.
+
+    Keyed by the client object rather than its address, which a later object
+    could reuse. That is only safe if the entry goes when the block does.
+    """
+    held = KamiwazaClient(base_url=BASE_URL)
+    reference = weakref.ref(held)
+
+    with held.request_headers({"Idempotency-Key": KEY}):
+        assert len(_SCOPED_HEADERS.get()) == 1
+
+    del held
+    gc.collect()
+
+    assert reference() is None, "the scope kept the client alive"
 
 
 class _KeepAlive(BaseHTTPRequestHandler):
