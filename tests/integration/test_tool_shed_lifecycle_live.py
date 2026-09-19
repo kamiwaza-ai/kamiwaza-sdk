@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import suppress
@@ -363,6 +364,22 @@ def _mcp_endpoint(advertised_url: str) -> str:
     return f"{base}{MCP_PATH}"
 
 
+def _decoded_lines(response) -> Iterable[str]:
+    """The reply's lines, decoded as UTF-8.
+
+    Both media types MCP defines are UTF-8, but ``requests`` derives the encoding
+    from the headers, and for ``text/event-stream`` without a charset parameter
+    that yields ISO-8859-1 (verified against requests 2.34.2:
+    ``get_encoding_from_headers({"content-type": "text/event-stream"})`` returns
+    ``'ISO-8859-1'``). A permitted UTF-8 byte-order mark would then arrive as
+    ``ï»¿`` rather than ``\ufeff``, the first field name would not read as
+    ``data``, and a conforming endpoint would fail this handshake. Any non-ASCII
+    payload would be mojibake for the same reason.
+    """
+    response.encoding = "utf-8"
+    return response.iter_lines(decode_unicode=True)
+
+
 def _decode_event(fields: list[str]) -> object | None:
     """One server-sent event's data fields, decoded, or None if not JSON.
 
@@ -430,7 +447,10 @@ def _jsonrpc_envelope(content_type: str, body_lines: Iterable[str], name: str) -
         for index, raw in enumerate(body_lines):
             # One leading byte-order mark is permitted on the stream and must be
             # stripped, or the first field name reads as "\ufeffdata".
-            line = raw.lstrip("\ufeff") if index == 0 else raw
+            # Exactly one, which is what the standard strips: a second BOM stays
+            # attached to the field name, so `data` is not recognised -- and a
+            # conforming client would not recognise it either.
+            line = raw.removeprefix("\ufeff") if index == 0 else raw
             # A CR survives when the stream uses CRLF and the reader split on LF.
             line = line[:-1] if line.endswith("\r") else line
             if line.startswith("data:"):
@@ -504,7 +524,7 @@ def _assert_mcp_handshake(client, advertised_url: str, name: str) -> None:
         )
         body = _jsonrpc_envelope(
             response.headers.get("content-type", ""),
-            response.iter_lines(decode_unicode=True),
+            _decoded_lines(response),
             name,
         )
     # Without these two, an uncorrelated body carrying the right-looking keys
@@ -519,14 +539,48 @@ def _assert_mcp_handshake(client, advertised_url: str, name: str) -> None:
     assert body.get("error") is None, (
         f"MCP initialize against {name} returned a JSON-RPC error: {body.get('error')}"
     )
-    result = body.get("result") or {}
-    assert result.get("protocolVersion"), (
-        f"the MCP result for {name} carries no protocolVersion: {body}"
+    _assert_initialize_result(body.get("result") or {}, name)
+
+
+# An MCP protocol version is a dated revision, e.g. "2024-11-05". The live
+# handshake this arm recorded on 2026-09-18 answered "2025-11-25".
+PROTOCOL_VERSION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _assert_initialize_result(result: dict, name: str) -> None:
+    """The result is an MCP InitializeResult, not merely a dict with two keys.
+
+    ``initialize`` answers with ``protocolVersion``, ``capabilities`` and a
+    ``serverInfo`` carrying both ``name`` and ``version``. Asserting only that
+    ``protocolVersion`` and ``serverInfo.name`` are truthy accepts
+    ``{"protocolVersion": "garbage", "serverInfo": {"name": "stub"}}`` -- a shape
+    no conforming client can use -- and this arm's whole claim is that the
+    endpoint speaks the protocol.
+
+    A seam rather than inline assertions so the shapes can be driven directly;
+    the positive control in the unit module is the handshake the live server
+    actually returned.
+    """
+    version = result.get("protocolVersion")
+    assert isinstance(version, str) and PROTOCOL_VERSION_RE.match(version), (
+        f"the MCP result for {name} carries protocolVersion {version!r}, which is "
+        "not a dated protocol revision"
     )
-    server_info = result.get("serverInfo") or {}
-    assert server_info.get("name"), (
-        f"the MCP result for {name} carries no serverInfo.name: {body}"
+    capabilities = result.get("capabilities")
+    assert isinstance(capabilities, dict), (
+        f"the MCP result for {name} carries capabilities {capabilities!r}; "
+        "initialize must declare what the server supports"
     )
+    server_info = result.get("serverInfo")
+    assert isinstance(server_info, dict), (
+        f"the MCP result for {name} carries serverInfo {server_info!r}"
+    )
+    for field in ("name", "version"):
+        value = server_info.get(field)
+        assert isinstance(value, str) and value.strip(), (
+            f"the MCP result for {name} carries serverInfo.{field} {value!r}; "
+            "an Implementation declares both a name and a version"
+        )
 
 
 def _assert_appears_in_discovery(client, deployment_id: UUID, name: str) -> None:

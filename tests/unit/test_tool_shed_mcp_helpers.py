@@ -14,9 +14,13 @@ imported and driven directly.
 """
 
 import pytest
+import requests
+from requests.utils import get_encoding_from_headers
 
 from kamiwaza_sdk.exceptions import APIError
 from tests.integration.test_tool_shed_lifecycle_live import (
+    _assert_initialize_result,
+    _decoded_lines,
     _is_pre_deploy_refusal,
     _jsonrpc_envelope,
     _mcp_endpoint,
@@ -283,3 +287,82 @@ def test_jsonrpc_envelope_reads_a_crlf_terminated_stream() -> None:
         "\r",
     ]
     assert _jsonrpc_envelope("text/event-stream", body, "tool-abc")["id"] == 1
+
+
+def _response(content_type: str, body: bytes) -> requests.Response:
+    """A response encoded the way a real one is: from its headers.
+
+    ``Response.encoding`` is set by the adapter at construction, so a hand-built
+    response must derive it the same way or the test would probe a path no server
+    produces.
+    """
+    response = requests.Response()
+    response.status_code = 200
+    response.headers["content-type"] = content_type
+    response._content = body
+    response._content_consumed = True
+    response.encoding = get_encoding_from_headers(response.headers)
+    return response
+
+
+def test_decoded_lines_reads_utf8_from_an_event_stream_without_a_charset() -> None:
+    """requests picks ISO-8859-1 for text/* without a charset.
+
+    Verified against requests 2.34.2: `get_encoding_from_headers` returns
+    'ISO-8859-1' for `text/event-stream`. The stream is always UTF-8, so a BOM
+    would arrive as `ï»¿` and the field name would not read as `data`.
+    """
+    raw = 'data: {"jsonrpc": "2.0", "id": 1, "result": {"note": "café"}}'
+    response = _response("text/event-stream", ("\ufeff" + raw + "\n\n").encode("utf-8"))
+    assert response.encoding == "ISO-8859-1", "the premise of this test changed"
+
+    lines = list(_decoded_lines(response))
+    assert lines[0].startswith("\ufeff"), "the byte-order mark did not survive as a BOM"
+    assert lines[0].endswith('"café"}}'), f"payload mis-decoded: {lines[0]!r}"
+
+
+def test_jsonrpc_envelope_refuses_a_second_byte_order_mark() -> None:
+    """The standard strips exactly one.
+
+    A second BOM stays attached to the field name, so a conforming client never
+    recognises `data:` — and neither may this reader.
+    """
+    body = [
+        '\ufeff\ufeffdata: {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "1"}}',
+        "",
+    ]
+    with pytest.raises(AssertionError, match="no JSON-RPC response"):
+        _jsonrpc_envelope("text/event-stream", body, "tool-abc")
+
+
+# The result the live server returned on 2026-09-18, quoted from the staged
+# evidence. The positive control: the stricter assertions must accept it.
+LIVE_RESULT = {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {"tools": {"listChanged": False}},
+    "serverInfo": {"name": "tool-kamiwaza-dde", "version": "2.3.1"},
+}
+
+
+def test_the_live_initialize_result_is_accepted() -> None:
+    _assert_initialize_result(dict(LIVE_RESULT), "tool-abc")
+
+
+def test_an_initialize_result_without_capabilities_is_refused() -> None:
+    result = {k: v for k, v in LIVE_RESULT.items() if k != "capabilities"}
+    with pytest.raises(AssertionError, match="must declare what the server supports"):
+        _assert_initialize_result(result, "tool-abc")
+
+
+def test_an_initialize_result_without_a_server_version_is_refused() -> None:
+    """serverInfo is an Implementation: a name alone is not one."""
+    result = dict(LIVE_RESULT, serverInfo={"name": "stub"})
+    with pytest.raises(AssertionError, match="serverInfo.version"):
+        _assert_initialize_result(result, "tool-abc")
+
+
+def test_an_unversioned_protocol_string_is_refused() -> None:
+    """ "garbage" is truthy; it is not a dated protocol revision."""
+    result = dict(LIVE_RESULT, protocolVersion="garbage")
+    with pytest.raises(AssertionError, match="not a dated protocol revision"):
+        _assert_initialize_result(result, "tool-abc")
